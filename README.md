@@ -9,10 +9,12 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 ## Features
 
 - **Audio Cues** — play WAV, MP3, FLAC, OGG, AAC files with sample-accurate playback
+- **Stop Cues** — instantly stop all running cues when triggered; drag the ■ STOP button or `+ Stop` directly into the cue list to insert at any position
 - **WASAPI & ASIO support** — low-latency audio on Windows via [cpal](https://github.com/RustAudio/cpal) + Steinberg ASIO SDK
 - **Resizable, reorderable, hideable columns** — customisable cue list layout persisted to localStorage
 - **Drag-and-drop cue reordering** — rearrange cues with a live drop indicator
-- **File drag-and-drop** — drop audio files onto the cue list to create Audio Cues instantly
+- **Toolbar button drag** — drag `+ Audio` or `+ Stop` from the toolbar to insert a new cue at any position in the list
+- **File drag-and-drop** — drop audio files onto the cue list; hover the centre of a row to assign the file, or the edge to insert a new cue between existing ones
 - **Continue modes** — Do Not Continue, Auto-Continue (overlap with Post-Wait), Auto-Follow (trigger next on completion)
 - **Waveform editor** — visual trim of Start/End points with real-time preview playhead
 - **Inspector panel** — edit cue properties (name, number, volume, fade, trim, output patch, continue mode)

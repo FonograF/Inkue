@@ -2,9 +2,10 @@
 // Shows AudioCue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { AudioCueData, CueSummary, FadeCurve, WaveformData } from "../../lib/types";
+import type { AudioCueData, CueSummary, WaveformData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, getWaveformPeaks } from "../../lib/commands";
 import { WaveformModal } from "../WaveformModal";
+import { CurveSelect } from "../common/CurveSelect";
 import { open } from "@tauri-apps/plugin-dialog";
 
 interface Props {
@@ -729,11 +730,6 @@ function LevelsTab({
 // Fade tab — fade in/out with duration and curve selection
 // ---------------------------------------------------------------------------
 
-const FADE_CURVES: { value: FadeCurve; label: string }[] = [
-  { value: "s_curve", label: "S-Curve (default)" },
-  { value: "linear", label: "Linear" },
-  { value: "exponential", label: "Exponential" },
-];
 
 function FadeTab({
   cue,
@@ -777,19 +773,10 @@ function FadeTab({
           />
         </Field>
         <Field label="Curve">
-          <select
-            style={inputStyle}
+          <CurveSelect
             value={cue.fade_in_curve ?? "s_curve"}
-            onChange={(e) =>
-              onSave({ fade_in_curve: e.target.value as FadeCurve })
-            }
-          >
-            {FADE_CURVES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => onSave({ fade_in_curve: v })}
+          />
         </Field>
       </div>
 
@@ -822,19 +809,10 @@ function FadeTab({
           />
         </Field>
         <Field label="Curve">
-          <select
-            style={inputStyle}
+          <CurveSelect
             value={cue.fade_out_curve ?? "s_curve"}
-            onChange={(e) =>
-              onSave({ fade_out_curve: e.target.value as FadeCurve })
-            }
-          >
-            {FADE_CURVES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => onSave({ fade_out_curve: v })}
+          />
         </Field>
       </div>
     </>

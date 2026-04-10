@@ -9,6 +9,7 @@ pub mod audio_cue;
 pub mod context;
 pub mod memo_cue;
 pub mod registry;
+pub mod stop_cue;
 pub mod traits;
 pub mod types;
 

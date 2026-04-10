@@ -15,6 +15,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   wait: "⏱",
   group: "📁",
   fade: "📉",
+  stop: "⬛",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

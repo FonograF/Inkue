@@ -20,6 +20,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 export const go = () => invoke<void>("go");
+export const setMasterVolume = (db: number) => invoke<void>("set_master_volume", { db });
 export const stopAll = () => invoke<void>("stop_all");
 export const hardStopAll = () => invoke<void>("hard_stop_all");
 export const stopCue = (cueId: CueId) => invoke<void>("stop_cue", { cueId });

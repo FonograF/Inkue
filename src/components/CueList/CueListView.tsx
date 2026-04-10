@@ -45,10 +45,6 @@ function isAudioPath(p: string) {
 function basenameNoExt(p: string) {
   return (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "");
 }
-function getTargetCueId(x: number, y: number): string | null {
-  const row = document.elementFromPoint(x, y)?.closest("[data-cue-id]") as HTMLElement | null;
-  return row?.dataset.cueId ?? null;
-}
 
 // ---------------------------------------------------------------------------
 // Cue context-menu item
@@ -163,6 +159,23 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   const [draggingCueId,   setDraggingCueId]   = useState<string | null>(null);
   const [dropInsertIndex, setDropInsertIndex]  = useState<number | null>(null);
 
+  // ---------- New-cue drag state (toolbar buttons dragged into list) ----------
+  // Driven by a CustomEvent "wincue:cue-drag-start" dispatched by external buttons.
+  const [newCueDragType,     setNewCueDragType]     = useState<import("../../lib/types").CueType | null>(null);
+  const [newCueDragInsertIdx, setNewCueDragInsertIdx] = useState<number | null>(null);
+
+  const newCueDragRef = useRef<{
+    cueType: import("../../lib/types").CueType;
+    startX: number;
+    startY: number;
+    active: boolean;
+    insertIdx: number | null;
+  } | null>(null);
+
+  // Keep a fresh ref to onRefresh so the stale useEffect closure can call it.
+  const onRefreshRef = useRef(onRefresh);
+  useEffect(() => { onRefreshRef.current = onRefresh; }, [onRefresh]);
+
   // Tracks an in-progress cue drag entirely in a ref (no re-render on every
   // pixel moved). dropIdx is mirrored here so the mouseup closure can read it.
   const cueDragRef = useRef<{
@@ -198,6 +211,21 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
   // Combined document-level pointer tracker for resize + reorder.
   useEffect(() => {
+    // Scan all visible cue rows by midpoint to find the correct insert index.
+    // More robust than elementFromPoint: works between rows, over scrollbar, etc.
+    function calcInsertIdxFromY(clientY: number): number {
+      const rowEls = rowsScrollRef.current
+        ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
+        : [];
+      for (const el of rowEls) {
+        const rect = el.getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) {
+          return Number(el.dataset.cueIndex ?? 0);
+        }
+      }
+      return cuesRef.current.length;
+    }
+
     const onMove = (e: MouseEvent) => {
       // ── Column resize ─────────────────────────────────────────────────────
       if (resizingRef.current) {
@@ -240,6 +268,21 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         return;
       }
 
+      // ── New-cue drag (toolbar button → insert position in list) ──────────
+      if (newCueDragRef.current) {
+        const drag = newCueDragRef.current;
+        if (!drag.active) {
+          if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 5) return;
+          drag.active = true;
+          document.body.style.cursor = "copy";
+          setNewCueDragType(drag.cueType);
+        }
+        const newDrop = calcInsertIdxFromY(e.clientY);
+        drag.insertIdx = newDrop;
+        setNewCueDragInsertIdx(newDrop);
+        return;
+      }
+
       // ── Cue reorder ───────────────────────────────────────────────────────
       if (cueDragRef.current) {
         const drag = cueDragRef.current;
@@ -249,35 +292,39 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           document.body.style.cursor = "grabbing";
           setDraggingCueId(drag.id);
         }
-        // Find which row the cursor is over, determine top/bottom half.
-        const rowEl = document.elementFromPoint(e.clientX, e.clientY)
-          ?.closest("[data-cue-id]") as HTMLElement | null;
-        if (rowEl) {
-          const rect = rowEl.getBoundingClientRect();
-          const idx  = Number(rowEl.dataset.cueIndex ?? -1);
-          if (idx >= 0) {
-            const newDrop = e.clientY < rect.top + rect.height / 2 ? idx : idx + 1;
-            drag.dropIdx = newDrop;
-            setDropInsertIndex(newDrop);
-          }
-        } else {
-          // Cursor between rows or outside — snap to nearest edge.
-          const rowsEl = rowsScrollRef.current;
-          if (rowsEl) {
-            const rect = rowsEl.getBoundingClientRect();
-            const edge = e.clientY <= rect.top ? 0 : cuesRef.current.length;
-            drag.dropIdx = edge;
-            setDropInsertIndex(edge);
-          }
-        }
+        const newDrop = calcInsertIdxFromY(e.clientY);
+        drag.dropIdx = newDrop;
+        setDropInsertIndex(newDrop);
         return;
       }
     };
 
-    const onUp = () => {
+    const onUp = (e: MouseEvent) => {
       if (resizingRef.current) {
         resizingRef.current = null;
         document.body.style.cursor = "";
+        return;
+      }
+      if (newCueDragRef.current) {
+        const drag = newCueDragRef.current;
+        if (drag.active && drag.insertIdx !== null) {
+          const rowsEl = rowsScrollRef.current;
+          if (rowsEl) {
+            const rect = rowsEl.getBoundingClientRect();
+            const inBounds =
+              e.clientX >= rect.left && e.clientX <= rect.right &&
+              e.clientY >= rect.top  && e.clientY <= rect.bottom;
+            if (inBounds) {
+              addCue(drag.cueType, drag.insertIdx)
+                .then(() => onRefreshRef.current())
+                .catch(console.error);
+            }
+          }
+        }
+        newCueDragRef.current = null;
+        document.body.style.cursor = "";
+        setNewCueDragType(null);
+        setNewCueDragInsertIdx(null);
         return;
       }
       if (colDragRef.current) {
@@ -322,16 +369,33 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           setDraggingCueId(null);
           setDropInsertIndex(null);
         }
+        if (newCueDragRef.current?.active) {
+          newCueDragRef.current = null;
+          document.body.style.cursor = "";
+          setNewCueDragType(null);
+          setNewCueDragInsertIdx(null);
+        }
       }
+    };
+
+    const onNewCueDragStart = (e: Event) => {
+      const { cueType, startX, startY } = (e as CustomEvent).detail as {
+        cueType: import("../../lib/types").CueType;
+        startX: number;
+        startY: number;
+      };
+      newCueDragRef.current = { cueType, startX, startY, active: false, insertIdx: null };
     };
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup",   onUp);
     document.addEventListener("keydown",   onKeyDown);
+    document.addEventListener("wincue:cue-drag-start", onNewCueDragStart);
     return () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup",   onUp);
       document.removeEventListener("keydown",   onKeyDown);
+      document.removeEventListener("wincue:cue-drag-start", onNewCueDragStart);
     };
   }, []);
 
@@ -373,8 +437,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   }
 
   // ---------- File drag-drop state ----------
-  const [dragOverCueId, setDragOverCueId] = useState<string | null>(null);
-  const [isDragging,    setIsDragging]    = useState(false);
+  const [dragOverCueId,    setDragOverCueId]    = useState<string | null>(null);
+  const [isDragging,       setIsDragging]       = useState(false);
+  // When a file is dragged in insert-between mode (cursor near row edge),
+  // this holds the insertion index; dragOverCueId is null in that case.
+  const [fileDragInsertIdx, setFileDragInsertIdx] = useState<number | null>(null);
   const [contextMenu,   setContextMenu]   = useState<{ x: number; y: number; cueId: string | null } | null>(null);
 
   const cuesRef = useRef(cues);
@@ -386,25 +453,78 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
     (async () => {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      // Tauri drag-drop positions are in physical (DPI-scaled) pixels.
+      // Convert to logical CSS pixels before comparing with getBoundingClientRect().
+      // Cursor in the top/bottom 8 logical px of a row → insert line.
+      // Cursor in the middle of a row → assign/replace that cue.
+      const EDGE_PX = 8;
+      function resolveFileDragMode(_physX: number, physY: number): { insertIdx: number | null; assignId: string | null } {
+        const dpr = window.devicePixelRatio || 1;
+        const py  = physY / dpr;
+        const rowEls = rowsScrollRef.current
+          ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
+          : [];
+        for (const el of rowEls) {
+          const rect = el.getBoundingClientRect();
+          if (py < rect.top) {
+            // Cursor is above this row (gap between previous and this row).
+            return { insertIdx: Number(el.dataset.cueIndex ?? 0), assignId: null };
+          }
+          if (py < rect.bottom) {
+            // Cursor is inside this row.
+            const idx = Number(el.dataset.cueIndex ?? -1);
+            const id  = el.dataset.cueId ?? null;
+            if (py - rect.top  < EDGE_PX) return { insertIdx: idx >= 0 ? idx     : 0,                      assignId: null };
+            if (rect.bottom - py < EDGE_PX) return { insertIdx: idx >= 0 ? idx + 1 : cuesRef.current.length, assignId: null };
+            return { insertIdx: null, assignId: id };
+          }
+        }
+        // Below all rows → append at end.
+        return { insertIdx: cuesRef.current.length, assignId: null };
+      }
+
       const fn_ = await getCurrentWindow().onDragDropEvent(async (event) => {
         const { type } = event.payload;
         if (type === "enter" || type === "over") {
           setIsDragging(true);
           const pos = event.payload.position;
-          if (pos) setDragOverCueId(getTargetCueId(pos.x, pos.y));
+          if (pos) {
+            const { insertIdx, assignId } = resolveFileDragMode(pos.x, pos.y);
+            setFileDragInsertIdx(insertIdx);
+            setDragOverCueId(assignId);
+          }
         } else if (type === "leave") {
           setIsDragging(false);
           setDragOverCueId(null);
+          setFileDragInsertIdx(null);
         } else if (type === "drop") {
           setIsDragging(false);
           setDragOverCueId(null);
+          setFileDragInsertIdx(null);
           const paths: string[] = (event.payload as { paths?: string[] }).paths ?? [];
           const pos = event.payload.position;
           const audioPaths = paths.filter(isAudioPath);
           if (audioPaths.length === 0) return;
-          const targetId = pos ? getTargetCueId(pos.x, pos.y) : null;
-          if (audioPaths.length === 1) {
-            await handleFileDrop(audioPaths[0], targetId);
+
+          const { insertIdx, assignId } = pos
+            ? resolveFileDragMode(pos.x, pos.y)
+            : { insertIdx: null, assignId: null };
+
+          if (insertIdx !== null) {
+            // Insert mode: create new cue(s) at the target position.
+            let at = insertIdx;
+            for (const p of audioPaths) {
+              const newId = await addCue("audio", at).catch(() => null);
+              if (newId) {
+                await setAudioFile(newId, p).catch(console.error);
+                await updateCue(newId, { name: basenameNoExt(p) }).catch(console.error);
+                setSelectedCueId(newId);
+                at++;
+              }
+            }
+            await onRefresh();
+          } else if (audioPaths.length === 1) {
+            await handleFileDrop(audioPaths[0], assignId);
           } else {
             for (const p of audioPaths) await handleFileDrop(p, null);
           }
@@ -618,12 +738,36 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
         {cues.map((cue, index) => (
           <Fragment key={cue.id}>
-            {/* Drop-target indicator line ABOVE this row */}
+            {/* Drop-target indicator line ABOVE this row (file insert) */}
+            {isDragging && fileDragInsertIdx === index && (
+              <div
+                style={{
+                  height: 2,
+                  background: "#3b82f6",
+                  margin: "0 8px",
+                  borderRadius: 1,
+                  pointerEvents: "none",
+                }}
+              />
+            )}
+            {/* Drop-target indicator line ABOVE this row (cue reorder) */}
             {draggingCueId !== null && dropInsertIndex === index && (
               <div
                 style={{
                   height: 2,
                   background: "#3b82f6",
+                  margin: "0 8px",
+                  borderRadius: 1,
+                  pointerEvents: "none",
+                }}
+              />
+            )}
+            {/* Drop-target indicator line ABOVE this row (new-cue drag from toolbar) */}
+            {newCueDragType !== null && newCueDragInsertIdx === index && (
+              <div
+                style={{
+                  height: 2,
+                  background: "#ef4444",
                   margin: "0 8px",
                   borderRadius: 1,
                   pointerEvents: "none",
@@ -657,7 +801,19 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           </Fragment>
         ))}
 
-        {/* Drop-target indicator line AFTER the last row */}
+        {/* Drop-target indicator line AFTER the last row (file insert) */}
+        {isDragging && fileDragInsertIdx === cues.length && (
+          <div
+            style={{
+              height: 2,
+              background: "#3b82f6",
+              margin: "0 8px",
+              borderRadius: 1,
+              pointerEvents: "none",
+            }}
+          />
+        )}
+        {/* Drop-target indicator line AFTER the last row (cue reorder) */}
         {draggingCueId !== null && dropInsertIndex === cues.length && (
           <div
             style={{
@@ -669,8 +825,20 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
             }}
           />
         )}
+        {/* Drop-target indicator line AFTER the last row (new-cue drag from toolbar) */}
+        {newCueDragType !== null && newCueDragInsertIdx === cues.length && (
+          <div
+            style={{
+              height: 2,
+              background: "#ef4444",
+              margin: "0 8px",
+              borderRadius: 1,
+              pointerEvents: "none",
+            }}
+          />
+        )}
 
-        {isDragging && !dragOverCueId && (
+        {isDragging && !dragOverCueId && fileDragInsertIdx === null && (
           <div
             style={{
               margin: "8px 16px",

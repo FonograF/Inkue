@@ -16,7 +16,7 @@ use crate::{
 /// it is silently skipped so the command always returns instantly.
 #[tauri::command]
 pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
-    let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
+    let (tx, rx) = crossbeam_channel::unbounded::<CueEvent>();
     let context = CueContext::new(state.audio_engine.clone(), tx);
     let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
@@ -35,6 +35,26 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     }
 
     transport.go(cue_list).map_err(|e| e.to_string())?;
+
+    // Handle any events emitted synchronously during go() — notably StopAll
+    // from a StopCue, which must stop all running cues immediately.
+    while let Ok(event) = rx.try_recv() {
+        if let CueEvent::StopAll = event {
+            let stop_context = make_context(&state.audio_engine);
+            let mut stop_transport = Transport::new(stop_context);
+            let stopping: Vec<_> = cue_list.cues
+                .iter()
+                .filter(|c| c.is_running() || c.is_paused())
+                .map(|c| c.id())
+                .collect();
+            let _ = stop_transport.stop_all(cue_list);
+            for id in stopping {
+                let _ = app_handle.emit("cue-state-changed", serde_json::json!({
+                    "cue_id": id, "old_state": "running", "new_state": "standby",
+                }));
+            }
+        }
+    }
 
     if let Some(phid) = cue_list.playhead_cue_id {
         let _ = app_handle.emit("playhead-moved", serde_json::json!({ "cue_id": phid }));
@@ -130,6 +150,17 @@ pub fn pause_cue(
     let _ = app_handle.emit("cue-state-changed", serde_json::json!({
         "cue_id": cue_id, "old_state": "running", "new_state": "paused",
     }));
+    Ok(())
+}
+
+/// Set the master output gain from a dB value.
+///
+/// The gain is applied atomically in the audio callback without any lock.
+/// Values ≤ −60 dB are treated as silence (gain = 0.0).
+#[tauri::command]
+pub fn set_master_volume(db: f32, state: State<'_, AppState>) -> Result<(), String> {
+    let gain = if db <= -60.0 { 0.0_f32 } else { 10_f32.powf(db / 20.0) };
+    state.audio_engine.set_master_gain(gain);
     Ok(())
 }
 

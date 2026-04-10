@@ -15,12 +15,17 @@ import {
   redo,
   copyCue,
   pasteCue,
+  setPlayhead,
 } from "../lib/commands";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 
 export function useKeyboardShortcuts(
   onRefresh: () => void,
   onOpenPreferences?: () => void,
+  onSave?: () => void,
+  onOpen?: () => void,
+  onToggleInspector?: () => void,
+  onGoto?: () => void,
 ) {
   const lastEscapeRef = useRef<number>(0);
   const { selectedCueId } = useWorkspaceStore();
@@ -59,9 +64,28 @@ export function useKeyboardShortcuts(
         }
         case "s":
         case "S": {
-          if (!e.ctrlKey && selectedCueId) {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            onSave?.();
+          } else if (selectedCueId) {
             await stopCue(selectedCueId).catch(console.error);
             onRefresh();
+          }
+          break;
+        }
+        case "o":
+        case "O": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            onOpen?.();
+          }
+          break;
+        }
+        case "i":
+        case "I": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            onToggleInspector?.();
           }
           break;
         }
@@ -85,6 +109,40 @@ export function useKeyboardShortcuts(
           if (e.ctrlKey) {
             e.preventDefault();
             onOpenPreferences?.();
+          }
+          break;
+        }
+        case "g":
+        case "G": {
+          if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+            e.preventDefault();
+            onGoto?.();
+          }
+          break;
+        }
+        case "ArrowUp": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            const { cues, playheadCueId } = useWorkspaceStore.getState();
+            const idx = cues.findIndex((c) => c.id === playheadCueId);
+            const prevCue = idx > 0 ? cues[idx - 1] : cues[0];
+            if (prevCue) {
+              await setPlayhead(prevCue.id).catch(console.error);
+              onRefresh();
+            }
+          }
+          break;
+        }
+        case "ArrowDown": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            const { cues, playheadCueId } = useWorkspaceStore.getState();
+            const idx = cues.findIndex((c) => c.id === playheadCueId);
+            const nextCue = idx < cues.length - 1 ? cues[idx + 1] : cues[cues.length - 1];
+            if (nextCue) {
+              await setPlayhead(nextCue.id).catch(console.error);
+              onRefresh();
+            }
           }
           break;
         }
@@ -162,5 +220,5 @@ export function useKeyboardShortcuts(
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedCueId, onRefresh, onOpenPreferences]);
+  }, [selectedCueId, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto]);
 }

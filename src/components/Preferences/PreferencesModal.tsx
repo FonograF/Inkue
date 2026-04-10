@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import type { AppPreferences, AudioPreferences, DeviceInfo } from "../../lib/types";
+import { CurveSelect } from "../common/CurveSelect";
 import {
   getAsioOutputPairs,
   getAvailableBackends,
@@ -240,17 +241,11 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
           />
         </Row>
         <Row label="Default Fade Curve">
-          <select
-            style={selectStyle}
+          <CurveSelect
             value={prefs.default_fade_curve}
-            onChange={(e) =>
-              onChange({ ...prefs, default_fade_curve: e.target.value as AudioPreferences["default_fade_curve"] })
-            }
-          >
-            <option value="linear">Linear</option>
-            <option value="s_curve">S-Curve</option>
-            <option value="exponential">Exponential</option>
-          </select>
+            onChange={(v) => onChange({ ...prefs, default_fade_curve: v })}
+            baseStyle={selectStyle}
+          />
         </Row>
       </Section>
     </>

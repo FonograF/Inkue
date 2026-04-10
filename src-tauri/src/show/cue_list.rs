@@ -53,6 +53,18 @@ impl CueList {
     // Mutation
     // -----------------------------------------------------------------------
 
+    /// Assign sequential cue numbers ("1", "2", "3", …) to every cue in order.
+    ///
+    /// Called automatically after any structural mutation (add, remove, move).
+    /// Cues whose number was manually cleared are still renumbered; this keeps
+    /// the list consistent and matches the user expectation that numbers always
+    /// reflect position.
+    pub fn renumber_all(&mut self) {
+        for (i, cue) in self.cues.iter_mut().enumerate() {
+            cue.set_number(Some((i + 1).to_string()));
+        }
+    }
+
     /// Append a cue to the end of the list.
     pub fn push(&mut self, cue: Box<dyn Cue>) {
         if self.cues.is_empty() {
@@ -60,6 +72,7 @@ impl CueList {
             self.playhead_cue_id = Some(cue.id());
         }
         self.cues.push(cue);
+        self.renumber_all();
     }
 
     /// Insert a cue at the given index (0-based).
@@ -70,6 +83,7 @@ impl CueList {
         if self.playhead_cue_id.is_none() {
             self.playhead_cue_id = Some(id);
         }
+        self.renumber_all();
     }
 
     /// Remove the cue with the given ID.  If the removed cue was at the
@@ -90,6 +104,7 @@ impl CueList {
                 .map(|c| c.id());
         }
 
+        self.renumber_all();
         Ok(removed)
     }
 
@@ -99,6 +114,7 @@ impl CueList {
         let cue = self.cues.remove(from);
         let to = to_index.min(self.cues.len());
         self.cues.insert(to, cue);
+        self.renumber_all();
         Ok(())
     }
 

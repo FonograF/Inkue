@@ -15,7 +15,7 @@ use commands::{
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     preferences_cmds::{get_asio_output_pairs, get_available_backends, get_preferences, list_audio_devices, test_audio_device, update_audio_preferences},
-    transport_cmds::{go, hard_stop_all, pause_cue, resume_cue, stop_all, stop_cue},
+    transport_cmds::{go, hard_stop_all, pause_cue, resume_cue, set_master_volume, stop_all, stop_cue},
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
@@ -55,6 +55,7 @@ pub fn run() {
             stop_cue,
             pause_cue,
             resume_cue,
+            set_master_volume,
             // Cues
             get_all_cues,
             get_cue,

@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 

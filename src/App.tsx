@@ -1,6 +1,6 @@
 // Root application layout — mirrors QLab's three-zone layout.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
@@ -9,7 +9,7 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, saveWorkspace, loadWorkspace, newWorkspace } from "./lib/commands";
+import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead } from "./lib/commands";
 import { PreferencesModal } from "./components/Preferences/PreferencesModal";
 import type { CueSummary } from "./lib/types";
 
@@ -132,6 +132,81 @@ function DialogBtn({
 }
 
 // ---------------------------------------------------------------------------
+// Goto cue dialog (G key) — type a cue number to move the playhead
+// ---------------------------------------------------------------------------
+
+function GotoDialog({
+  onClose,
+  onRefresh,
+}: {
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const commit = async () => {
+    const q = value.trim();
+    if (!q) { onClose(); return; }
+    const { cues } = useWorkspaceStore.getState();
+    const match = cues.find((c) => c.number != null && c.number === q);
+    if (match) {
+      await setPlayhead(match.id).catch(console.error);
+      onRefresh();
+    }
+    onClose();
+  };
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); void commit(); }
+    if (e.key === "Escape") { e.preventDefault(); onClose(); }
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 99998,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: "#1e293b", border: "1px solid #475569",
+          borderRadius: 8, padding: "16px 20px", width: 280,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.8)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>
+          Go to cue number
+        </div>
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder="e.g. 1, 1.5, Intro"
+          style={{
+            width: "100%", boxSizing: "border-box",
+            background: "#0f172a", border: "1px solid #334155",
+            borderRadius: 5, color: "#f1f5f9", fontSize: 14,
+            padding: "7px 10px", outline: "none",
+          }}
+        />
+        <div style={{ fontSize: 11, color: "#475569", marginTop: 8 }}>
+          Enter to confirm · Escape to cancel
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // File menu
 // ---------------------------------------------------------------------------
 
@@ -240,6 +315,7 @@ export default function App() {
   const [inspectorOpen, setInspectorOpen]     = useState(true);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [prefsOpen, setPrefsOpen]             = useState(false);
+  const [gotoOpen, setGotoOpen]               = useState(false);
 
   // Bootstrap
   useEffect(() => {
@@ -338,13 +414,38 @@ export default function App() {
     await refreshCues();
   }, [refreshCues]);
 
-  useKeyboardShortcuts(handleRefresh, () => setPrefsOpen(true));
+  useKeyboardShortcuts(
+    handleRefresh,
+    () => setPrefsOpen(true),
+    () => void handleSave(),
+    () => void handleOpen(),
+    () => setInspectorOpen((v) => !v),
+    () => setGotoOpen(true),
+  );
 
   const selectedCue = cues.find((c) => c.id === selectedCueId) ?? null;
 
   const handleAddAudio = async () => {
-    await addCue("audio").catch(console.error);
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("audio", idx >= 0 ? idx + 1 : -1).catch(console.error);
     await refreshCues();
+  };
+
+  const handleAddStop = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("stop", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop", e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    document.dispatchEvent(
+      new CustomEvent("wincue:cue-drag-start", {
+        detail: { cueType, startX: e.clientX, startY: e.clientY },
+      }),
+    );
   };
 
   const titleBarName = workspaceInfo
@@ -363,6 +464,11 @@ export default function App() {
     >
       {/* Preferences modal */}
       {prefsOpen && <PreferencesModal onClose={() => setPrefsOpen(false)} />}
+
+      {/* Goto cue dialog */}
+      {gotoOpen && (
+        <GotoDialog onClose={() => setGotoOpen(false)} onRefresh={handleRefresh} />
+      )}
 
       {/* Unsaved-changes dialog */}
       {closeDialogOpen && (
@@ -412,8 +518,21 @@ export default function App() {
 
         {/* Toolbar */}
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          <button style={toolbarBtn} onClick={handleAddAudio} title="Add Audio Cue (Ctrl+N)">
+          <button
+            style={{ ...toolbarBtn, cursor: "grab", userSelect: "none" }}
+            onClick={handleAddAudio}
+            onMouseDown={(e) => dispatchCueDrag("audio", e)}
+            title="Add Audio Cue after selection (Ctrl+N) · Drag to insert at position"
+          >
             + Audio
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#fca5a5", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddStop}
+            onMouseDown={(e) => dispatchCueDrag("stop", e)}
+            title="Add Stop Cue after selection · Drag to insert at position"
+          >
+            + Stop
           </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector

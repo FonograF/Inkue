@@ -15,6 +15,8 @@ pub enum CueType {
     Wait,
     Group,
     Fade,
+    /// Stops all currently-running cues when triggered.
+    Stop,
 }
 
 impl std::fmt::Display for CueType {
@@ -25,6 +27,7 @@ impl std::fmt::Display for CueType {
             CueType::Wait => write!(f, "wait"),
             CueType::Group => write!(f, "group"),
             CueType::Fade => write!(f, "fade"),
+            CueType::Stop => write!(f, "stop"),
         }
     }
 }

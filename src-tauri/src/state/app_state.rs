@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     cue::{
         audio_cue::AudioCueFactory, memo_cue::MemoCueFactory, registry::CueRegistry,
-        types::CueType,
+        stop_cue::StopCueFactory, types::CueType,
     },
     engine::AudioEngine,
     show::{undo_stack::UndoStack, Workspace},
@@ -47,6 +47,7 @@ impl AppState {
         let mut registry = CueRegistry::new();
         registry.register(CueType::Audio, Box::new(AudioCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
+        registry.register(CueType::Stop, Box::new(StopCueFactory));
 
         Ok(Self {
             workspace: Arc::new(Mutex::new(workspace)),
