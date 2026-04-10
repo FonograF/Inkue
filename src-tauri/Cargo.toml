@@ -1,0 +1,56 @@
+[package]
+name = "wincue"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "wincue_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "wincue"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Audio
+cpal = { version = "0.15", features = ["wasm-bindgen"] }
+# winreg is used for ASIO driver detection on Windows (asio-support feature only)
+[target.'cfg(windows)'.dependencies]
+winreg = { version = "0.52", optional = true }
+symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
+
+# Lock-free comms
+ringbuf = "0.4"
+crossbeam-channel = "0.5"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# Enable ASIO support. Requires:
+#   1. Steinberg ASIO SDK (free at steinberg.net/developers)
+#   2. CPAL_ASIO_DIR env var pointing to the SDK root before building
+#   3. Build with: cargo build --features asio-support
+asio-support = ["cpal/asio", "winreg"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
