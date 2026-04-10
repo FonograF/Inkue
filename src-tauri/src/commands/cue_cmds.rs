@@ -107,6 +107,7 @@ pub fn add_cue(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
     let cue = registry.create(&cue_type).map_err(|e| e.to_string())?;
     let id = cue.id().to_string();
@@ -133,6 +134,7 @@ pub fn remove_cue(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
@@ -150,6 +152,7 @@ pub fn move_cue(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
@@ -166,6 +169,7 @@ pub fn duplicate_cue(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
@@ -207,6 +211,7 @@ pub fn update_cue(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     // Lock order: registry first, then workspace (matches duplicate_cue).
@@ -368,6 +373,7 @@ pub fn set_audio_file(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let registry = state.registry.lock().map_err(|e| e.to_string())?;

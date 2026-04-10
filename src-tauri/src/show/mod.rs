@@ -3,6 +3,7 @@
 pub mod cue_list;
 pub mod event_loop;
 pub mod transport;
+pub mod undo_stack;
 pub mod workspace;
 
 pub use workspace::Workspace;

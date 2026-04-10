@@ -42,6 +42,18 @@ export const moveCue = (cueId: CueId, newPosition: number) =>
   invoke<void>("move_cue", { cueId, newPosition });
 export const duplicateCue = (cueId: CueId) =>
   invoke<CueId>("duplicate_cue", { cueId });
+
+// ---------------------------------------------------------------------------
+// Undo / Redo / Copy / Paste
+// ---------------------------------------------------------------------------
+
+export const undo = () => invoke<void>("undo");
+export const redo = () => invoke<void>("redo");
+export const canUndo = () => invoke<boolean>("can_undo");
+export const canRedo = () => invoke<boolean>("can_redo");
+export const copyCue = (cueId: CueId) => invoke<void>("copy_cue", { cueId });
+export const pasteCue = (afterCueId?: CueId | null) =>
+  invoke<CueId>("paste_cue", { afterCueId: afterCueId ?? null });
 export const updateCue = (cueId: CueId, properties: Partial<AudioCueData>) =>
   invoke<void>("update_cue", { cueId, properties });
 export const setAudioFile = (cueId: CueId, filePath: string) =>

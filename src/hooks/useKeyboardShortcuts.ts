@@ -11,6 +11,10 @@ import {
   addCue,
   removeCue,
   duplicateCue,
+  undo,
+  redo,
+  copyCue,
+  pasteCue,
 } from "../lib/commands";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 
@@ -98,6 +102,47 @@ export function useKeyboardShortcuts(
           if (e.ctrlKey && selectedCueId) {
             e.preventDefault();
             await duplicateCue(selectedCueId).catch(console.error);
+            onRefresh();
+          }
+          break;
+        }
+        case "z":
+        case "Z": {
+          if (e.ctrlKey && e.shiftKey) {
+            // Ctrl+Shift+Z → Redo (alternative to Ctrl+Y)
+            e.preventDefault();
+            await redo().catch(console.error);
+            onRefresh();
+          } else if (e.ctrlKey) {
+            // Ctrl+Z → Undo
+            e.preventDefault();
+            await undo().catch(console.error);
+            onRefresh();
+          }
+          break;
+        }
+        case "y":
+        case "Y": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            await redo().catch(console.error);
+            onRefresh();
+          }
+          break;
+        }
+        case "c":
+        case "C": {
+          if (e.ctrlKey && selectedCueId) {
+            e.preventDefault();
+            await copyCue(selectedCueId).catch(console.error);
+          }
+          break;
+        }
+        case "v":
+        case "V": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            await pasteCue(selectedCueId).catch(console.error);
             onRefresh();
           }
           break;

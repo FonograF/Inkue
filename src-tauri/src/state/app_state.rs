@@ -14,7 +14,7 @@ use crate::{
         types::CueType,
     },
     engine::AudioEngine,
-    show::Workspace,
+    show::{undo_stack::UndoStack, Workspace},
 };
 
 /// The Tauri managed state object.
@@ -28,6 +28,10 @@ pub struct AppState {
     /// Set of cue IDs whose audio files are currently being decoded in the
     /// background.  Used to show a "Loading…" indicator in the UI.
     pub loading_cues: Arc<Mutex<HashSet<Uuid>>>,
+    /// Undo / redo history for the active cue list.
+    pub undo_stack: Arc<Mutex<UndoStack>>,
+    /// In-app clipboard: the last cue copied via Ctrl+C (serialised JSON).
+    pub clipboard: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 impl AppState {
@@ -49,6 +53,8 @@ impl AppState {
             audio_engine,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
+            undo_stack: Arc::new(Mutex::new(UndoStack::new())),
+            clipboard: Arc::new(Mutex::new(None)),
         })
     }
 }
