@@ -91,6 +91,11 @@ pub struct AudioCue {
     /// `true` between `go()` and the moment the audio action actually starts
     /// (i.e. while waiting for `pre_wait` to expire).
     in_pre_wait: bool,
+    /// Incremented on every `go()` call.  Kept for diagnostics / future use.
+    play_generation: u64,
+    /// Set to `true` by [`Transport::go`] immediately after firing the
+    /// Auto-Continue chain, so the event loop never double-fires it.
+    auto_continue_fired: bool,
 }
 
 impl AudioCue {
@@ -124,6 +129,8 @@ impl AudioCue {
             active_voice_id: None,
             cached_duration: None,
             in_pre_wait: false,
+            play_generation: 0,
+            auto_continue_fired: false,
         }
     }
 
@@ -388,6 +395,11 @@ impl Cue for AudioCue {
             return Ok(()); // Already playing; ignore duplicate GO.
         }
 
+        // New play: bump generation and clear the auto-continue flag so the
+        // transport can fire the chain again for this play.
+        self.play_generation = self.play_generation.wrapping_add(1);
+        self.auto_continue_fired = false;
+
         self.state = CueState::Running;
         self.started_at = Some(Instant::now());
 
@@ -414,6 +426,7 @@ impl Cue for AudioCue {
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
+        self.auto_continue_fired = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -446,6 +459,7 @@ impl Cue for AudioCue {
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
+        self.auto_continue_fired = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -457,6 +471,7 @@ impl Cue for AudioCue {
         self.started_at = None;
         self.action_started_at = None;
         self.in_pre_wait = false;
+        self.auto_continue_fired = false;
         Ok(())
     }
 
@@ -471,23 +486,45 @@ impl Cue for AudioCue {
         !self.in_pre_wait
     }
 
+    fn play_generation(&self) -> u64 {
+        self.play_generation
+    }
+
+    fn is_auto_continue_fired(&self) -> bool {
+        self.auto_continue_fired
+    }
+
+    fn mark_auto_continue_fired(&mut self) {
+        self.auto_continue_fired = true;
+    }
+
+    fn clear_auto_continue_fired(&mut self) {
+        self.auto_continue_fired = false;
+    }
+
     fn pre_wait(&self) -> Duration { self.pre_wait }
     fn set_pre_wait(&mut self, d: Duration) { self.pre_wait = d; }
     fn post_wait(&self) -> Duration { self.post_wait }
     fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
     fn duration(&self) -> Option<Duration> {
+        // Infinite loop — no fixed duration; rely on voice_done for completion.
+        if self.loop_count == u32::MAX {
+            return None;
+        }
         self.cached_duration.map(|d| {
             // Adjust for start/end markers.
             let start = self.start_time.unwrap_or(Duration::ZERO);
             let end = self.end_time.unwrap_or(d);
             let base = end.saturating_sub(start);
             // Adjust for playback rate: rate > 1.0 shortens effective duration.
-            if self.rate > 0.0 && (self.rate - 1.0).abs() > f64::EPSILON {
+            let adjusted = if self.rate > 0.0 && (self.rate - 1.0).abs() > f64::EPSILON {
                 Duration::from_secs_f64(base.as_secs_f64() / self.rate)
             } else {
                 base
-            }
+            };
+            // Multiply by total number of plays: initial play + loop_count repeats.
+            adjusted * (self.loop_count + 1)
         })
     }
 

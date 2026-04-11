@@ -213,6 +213,28 @@ pub trait Cue: Send {
         None
     }
 
+    /// Monotonically increasing counter incremented on every `go()` call.
+    /// Reserved for diagnostics / future use.  Default: 0.
+    fn play_generation(&self) -> u64 {
+        0
+    }
+
+    /// Returns `true` if Auto-Continue has already been fired for the
+    /// **current** play of this cue.  The transport sets this flag
+    /// synchronously inside `go()` before chaining, so the event loop
+    /// never sees the cue as needing a second chain.
+    fn is_auto_continue_fired(&self) -> bool {
+        false
+    }
+
+    /// Mark Auto-Continue as fired for the current play.
+    /// Called by [`Transport::go`] immediately after chaining.
+    fn mark_auto_continue_fired(&mut self) {}
+
+    /// Reset the Auto-Continue fired flag.  Called by `go()` (new play) and
+    /// `reset()` / `stop()` (cue stopped or completed).
+    fn clear_auto_continue_fired(&mut self) {}
+
     /// Full duration of the underlying source file, **without** start/end
     /// markers applied.  Audio cues override this; other types return `duration()`.
     fn file_duration(&self) -> Option<Duration> {

@@ -34,7 +34,7 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         }
     }
 
-    transport.go(cue_list).map_err(|e| e.to_string())?;
+    let triggered = transport.go(cue_list).map_err(|e| e.to_string())?;
 
     // Handle any events emitted synchronously during go() — notably StopAll
     // from a StopCue, which must stop all running cues immediately.
@@ -54,6 +54,15 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
                 }));
             }
         }
+    }
+
+    // Emit cue-state-changed for every cue in the Auto-Continue chain
+    // (index 0 = the cue the user triggered; the UI infers its state from
+    // the playhead-moved event, so we start at index 1 for chained cues).
+    for &id in triggered.iter().skip(1) {
+        let _ = app_handle.emit("cue-state-changed", serde_json::json!({
+            "cue_id": id, "old_state": "standby", "new_state": "running",
+        }));
     }
 
     if let Some(phid) = cue_list.playhead_cue_id {

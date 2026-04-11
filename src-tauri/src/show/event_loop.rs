@@ -8,9 +8,9 @@
 //!   Tauri events so the UI stays in sync without polling.
 //! - Calls [`AudioEngine::gc_voices`] to release stopped voice memory.
 
-use std::collections::HashSet;
+use std::collections::HashMap; // used for auto_follow_pending
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::Emitter;
 
@@ -32,13 +32,19 @@ pub fn run(
     audio_engine: Arc<AudioEngine>,
     workspace: Arc<Mutex<Workspace>>,
 ) {
-    // Tracks which Running cues have already had their Auto-Continue fired
-    // this execution cycle.  Cleared when the cue resets/stops.
-    let mut auto_continue_fired: HashSet<CueId> = HashSet::new();
+    // Tracks Auto-Follow completions that are waiting for their Post-Wait
+    // timer before firing the next GO.  Key = completed cue ID, Value = the
+    // Instant at which the GO should fire.
+    let mut auto_follow_pending: HashMap<CueId, Instant> = HashMap::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(TICK_MS));
-        tick(&handle, &audio_engine, &workspace, &mut auto_continue_fired);
+        tick(
+            &handle,
+            &audio_engine,
+            &workspace,
+            &mut auto_follow_pending,
+        );
     }
 }
 
@@ -57,7 +63,7 @@ fn tick(
     handle: &tauri::AppHandle,
     engine: &Arc<AudioEngine>,
     workspace: &Arc<Mutex<Workspace>>,
-    auto_continue_fired: &mut HashSet<CueId>,
+    auto_follow_pending: &mut HashMap<CueId, Instant>,
 ) {
     // ------------------------------------------------------------------
     // 1. Drain the audio status ring buffer.
@@ -108,9 +114,9 @@ fn tick(
     };
 
     // ------------------------------------------------------------------
-    // 3b. Tick all Running cues so they can handle pre-wait transitions.
-    //     (Must happen before the completion check so that a cue that
-    //     completes its pre-wait and immediately finishes is detected.)
+    // 3. Tick all Running cues so they can handle pre-wait transitions.
+    //    (Must happen before the completion check so that a cue that
+    //    completes its pre-wait and immediately finishes is detected.)
     // ------------------------------------------------------------------
     let tick_ctx = make_context(engine);
     for cue in cue_list.cues.iter_mut() {
@@ -144,8 +150,7 @@ fn tick(
             let id = cue.id();
             let cm = cue.continue_mode();
             let pw = cue.post_wait();
-            let _ = cue.reset();
-            auto_continue_fired.remove(&id);
+            let _ = cue.reset(); // also clears auto_continue_fired flag on the cue
             newly_completed.push((id, cm, pw));
         }
     }
@@ -179,44 +184,84 @@ fn tick(
         .collect();
 
     // ------------------------------------------------------------------
-    // 6. Auto-Continue / Auto-Follow detection.
+    // 6. Auto-Continue (delayed, post_wait > 0) / Auto-Follow detection.
+    //
+    //    Immediate Auto-Continue chains (post_wait == 0) are fired
+    //    synchronously inside Transport::go() — no tick delay.  The event
+    //    loop only needs to handle the *delayed* case where post_wait > 0
+    //    and the timer has now elapsed.
+    //
+    //    The per-cue `is_auto_continue_fired()` flag prevents double-fires:
+    //    Transport::go() sets it before chaining, so if post_wait == 0 the
+    //    flag is already true when we get here.
     // ------------------------------------------------------------------
     let mut should_go = false;
 
-    // Auto-Continue on still-running cues: fire when action_elapsed >= post_wait.
-    for cue in cue_list.cues.iter() {
-        if cue.state() != CueState::Running {
-            continue;
-        }
-        if cue.continue_mode() == ContinueMode::AutoContinue
-            && !auto_continue_fired.contains(&cue.id())
-            && cue.is_action_started()
-            && cue.action_elapsed() >= cue.post_wait()
-        {
-            auto_continue_fired.insert(cue.id());
-            should_go = true;
+    // Collect cues that need their delayed Auto-Continue fired now.
+    let delayed_ac_ids: Vec<CueId> = cue_list
+        .cues
+        .iter()
+        .filter(|c| {
+            c.state() == CueState::Running
+                && c.continue_mode() == ContinueMode::AutoContinue
+                && !c.is_auto_continue_fired()
+                && c.is_action_started()
+                && c.action_elapsed() >= c.post_wait()
+        })
+        .map(|c| c.id())
+        .collect();
+
+    // Mark them as fired (needs mutable access).
+    for id in &delayed_ac_ids {
+        if let Some(cue) = cue_list.cues.iter_mut().find(|c| c.id() == *id) {
+            cue.mark_auto_continue_fired();
         }
     }
 
-    // Auto-Follow: fire the next cue the moment THIS cue finishes playing.
-    // (transport.go() does NOT chain immediately for running cues, so it falls
-    // through to here.)
-    for (_cue_id, cm, _pw) in &newly_completed {
+    if !delayed_ac_ids.is_empty() {
+        should_go = true;
+    }
+
+    // Auto-Follow: fire the next cue when THIS cue finishes, respecting Post-Wait.
+    //   post_wait = 0 → GO fires immediately on completion.
+    //   post_wait > 0 → schedule a GO for Instant::now() + post_wait.
+    for (cue_id, cm, pw) in &newly_completed {
         if *cm == ContinueMode::AutoFollow {
-            should_go = true;
+            if pw.is_zero() {
+                should_go = true;
+            } else {
+                auto_follow_pending.insert(*cue_id, Instant::now() + *pw);
+            }
         }
     }
 
+    // Check scheduled Auto-Follow timers: fire any that have elapsed.
+    let now = Instant::now();
+    auto_follow_pending.retain(|_id, due| {
+        if now >= *due {
+            should_go = true;
+            false // timer consumed — remove
+        } else {
+            true  // not yet due — keep
+        }
+    });
+
     // ------------------------------------------------------------------
-    // 7. Fire Auto-Continue (workspace still locked — needed for GO).
+    // 7. Fire Auto-Continue / Auto-Follow GO.
+    //
+    //    Transport::go() now handles immediate AutoContinue chains
+    //    (post_wait == 0) synchronously and returns ALL triggered cue IDs.
+    //    Any further immediate chains are resolved inside that single call.
     // ------------------------------------------------------------------
-    let mut go_result: Option<(CueId, Option<CueId>)> = None; // (triggered_id, new_playhead_id)
+    let mut go_triggered: Vec<CueId> = Vec::new();
+    let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
         let context = make_context(engine);
         let mut transport = Transport::new(context);
-        if let Ok(Some(triggered_id)) = transport.go(cue_list) {
-            go_result = Some((triggered_id, cue_list.playhead_cue_id));
+        if let Ok(ids) = transport.go(cue_list) {
+            go_triggered = ids;
+            go_final_playhead = cue_list.playhead_cue_id;
         }
     }
 
@@ -251,18 +296,20 @@ fn tick(
         );
     }
 
-    if let Some((triggered_id, new_phid)) = go_result {
-        if let Some(phid) = new_phid {
+    if !go_triggered.is_empty() {
+        if let Some(phid) = go_final_playhead {
             let _ = handle.emit("playhead-moved", serde_json::json!({ "cue_id": phid }));
         }
-        let _ = handle.emit(
-            "cue-state-changed",
-            serde_json::json!({
-                "cue_id": triggered_id,
-                "old_state": "standby",
-                "new_state": "running",
-            }),
-        );
+        for triggered_id in &go_triggered {
+            let _ = handle.emit(
+                "cue-state-changed",
+                serde_json::json!({
+                    "cue_id": triggered_id,
+                    "old_state": "standby",
+                    "new_state": "running",
+                }),
+            );
+        }
     }
 
     // ------------------------------------------------------------------

@@ -174,16 +174,22 @@ pub fn duplicate_cue(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
 
-    let json = {
+    let (json, preserved_audio) = {
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
         let cue = cue_list.get(&id).ok_or("Cue not found")?;
         let mut j = cue.serialize();
         // Assign a new UUID to the copy.
         j["id"] = serde_json::json!(Uuid::new_v4().to_string());
-        j
+        // Transfer decoded audio so the copy is playable immediately,
+        // without requiring a background re-decode.
+        let audio = cue.extract_decoded_audio();
+        (j, audio)
     };
 
-    let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
+    let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
+    if let Some((samples, channels, sample_rate, duration)) = preserved_audio {
+        new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
+    }
     let new_id = new_cue.id().to_string();
     drop(registry);
 
