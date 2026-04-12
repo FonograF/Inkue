@@ -1,6 +1,7 @@
 // Global keyboard shortcut handler, mirroring QLab's key bindings.
 
 import { useEffect, useRef } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   go,
   hardStopAll,
@@ -28,7 +29,8 @@ export function useKeyboardShortcuts(
   onGoto?: () => void,
 ) {
   const lastEscapeRef = useRef<number>(0);
-  const { selectedCueId } = useWorkspaceStore();
+  const lastGoRef = useRef<number>(0);
+  const { selectedCueId, generalPrefs } = useWorkspaceStore();
 
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
@@ -44,8 +46,12 @@ export function useKeyboardShortcuts(
 
       switch (e.key) {
         case " ": {
-          // Space → GO
+          // Space → GO (with double-GO protection)
           e.preventDefault();
+          const now = Date.now();
+          const protection = generalPrefs.double_go_protection_ms;
+          if (protection > 0 && now - lastGoRef.current < protection) break;
+          lastGoRef.current = now;
           await go().catch(console.error);
           onRefresh();
           break;
@@ -208,6 +214,10 @@ export function useKeyboardShortcuts(
         case "Delete":
         case "Backspace": {
           if (selectedCueId && e.ctrlKey === false) {
+            if (generalPrefs.confirm_before_delete) {
+              const ok = await confirm("Delete this cue?", { title: "Confirm Delete", kind: "warning" });
+              if (!ok) break;
+            }
             await removeCue(selectedCueId).catch(console.error);
             onRefresh();
           }
@@ -220,5 +230,5 @@ export function useKeyboardShortcuts(
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedCueId, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto]);
+  }, [selectedCueId, generalPrefs, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto]);
 }

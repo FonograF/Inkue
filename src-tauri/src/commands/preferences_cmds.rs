@@ -6,7 +6,7 @@ use tauri::{Emitter, State};
 
 use crate::{
     engine::device_manager::DeviceInfo,
-    preferences::{AppPreferences, AudioPreferences},
+    preferences::{AppPreferences, AudioPreferences, GeneralPreferences},
     state::AppState,
 };
 
@@ -117,6 +117,22 @@ pub fn update_audio_preferences(
         }
     }
 
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Overwrite the general section of preferences and mark the workspace modified.
+///
+/// Unlike audio preferences, no engine restart is needed.
+#[tauri::command]
+pub fn update_general_preferences(
+    prefs: GeneralPreferences,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.preferences.general = prefs;
+    ws.mark_modified();
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }

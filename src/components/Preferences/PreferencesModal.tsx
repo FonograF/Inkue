@@ -3,8 +3,9 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import type { AppPreferences, AudioPreferences, DeviceInfo } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, DeviceInfo, GeneralPreferences } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
+import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   getAsioOutputPairs,
   getAvailableBackends,
@@ -12,6 +13,7 @@ import {
   listAudioDevices,
   testAudioDevice,
   updateAudioPreferences,
+  updateGeneralPreferences,
 } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
@@ -253,6 +255,60 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
 }
 
 // ---------------------------------------------------------------------------
+// General content
+// ---------------------------------------------------------------------------
+
+function GeneralContent({ prefs, onChange }: {
+  prefs: GeneralPreferences;
+  onChange: (p: GeneralPreferences) => void;
+}) {
+  return (
+    <>
+      <Section title="Transport">
+        <Row label="Double GO Protection">
+          <input
+            type="number" min={0} max={5000} step={50}
+            style={{ ...inputStyle, width: 90 }}
+            value={prefs.double_go_protection_ms}
+            onChange={(e) => onChange({ ...prefs, double_go_protection_ms: Number(e.target.value) })}
+          />
+          <span style={{ fontSize: 11, color: "#475569" }}>ms (0 = disabled)</span>
+        </Row>
+      </Section>
+      <Section title="Cue List">
+        <Row label="Confirm Before Delete">
+          <input
+            type="checkbox"
+            checked={prefs.confirm_before_delete}
+            onChange={(e) => onChange({ ...prefs, confirm_before_delete: e.target.checked })}
+            style={{ accentColor: "#3b82f6", width: 14, height: 14 }}
+          />
+        </Row>
+        <Row label="Auto-Scroll to Playhead">
+          <input
+            type="checkbox"
+            checked={prefs.auto_scroll_to_playhead}
+            onChange={(e) => onChange({ ...prefs, auto_scroll_to_playhead: e.target.checked })}
+            style={{ accentColor: "#3b82f6", width: 14, height: 14 }}
+          />
+        </Row>
+        <Row label="Row Height">
+          <select
+            style={selectStyle}
+            value={prefs.cue_row_height}
+            onChange={(e) => onChange({ ...prefs, cue_row_height: e.target.value as GeneralPreferences["cue_row_height"] })}
+          >
+            <option value="compact">Compact</option>
+            <option value="normal">Normal</option>
+            <option value="tall">Tall</option>
+          </select>
+        </Row>
+      </Section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Draggable floating modal
 // ---------------------------------------------------------------------------
 
@@ -264,6 +320,7 @@ const MODAL_W = 740;
 const MODAL_H = 520;
 
 export function PreferencesModal({ onClose }: Props) {
+  const { setGeneralPrefs } = useWorkspaceStore();
   const [category, setCategory] = useState<Category>("audio");
   const [prefs, setPrefs] = useState<AppPreferences | null>(null);
   const [draft, setDraft] = useState<AppPreferences | null>(null);
@@ -324,6 +381,8 @@ export function PreferencesModal({ onClose }: Props) {
     setApplyError(null);
     try {
       await updateAudioPreferences(draft.audio);
+      await updateGeneralPreferences(draft.general);
+      setGeneralPrefs(draft.general);
       setPrefs(draft);
       onClose();
     } catch (e) {
@@ -432,7 +491,13 @@ export function PreferencesModal({ onClose }: Props) {
                 onImmediateApply={handleImmediateApply}
               />
             )}
-            {category !== "audio" && (
+            {category === "general" && (
+              <GeneralContent
+                prefs={draft.general}
+                onChange={(general) => setDraft({ ...draft, general })}
+              />
+            )}
+            {category !== "audio" && category !== "general" && (
               <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#475569", fontSize: 13 }}>
                 Coming soon
               </div>

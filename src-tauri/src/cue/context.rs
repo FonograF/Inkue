@@ -33,14 +33,18 @@ pub struct CueContext {
     pub audio_engine: Arc<AudioEngine>,
     /// Channel for signalling events back to the Show Engine / transport layer.
     pub event_sender: Sender<CueEvent>,
+    /// Duration (ms) of the soft fade-out applied on Stop when the cue has no
+    /// explicit `fade_out` spec set.  Comes from `AudioPreferences::default_fade_out_ms`.
+    pub stop_fade_ms: u32,
 }
 
 impl CueContext {
-    /// Create a new context with the given engine and event sender.
-    pub fn new(audio_engine: Arc<AudioEngine>, event_sender: Sender<CueEvent>) -> Self {
+    /// Create a new context with the given engine, event sender and stop-fade duration.
+    pub fn new(audio_engine: Arc<AudioEngine>, event_sender: Sender<CueEvent>, stop_fade_ms: u32) -> Self {
         Self {
             audio_engine,
             event_sender,
+            stop_fade_ms,
         }
     }
 

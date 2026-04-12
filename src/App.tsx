@@ -309,7 +309,7 @@ function FileMenu({
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, workspaceInfo, selectedCueId, cues } =
+  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, workspaceInfo, selectedCueId, cues } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]     = useState(true);
@@ -321,6 +321,7 @@ export default function App() {
   useEffect(() => {
     refreshCues();
     refreshWorkspaceInfo();
+    loadGeneralPrefs();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // -------------------------------------------------------------------------

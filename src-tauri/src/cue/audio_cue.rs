@@ -19,7 +19,6 @@ use symphonia::core::probe::Hint;
 use uuid::Uuid;
 
 use crate::engine::{
-    audio_engine::DEFAULT_FADE_OUT_MS,
     ring_command::{FadeCurve as EngineFadeCurve, VoiceId},
     voice::{FadeDirection, FadeState, Voice},
 };
@@ -420,7 +419,7 @@ impl Cue for AudioCue {
             let (fade_ms, fade_curve) = self.fade_out
                 .as_ref()
                 .map(|f| (f.duration_ms as u32, Self::engine_curve(f.curve)))
-                .unwrap_or((DEFAULT_FADE_OUT_MS, EngineFadeCurve::SCurve));
+                .unwrap_or((context.stop_fade_ms, EngineFadeCurve::SCurve));
             context.audio_engine.stop_voice(vid, fade_ms, fade_curve)?;
         }
         self.state = CueState::Standby;

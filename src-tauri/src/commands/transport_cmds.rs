@@ -4,9 +4,19 @@ use tauri::{Emitter, State};
 
 use crate::{
     cue::context::{CueContext, CueEvent},
+    engine::AudioEngine,
     show::transport::Transport,
     state::AppState,
 };
+
+/// Build a [`CueContext`] with a fire-and-forget event channel.
+///
+/// `stop_fade_ms` comes from `ws.preferences.audio.default_fade_out_ms` and
+/// is used by [`AudioCue::stop`] when no per-cue fade-out spec is set.
+fn make_context(audio_engine: &std::sync::Arc<AudioEngine>, stop_fade_ms: u32) -> CueContext {
+    let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
+    CueContext::new(audio_engine.clone(), tx, stop_fade_ms)
+}
 
 /// Trigger the cue at the Playhead.
 ///
@@ -16,10 +26,13 @@ use crate::{
 /// it is silently skipped so the command always returns instantly.
 #[tauri::command]
 pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
-    let (tx, rx) = crossbeam_channel::unbounded::<CueEvent>();
-    let context = CueContext::new(state.audio_engine.clone(), tx);
-    let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+
+    let (tx, rx) = crossbeam_channel::unbounded::<CueEvent>();
+    let context = CueContext::new(state.audio_engine.clone(), tx, stop_fade_ms);
+    let mut transport = Transport::new(context);
+
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
     // If the cue at the playhead has no decoded samples yet (still loading),
@@ -40,7 +53,7 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     // from a StopCue, which must stop all running cues immediately.
     while let Ok(event) = rx.try_recv() {
         if let CueEvent::StopAll = event {
-            let stop_context = make_context(&state.audio_engine);
+            let stop_context = make_context(&state.audio_engine, stop_fade_ms);
             let mut stop_transport = Transport::new(stop_context);
             let stopping: Vec<_> = cue_list.cues
                 .iter()
@@ -71,20 +84,16 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     Ok(())
 }
 
-fn make_context(audio_engine: &std::sync::Arc<crate::engine::AudioEngine>) -> CueContext {
-    let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    CueContext::new(audio_engine.clone(), tx)
-}
-
 /// Stop all running cues with a soft fade-out.
 #[tauri::command]
 pub fn stop_all(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let context = make_context(&state.audio_engine);
-    let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state.audio_engine, stop_fade_ms);
+    let mut transport = Transport::new(context);
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     let stopping: Vec<_> = cue_list.cues
         .iter()
@@ -106,9 +115,10 @@ pub fn hard_stop_all(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let context = make_context(&state.audio_engine);
-    let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state.audio_engine, stop_fade_ms);
+    let mut transport = Transport::new(context);
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     let stopping: Vec<_> = cue_list.cues
         .iter()
@@ -132,9 +142,10 @@ pub fn stop_cue(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let id: uuid::Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let context = make_context(&state.audio_engine);
-    let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state.audio_engine, stop_fade_ms);
+    let mut transport = Transport::new(context);
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     transport.stop_cue(cue_list, &id).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("cue-state-changed", serde_json::json!({
@@ -151,9 +162,10 @@ pub fn pause_cue(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let id: uuid::Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let context = make_context(&state.audio_engine);
-    let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state.audio_engine, stop_fade_ms);
+    let mut transport = Transport::new(context);
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     transport.pause_cue(cue_list, &id).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("cue-state-changed", serde_json::json!({
@@ -181,9 +193,10 @@ pub fn resume_cue(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let id: uuid::Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let context = make_context(&state.audio_engine);
-    let mut transport = Transport::new(context);
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state.audio_engine, stop_fade_ms);
+    let mut transport = Transport::new(context);
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     transport.resume_cue(cue_list, &id).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("cue-state-changed", serde_json::json!({

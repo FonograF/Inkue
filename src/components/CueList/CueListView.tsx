@@ -139,8 +139,19 @@ interface Props {
 }
 
 export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
-  const { cues, selectedCueId, playheadCueId, setSelectedCueId, setPlayheadCueId } =
+  const { cues, selectedCueId, playheadCueId, setSelectedCueId, setPlayheadCueId, generalPrefs } =
     useWorkspaceStore();
+
+  const rowHeight = generalPrefs.cue_row_height === "compact" ? 22
+    : generalPrefs.cue_row_height === "tall" ? 32
+    : 26;
+
+  // Auto-scroll to playhead when it moves
+  useEffect(() => {
+    if (!generalPrefs.auto_scroll_to_playhead || !playheadCueId) return;
+    const el = rowsScrollRef.current?.querySelector(`[data-cue-id="${playheadCueId}"]`);
+    if (el) el.scrollIntoView({ block: "nearest" });
+  }, [playheadCueId, generalPrefs.auto_scroll_to_playhead]);
 
   // ---------- Column config ----------
   const [colConfig, setColConfig] = useState<ColumnConfig>(loadColumnConfig);
@@ -779,6 +790,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               cueIndex={index}
               gridStyle={gridStyle}
               visibleDefs={visibleDefs}
+              rowHeight={rowHeight}
               isSelected={selectedCueId === cue.id}
               isAtPlayhead={playheadCueId === cue.id}
               isDragOver={dragOverCueId === cue.id}

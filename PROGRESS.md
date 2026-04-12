@@ -1,10 +1,10 @@
-# WinCue — État du projet au 2026-04-11
+# WinCue — État du projet au 2026-04-12
 
 ## Version courante : 0.1.2
 
 ## Résultat de cargo build
 
-**Compile sans erreur, zéro warning.** (au 2026-04-11)
+**Compile sans erreur, zéro warning.** (au 2026-04-12)
 
 ## Résultat de cargo test
 
@@ -21,151 +21,204 @@
 | Types cue | `cue/types.rs` | ✅ Complet |
 | Trait Cue | `cue/traits.rs` | ✅ Complet |
 | CueRegistry | `cue/registry.rs` | ✅ Complet |
-| CueContext | `cue/context.rs` | ✅ Complet |
-| AudioCue | `cue/audio_cue.rs` | ✅ Complet — pre-wait, fade-in/out, rate mismatch corrigé |
+| CueContext | `cue/context.rs` | ✅ Complet — `stop_fade_ms` lu depuis les préférences |
+| AudioCue | `cue/audio_cue.rs` | ✅ Complet — pre-wait, fade-in/out, loop, rate mismatch |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complet |
-| **StopCue** | **`cue/stop_cue.rs`** | **✅ Nouveau — stoppe tous les cues en cours au GO** |
+| StopCue | `cue/stop_cue.rs` | ✅ Complet — stoppe tous les cues en cours au GO |
 | VoiceState / FadeState | `engine/voice.rs` | ✅ Complet |
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complet |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complet |
-| AudioEngine | `engine/audio_engine.rs` | ✅ Complet — ASIO, `set_master_gain()` |
-| CueList | `show/cue_list.rs` | ✅ Complet — `renumber_all()` appelé après chaque mutation |
+| AudioEngine | `engine/audio_engine.rs` | ✅ Complet — WASAPI/ASIO, `set_master_gain()` |
+| CueList | `show/cue_list.rs` | ✅ Complet — `renumber_all()` après chaque mutation |
 | Workspace | `show/workspace.rs` | ✅ Complet |
-| Transport | `show/transport.rs` | ✅ Complet |
+| Transport | `show/transport.rs` | ✅ Complet — chaînes Auto-Continue résolues synchronement |
 | Event Loop 30fps | `show/event_loop.rs` | ✅ Complet |
 | UndoStack | `show/undo_stack.rs` | ✅ Complet — pile 50 niveaux, snapshots JSON + Arc clones |
 | AppState | `state/app_state.rs` | ✅ Complet |
-| Preferences | `preferences.rs` | ✅ Complet |
-| Commands transport | `commands/transport_cmds.rs` | ✅ Complet — `set_master_volume`, gestion `StopAll` event |
+| Preferences | `preferences.rs` | ✅ Complet — `GeneralPreferences` avec 4 champs, `update_general_preferences` |
+| Commands transport | `commands/transport_cmds.rs` | ✅ Complet — `set_master_volume`, gestion `StopAll` |
 | Commands cues | `commands/cue_cmds.rs` | ✅ Complet |
 | Commands workspace | `commands/workspace_cmds.rs` | ✅ Complet |
 | Commands devices | `commands/device_cmds.rs` | ✅ Complet |
 | Commands preferences | `commands/preferences_cmds.rs` | ✅ Complet |
-| Commands undo | `commands/undo_cmds.rs` | ✅ Complet — undo, redo, copy_cue, paste_cue |
+| Commands undo | `commands/undo_cmds.rs` | ✅ Complet — undo, redo, copy_cue, paste_cue (avec transfert audio) |
 
 ### Frontend React / TypeScript
 
 | Fichier | Statut |
 |---|---|
-| `lib/types.ts` | ✅ Complet — type `"stop"` ajouté à `CueType` |
-| `lib/commands.ts` | ✅ Complet — `setMasterVolume` ajouté |
+| `lib/types.ts` | ✅ Complet |
+| `lib/commands.ts` | ✅ Complet |
 | `stores/workspaceStore.ts` | ✅ Complet |
 | `stores/transportStore.ts` | ✅ Complet |
 | `stores/timingStore.ts` | ✅ Complet |
 | `hooks/useTauriEvents.ts` | ✅ Complet |
-| `hooks/useKeyboardShortcuts.ts` | ✅ Complet — Space/Esc/S/P/[/]/Ctrl+S/O/N/D/I/Z/Y/C/V/G/Delete/↑↓ |
+| `hooks/useKeyboardShortcuts.ts` | ✅ Complet — Space/Esc/S/P/[/]/Ctrl+S/O/N/D/I/Z/Y/C/V/G/Delete/↑↓ ; double GO protection ; confirm delete |
 | `App.tsx` | ✅ Complet — boutons `+ Audio` / `+ Stop` draggables, insertion après sélection |
 | `components/CueList/columns.ts` | ✅ Complet |
 | `components/CueList/CueListView.tsx` | ✅ Complet — drag custom (CustomEvent), insert-between fichiers, fix DPI |
-| `components/CueList/CueRow.tsx` | ✅ Complet — icône `⬛` pour Stop Cue |
+| `components/CueList/CueRow.tsx` | ✅ Complet — icône par type, bande colorée gauche (color tags) |
 | `components/CueList/PlayheadIndicator.tsx` | ✅ Complet |
-| `components/Inspector/InspectorPanel.tsx` | ✅ 4 onglets — CurveSelect avec aperçu SVG |
-| `components/Transport/TransportBar.tsx` | ✅ Complet — STOP draggable via mouse events |
+| `components/Inspector/InspectorPanel.tsx` | ✅ Complet — shell 135 lignes, tabs, état, browse |
+| `components/Inspector/BasicsTab.tsx` | ✅ Extrait |
+| `components/Inspector/TimeTab.tsx` | ✅ Extrait |
+| `components/Inspector/LevelsTab.tsx` | ✅ Extrait |
+| `components/Inspector/FadeTab.tsx` | ✅ Extrait |
+| `components/Inspector/WaveformViewer.tsx` | ✅ Extrait |
+| `components/Inspector/ColorPicker.tsx` | ✅ Extrait |
+| `components/Inspector/Field.tsx` | ✅ Extrait — primitif partagé (Field + inputStyle) |
+| `components/Transport/TransportBar.tsx` | ✅ Complet — VU-mètre master, slider volume, STOP draggable |
 | `components/common/TimeDisplay.tsx` | ✅ Complet |
-| `components/common/CurveSelect.tsx` | ✅ Complet — composant partagé avec aperçu SVG de chaque courbe |
-| `components/Preferences/PreferencesModal.tsx` | ✅ Complet — CurveSelect intégré |
+| `components/common/CurveSelect.tsx` | ✅ Complet — aperçu SVG de chaque courbe |
+| `components/Preferences/PreferencesModal.tsx` | ✅ Complet — onglets Audio + General |
 | `components/WaveformModal.tsx` | ✅ Complet |
 
 ---
 
-## Travail accompli en 0.1.2 (2026-04-11)
+## Historique des changements
 
-### 🔧 Backend
+### Post-0.1.2 — correctifs et fonctionnalités (2026-04-12)
 
-**Nouveau type de cue : Stop Cue**
-- `cue/stop_cue.rs` — `StopCue` + `StopCueFactory` : au GO, émet `CueEvent::StopAll` et se complète immédiatement
-- `cue/context.rs` — nouvelle variante `CueEvent::StopAll` dans l'enum des événements
-- `cue/types.rs` — `CueType::Stop` ajouté (sérialisé `"stop"`)
-- `cue/mod.rs` — module `stop_cue` exposé
-- `state/app_state.rs` — `StopCueFactory` enregistré dans le `CueRegistry`
-- `commands/transport_cmds.rs` — la commande `go` draine maintenant le channel d'événements après `transport.go()` et gère `StopAll` en appelant `stop_all` sur tous les cues en cours
+#### ⚙️ Préférences Générales
 
-### 🎨 Frontend
+**4 options dans l'onglet General des Préférences**
 
-**Stop Cue dans l'UI**
-- `lib/types.ts` — `"stop"` ajouté au type `CueType`
-- `components/CueList/CueRow.tsx` — icône `⬛` pour les Stop Cues
-- `App.tsx` — bouton `+ Stop` (rouge clair) à côté de `+ Audio` dans la barre d'outils
+- **Double GO Protection** — délai minimum entre deux GO consécutifs (défaut 500 ms, 0 = désactivé)
+  - `preferences.rs` — champ `double_go_protection_ms: u32` avec `serde(default)`
+  - `useKeyboardShortcuts.ts` — `useRef<number>` pour horodatage, protection vérifiée avant chaque GO (Space)
 
-**Drag & drop repensé (système custom mouse events)**
-- Abandon de l'HTML5 DnD API : Tauri intercepte les drag internes comme des drags de fichier OS, bloquant le `onDrop` DOM et déclenchant faussement `isDragOver`
-- Nouveau mécanisme via `CustomEvent("wincue:cue-drag-start")` dispatché au `mousedown` ; `CueListView` l'écoute dans son `useEffect` global déjà en place pour le réordonnancement
-- Bouton `■ STOP` (TransportBar) : glisser dans la liste → ligne rouge à la position d'insertion → relâcher → Stop Cue créé
-- Bouton `+ Audio` et `+ Stop` (toolbar App) : même comportement via le même mécanisme
-- Clic sur `+ Audio` / `+ Stop` insère désormais **après le cue sélectionné** (au lieu de toujours à la fin)
+- **Confirm Before Delete** — fenêtre de confirmation native avant suppression d'un cue (défaut false)
+  - `preferences.rs` — champ `confirm_before_delete: bool`
+  - `useKeyboardShortcuts.ts` — `await confirm(...)` via `@tauri-apps/plugin-dialog` si actif (Delete/Backspace)
 
-**Calcul de position robuste (fix ligne qui saute)**
-- Remplacement de `document.elementFromPoint()` par un scan linéaire des rangées `[data-cue-id]` par midpoint
-- `elementFromPoint` échouait silencieusement sur les gaps inter-rangées, la scrollbar, le header → fallback brutal sur `cues.length` (fin de liste)
-- Le nouveau scan retourne toujours la bonne position même entre les rangées
+- **Auto-Scroll to Playhead** — défilement automatique vers le cue à la tête de lecture quand le playhead bouge (défaut true)
+  - `preferences.rs` — champ `auto_scroll_to_playhead: bool`
+  - `CueListView.tsx` — `useEffect` sur `playheadCueId` → `scrollIntoView({ block: "nearest" })`
 
-**File drag-and-drop amélioré**
-- Mode **insérer** : curseur dans les 8 px du bord haut/bas d'une rangée → ligne bleue d'insertion → crée un nouveau cue à cette position
-- Mode **assigner** : curseur au milieu d'une rangée → encadrement bleu → assigne le fichier au cue existant
-- Fix décalage ~2 rangées sur Windows HiDPI : les coordonnées Tauri sont en pixels physiques ; division par `window.devicePixelRatio` avant comparaison avec `getBoundingClientRect()` (pixels CSS)
+- **Cue Row Height** — hauteur des rangées : Compact (22 px) / Normal (26 px) / Tall (32 px), défaut Normal
+  - `preferences.rs` — enum `CueRowHeight` + champ dans `GeneralPreferences`
+  - `CueListView.tsx` — calcule `rowHeight` depuis la préf, le passe à chaque `<CueRow>`
+  - `CueRow.tsx` — prop `rowHeight?: number` utilisé comme `minHeight`
+
+**Infrastructure commune**
+- `preferences_cmds.rs` — nouvelle commande `update_general_preferences`
+- `lib.rs` — commande enregistrée dans `invoke_handler`
+- `lib/types.ts` — `CueRowHeight`, `GeneralPreferences`, `DEFAULT_GENERAL_PREFS`, `AppPreferences.general` typé
+- `lib/commands.ts` — `updateGeneralPreferences`
+- `stores/workspaceStore.ts` — `generalPrefs`, `loadGeneralPrefs()`, `setGeneralPrefs()`
+- `App.tsx` — `loadGeneralPrefs()` appelé au bootstrap
+- `PreferencesModal.tsx` — composant `GeneralContent` (4 contrôles), `handleApply` appelle `updateGeneralPreferences` + sync store
 
 ---
 
-## Travail accompli en 0.1.1 (2026-04-11)
+#### 🐛 Correctifs Backend
 
-### 🔧 Backend
+**Copy/paste de Audio Cue — son absent**
+- `commands/undo_cmds.rs` — `paste_cue` reconstruisait le cue depuis JSON uniquement, sans transférer les samples décodés ; le cue collé était muet et bloquait le GO
+- Fix : extraction de l'`Arc` samples depuis le cue original via `extract_decoded_audio` + `accept_preloaded_audio` (même stratégie que `duplicate_cue`)
+- Fallback : si le cue original a été supprimé avant le coller, un thread de décodage en arrière-plan est déclenché
 
-**Numérotation automatique des cues**
-- `CueList::renumber_all()` assigne "1", "2", "3"… après chaque `push`, `insert`, `remove`, `move_cue`
-- Couvre drag & drop, add, remove, reorder, duplicate, paste
-- Undo/redo restaure les numéros depuis le snapshot
+**Préférence durée fade STOP ignorée**
+- `cue/context.rs` — nouveau champ `stop_fade_ms: u32` dans `CueContext`
+- `cue/audio_cue.rs` — `stop()` utilisait la constante `DEFAULT_FADE_OUT_MS = 500` au lieu de la préférence
+- `commands/transport_cmds.rs` + `show/event_loop.rs` — tous les contextes lisent `ws.preferences.audio.default_fade_out_ms`
 
-**Commande `set_master_volume`**
-- Nouveau Tauri command dans `transport_cmds.rs`
-- Convertit dB → gain linéaire et appelle `audio_engine.set_master_gain()` atomiquement
+#### 🎨 Fonctionnalités Frontend
 
-**Diagnostic drag & drop fichiers**
-- Bug : terminal lancé en administrateur → UAC bloquait le drag depuis l'Explorateur Windows
-- Fix : lancer le terminal sans privilèges élevés (pas de modification de code)
+**Refactoring Inspector — extraction en sous-composants**
+- `InspectorPanel.tsx` réduit de 875 → 135 lignes (shell uniquement)
+- 7 fichiers extraits : `BasicsTab`, `TimeTab`, `LevelsTab`, `FadeTab`, `WaveformViewer`, `ColorPicker`, `Field`
+- Comportement identique, zéro régression TypeScript
 
-**Permission Tauri drag-drop**
-- Investigation : `core:window:allow-drag-drop` n'existe pas en Tauri v2
-- `fileDropEnabled` n'est pas un champ valide dans `tauri.conf.json` v2
-- `onDragDropEvent` fonctionne nativement — problème était uniquement UAC
+**Color tags**
+- `components/CueList/CueRow.tsx` — bande colorée 4px sur le bord gauche (transparent si `"none"`), style QLab
+- `components/Inspector/InspectorPanel.tsx` — composant `ColorPicker` : 10 swatches (none + 9 couleurs), ajouté dans le Basics tab sous Continue
+- Backend et sérialisation déjà complets — aucune modification Rust nécessaire
 
-### 🎨 Frontend
+---
 
-**Shortcuts manquants ajoutés**
-- `Ctrl+S` → save workspace
-- `Ctrl+O` → open workspace
-- `Ctrl+I` → toggle inspector
-- `G` → GotoDialog (overlay input, Enter confirme, Escape annule)
-- `Ctrl+↑` / `Ctrl+↓` → déplace le playhead vers la cue précédente / suivante
+### 0.1.2 — correctifs post-release (2026-04-12, commit 89b8271)
 
-**CurveSelect — aperçu SVG des courbes de fade**
-- Composant partagé `components/common/CurveSelect.tsx`
-- Mini-SVG généré depuis les formules exactes du moteur Rust (smooth-step, exponentiel)
-- Intégré dans l'Inspector (onglet Fade) et dans les Préférences
+**Loop playback — statut idle prématuré**
+- `cue/audio_cue.rs` — `duration()` retournait la durée d'une seule itération au lieu de `base × (loop_count + 1)` ; l'event loop détectait une fin prématurée dès la 2ème boucle
+- Loops infinis (`loop_count == u32::MAX`) → `duration()` retourne `None`
 
-**Refonte TransportBar**
-- VU-mètre horizontal gradué en dB (−60 à 0, ticks à 0/−6/−12/−18/−24/−36)
-- Gradient de couleur vert → jaune → orange → rouge sur échelle logarithmique
-- Slider volume `<input type="range">` natif aligné pixel-perfect sous les barres L/R
-- Initialisé depuis `prefs.audio.default_volume_db` au montage
-- Boutons GO (22px) et STOP (18px) agrandis
-- Status idle/running agrandi (18px, fontWeight 600)
+**Auto-Continue bloqué après Stop All**
+- `auto_continue_fired` n'était jamais remis à zéro lors d'un Stop externe ; les chaînes ne refireaient plus à la relecture
+- Fix : `auto_continue_fired` remis à zéro à chaque `go()` ; purge via `retain()` à chaque tick de l'event loop
+
+**Auto-Continue — délai ~33 ms par maillon**
+- Les chaînes immédiates (`post_wait == 0`) étaient déclenchées dans la boucle 30 fps (+1 tick par maillon)
+- Fix : `Transport::go()` résout toute la chaîne immédiate synchronement et retourne tous les IDs ; l'event loop ne gère que les chaînes avec délai (`post_wait > 0`)
+
+**Duplicate Cue sans audio**
+- `commands/cue_cmds.rs` — `duplicate_cue` reconstruisait depuis JSON sans transférer les samples ; `cached_duration == None` → garde GO sautait silencieusement
+- Fix : `extract_decoded_audio` + `accept_preloaded_audio`
+
+**Nouveaux éléments de trait**
+- `cue/traits.rs` — `extract_decoded_audio`, `accept_preloaded_audio`, `auto_continue_fired` / reset
+
+---
+
+### 0.1.2 (2026-04-11)
+
+#### 🔧 Backend
+
+**Nouveau type de cue : Stop Cue**
+- `cue/stop_cue.rs` — `StopCue` + `StopCueFactory` : au GO, émet `CueEvent::StopAll` et se complète immédiatement
+- `cue/context.rs` — variante `CueEvent::StopAll`
+- `cue/types.rs` — `CueType::Stop` (sérialisé `"stop"`)
+- `commands/transport_cmds.rs` — `go` draine le channel et gère `StopAll` synchronement
+
+#### 🎨 Frontend
+
+**Stop Cue dans l'UI**
+- `lib/types.ts` — `"stop"` ajouté à `CueType`
+- `components/CueList/CueRow.tsx` — icône `⬛` pour les Stop Cues
+- `App.tsx` — bouton `+ Stop` dans la toolbar
+
+**Drag & drop repensé (system custom mouse events)**
+- Abandon HTML5 DnD API (interceptée par Tauri comme drag fichier OS)
+- `CustomEvent("wincue:cue-drag-start")` au `mousedown` ; `CueListView` l'écoute globalement
+- STOP draggable (TransportBar), `+ Audio` / `+ Stop` draggables (toolbar)
+- Insertion après le cue sélectionné (au lieu de fin de liste)
+
+**Calcul de position robuste**
+- Remplacement de `document.elementFromPoint()` par scan linéaire des rangées `[data-cue-id]` par midpoint
+- Fix décalage ~2 rangées sur Windows HiDPI : division par `window.devicePixelRatio`
+
+**File drag-and-drop amélioré**
+- Mode insérer (bords ±8px) / mode assigner (centre de rangée)
+- Fix coordonnées HiDPI
+
+---
+
+### 0.1.1 (2026-04-11)
+
+#### 🔧 Backend
+
+- `CueList::renumber_all()` après chaque mutation (push, insert, remove, move_cue)
+- Commande `set_master_volume` (dB → gain linéaire → `set_master_gain()`)
+
+#### 🎨 Frontend
+
+- Shortcuts manquants : `Ctrl+S/O/I`, `G` (GotoDialog), `Ctrl+↑/↓`
+- `CurveSelect` — composant partagé avec aperçu SVG (smooth-step, exponentiel)
+- Refonte TransportBar : VU-mètre gradué en dB, gradient couleur, slider volume
 
 ---
 
 ## Ce qui est partiellement implémenté ou manquant
 
-### Backend — fonctionnalités manquantes
+### Backend
 
 #### Routing par Output Patch non implémenté
 Tout l'audio sort sur le device par défaut. `OutputPatch` est stocké mais l'`AudioEngine` ne le consulte pas.
 
-### Frontend — fonctionnalités manquantes
+### Frontend
 
 | Manquant | Détail |
 |---|---|
-| LevelMeter par cue | VU-mètres master OK, par cue absent |
-| Color tags | Champ `color` présent dans le modèle, UI non implémentée |
-| Sous-composants Inspector séparés | Tous inlinés dans InspectorPanel.tsx |
 
 ---
 
@@ -180,17 +233,14 @@ Tout l'audio sort sur le device par défaut. `OutputPatch` est stocké mais l'`A
 | 5. Frontend CueList + GO | ✅ |
 | 6. Playhead + transport | ✅ |
 | 7. Output Patches + DeviceManager | ⚠️ Modèle présent, routing audio non branché |
-| 8. Inspector panel | ✅ 4 onglets |
+| 8. Inspector panel | ✅ |
 | 9. Workspace save/load | ✅ |
 | 10. Keyboard shortcuts | ✅ |
 | 11. Fades, waveform, level meters | ✅ |
-| 12. Drag-drop, undo/redo, color tags | ⚠️ Tout ✅ sauf color tags |
+| 12. Drag-drop, undo/redo, color tags | ✅ |
 
 ---
 
 ## Prochaines priorités
 
 1. **Routing Output Patch** dans `AudioEngine`
-2. **Color tags** sur les cues (UI + persistance)
-3. **LevelMeter par cue** autonome
-4. **Refactoring** : extraire sous-composants Inspector en fichiers séparés

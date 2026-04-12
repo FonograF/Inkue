@@ -24,6 +24,19 @@ const CONTINUE_LABELS: Record<string, string> = {
   auto_follow: "→",
 };
 
+const COLOR_SWATCHES: Record<string, string> = {
+  none:   "transparent",
+  red:    "#ef4444",
+  orange: "#f97316",
+  yellow: "#eab308",
+  green:  "#22c55e",
+  blue:   "#3b82f6",
+  purple: "#a855f7",
+  pink:   "#ec4899",
+  white:  "#f1f5f9",
+  black:  "#334155",
+};
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -37,6 +50,7 @@ interface Props {
   visibleDefs: ColumnDef[];
   isSelected: boolean;
   isAtPlayhead: boolean;
+  rowHeight?: number;
   isDragOver?: boolean;
   /** True while this cue is being dragged (dims the row). */
   isDragSource?: boolean;
@@ -56,6 +70,7 @@ export function CueRow({
   cueIndex,
   gridStyle,
   visibleDefs,
+  rowHeight = 26,
   isSelected,
   isAtPlayhead,
   isDragOver,
@@ -81,6 +96,8 @@ export function CueRow({
   else if (isRunning)  bg = "#14532d";
   else if (isPaused)   bg = "#78350f";
 
+  const colorAccent = COLOR_SWATCHES[cue.color] ?? "transparent";
+
   const rowStyle: React.CSSProperties = {
     ...gridStyle,
     alignItems: "center",
@@ -90,10 +107,11 @@ export function CueRow({
     userSelect: "none",
     background: bg,
     borderBottom: isDragOver ? "1px solid #3b82f6" : "1px solid #1e293b",
+    borderLeft: `4px solid ${colorAccent}`,
     outline: isDragOver ? "1px solid #3b82f6" : "none",
     fontSize: 13,
     color: "#e2e8f0",
-    minHeight: 26,
+    minHeight: rowHeight,
     opacity: isDragSource ? 0.4 : 1,
     transition: "opacity 0.1s",
   };

@@ -102,9 +102,25 @@ export interface AudioPreferences {
   asio_out_pair: number;
 }
 
+export type CueRowHeight = "compact" | "normal" | "tall";
+
+export interface GeneralPreferences {
+  double_go_protection_ms: number;
+  confirm_before_delete: boolean;
+  auto_scroll_to_playhead: boolean;
+  cue_row_height: CueRowHeight;
+}
+
+export const DEFAULT_GENERAL_PREFS: GeneralPreferences = {
+  double_go_protection_ms: 500,
+  confirm_before_delete: false,
+  auto_scroll_to_playhead: true,
+  cue_row_height: "normal",
+};
+
 export interface AppPreferences {
   audio: AudioPreferences;
-  general: Record<string, never>;
+  general: GeneralPreferences;
   network: Record<string, never>;
   display: Record<string, never>;
 }

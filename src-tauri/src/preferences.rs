@@ -88,9 +88,54 @@ impl Default for AudioPreferences {
 // Reserved category structs (empty, ready for future content)
 // ---------------------------------------------------------------------------
 
-/// General app-behaviour preferences (language, theme, GO behaviour, …).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GeneralPreferences {}
+/// Row height for the Cue List table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CueRowHeight {
+    Compact,
+    #[default]
+    Normal,
+    Tall,
+}
+
+/// General app-behaviour preferences.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralPreferences {
+    /// Minimum time (ms) between two GO triggers.  A second GO fired within
+    /// this window is silently ignored to prevent accidental double-presses
+    /// during live shows.  Set to 0 to disable.
+    #[serde(default = "GeneralPreferences::default_double_go_protection_ms")]
+    pub double_go_protection_ms: u32,
+
+    /// When true, deleting a cue via the keyboard shows a confirmation dialog.
+    #[serde(default)]
+    pub confirm_before_delete: bool,
+
+    /// When true, the cue list automatically scrolls to keep the Playhead
+    /// visible after each GO.
+    #[serde(default = "GeneralPreferences::default_auto_scroll_to_playhead")]
+    pub auto_scroll_to_playhead: bool,
+
+    /// Height of each row in the cue list table.
+    #[serde(default)]
+    pub cue_row_height: CueRowHeight,
+}
+
+impl GeneralPreferences {
+    fn default_double_go_protection_ms() -> u32 { 500 }
+    fn default_auto_scroll_to_playhead() -> bool { true }
+}
+
+impl Default for GeneralPreferences {
+    fn default() -> Self {
+        Self {
+            double_go_protection_ms: Self::default_double_go_protection_ms(),
+            confirm_before_delete: false,
+            auto_scroll_to_playhead: Self::default_auto_scroll_to_playhead(),
+            cue_row_height: CueRowHeight::default(),
+        }
+    }
+}
 
 /// Network preferences (OSC, MIDI, Art-Net, …).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

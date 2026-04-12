@@ -52,11 +52,11 @@ pub fn run(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn make_context(engine: &Arc<AudioEngine>) -> CueContext {
+fn make_context(engine: &Arc<AudioEngine>, stop_fade_ms: u32) -> CueContext {
     // The receiver is intentionally dropped here; events from within the loop
     // are handled directly by reading AudioStatus from the ring buffer.
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    CueContext::new(engine.clone(), tx)
+    CueContext::new(engine.clone(), tx, stop_fade_ms)
 }
 
 fn tick(
@@ -108,6 +108,8 @@ fn tick(
         Err(_) => return,
     };
 
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+
     let cue_list = match ws.active_cue_list_mut() {
         Some(cl) => cl,
         None => return,
@@ -118,7 +120,7 @@ fn tick(
     //    (Must happen before the completion check so that a cue that
     //    completes its pre-wait and immediately finishes is detected.)
     // ------------------------------------------------------------------
-    let tick_ctx = make_context(engine);
+    let tick_ctx = make_context(engine, stop_fade_ms);
     for cue in cue_list.cues.iter_mut() {
         if cue.state() == CueState::Running {
             let _ = cue.tick(&tick_ctx);
@@ -257,7 +259,7 @@ fn tick(
     let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
-        let context = make_context(engine);
+        let context = make_context(engine, stop_fade_ms);
         let mut transport = Transport::new(context);
         if let Ok(ids) = transport.go(cue_list) {
             go_triggered = ids;

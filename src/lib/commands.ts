@@ -10,6 +10,7 @@ import type {
   CueSummary,
   CueType,
   DeviceInfo,
+  GeneralPreferences,
   OutputPatch,
   WaveformData,
   WorkspaceInfo,
@@ -106,6 +107,8 @@ export const getAsioOutputPairs = () =>
   invoke<number>("get_asio_output_pairs");
 export const updateAudioPreferences = (prefs: AudioPreferences) =>
   invoke<void>("update_audio_preferences", { prefs });
+export const updateGeneralPreferences = (prefs: GeneralPreferences) =>
+  invoke<void>("update_general_preferences", { prefs });
 export async function listAudioDevices(backend?: string): Promise<DeviceInfo[]> {
   return invoke<DeviceInfo[]>("list_audio_devices", { backend: backend ?? null });
 }

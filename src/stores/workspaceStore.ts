@@ -1,14 +1,16 @@
 // Zustand store: workspace data, cue list, selection, and playhead.
 
 import { create } from "zustand";
-import type { CueId, CueSummary, WorkspaceInfo } from "../lib/types";
-import { getAllCues, getPlayhead, getWorkspaceInfo } from "../lib/commands";
+import type { CueId, CueSummary, GeneralPreferences, WorkspaceInfo } from "../lib/types";
+import { DEFAULT_GENERAL_PREFS } from "../lib/types";
+import { getAllCues, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
 
 interface WorkspaceState {
   cues: CueSummary[];
   selectedCueId: CueId | null;
   playheadCueId: CueId | null;
   workspaceInfo: WorkspaceInfo | null;
+  generalPrefs: GeneralPreferences;
 
   // Actions
   refreshCues: () => Promise<void>;
@@ -16,6 +18,8 @@ interface WorkspaceState {
   setSelectedCueId: (id: CueId | null) => void;
   setPlayheadCueId: (id: CueId | null) => void;
   updateCueState: (cueId: CueId, state: CueSummary["state"]) => void;
+  loadGeneralPrefs: () => Promise<void>;
+  setGeneralPrefs: (p: GeneralPreferences) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
@@ -23,6 +27,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   selectedCueId: null,
   playheadCueId: null,
   workspaceInfo: null,
+  generalPrefs: DEFAULT_GENERAL_PREFS,
 
   refreshCues: async () => {
     try {
@@ -52,4 +57,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
       cues: prev.cues.map((c) => (c.id === cueId ? { ...c, state } : c)),
     }));
   },
+
+  loadGeneralPrefs: async () => {
+    try {
+      const prefs = await getPreferences();
+      set({ generalPrefs: { ...DEFAULT_GENERAL_PREFS, ...prefs.general } });
+    } catch (e) {
+      console.error("Failed to load general preferences:", e);
+    }
+  },
+
+  setGeneralPrefs: (p) => set({ generalPrefs: p }),
 }));
