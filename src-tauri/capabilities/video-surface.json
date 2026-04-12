@@ -1,0 +1,7 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
+  "identifier": "video-surface",
+  "description": "Permissions for the WinCue video output surface window",
+  "windows": ["video-surface-0"],
+  "permissions": ["core:default"]
+}

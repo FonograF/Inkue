@@ -5,11 +5,14 @@ import { WaveformViewer } from "./WaveformViewer";
 export function TimeTab({
   cue,
   isAudio,
+  isVideo,
   onSave,
   onOpenWaveform,
 }: {
-  cue: AudioCueData;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  cue: any;
   isAudio: boolean;
+  isVideo?: boolean;
   onSave: (p: Partial<AudioCueData>) => void;
   onOpenWaveform: () => void;
 }) {
@@ -46,7 +49,7 @@ export function TimeTab({
       {isAudio && cue.file_path && (
         <WaveformViewer cue={cue} onSave={onSave} onExpand={onOpenWaveform} />
       )}
-      {isAudio && (
+      {(isAudio || isVideo) && (
         <>
           <Field label="Start Time (s)">
             <input
@@ -103,17 +106,19 @@ export function TimeTab({
               }
             />
           </Field>
-          <Field label="Rate">
-            <input
-              style={inputStyle}
-              type="number"
-              step="0.1"
-              min="0.1"
-              max="4.0"
-              defaultValue={cue.rate}
-              onBlur={(e) => onSave({ rate: parseFloat(e.target.value) })}
-            />
-          </Field>
+          {isAudio && (
+            <Field label="Rate">
+              <input
+                style={inputStyle}
+                type="number"
+                step="0.1"
+                min="0.1"
+                max="4.0"
+                defaultValue={cue.rate}
+                onBlur={(e) => onSave({ rate: parseFloat(e.target.value) })}
+              />
+            </Field>
+          )}
         </>
       )}
     </>

@@ -16,6 +16,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   group: "📁",
   fade: "📉",
   stop: "⬛",
+  video: "🎬",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

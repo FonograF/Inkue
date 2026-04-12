@@ -50,7 +50,7 @@ fn summarise(cue: &dyn Cue) -> CueSummary {
         pre_wait_ms: cue.pre_wait().as_millis() as u64,
         post_wait_ms: cue.post_wait().as_millis() as u64,
         duration_ms: cue.duration().map(|d| d.as_millis() as u64),
-        file_path: None, // populated below for audio cues
+        file_path: None, // populated below for file-based cues
         is_loading: false, // populated below
     }
 }
@@ -72,9 +72,9 @@ pub fn get_all_cues(state: State<'_, AppState>) -> Result<Vec<CueSummary>, Strin
         .map(|c| {
             let mut s = summarise(c.as_ref());
             s.is_loading = loading.contains(&c.id());
-            // Down-cast to AudioCue to retrieve the file_path for the UI target column.
-            // SAFETY: We only read the serialised form; no unsafe involved.
-            if c.cue_type() == CueType::Audio {
+            // Populate file_path for file-based cues (Audio + Video) via the
+            // serialised form — avoids unsafe downcasting.
+            if matches!(c.cue_type(), CueType::Audio | CueType::Video) {
                 let json = c.serialize();
                 s.file_path = json
                     .get("file_path")
@@ -544,3 +544,44 @@ pub fn stop_preview(voice_id: String, state: State<'_, AppState>) -> Result<(), 
         .stop_voice(id, 0, FadeCurve::Linear)
         .map_err(|e| e.to_string())
 }
+
+// ---------------------------------------------------------------------------
+// Video file management
+// ---------------------------------------------------------------------------
+
+/// Set the file path of a Video Cue.
+///
+/// Unlike [`set_audio_file`], no background decoding is needed — the video
+/// streams directly from disk when the cue is triggered.
+#[tauri::command]
+pub fn set_video_file(
+    cue_id: String,
+    file_path: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let registry = state.registry.lock().map_err(|e| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+
+    let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
+    if cue_list.cues[idx].cue_type() != CueType::Video {
+        return Err("set_video_file only applies to Video Cues".to_string());
+    }
+
+    let mut json = cue_list.cues[idx].serialize();
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("file_path".to_string(), serde_json::json!(file_path));
+    }
+    let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
+    drop(registry);
+    cue_list.cues[idx] = new_cue;
+
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+

@@ -260,6 +260,11 @@ pub trait Cue: Send {
         None
     }
 
+    /// Called when the underlying media's total duration becomes known at
+    /// runtime (e.g., after a video file's metadata loads in the surface
+    /// window).  Non-video cues can ignore this call (default no-op).
+    fn set_runtime_duration(&mut self, _duration: std::time::Duration) {}
+
     /// Capture the volatile runtime state so it can be transplanted into a
     /// freshly-rebuilt instance.  Called by `update_cue` just before the
     /// old cue is replaced.  Default returns a Standby snapshot with no voice

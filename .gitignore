@@ -17,11 +17,15 @@ src-tauri/WixTools/
 
 # IDE & OS
 .vscode/
+.vs/
 .idea/
 *.suo
 *.user
 .DS_Store
 Thumbs.db
+
+# Claude Code local config
+.claude/
 
 # Logs
 *.log
@@ -30,3 +34,6 @@ npm-debug.log*
 # Environment
 .env
 .env.local
+
+# Vendor binaries — large binaries not tracked in git (copy manually or via LFS)
+src-tauri/vendor/

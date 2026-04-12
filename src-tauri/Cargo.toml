@@ -28,10 +28,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Audio
 cpal = { version = "0.15", features = ["wasm-bindgen"] }
-# winreg is used for ASIO driver detection on Windows (asio-support feature only)
-[target.'cfg(windows)'.dependencies]
-winreg = { version = "0.52", optional = true }
-symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
+
+# Video — libmpv loaded at runtime via libloading (no link-time import library needed)
+libloading = "0.8"
 
 # Lock-free comms
 ringbuf = "0.4"
@@ -40,6 +39,19 @@ crossbeam-channel = "0.5"
 # Logging
 log = "0.4"
 env_logger = "0.11"
+
+# Windows-specific dependencies
+# winreg is used for ASIO driver detection (asio-support feature only)
+[target.'cfg(windows)'.dependencies]
+winreg = { version = "0.52", optional = true }
+symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+] }
 
 [features]
 default = ["custom-protocol"]

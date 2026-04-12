@@ -5,13 +5,18 @@ import { ColorPicker } from "./ColorPicker";
 export function BasicsTab({
   cue,
   isAudio,
+  isVideo,
   onSave,
   onBrowse,
+  onBrowseVideo,
 }: {
-  cue: AudioCueData;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  cue: any;
   isAudio: boolean;
+  isVideo?: boolean;
   onSave: (p: Partial<AudioCueData>) => void;
   onBrowse: () => void;
+  onBrowseVideo?: () => void;
 }) {
   return (
     <>
@@ -32,11 +37,11 @@ export function BasicsTab({
       <Field label="Notes">
         <textarea
           style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
-          defaultValue={cue.notes}
+          defaultValue={cue.notes ?? ""}
           onBlur={(e) => onSave({ notes: e.target.value })}
         />
       </Field>
-      {isAudio && (
+      {(isAudio || isVideo) && (
         <Field label="File">
           <div style={{ display: "flex", gap: 4 }}>
             <input
@@ -56,7 +61,7 @@ export function BasicsTab({
                 fontSize: 12,
                 flexShrink: 0,
               }}
-              onClick={onBrowse}
+              onClick={isVideo ? onBrowseVideo : onBrowse}
             >
               Browse…
             </button>

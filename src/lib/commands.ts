@@ -12,6 +12,7 @@ import type {
   DeviceInfo,
   GeneralPreferences,
   OutputPatch,
+  VideoCueData,
   WaveformData,
   WorkspaceInfo,
 } from "./types";
@@ -35,7 +36,7 @@ export const resumeCue = (cueId: CueId) =>
 
 export const getAllCues = () => invoke<CueSummary[]>("get_all_cues");
 export const getCue = (cueId: CueId) =>
-  invoke<AudioCueData>("get_cue", { cueId });
+  invoke<AudioCueData | VideoCueData>("get_cue", { cueId });
 export const addCue = (cueType: CueType, position = -1) =>
   invoke<CueId>("add_cue", { cueType, position });
 export const removeCue = (cueId: CueId) =>
@@ -60,6 +61,15 @@ export const updateCue = (cueId: CueId, properties: Partial<AudioCueData>) =>
   invoke<void>("update_cue", { cueId, properties });
 export const setAudioFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_audio_file", { cueId, filePath });
+export const setVideoFile = (cueId: CueId, filePath: string) =>
+  invoke<void>("set_video_file", { cueId, filePath });
+export const reportVideoStatus = (
+  voiceId: string,
+  statusType: "completed" | "duration" | "error",
+  durationMs: number | null,
+  errorMessage: string | null,
+) =>
+  invoke<void>("report_video_status", { voiceId, statusType, durationMs, errorMessage });
 export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
 

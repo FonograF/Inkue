@@ -29,6 +29,7 @@ import {
   duplicateCue,
   moveCue,
   setAudioFile,
+  setVideoFile,
   setPlayhead,
   updateCue,
 } from "../../lib/commands";
@@ -38,9 +39,13 @@ import {
 // ---------------------------------------------------------------------------
 
 const AUDIO_EXTS = new Set(["wav", "mp3", "flac", "ogg", "aac", "m4a"]);
+const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "mov", "mkv", "avi", "ogv"]);
 
 function isAudioPath(p: string) {
   return AUDIO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
+}
+function isVideoPath(p: string) {
+  return VIDEO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
 }
 function basenameNoExt(p: string) {
   return (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "");
@@ -514,8 +519,8 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           setFileDragInsertIdx(null);
           const paths: string[] = (event.payload as { paths?: string[] }).paths ?? [];
           const pos = event.payload.position;
-          const audioPaths = paths.filter(isAudioPath);
-          if (audioPaths.length === 0) return;
+          const mediaPaths = paths.filter((p) => isAudioPath(p) || isVideoPath(p));
+          if (mediaPaths.length === 0) return;
 
           const { insertIdx, assignId } = pos
             ? resolveFileDragMode(pos.x, pos.y)
@@ -524,20 +529,25 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           if (insertIdx !== null) {
             // Insert mode: create new cue(s) at the target position.
             let at = insertIdx;
-            for (const p of audioPaths) {
-              const newId = await addCue("audio", at).catch(() => null);
+            for (const p of mediaPaths) {
+              const cueType = isVideoPath(p) ? "video" : "audio";
+              const newId = await addCue(cueType, at).catch(() => null);
               if (newId) {
-                await setAudioFile(newId, p).catch(console.error);
+                if (cueType === "video") {
+                  await setVideoFile(newId, p).catch(console.error);
+                } else {
+                  await setAudioFile(newId, p).catch(console.error);
+                }
                 await updateCue(newId, { name: basenameNoExt(p) }).catch(console.error);
                 setSelectedCueId(newId);
                 at++;
               }
             }
             await onRefresh();
-          } else if (audioPaths.length === 1) {
-            await handleFileDrop(audioPaths[0], assignId);
+          } else if (mediaPaths.length === 1) {
+            await handleFileDrop(mediaPaths[0], assignId);
           } else {
-            for (const p of audioPaths) await handleFileDrop(p, null);
+            for (const p of mediaPaths) await handleFileDrop(p, null);
           }
         }
       });
@@ -548,12 +558,31 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleFileDrop(filePath: string, targetCueId: string | null) {
+    const isVid = isVideoPath(filePath);
     if (targetCueId) {
-      await setAudioFile(targetCueId, filePath).catch(console.error);
+      // Assign to an existing cue only if the file type matches the cue type.
+      const targetCue = cuesRef.current.find((c) => c.id === targetCueId);
+      if (targetCue?.cue_type === "video" && isVid) {
+        await setVideoFile(targetCueId, filePath).catch(console.error);
+      } else if (targetCue?.cue_type === "audio" && !isVid) {
+        await setAudioFile(targetCueId, filePath).catch(console.error);
+      } else {
+        // Type mismatch — insert a new cue at the end instead.
+        const cueType = isVid ? "video" : "audio";
+        const newId = await addCue(cueType, -1).catch(() => null);
+        if (newId) {
+          if (isVid) await setVideoFile(newId, filePath).catch(console.error);
+          else await setAudioFile(newId, filePath).catch(console.error);
+          await updateCue(newId, { name: basenameNoExt(filePath) }).catch(console.error);
+          setSelectedCueId(newId);
+        }
+      }
     } else {
-      const newId = await addCue("audio", -1).catch(() => null);
+      const cueType = isVid ? "video" : "audio";
+      const newId = await addCue(cueType, -1).catch(() => null);
       if (newId) {
-        await setAudioFile(newId, filePath).catch(console.error);
+        if (isVid) await setVideoFile(newId, filePath).catch(console.error);
+        else await setAudioFile(newId, filePath).catch(console.error);
         await updateCue(newId, { name: basenameNoExt(filePath) }).catch(console.error);
         setSelectedCueId(newId);
       }

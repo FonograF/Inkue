@@ -440,7 +440,14 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop", e: React.MouseEvent) => {
+  const handleAddVideo = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("video", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("wincue:cue-drag-start", {
@@ -534,6 +541,14 @@ export default function App() {
             title="Add Stop Cue after selection · Drag to insert at position"
           >
             + Stop
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#a78bfa", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddVideo}
+            onMouseDown={(e) => dispatchCueDrag("video", e)}
+            title="Add Video Cue after selection · Drag to insert at position"
+          >
+            + Video
           </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector

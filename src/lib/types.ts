@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -58,6 +58,20 @@ export interface AudioCueData extends CueSummary {
   loop_count: number;
   output_patch_id: string | null;
   rate: number;
+}
+
+/** Full cue data returned by get_cue for a Video Cue. */
+export interface VideoCueData extends CueSummary {
+  notes: string;
+  volume_db: number;
+  fade_in_ms: number | null;
+  fade_in_curve: FadeCurve | null;
+  fade_out_ms: number | null;
+  fade_out_curve: FadeCurve | null;
+  start_time_ms: number | null;
+  end_time_ms: number | null;
+  loop_count: number;
+  output_surface_id: string | null;
 }
 
 export interface DeviceInfo {

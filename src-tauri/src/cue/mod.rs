@@ -12,6 +12,7 @@ pub mod registry;
 pub mod stop_cue;
 pub mod traits;
 pub mod types;
+pub mod video_cue;
 
 pub use registry::CueRegistry;
 pub use traits::Cue;

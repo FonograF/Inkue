@@ -7,41 +7,63 @@ pub mod preferences;
 pub mod show;
 pub mod state;
 
+use std::sync::Arc;
+
 use commands::{
     cue_cmds::{
         add_cue, duplicate_cue, get_all_cues, get_cue, get_playhead, get_waveform_peaks,
-        move_cue, preview_cue, remove_cue, set_audio_file, set_playhead, stop_preview,
-        update_cue,
+        move_cue, preview_cue, remove_cue, set_audio_file, set_playhead,
+        set_video_file, stop_preview, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
-    preferences_cmds::{get_asio_output_pairs, get_available_backends, get_preferences, list_audio_devices, test_audio_device, update_audio_preferences, update_general_preferences},
-    transport_cmds::{go, hard_stop_all, pause_cue, resume_cue, set_master_volume, stop_all, stop_cue},
+    preferences_cmds::{
+        get_asio_output_pairs, get_available_backends, get_preferences, list_audio_devices,
+        test_audio_device, update_audio_preferences, update_general_preferences,
+    },
+    transport_cmds::{
+        go, hard_stop_all, pause_cue, resume_cue, set_master_volume, stop_all, stop_cue,
+    },
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
+use engine::{AudioEngine, VideoEngine};
 use state::AppState;
 use tauri::Manager;
-
 /// Build and run the Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
 
-    let app_state = AppState::new().expect("Failed to initialise application state");
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(app_state)
         .setup(|app| {
+            // ----------------------------------------------------------------
+            // Initialise engines and managed state.
+            // VideoEngine creates its own native Win32 window + libmpv context.
+            // ----------------------------------------------------------------
+            let audio_engine = AudioEngine::new()?;
+            let video_engine = Arc::new(
+                VideoEngine::new()
+                    .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                        as Box<dyn std::error::Error>)?,
+            );
+
+            let app_state = AppState::new(audio_engine, Arc::clone(&video_engine));
+            app.manage(app_state);
+
+            // ----------------------------------------------------------------
+            // Start the 30 fps event loop on a dedicated thread.
+            // ----------------------------------------------------------------
             let handle = app.handle().clone();
-            let engine = app.state::<AppState>().audio_engine.clone();
+            let a_engine = app.state::<AppState>().audio_engine.clone();
+            let v_engine = Arc::clone(&video_engine);
             let workspace = app.state::<AppState>().workspace.clone();
 
             std::thread::Builder::new()
                 .name("wincue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, engine, workspace);
+                    crate::show::event_loop::run(handle, a_engine, v_engine, workspace);
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -67,6 +89,7 @@ pub fn run() {
             set_playhead,
             get_playhead,
             set_audio_file,
+            set_video_file,
             get_waveform_peaks,
             preview_cue,
             stop_preview,

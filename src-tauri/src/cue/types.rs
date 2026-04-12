@@ -17,6 +17,8 @@ pub enum CueType {
     Fade,
     /// Stops all currently-running cues when triggered.
     Stop,
+    /// Plays a video file on a video output surface window.
+    Video,
 }
 
 impl std::fmt::Display for CueType {
@@ -28,6 +30,7 @@ impl std::fmt::Display for CueType {
             CueType::Group => write!(f, "group"),
             CueType::Fade => write!(f, "fade"),
             CueType::Stop => write!(f, "stop"),
+            CueType::Video => write!(f, "video"),
         }
     }
 }

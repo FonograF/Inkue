@@ -2,8 +2,8 @@
 // Shows cue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useState } from "react";
-import type { AudioCueData, CueSummary } from "../../lib/types";
-import { getCue, updateCue, setAudioFile } from "../../lib/commands";
+import type { AudioCueData, CueSummary, VideoCueData } from "../../lib/types";
+import { getCue, updateCue, setAudioFile, setVideoFile } from "../../lib/commands";
 import { WaveformModal } from "../WaveformModal";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BasicsTab } from "./BasicsTab";
@@ -19,7 +19,7 @@ interface Props {
 type Tab = "basics" | "time" | "levels" | "fade";
 
 export function InspectorPanel({ selectedCue, onRefresh }: Props) {
-  const [cueData, setCueData] = useState<AudioCueData | null>(null);
+  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
 
@@ -30,7 +30,9 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
     }
     getCue(selectedCue.id)
       .then((data) => {
-        setCueData({ ...data, cue_type: selectedCue.cue_type });
+        // Merge cue_type from the summary in case the serialised form uses
+        // a different key ("type" vs "cue_type").
+        setCueData({ ...data, cue_type: selectedCue.cue_type } as AudioCueData | VideoCueData);
       })
       .catch(console.error);
   }, [selectedCue?.id]);
@@ -51,8 +53,10 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
   }
 
   const isAudio = selectedCue.cue_type === "audio";
+  const isVideo = selectedCue.cue_type === "video";
 
-  const save = async (partial: Partial<AudioCueData>) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const save = async (partial: Partial<any>) => {
     await updateCue(cueData.id, partial).catch(console.error);
     setCueData((prev) => (prev ? { ...prev, ...partial } : prev));
     onRefresh();
@@ -67,6 +71,20 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
     });
     if (typeof result === "string") {
       await setAudioFile(cueData.id, result).catch(console.error);
+      setCueData((prev) => (prev ? { ...prev, file_path: result } : prev));
+      onRefresh();
+    }
+  };
+
+  const handleBrowseVideo = async () => {
+    const result = await open({
+      multiple: false,
+      filters: [
+        { name: "Video Files", extensions: ["mp4", "m4v", "webm", "mov", "mkv", "avi", "ogv"] },
+      ],
+    });
+    if (typeof result === "string") {
+      await setVideoFile(cueData.id, result).catch(console.error);
       setCueData((prev) => (prev ? { ...prev, file_path: result } : prev));
       onRefresh();
     }
@@ -104,7 +122,7 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
           background: "#020617",
         }}
       >
-        {isAudio ? "🔊" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
@@ -115,12 +133,12 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
         <button style={tabStyle("time")} onClick={() => setActiveTab("time")}>
           Time
         </button>
-        {isAudio && (
+        {(isAudio || isVideo) && (
           <button style={tabStyle("levels")} onClick={() => setActiveTab("levels")}>
             Levels
           </button>
         )}
-        {isAudio && (
+        {(isAudio || isVideo) && (
           <button style={tabStyle("fade")} onClick={() => setActiveTab("fade")}>
             Fade
           </button>
@@ -133,29 +151,32 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
           <BasicsTab
             cue={cueData}
             isAudio={isAudio}
+            isVideo={isVideo}
             onSave={save}
             onBrowse={handleBrowse}
+            onBrowseVideo={handleBrowseVideo}
           />
         )}
         {activeTab === "time" && (
           <TimeTab
             cue={cueData}
             isAudio={isAudio}
+            isVideo={isVideo}
             onSave={save}
             onOpenWaveform={() => setWaveformModalOpen(true)}
           />
         )}
-        {activeTab === "levels" && isAudio && (
-          <LevelsTab cue={cueData} onSave={save} />
+        {activeTab === "levels" && (isAudio || isVideo) && (
+          <LevelsTab cue={cueData as AudioCueData} onSave={save} />
         )}
-        {activeTab === "fade" && isAudio && (
-          <FadeTab cue={cueData} onSave={save} />
+        {activeTab === "fade" && (isAudio || isVideo) && (
+          <FadeTab cue={cueData as AudioCueData} onSave={save} />
         )}
       </div>
 
-      {waveformModalOpen && cueData && (
+      {waveformModalOpen && cueData && isAudio && (
         <WaveformModal
-          cue={cueData}
+          cue={cueData as AudioCueData}
           onClose={() => setWaveformModalOpen(false)}
           onSave={save}
         />
