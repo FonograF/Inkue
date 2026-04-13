@@ -12,7 +12,7 @@ use std::sync::Arc;
 use commands::{
     cue_cmds::{
         add_cue, duplicate_cue, get_all_cues, get_cue, get_playhead, get_waveform_peaks,
-        move_cue, preview_cue, remove_cue, set_audio_file, set_playhead,
+        list_video_screens, move_cue, preview_cue, remove_cue, set_audio_file, set_playhead,
         set_video_file, stop_preview, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
@@ -32,7 +32,13 @@ use tauri::Manager;
 /// Build and run the Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    // Default to info-level for the wincue crate so mpv renderer messages are
+    // visible in the terminal without needing to set RUST_LOG manually.
+    // Override with: RUST_LOG=debug pnpm tauri dev
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("wincue=info"),
+    )
+    .init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -91,6 +97,7 @@ pub fn run() {
             set_audio_file,
             set_video_file,
             get_waveform_peaks,
+            list_video_screens,
             preview_cue,
             stop_preview,
             // Undo / Redo / Copy / Paste

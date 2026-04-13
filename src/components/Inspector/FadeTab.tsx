@@ -1,4 +1,4 @@
-import type { AudioCueData } from "../../lib/types";
+import type { AudioCueData, VideoCueData } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
 import { CurveSelect } from "../common/CurveSelect";
 
@@ -6,8 +6,8 @@ export function FadeTab({
   cue,
   onSave,
 }: {
-  cue: AudioCueData;
-  onSave: (p: Partial<AudioCueData>) => void;
+  cue: AudioCueData | VideoCueData;
+  onSave: (p: Partial<AudioCueData | VideoCueData>) => void;
 }) {
   return (
     <>

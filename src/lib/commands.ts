@@ -12,6 +12,7 @@ import type {
   DeviceInfo,
   GeneralPreferences,
   OutputPatch,
+  ScreenInfo,
   VideoCueData,
   WaveformData,
   WorkspaceInfo,
@@ -72,6 +73,7 @@ export const reportVideoStatus = (
   invoke<void>("report_video_status", { voiceId, statusType, durationMs, errorMessage });
 export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
+export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
 
 export const previewCue = (cueId: CueId, startMs?: number, endMs?: number) =>
   invoke<string>("preview_cue", {

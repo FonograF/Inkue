@@ -62,6 +62,8 @@ pub struct VideoCue {
     pub loop_count: u32,
     /// Output surface to render on.  `None` uses the default surface.
     pub output_surface_id: Option<SurfaceId>,
+    /// Monitor index to play on (0 = primary).  `None` keeps the floating window.
+    pub screen_index: Option<u32>,
 
     // --- Runtime ---
     /// The video voice ID currently in use, if any.
@@ -100,6 +102,7 @@ impl VideoCue {
             end_time: None,
             loop_count: 0,
             output_surface_id: None,
+            screen_index: None,
             active_voice_id: None,
             cached_duration: None,
             in_pre_wait: false,
@@ -126,6 +129,7 @@ impl VideoCue {
             start_ms,
             end_ms,
             self.fade_in.as_ref(),
+            self.screen_index,
         )?;
 
         self.active_voice_id = Some(voice_id);
@@ -363,6 +367,7 @@ impl Cue for VideoCue {
             "end_time_ms": self.end_time.map(|d| d.as_millis() as u64),
             "loop_count": self.loop_count,
             "output_surface_id": self.output_surface_id,
+            "screen_index": self.screen_index,
         })
     }
 }
@@ -441,6 +446,9 @@ impl CueFactory for VideoCueFactory {
         }
         if let Some(sid_str) = value.get("output_surface_id").and_then(|v| v.as_str()) {
             cue.output_surface_id = sid_str.parse().ok();
+        }
+        if let Some(si) = value.get("screen_index").and_then(|v| v.as_u64()) {
+            cue.screen_index = Some(si as u32);
         }
 
         Ok(Box::new(cue))

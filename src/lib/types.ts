@@ -72,6 +72,18 @@ export interface VideoCueData extends CueSummary {
   end_time_ms: number | null;
   loop_count: number;
   output_surface_id: string | null;
+  /** Monitor index (0 = primary). null = floating window. */
+  screen_index: number | null;
+}
+
+/** Information about a connected monitor. */
+export interface ScreenInfo {
+  index: number;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  is_primary: boolean;
 }
 
 export interface DeviceInfo {

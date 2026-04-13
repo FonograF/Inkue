@@ -585,3 +585,8 @@ pub fn set_video_file(
     Ok(())
 }
 
+/// Return the list of connected monitors for the Screen selector in the inspector.
+#[tauri::command]
+pub fn list_video_screens() -> Vec<crate::engine::video_engine::ScreenInfo> {
+    crate::engine::VideoEngine::list_screens()
+}

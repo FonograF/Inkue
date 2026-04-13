@@ -2,9 +2,10 @@
 
 ## What is this project?
 
-WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). The first version implements Audio Cues, but the architecture must support any cue type (MIDI, OSC, Video, Fade, Group, Wait, Memo, Network, Script) without modifying existing code.
+WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.1.2** — Audio, Video, Stop, and Memo cue types are implemented. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
 
-The full specification is in `wincue-prompt.md` at the project root. Read it before starting any work.
+The full specification is in `wincue-prompt.md` at the project root.
+**Before starting any implementation work, read `PROGRESS.md`** — it reflects the current state of the codebase, known bugs, and next priorities. `wincue-prompt.md` is useful for spec details (trait methods, event names, save format), but PROGRESS.md is the ground truth for what is done.
 
 ## Stack
 
@@ -79,7 +80,7 @@ Three distinct layers, never mix them:
 ### TypeScript / React
 
 - Functional components only, no class components
-- Zustand for all shared state (two stores: workspaceStore, transportStore)
+- Zustand for all shared state (three stores: `workspaceStore`, `transportStore`, `timingStore`)
 - All Tauri command calls go through typed wrappers in `lib/commands.ts`
 - All types shared with the backend are defined in `lib/types.ts`
 - Event listeners are set up via the `useTauriEvents` hook, never inline
@@ -120,22 +121,22 @@ At minimum, these must have unit tests:
 
 Run tests with `cargo test` from the `src-tauri/` directory.
 
-## File you must read first
+## Current state & open work
 
-Before any implementation work, read `wincue-prompt.md` in the project root. It contains the complete specification including the exact project file structure, all trait methods, all Tauri commands and events, the save format, and the UI layout.
+**All core development steps are complete** (scaffold, cue system, audio engine, frontend, transport, inspector, workspace, shortcuts, fades, drag-drop, undo/redo, color tags). The project compiles with zero warnings and 20 tests pass.
 
-## Development order
+### Known bugs / next priorities
 
-If starting from scratch or resuming, follow this order:
-1. Tauri v2 scaffold + basic window opens
-2. Cue trait + types + CueRegistry + MemoCue (proves extensibility)
-3. AudioEngine with basic WAV playback (cpal + symphonia)
-4. AudioCue implementation connected to engine
-5. Frontend: static cue list display + GO button that plays audio
-6. Playhead + transport (GO/STOP/PAUSE with continue modes)
-7. Output Patches + DeviceManager
-8. Inspector panel with audio cue editing
-9. Workspace save/load (.wincue JSON)
-10. Keyboard shortcuts
-11. Fades, waveform display, level meters
-12. Polish: drag-drop reorder, undo/redo, color tags
+1. **Inspector — Video Cue display bugs** (`InspectorPanel.tsx`, `BasicsTab.tsx`, `TimeTab.tsx`, `LevelsTab.tsx`, `FadeTab.tsx`)
+   - Fields not properly conditioned on `isVideo` / `cue_type`
+   - `LevelsTab` / `FadeTab` cast to `AudioCueData` even for video cues — unsafe
+
+2. **Video playback non-functional** (`engine/video_engine.rs`, `cue/video_cue.rs`)
+   - Architecture complete (libmpv FFI, Win32 window, event loop), but no render on GO
+   - Requires `vendor/mpv/libmpv-2.dll` at runtime (not versioned, 113 MB)
+   - Debug: Win32 window creation, HWND `wid` injection, `loadfile` path, MPV event reception
+
+3. **Output Patch routing not wired** (`engine/audio_engine.rs`)
+   - `OutputPatch` is stored in workspace but `AudioEngine` always uses the default device
+
+See `PROGRESS.md` for the full detailed state of every module.

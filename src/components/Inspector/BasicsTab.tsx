@@ -1,4 +1,6 @@
-import type { AudioCueData } from "../../lib/types";
+import { useEffect, useState } from "react";
+import type { AudioCueData, ScreenInfo } from "../../lib/types";
+import { listVideoScreens } from "../../lib/commands";
 import { Field, inputStyle } from "./Field";
 import { ColorPicker } from "./ColorPicker";
 
@@ -14,10 +16,16 @@ export function BasicsTab({
   cue: any;
   isAudio: boolean;
   isVideo?: boolean;
-  onSave: (p: Partial<AudioCueData>) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onSave: (p: Partial<any>) => void;
   onBrowse: () => void;
   onBrowseVideo?: () => void;
 }) {
+  const [screens, setScreens] = useState<ScreenInfo[]>([]);
+  useEffect(() => {
+    if (isVideo) listVideoScreens().then(setScreens).catch(console.error);
+  }, [isVideo]);
+
   return (
     <>
       <Field label="Cue #">
@@ -66,6 +74,27 @@ export function BasicsTab({
               Browse…
             </button>
           </div>
+        </Field>
+      )}
+      {isVideo && (
+        <Field label="Screen">
+          <select
+            style={inputStyle}
+            value={cue.screen_index ?? "floating"}
+            onChange={(e) => {
+              const v = e.target.value;
+              onSave({ screen_index: v === "floating" ? null : parseInt(v) });
+            }}
+          >
+            <option value="floating">Floating window</option>
+            {screens.map((s) => (
+              <option key={s.index} value={s.index}>
+                {s.is_primary
+                  ? `Screen ${s.index + 1} (primary, ${s.width}×${s.height})`
+                  : `Screen ${s.index + 1} (${s.width}×${s.height})`}
+              </option>
+            ))}
+          </select>
         </Field>
       )}
       <Field label="Continue">
