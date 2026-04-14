@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
 use super::{
@@ -21,6 +21,22 @@ use super::{
 const _MAX_VOICES: usize = 64;
 const RING_CAPACITY: usize = 256;
 pub const DEFAULT_FADE_OUT_MS: u32 = 500;
+
+/// Minimum number of PCM samples that must be buffered before the video PCM
+/// consumer starts draining.  At 48 kHz stereo this is ~100 ms (4 800 frames
+/// × 2 channels = 9 600 samples).  Prevents the A/V desync dropout that
+/// occurs when the audio callback starts consuming samples before mpv has had
+/// time to write enough data into the named pipe.
+const MIN_VIDEO_PREBUFFER: usize = 9_600;
+
+/// Wraps the video PCM ring-buffer consumer together with a one-shot
+/// pre-roll flag so that `fill_buffer` can hold off draining until
+/// enough audio is buffered.
+struct VideoPcmState {
+    cons: ringbuf::HeapCons<f32>,
+    /// `true` until `cons.occupied_len() >= MIN_VIDEO_PREBUFFER`.
+    prebuffering: bool,
+}
 
 /// The audio engine.
 pub struct AudioEngine {
@@ -39,7 +55,9 @@ pub struct AudioEngine {
     /// `fill_buffer` drains this at hardware rate alongside audio voices.
     /// Accessed with `try_lock` in the RT callback — contention is
     /// near-zero since it is only swapped at GO/stop time.
-    video_pcm_cons: Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>,
+    /// The [`VideoPcmState`] wrapper adds a one-shot pre-roll flag so that
+    /// draining is held off until `MIN_VIDEO_PREBUFFER` samples are queued.
+    video_pcm_cons: Arc<Mutex<Option<VideoPcmState>>>,
 }
 
 // SAFETY: cpal::Stream is not Send on Windows when using WASAPI.
@@ -68,7 +86,7 @@ impl AudioEngine {
         let cb_master_gain = Arc::clone(&master_gain);
         let engine_master_gain = Arc::clone(&master_gain);
 
-        let video_pcm_cons: Arc<Mutex<Option<ringbuf::HeapCons<f32>>>> =
+        let video_pcm_cons: Arc<Mutex<Option<VideoPcmState>>> =
             Arc::new(Mutex::new(None));
         let cb_video_pcm = Arc::clone(&video_pcm_cons);
 
@@ -146,7 +164,7 @@ impl AudioEngine {
     /// `try_lock` and skips mixing if contended (one callback worth of silence).
     pub fn set_video_pcm_consumer(&self, cons: Option<ringbuf::HeapCons<f32>>) {
         if let Ok(mut g) = self.video_pcm_cons.lock() {
-            *g = cons;
+            *g = cons.map(|c| VideoPcmState { cons: c, prebuffering: true });
         }
     }
 
@@ -278,7 +296,7 @@ impl AudioEngine {
         let cb_mg = Arc::clone(&self.master_gain);
         // Clear the video PCM consumer — the sample rate may have changed and
         // any buffered data would be at the wrong rate.  VideoEngine will
-        // install a new consumer on the next video GO.
+        // install a new consumer on the next video GO (with a fresh pre-roll).
         if let Ok(mut g) = self.video_pcm_cons.lock() { *g = None; }
         let cb_vid = Arc::clone(&self.video_pcm_cons);
 
@@ -378,7 +396,7 @@ fn fill_buffer(
     cmd_cons: &mut ringbuf::HeapCons<AudioCommand>,
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
     master_gain: &Arc<std::sync::atomic::AtomicU32>,
-    video_pcm_cons: &Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>,
+    video_pcm_cons: &Arc<Mutex<Option<VideoPcmState>>>,
 ) {
     output.fill(0.0);
 
@@ -508,20 +526,29 @@ fn fill_buffer(
     // Use try_lock — if the Mutex is held (consumer being swapped at GO/stop
     // time), we skip video mixing for this one callback (inaudible glitch).
     if let Ok(mut cons_guard) = video_pcm_cons.try_lock() {
-        if let Some(cons) = cons_guard.as_mut() {
-            for frame in 0..frames {
-                let out_base = frame * channels;
-                let l = cons.try_pop().unwrap_or(0.0);
-                let r = cons.try_pop().unwrap_or(l);
-                let out_l = l.clamp(-1.0, 1.0);
-                let out_r = r.clamp(-1.0, 1.0);
-                if channels >= 1 {
-                    output[out_base] += out_l;
-                    peak_l = peak_l.max(out_l.abs());
+        if let Some(state) = cons_guard.as_mut() {
+            // Pre-roll: hold off draining until enough samples are buffered so
+            // that the audio callback never under-runs at video start.
+            if state.prebuffering {
+                if state.cons.occupied_len() >= MIN_VIDEO_PREBUFFER {
+                    state.prebuffering = false;
                 }
-                if channels >= 2 {
-                    output[out_base + 1] += out_r;
-                    peak_r = peak_r.max(out_r.abs());
+                // While pre-buffering, output silence for the video track.
+            } else {
+                for frame in 0..frames {
+                    let out_base = frame * channels;
+                    let l = state.cons.try_pop().unwrap_or(0.0);
+                    let r = state.cons.try_pop().unwrap_or(l);
+                    let out_l = l.clamp(-1.0, 1.0);
+                    let out_r = r.clamp(-1.0, 1.0);
+                    if channels >= 1 {
+                        output[out_base] += out_l;
+                        peak_l = peak_l.max(out_l.abs());
+                    }
+                    if channels >= 2 {
+                        output[out_base + 1] += out_r;
+                        peak_r = peak_r.max(out_r.abs());
+                    }
                 }
             }
         }

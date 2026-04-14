@@ -866,9 +866,10 @@ fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>) {
         .chain(std::iter::once(0))
         .collect();
 
-    // Aim to keep this many samples pre-buffered (~85 ms at 48 kHz stereo).
-    // mpv is throttled via pipe backpressure once this threshold is reached.
-    const MAX_PREBUFFER: usize = 8192;
+    // Keep this many f32 samples pre-buffered before throttling mpv.
+    // ~500 ms of stereo audio at 48 kHz.  mpv is blocked via pipe backpressure
+    // once this is reached; the ring buffer provides an additional cushion.
+    let max_prebuffer: usize = (audio_engine.sample_rate() as usize) / 2 * 2; // sr/2 * 2ch
 
     log::info!(r"PCM pipe reader: started (\\.\pipe\wincue-mpv-audio)");
 
@@ -898,8 +899,10 @@ fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>) {
         unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
         log::info!("PCM pipe: mpv connected — creating ring buffer");
 
-        // Fresh ring buffer for this video: 1 second of stereo f32.
-        let ring_size = (audio_engine.sample_rate() as usize * 2).max(8192);
+        // Fresh ring buffer for this video: 3 seconds of stereo f32.
+        // Sized generously so mpv burst-writes and scheduling jitter never
+        // overflow the buffer even when the writer thread is briefly preempted.
+        let ring_size = (audio_engine.sample_rate() as usize * 2 * 3).max(16384);
         let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
         audio_engine.set_video_pcm_consumer(Some(cons));
 
@@ -908,7 +911,7 @@ fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>) {
         loop {
             // Throttle: wait while the ring buffer is near-full so that pipe
             // backpressure limits mpv's write speed to approximately real-time.
-            while prod.occupied_len() > MAX_PREBUFFER {
+            while prod.occupied_len() > max_prebuffer {
                 std::thread::sleep(Duration::from_millis(1));
             }
 
