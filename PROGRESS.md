@@ -70,23 +70,24 @@
 
 ---
 
-## Bugs connus (non résolus)
+## Bugs connus / à tester
 
-### ASIO→WASAPI : résolution de nom à vérifier
+### Video PCM via `ao=pcm` + named pipe — à valider sur hardware
 
-Le routing vidéo vers ASIO est implémenté via `wasapi_name_for_asio()` dans `VideoEngine` : fuzzy match en deux passes (substring complet, puis mots-clés sans "ASIO"/"Driver"). La résolution compile et s'exécute mais n'a pas encore été vérifiée sur le matériel de l'utilisateur (UMC ASIO Driver → endpoint WASAPI inconnu). Si `None` est retourné, mpv bascule sur le device système par défaut.
+L'architecture est complète et compile, mais n'a pas encore été testée sur hardware ASIO.  
+Ce qu'il faut vérifier au lancement :
+
+1. Les logs `PCM pipe: waiting for mpv to connect...` / `PCM pipe: mpv connected` apparaissent au GO d'une vidéo
+2. Le VU meter bouge pendant la lecture vidéo (confirme que les samples arrivent dans AudioEngine)
+3. Le son vidéo sort bien par le device ASIO (pas par WASAPI par défaut)
+
+Si mpv ne peut pas ouvrir `\\.\pipe\wincue-mpv-audio` en tant que client (certaines versions de mpv ne supportent pas les named pipes comme fichier `ao=pcm`), une alternative serait d'utiliser `ao=pcm,file=<temp_file>` avec polling — mais la solution pipe est préférable.
 
 ---
 
 ## Historique des changements
 
-### Post-0.2.0 — VU meter, ASIO build, Output Patch routing (2026-04-14)
-
-#### 🎚️ VU Meter — mesures réelles
-
-- `VideoEngine` : thread WASAPI loopback (`cpal`) — capture audio sortant, atomics `loopback_peak_l/r` lus par le 30fps loop
-- `TransportBar.tsx` : rAF-based decay (20 dB/sec), peak hold 1,5 s, aiguille rouge > -6 dBFS
-- Suppression du fallback "volume configuré" pour la vidéo — uniquement vraies mesures loopback
+### Post-0.2.0 — Refonte architecture audio vidéo (2026-04-14)
 
 #### 🔧 ASIO build fix
 
@@ -94,16 +95,26 @@ Le routing vidéo vers ASIO est implémenté via `wasapi_name_for_asio()` dans `
 - `src-tauri/.cargo/config.toml` : `CPAL_ASIO_DIR = { value = "../vendor/asiosdk", relative = true }`
 - `pnpm tauri:dev -- --features asio-support` compile sans erreur
 
-#### 🔌 Output Patch routing — câblage complet
+#### 🔌 Output Patch routing audio (AudioCue)
 
 - `Voice.out_l / out_r` (`engine/voice.rs`) — canaux cibles dans le buffer WASAPI/ASIO
 - `AudioEngine.fill_buffer` — utilise `voice.out_l / out_r` au lieu de 0/1 codés en dur
-- `CueContext` enrichi : `output_patches`, `default_patch_id`, `audio_device_id`, `audio_backend`
+- `CueContext` : `output_patches`, `default_patch_id` pour résoudre les patches au GO
 - `AudioCue` : résout l'`OutputPatch` au GO, positionne `voice.out_l / out_r`
-- `VideoCue` : champ `output_patch_id`, résolution device + fallback `ws.preferences.audio.device_id`
-- `VideoEngine.play_voice()` : accepte `audio_device` + `audio_backend`, set mpv `audio-device`
-- `wasapi_name_for_asio()` : résolution ASIO→WASAPI par fuzzy match (deux passes)
-- `event_loop.rs` + `transport_cmds.rs` : snapshottent les préférences audio avant construction du `CueContext`
+
+#### 🎚️ VU Meter + Video PCM via AudioEngine (`ao=pcm` + named pipe)
+
+**Problèmes architecturaux corrigés :**
+- Suppression WASAPI loopback (capturait le device système par défaut, inutilisable avec ASIO)
+- Suppression `wasapi_name_for_asio()` (mpv ne supporte pas ASIO — approche incorrecte)
+- Suppression `audio_device_id` / `audio_backend` de `CueContext` (plus nécessaires)
+
+**Nouvelle architecture :**
+- `mpv ao=pcm` écrit du PCM float32 stéréo vers `\\.\pipe\wincue-mpv-audio`
+- Thread `wincue-mpv-pcm` lit le pipe → ring buffer → `AudioEngine.set_video_pcm_consumer()`
+- `AudioEngine.fill_buffer` mixe le PCM vidéo avec les voices audio (même device WASAPI/ASIO)
+- VU meter lit `AudioStatus::MasterLevels` depuis le ring buffer d'AudioEngine — inclut audio + vidéo
+- `TransportBar.tsx` : rAF-based decay (20 dB/sec), peak hold 1,5 s, aiguille rouge > -6 dBFS
 
 ---
 
@@ -223,5 +234,5 @@ Rien de bloquant.
 
 ## Prochaine priorité
 
-1. **Valider ASIO→WASAPI** — lancer l'app, vérifier les logs `WASAPI devices for ASIO match` et `ASIO→WASAPI`, confirmer que mpv route bien l'audio vidéo vers le matériel ASIO
-2. **Retirer le log `[DIAG-1]`** dans `VideoEngine::new()` une fois le routing confirmé
+1. **Tester le routing vidéo** — lancer l'app, GO une vidéo, vérifier les logs `PCM pipe: mpv connected` et le VU meter
+2. Si mpv ne peut pas ouvrir le named pipe comme fichier `ao=pcm` : utiliser un fichier temp avec polling comme fallback

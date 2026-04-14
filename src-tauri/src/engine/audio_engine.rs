@@ -33,6 +33,13 @@ pub struct AudioEngine {
     /// Total output channel count of the current stream (updated on restart).
     output_channels: std::sync::atomic::AtomicU32,
     master_gain: Arc<std::sync::atomic::AtomicU32>,
+    /// Incoming decoded PCM from the video engine (via named pipe).
+    ///
+    /// Set by [`VideoEngine`] just before each video starts; cleared on stop.
+    /// `fill_buffer` drains this at hardware rate alongside audio voices.
+    /// Accessed with `try_lock` in the RT callback — contention is
+    /// near-zero since it is only swapped at GO/stop time.
+    video_pcm_cons: Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>,
 }
 
 // SAFETY: cpal::Stream is not Send on Windows when using WASAPI.
@@ -61,6 +68,10 @@ impl AudioEngine {
         let cb_master_gain = Arc::clone(&master_gain);
         let engine_master_gain = Arc::clone(&master_gain);
 
+        let video_pcm_cons: Arc<Mutex<Option<ringbuf::HeapCons<f32>>>> =
+            Arc::new(Mutex::new(None));
+        let cb_video_pcm = Arc::clone(&video_pcm_cons);
+
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 &StreamConfig {
@@ -69,7 +80,7 @@ impl AudioEngine {
                     buffer_size: cpal::BufferSize::Default,
                 },
                 move |data: &mut [f32], _| {
-                    fill_buffer(data, channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain);
+                    fill_buffer(data, channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain, &cb_video_pcm);
                 },
                 |err| log::error!("cpal stream error: {err}"),
                 None,
@@ -85,7 +96,7 @@ impl AudioEngine {
                     },
                     move |data: &mut [i32], _| {
                         let n = data.len().min(scratch.len());
-                        fill_buffer(&mut scratch[..n], channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain);
+                        fill_buffer(&mut scratch[..n], channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain, &cb_video_pcm);
                         for (out, &s) in data.iter_mut().zip(scratch[..n].iter()) {
                             *out = (s.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
                         }
@@ -108,6 +119,7 @@ impl AudioEngine {
             sample_rate: std::sync::atomic::AtomicU32::new(sample_rate),
             output_channels: std::sync::atomic::AtomicU32::new(channels as u32),
             master_gain: engine_master_gain,
+            video_pcm_cons,
         }))
     }
 
@@ -123,6 +135,19 @@ impl AudioEngine {
     /// Set the master output gain (real-time safe via atomic).
     pub fn set_master_gain(&self, gain: f32) {
         self.master_gain.store(f32::to_bits(gain), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Install (or remove) the ring buffer consumer that carries decoded PCM
+    /// from the video engine into the mix.
+    ///
+    /// Called by [`VideoEngine`] just before starting a video (`Some(cons)`)
+    /// and on stop/disconnect (`None`).  The swap is protected by a Mutex that
+    /// is held only for the duration of the swap — the audio callback uses
+    /// `try_lock` and skips mixing if contended (one callback worth of silence).
+    pub fn set_video_pcm_consumer(&self, cons: Option<ringbuf::HeapCons<f32>>) {
+        if let Ok(mut g) = self.video_pcm_cons.lock() {
+            *g = cons;
+        }
     }
 
     /// Add a pre-decoded voice to the pool and issue a Play command.
@@ -251,6 +276,11 @@ impl AudioEngine {
         // Build new stream — reuse same voices and master_gain.
         let cb_voices = Arc::clone(&self.voices);
         let cb_mg = Arc::clone(&self.master_gain);
+        // Clear the video PCM consumer — the sample rate may have changed and
+        // any buffered data would be at the wrong rate.  VideoEngine will
+        // install a new consumer on the next video GO.
+        if let Ok(mut g) = self.video_pcm_cons.lock() { *g = None; }
+        let cb_vid = Arc::clone(&self.video_pcm_cons);
 
         // For ASIO: route the internal stereo mix to the selected output pair.
         // pair_offset = first channel index of the selected pair (e.g. pair 1 → offset 2).
@@ -267,7 +297,7 @@ impl AudioEngine {
             cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
                 &stream_cfg,
                 move |data: &mut [f32], _| {
-                    fill_buffer(data, total_ch, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg);
+                    fill_buffer(data, total_ch, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid);
                 },
                 |err| log::error!("cpal stream error: {err}"),
                 None,
@@ -280,7 +310,7 @@ impl AudioEngine {
                     move |data: &mut [f32], _| {
                         let frames = data.len() / total_ch;
                         let n = (frames * 2).min(scratch.len());
-                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg);
+                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid);
                         data.fill(0.0);
                         for f in 0..frames {
                             data[f * total_ch + pair_offset]     = scratch[f * 2];
@@ -300,7 +330,7 @@ impl AudioEngine {
                     move |data: &mut [i32], _| {
                         let frames = data.len() / total_ch;
                         let n = (frames * 2).min(scratch.len());
-                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg);
+                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid);
                         data.fill(0);
                         for f in 0..frames {
                             data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
@@ -348,6 +378,7 @@ fn fill_buffer(
     cmd_cons: &mut ringbuf::HeapCons<AudioCommand>,
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
     master_gain: &Arc<std::sync::atomic::AtomicU32>,
+    video_pcm_cons: &Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>,
 ) {
     output.fill(0.0);
 
@@ -471,6 +502,29 @@ fn fill_buffer(
 
         // Store integer floor; sub-frame precision is re-established each callback.
         voice.frame_pos.store(frame_pos_f as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // Mix decoded video PCM from the named-pipe ring buffer.
+    // Use try_lock — if the Mutex is held (consumer being swapped at GO/stop
+    // time), we skip video mixing for this one callback (inaudible glitch).
+    if let Ok(mut cons_guard) = video_pcm_cons.try_lock() {
+        if let Some(cons) = cons_guard.as_mut() {
+            for frame in 0..frames {
+                let out_base = frame * channels;
+                let l = cons.try_pop().unwrap_or(0.0);
+                let r = cons.try_pop().unwrap_or(l);
+                let out_l = l.clamp(-1.0, 1.0);
+                let out_r = r.clamp(-1.0, 1.0);
+                if channels >= 1 {
+                    output[out_base] += out_l;
+                    peak_l = peak_l.max(out_l.abs());
+                }
+                if channels >= 2 {
+                    output[out_base + 1] += out_r;
+                    peak_r = peak_r.max(out_r.abs());
+                }
+            }
+        }
     }
 
     // Apply master gain.

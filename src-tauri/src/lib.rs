@@ -50,7 +50,7 @@ pub fn run() {
             // ----------------------------------------------------------------
             let audio_engine = AudioEngine::new()?;
             let video_engine = Arc::new(
-                VideoEngine::new()
+                VideoEngine::new(Arc::clone(&audio_engine))
                     .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                         as Box<dyn std::error::Error>)?,
             );

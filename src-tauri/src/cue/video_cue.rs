@@ -125,23 +125,6 @@ impl VideoCue {
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
 
-        // Resolve the audio device for mpv:
-        // 1. Prefer the cue's assigned OutputPatch (future per-cue routing)
-        // 2. Fall back to the workspace's global audio device_id (the device
-        //    currently used by AudioEngine — set in Preferences)
-        // 3. Fall back to mpv auto (system default)
-        let audio_device: Option<String> = context
-            .resolve_patch(self.output_patch_id)
-            .map(|p| p.device_id.clone())
-            .or_else(|| context.audio_device_id.clone());
-
-        log::info!(
-            "VideoCue '{}' — resolved audio device for mpv: {:?} (backend={:?})",
-            self.name,
-            audio_device,
-            context.audio_backend,
-        );
-
         let voice_id = context.video_engine.play_voice(
             path,
             self.output_surface_id,
@@ -151,8 +134,6 @@ impl VideoCue {
             end_ms,
             self.fade_in.as_ref(),
             self.screen_index,
-            audio_device.as_deref(),
-            &context.audio_backend,
         )?;
 
         self.active_voice_id = Some(voice_id);

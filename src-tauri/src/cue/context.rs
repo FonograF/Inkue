@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crossbeam_channel::Sender;
 
 use crate::engine::{device_manager::OutputPatch, video_engine::VideoEngine, AudioEngine};
-use crate::preferences::AudioBackend;
 
 /// Events emitted by cues to the Show Engine during execution.
 #[derive(Debug, Clone)]
@@ -48,13 +47,6 @@ pub struct CueContext {
     /// The workspace's default Output Patch ID, used when a cue has no
     /// explicit patch assignment.
     pub default_patch_id: Option<uuid::Uuid>,
-    /// OS device name currently selected for audio output (`AudioPreferences::device_id`).
-    /// `None` means use the system default.  Used by [`VideoCue`] to route mpv's
-    /// audio output to the same hardware as AudioEngine.
-    pub audio_device_id: Option<String>,
-    /// Audio backend in use (WASAPI shared/exclusive or ASIO).
-    /// Used by [`VideoCue`] to determine the correct mpv `audio-device` prefix.
-    pub audio_backend: AudioBackend,
 }
 
 impl CueContext {
@@ -66,8 +58,6 @@ impl CueContext {
         stop_fade_ms: u32,
         output_patches: Vec<OutputPatch>,
         default_patch_id: Option<uuid::Uuid>,
-        audio_device_id: Option<String>,
-        audio_backend: AudioBackend,
     ) -> Self {
         Self {
             audio_engine,
@@ -76,8 +66,6 @@ impl CueContext {
             stop_fade_ms,
             output_patches: Arc::new(output_patches),
             default_patch_id,
-            audio_device_id,
-            audio_backend,
         }
     }
 

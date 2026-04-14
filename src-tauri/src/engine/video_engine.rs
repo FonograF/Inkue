@@ -31,24 +31,24 @@
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use crossbeam_channel::{Receiver, Sender};
+use ringbuf::traits::{Observer, Producer, Split};
+use ringbuf::HeapRb;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-
 use crate::cue::types::{db_to_linear, FadeSpec};
+use crate::engine::AudioEngine;
 
 use super::mpv_sys::{
     MpvEventEndFile, MpvEventLogMessage, MpvLib,
     MPV_END_FILE_REASON_EOF, MPV_END_FILE_REASON_ERROR,
     MPV_EVENT_END_FILE, MPV_EVENT_FILE_LOADED, MPV_EVENT_LOG_MESSAGE,
-    MPV_EVENT_SHUTDOWN, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64, MPV_FORMAT_STRING,
+    MPV_EVENT_SHUTDOWN, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64,
 };
 
 /// Unique identifier for one playing video instance.
@@ -155,19 +155,24 @@ pub struct VideoEngine {
     status_tx: Sender<VideoStatus>,
     status_rx: Mutex<Receiver<VideoStatus>>,
     default_surface_id: SurfaceId,
-    /// Left-channel peak from WASAPI loopback capture (f32 bits packed as u32).
-    loopback_peak_l: Arc<AtomicU32>,
-    /// Right-channel peak from WASAPI loopback capture (f32 bits packed as u32).
-    loopback_peak_r: Arc<AtomicU32>,
+    /// Reference to the audio engine, used to install the video PCM consumer
+    /// ring buffer when a video starts (so video audio flows through AudioEngine).
+    /// Kept alive here so the `run_pcm_pipe_reader` thread can always reach it.
+    #[allow(dead_code)]
+    audio_engine: Arc<AudioEngine>,
 }
 
 impl VideoEngine {
     /// Construct the engine.
     ///
     /// Creates the Win32 window (hidden), loads libmpv, and initialises a
-    /// shared mpv context.  Returns an error if `libmpv-2.dll` cannot be
-    /// loaded or if the mpv context cannot be initialised.
-    pub fn new() -> Result<Self> {
+    /// shared mpv context.  mpv is configured to output audio via a Windows
+    /// named pipe (`ao=pcm`) so all video audio flows through [`AudioEngine`]
+    /// rather than through a separate WASAPI/ASIO output.
+    ///
+    /// Returns an error if `libmpv-2.dll` cannot be loaded or if the mpv
+    /// context cannot be initialised.
+    pub fn new(audio_engine: Arc<AudioEngine>) -> Result<Self> {
         let lib = Arc::new(MpvLib::load()?);
 
         // Create the output window on its own Win32 thread.
@@ -192,38 +197,41 @@ impl VideoEngine {
             );
 
             // Video output: force the native D3D11 backend.
-            // vo=gpu without gpu-api defaults to the ANGLE/EGL backend on Windows,
-            // which does not reliably support --wid and produces a black window.
-            // The D3D11 native backend creates a DXGI swap chain directly on the
-            // provided HWND and always works in embedded mode.
             opt_str(&lib, ctx, "vo", "gpu");
             opt_str(&lib, ctx, "gpu-api", "d3d11");
-
-            // Initialise the VO immediately so the D3D11 device + swap chain are
-            // ready before the first loadfile command is issued.
             opt_str(&lib, ctx, "force-window", "immediate");
-
-            // Disable hardware decode to avoid black-frame issues caused by
-            // DXVA2/D3D11VA sharing the same D3D device as the renderer before
-            // the device is fully initialised.
             opt_str(&lib, ctx, "hwdec", "no");
 
-            // No OSD, no input handling — pure show-control output surface.
+            // No OSD, no input handling.
             opt_str(&lib, ctx, "osc", "no");
             opt_str(&lib, ctx, "osd-level", "0");
             opt_str(&lib, ctx, "input-default-bindings", "no");
             opt_str(&lib, ctx, "input-vo-keyboard", "no");
             opt_str(&lib, ctx, "input-cursor", "no");
 
-            // Stay alive (in idle state) between files for fast successive
-            // playback.  keep-open=no lets mpv return to idle cleanly after
-            // EOF so the pause property does not carry over to the next play.
+            // Stay alive between files.
             opt_str(&lib, ctx, "keep-open", "no");
             opt_str(&lib, ctx, "idle", "yes");
 
+            // ---------------------------------------------------------------
+            // Audio routing: pipe decoded PCM into AudioEngine via a Windows
+            // named pipe so that video audio comes out through the same
+            // WASAPI / ASIO device as audio cues.
+            //
+            // ao=pcm writes raw float32 stereo PCM at the engine sample rate
+            // to the named pipe.  A background thread reads the pipe and feeds
+            // the samples into AudioEngine's video PCM ring buffer, where they
+            // are mixed in fill_buffer alongside audio voices.
+            // ---------------------------------------------------------------
+            opt_str(&lib, ctx, "ao", "pcm");
+            opt_str(&lib, ctx, "ao-pcm-file", r"\\.\pipe\wincue-mpv-audio");
+            opt_str(&lib, ctx, "ao-pcm-waveheader", "no");
+            let sr_str = audio_engine.sample_rate().to_string();
+            opt_str(&lib, ctx, "audio-samplerate", &sr_str);
+            opt_str(&lib, ctx, "audio-channels", "stereo");
+            opt_str(&lib, ctx, "audio-format", "float");
 
-            // Verbose log messages so VO/codec failures are visible in the
-            // terminal when running `pnpm tauri dev`.
+            // Verbose log messages for diagnostics.
             let v = cs("v");
             (lib.mpv_request_log_messages)(ctx, v.as_ptr());
 
@@ -231,29 +239,6 @@ impl VideoEngine {
             if ret < 0 {
                 (lib.mpv_terminate_destroy)(ctx);
                 return Err(anyhow!("mpv_initialize() failed with code {ret}"));
-            }
-
-            // [DIAG-1] Enumerate mpv's audio device list so we know the exact
-            // name format expected by the audio-device property.
-            // mpv exposes this as a node-list via the "audio-device-list" property.
-            // We read it as a raw string (OSD format) which mpv renders as
-            // human-readable output — sufficient for diagnostic purposes.
-            {
-                let prop = cs("audio-device-list");
-                let mut ptr: *mut std::ffi::c_char = std::ptr::null_mut();
-                let r = (lib.mpv_get_property)(
-                    ctx,
-                    prop.as_ptr(),
-                    MPV_FORMAT_STRING,
-                    &mut ptr as *mut *mut std::ffi::c_char as *mut c_void,
-                );
-                if r == 0 && !ptr.is_null() {
-                    let list = std::ffi::CStr::from_ptr(ptr).to_string_lossy().to_string();
-                    (lib.mpv_free)(ptr as *mut c_void);
-                    log::info!("[DIAG-1] mpv audio-device-list:\n{}", list);
-                } else {
-                    log::warn!("[DIAG-1] Could not read audio-device-list (ret={})", r);
-                }
             }
         }
 
@@ -273,10 +258,16 @@ impl VideoEngine {
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
 
-        // Start WASAPI loopback capture for VU metering during video playback.
-        let loopback_peak_l = Arc::new(AtomicU32::new(0));
-        let loopback_peak_r = Arc::new(AtomicU32::new(0));
-        Self::start_loopback(Arc::clone(&loopback_peak_l), Arc::clone(&loopback_peak_r));
+        // Spawn the named-pipe PCM reader thread.  It runs for the lifetime of
+        // the process; each mpv connection (one per video file) creates a fresh
+        // ring buffer and installs it in AudioEngine.
+        {
+            let ae = Arc::clone(&audio_engine);
+            std::thread::Builder::new()
+                .name("wincue-mpv-pcm".into())
+                .spawn(move || run_pcm_pipe_reader(ae))
+                .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
+        }
 
         Ok(Self {
             mpv_lib: lib,
@@ -287,8 +278,7 @@ impl VideoEngine {
             status_tx,
             status_rx: Mutex::new(status_rx),
             default_surface_id: Uuid::new_v4(),
-            loopback_peak_l,
-            loopback_peak_r,
+            audio_engine,
         })
     }
 
@@ -427,56 +417,10 @@ impl VideoEngine {
         }]
     }
 
-    /// Resolve an ASIO driver name to the corresponding WASAPI endpoint name.
-    ///
-    /// mpv always uses its own WASAPI backend and cannot use ASIO directly.
-    /// When the user has selected an ASIO device (e.g. `"UMC ASIO Driver"`),
-    /// the same hardware is also exposed as a WASAPI endpoint whose friendly
-    /// name typically contains the ASIO driver name as a substring
-    /// (e.g. `"Speakers (UMC ASIO Driver)"`).
-    ///
-    /// This function enumerates all WASAPI output devices via cpal's default
-    /// host and returns the first whose name contains `asio_name` (case-
-    /// insensitive).  Returns `None` if no match is found, in which case mpv
-    /// will fall back to the system default output.
-    fn wasapi_name_for_asio(asio_name: &str) -> Option<String> {
-        use cpal::traits::HostTrait;
-        let host = cpal::default_host();
-        let asio_lower = asio_name.to_lowercase();
-        // Strip common suffixes to improve matching:
-        //   "UMC ASIO Driver" → "UMC"  (match "Speakers (UMC …)")
-        // We try progressively shorter prefixes until we find a match.
-        let candidates: Vec<String> = host
-            .output_devices()
-            .ok()?
-            .filter_map(|d| d.name().ok())
-            .collect();
-
-        log::info!("WASAPI devices for ASIO match (asio='{}'): {:?}", asio_name, candidates);
-
-        // First pass: exact substring match of the full ASIO name.
-        if let Some(name) = candidates.iter().find(|n| n.to_lowercase().contains(&asio_lower)) {
-            return Some(name.clone());
-        }
-
-        // Second pass: strip the word "ASIO" and "Driver" and try the
-        // remaining words.  "UMC ASIO Driver" → ["UMC"] → look for "UMC".
-        let words: Vec<&str> = asio_name
-            .split_whitespace()
-            .filter(|w| !w.eq_ignore_ascii_case("asio") && !w.eq_ignore_ascii_case("driver"))
-            .collect();
-        for word in &words {
-            let wl = word.to_lowercase();
-            if wl.len() < 3 { continue; } // skip single-letter tokens
-            if let Some(name) = candidates.iter().find(|n| n.to_lowercase().contains(wl.as_str())) {
-                return Some(name.clone());
-            }
-        }
-
-        None
-    }
-
     /// Begin playback of `file_path` and return the new [`VoiceId`].
+    ///
+    /// Video audio is routed through [`AudioEngine`] automatically via the
+    /// `ao=pcm` named-pipe mechanism initialised in [`VideoEngine::new`].
     ///
     /// `screen_index` — when `Some(n)`, the window is moved to fill monitor n
     /// (0 = primary) before playback starts.  `None` keeps the floating window
@@ -491,8 +435,6 @@ impl VideoEngine {
         end_ms: Option<u64>,
         _fade_in: Option<&FadeSpec>,
         screen_index: Option<u32>,
-        audio_device: Option<&str>,
-        audio_backend: &crate::preferences::AudioBackend,
     ) -> Result<VoiceId> {
         let voice_id = Uuid::new_v4();
 
@@ -585,49 +527,6 @@ impl VideoEngine {
             let vol_str = cs(&format!("{vol_pct:.2}"));
             let prop_vol = cs("volume");
             (lib.mpv_set_property_string)(ctx, prop_vol.as_ptr(), vol_str.as_ptr());
-
-            // Route audio to the configured output device.
-            // mpv always uses its own WASAPI backend — ASIO is not available
-            // to mpv.  When the user selected an ASIO device we resolve it to
-            // the corresponding WASAPI endpoint name first.
-            let resolved_wasapi: Option<String> = match audio_device {
-                None => None,
-                Some(dev) => {
-                    use crate::preferences::AudioBackend;
-                    if matches!(audio_backend, AudioBackend::Asio) {
-                        // Resolve ASIO driver name → WASAPI endpoint name.
-                        let wasapi = Self::wasapi_name_for_asio(dev);
-                        log::info!(
-                            "ASIO→WASAPI: '{}' → {:?}",
-                            dev, wasapi
-                        );
-                        wasapi
-                    } else {
-                        Some(dev.to_owned())
-                    }
-                }
-            };
-
-            if let Some(dev) = resolved_wasapi {
-                let mpv_dev = if dev.starts_with("wasapi/") || dev.starts_with("alsa/") {
-                    dev.clone()
-                } else {
-                    format!("wasapi/{dev}")
-                };
-                log::info!("mpv audio-device → '{}'", mpv_dev);
-                let dev_cstr = cs(&mpv_dev);
-                let prop_dev = cs("audio-device");
-                let ret = (lib.mpv_set_property_string)(ctx, prop_dev.as_ptr(), dev_cstr.as_ptr());
-                if ret != 0 {
-                    log::warn!("mpv_set_property_string(audio-device) failed: {}", ret);
-                }
-            } else {
-                // No device configured or ASIO device has no matching WASAPI
-                // endpoint — use mpv's automatic selection (system default).
-                let prop_dev = cs("audio-device");
-                let auto_cstr = cs("auto");
-                (lib.mpv_set_property_string)(ctx, prop_dev.as_ptr(), auto_cstr.as_ptr());
-            }
 
             // Build per-file option string.
             let mut opts: Vec<String> = Vec::new();
@@ -760,98 +659,6 @@ impl VideoEngine {
                 toggle_fullscreen_impl(self.hwnd, &mut state);
             }
         }
-    }
-
-    /// Return the current playback peak levels `(L, R)` for the VU meter.
-    ///
-    /// Reads peaks captured by the WASAPI loopback thread.  Returns `(0.0, 0.0)`
-    /// when no voice is active so the meter stays dark between cues.
-    pub fn current_levels(&self) -> (f32, f32) {
-        if self.current_voice.lock().unwrap().is_none() {
-            return (0.0, 0.0);
-        }
-        let l = f32::from_bits(self.loopback_peak_l.load(Ordering::Relaxed));
-        let r = f32::from_bits(self.loopback_peak_r.load(Ordering::Relaxed));
-        (l.clamp(0.0, 1.0), r.clamp(0.0, 1.0))
-    }
-
-    /// Spawn a background thread that opens a WASAPI loopback capture stream on
-    /// the default render device and continuously writes instantaneous peak
-    /// values into the two shared atomics.
-    ///
-    /// The thread runs for the lifetime of the process.  If loopback is
-    /// unavailable (no output device, unsupported driver) it logs a warning
-    /// and exits silently — the meter will just show nothing for video.
-    fn start_loopback(peak_l: Arc<AtomicU32>, peak_r: Arc<AtomicU32>) {
-        std::thread::Builder::new()
-            .name("wincue-loopback".into())
-            .spawn(move || {
-                let host = cpal::default_host();
-                let device = match host.default_output_device() {
-                    Some(d) => d,
-                    None => {
-                        log::warn!("Loopback: no default output device");
-                        return;
-                    }
-                };
-                let config = match device.default_output_config() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::warn!("Loopback: default_output_config failed: {e}");
-                        return;
-                    }
-                };
-                let channels = config.channels() as usize;
-                log::info!(
-                    "WASAPI loopback capture: {} ch, {} Hz, {:?}",
-                    channels,
-                    config.sample_rate().0,
-                    config.sample_format()
-                );
-
-                let err_fn = |e: cpal::StreamError| {
-                    log::warn!("Loopback stream error: {e}");
-                };
-
-                // Build the capture stream.  cpal's WASAPI backend detects
-                // that `device` is a render endpoint and uses
-                // AUDCLNT_STREAMFLAGS_LOOPBACK automatically.
-                let stream = match device.build_input_stream(
-                    &config.into(),
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let ch = channels.max(1);
-                        let (mut pl, mut pr) = (0.0f32, 0.0f32);
-                        let mut i = 0;
-                        while i + ch <= data.len() {
-                            pl = pl.max(data[i].abs());
-                            pr = pr.max(data[if ch > 1 { i + 1 } else { i }].abs());
-                            i += ch;
-                        }
-                        peak_l.store(pl.to_bits(), Ordering::Relaxed);
-                        peak_r.store(pr.to_bits(), Ordering::Relaxed);
-                    },
-                    err_fn,
-                    None,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("Loopback: build_input_stream failed: {e}");
-                        return;
-                    }
-                };
-
-                if let Err(e) = stream.play() {
-                    log::warn!("Loopback: stream.play() failed: {e}");
-                    return;
-                }
-
-                // Keep the stream alive.  This thread parks forever while
-                // cpal's internal audio thread runs the callback.
-                loop {
-                    std::thread::park();
-                }
-            })
-            .ok();
     }
 
     /// No-op — kept for API compatibility.
@@ -989,6 +796,150 @@ fn mpv_event_loop(
             }
 
             _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Named-pipe PCM reader  (thread: wincue-mpv-pcm)
+// ---------------------------------------------------------------------------
+
+/// Read decoded PCM from mpv's `ao=pcm` named-pipe output and feed it into
+/// [`AudioEngine`]'s video PCM ring buffer.
+///
+/// mpv opens `\\.\pipe\wincue-mpv-audio` as the audio output file.
+/// This function runs as a background thread for the lifetime of the process.
+///
+/// ## Rate control
+///
+/// mpv with `ao=pcm` writes PCM as fast as decoding allows (no real-time
+/// pacing).  To prevent overflowing the ring buffer and causing the audio
+/// clock to run ahead of real time, the reader thread throttles itself:
+/// when the ring buffer occupancy exceeds `MAX_PREBUFFER` samples it sleeps
+/// for 1 ms, letting AudioEngine drain.  This naturally limits mpv's write
+/// speed (via pipe backpressure) to approximately real-time, which keeps
+/// video and audio in sync.
+///
+/// ## Per-video lifecycle
+///
+/// Each mpv connection (one per video file) creates a fresh ring buffer.
+/// After mpv disconnects (stop / EOF), the consumer is cleared from
+/// AudioEngine so the mixer produces silence until the next video starts.
+fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>) {
+    // Declare the Windows named-pipe and file-I/O APIs directly to avoid
+    // windows-sys feature-flag issues.  All functions are in kernel32.dll /
+    // advapi32.dll which are always linked on Windows.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateNamedPipeW(
+            lpname: *const u16,
+            dwopenmode: u32,
+            dwpipemode: u32,
+            nmaxinstances: u32,
+            noutbuffersize: u32,
+            ninbuffersize: u32,
+            ndefaulttimeout: u32,
+            lpsecurityattributes: *const std::ffi::c_void,
+        ) -> isize;
+        fn ConnectNamedPipe(hnamedpipe: isize, lpoverlapped: *mut std::ffi::c_void) -> i32;
+        fn DisconnectNamedPipe(hnamedpipe: isize) -> i32;
+        fn ReadFile(
+            hfile: isize,
+            lpbuffer: *mut std::ffi::c_void,
+            nnumberofbytestoread: u32,
+            lpnumberofbytesread: *mut u32,
+            lpoverlapped: *mut std::ffi::c_void,
+        ) -> i32;
+        fn CloseHandle(hobject: isize) -> i32;
+    }
+
+    const PIPE_ACCESS_INBOUND: u32 = 0x0000_0001;
+    const PIPE_TYPE_BYTE: u32 = 0x0000_0000;
+    const PIPE_READMODE_BYTE: u32 = 0x0000_0000;
+    const PIPE_WAIT: u32 = 0x0000_0000;
+    const PIPE_UNLIMITED_INSTANCES: u32 = 255;
+    const INVALID_HANDLE_VALUE: isize = -1_isize;
+
+    // UTF-16 encoded pipe name (null-terminated).
+    let pipe_name: Vec<u16> = r"\\.\pipe\wincue-mpv-audio"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // Aim to keep this many samples pre-buffered (~85 ms at 48 kHz stereo).
+    // mpv is throttled via pipe backpressure once this threshold is reached.
+    const MAX_PREBUFFER: usize = 8192;
+
+    log::info!(r"PCM pipe reader: started (\\.\pipe\wincue-mpv-audio)");
+
+    loop {
+        // Create a new server-side pipe instance for the next mpv connection.
+        let handle = unsafe {
+            CreateNamedPipeW(
+                pipe_name.as_ptr(),
+                PIPE_ACCESS_INBOUND,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                0,      // out-buffer (server-to-client; not used for inbound)
+                65536,  // in-buffer (client-to-server; receives mpv's audio)
+                0,      // default timeout
+                std::ptr::null(),
+            )
+        };
+
+        if handle == INVALID_HANDLE_VALUE {
+            log::warn!("PCM pipe: CreateNamedPipeW failed — retrying in 500 ms");
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        // Block until mpv opens the pipe as a client.
+        log::info!("PCM pipe: waiting for mpv to connect...");
+        unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+        log::info!("PCM pipe: mpv connected — creating ring buffer");
+
+        // Fresh ring buffer for this video: 1 second of stereo f32.
+        let ring_size = (audio_engine.sample_rate() as usize * 2).max(8192);
+        let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
+        audio_engine.set_video_pcm_consumer(Some(cons));
+
+        // Read raw f32-LE interleaved stereo PCM from mpv.
+        let mut raw = [0u8; 4096];
+        loop {
+            // Throttle: wait while the ring buffer is near-full so that pipe
+            // backpressure limits mpv's write speed to approximately real-time.
+            while prod.occupied_len() > MAX_PREBUFFER {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            let mut bytes_read: u32 = 0;
+            let ok = unsafe {
+                ReadFile(
+                    handle,
+                    raw.as_mut_ptr().cast(),
+                    raw.len() as u32,
+                    &mut bytes_read,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if ok == 0 || bytes_read == 0 {
+                break; // Pipe closed by mpv (stop or EOF).
+            }
+
+            for chunk in raw[..bytes_read as usize].chunks_exact(4) {
+                // SAFETY: chunks_exact(4) guarantees exactly 4 bytes.
+                let sample = f32::from_le_bytes(chunk.try_into().unwrap());
+                let _ = prod.try_push(sample);
+            }
+        }
+
+        log::info!("PCM pipe: mpv disconnected — clearing video PCM consumer");
+        audio_engine.set_video_pcm_consumer(None);
+
+        unsafe {
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
         }
     }
 }
