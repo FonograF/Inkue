@@ -1,0 +1,11 @@
+# Per-project Cargo configuration.
+#
+# Sets CPAL_ASIO_DIR to the copy of the Steinberg ASIO SDK bundled inside the
+# project at vendor/asiosdk.  This avoids depending on a system environment
+# variable and ensures the build script (asio-sys) can always resolve the SDK
+# regardless of how the build is launched (pnpm, VS Code tasks, CI, etc.).
+#
+# See: https://crates.io/crates/cpal#asio-on-windows
+
+[env]
+CPAL_ASIO_DIR = { value = "../vendor/asiosdk", relative = true }

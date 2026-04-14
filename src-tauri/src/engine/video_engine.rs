@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -39,13 +40,15 @@ use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
 use crate::cue::types::{db_to_linear, FadeSpec};
 
 use super::mpv_sys::{
     MpvEventEndFile, MpvEventLogMessage, MpvLib,
     MPV_END_FILE_REASON_EOF, MPV_END_FILE_REASON_ERROR,
     MPV_EVENT_END_FILE, MPV_EVENT_FILE_LOADED, MPV_EVENT_LOG_MESSAGE,
-    MPV_EVENT_SHUTDOWN, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64,
+    MPV_EVENT_SHUTDOWN, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64, MPV_FORMAT_STRING,
 };
 
 /// Unique identifier for one playing video instance.
@@ -152,6 +155,10 @@ pub struct VideoEngine {
     status_tx: Sender<VideoStatus>,
     status_rx: Mutex<Receiver<VideoStatus>>,
     default_surface_id: SurfaceId,
+    /// Left-channel peak from WASAPI loopback capture (f32 bits packed as u32).
+    loopback_peak_l: Arc<AtomicU32>,
+    /// Right-channel peak from WASAPI loopback capture (f32 bits packed as u32).
+    loopback_peak_r: Arc<AtomicU32>,
 }
 
 impl VideoEngine {
@@ -214,6 +221,7 @@ impl VideoEngine {
             opt_str(&lib, ctx, "keep-open", "no");
             opt_str(&lib, ctx, "idle", "yes");
 
+
             // Verbose log messages so VO/codec failures are visible in the
             // terminal when running `pnpm tauri dev`.
             let v = cs("v");
@@ -223,6 +231,29 @@ impl VideoEngine {
             if ret < 0 {
                 (lib.mpv_terminate_destroy)(ctx);
                 return Err(anyhow!("mpv_initialize() failed with code {ret}"));
+            }
+
+            // [DIAG-1] Enumerate mpv's audio device list so we know the exact
+            // name format expected by the audio-device property.
+            // mpv exposes this as a node-list via the "audio-device-list" property.
+            // We read it as a raw string (OSD format) which mpv renders as
+            // human-readable output — sufficient for diagnostic purposes.
+            {
+                let prop = cs("audio-device-list");
+                let mut ptr: *mut std::ffi::c_char = std::ptr::null_mut();
+                let r = (lib.mpv_get_property)(
+                    ctx,
+                    prop.as_ptr(),
+                    MPV_FORMAT_STRING,
+                    &mut ptr as *mut *mut std::ffi::c_char as *mut c_void,
+                );
+                if r == 0 && !ptr.is_null() {
+                    let list = std::ffi::CStr::from_ptr(ptr).to_string_lossy().to_string();
+                    (lib.mpv_free)(ptr as *mut c_void);
+                    log::info!("[DIAG-1] mpv audio-device-list:\n{}", list);
+                } else {
+                    log::warn!("[DIAG-1] Could not read audio-device-list (ret={})", r);
+                }
             }
         }
 
@@ -242,6 +273,11 @@ impl VideoEngine {
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
 
+        // Start WASAPI loopback capture for VU metering during video playback.
+        let loopback_peak_l = Arc::new(AtomicU32::new(0));
+        let loopback_peak_r = Arc::new(AtomicU32::new(0));
+        Self::start_loopback(Arc::clone(&loopback_peak_l), Arc::clone(&loopback_peak_r));
+
         Ok(Self {
             mpv_lib: lib,
             mpv_ctx,
@@ -251,7 +287,80 @@ impl VideoEngine {
             status_tx,
             status_rx: Mutex::new(status_rx),
             default_surface_id: Uuid::new_v4(),
+            loopback_peak_l,
+            loopback_peak_r,
         })
+    }
+
+    /// Expose the loaded `MpvLib` so callers can use it for probing.
+    pub fn mpv_lib(&self) -> &MpvLib {
+        &self.mpv_lib
+    }
+
+    /// Probe the duration of a video file without displaying it.
+    ///
+    /// Creates a throw-away mpv context with `vo=null` and `ao=null`, loads
+    /// the file paused, reads the `duration` property from `MPV_EVENT_FILE_LOADED`,
+    /// then destroys the context.  The whole operation is synchronous and
+    /// completes in < 200 ms for most containers.
+    pub fn probe_duration(lib: &MpvLib, path: &Path) -> Option<Duration> {
+        unsafe {
+            let ctx = (lib.mpv_create)();
+            if ctx.is_null() { return None; }
+
+            // Null outputs — no window, no audio device.
+            opt_str(lib, ctx, "vo", "null");
+            opt_str(lib, ctx, "ao", "null");
+            // Start paused so playback never actually runs.
+            opt_str(lib, ctx, "pause", "yes");
+            // Disable hwdec to avoid device-initialisation overhead.
+            opt_str(lib, ctx, "hwdec", "no");
+
+            if (lib.mpv_initialize)(ctx) < 0 {
+                (lib.mpv_terminate_destroy)(ctx);
+                return None;
+            }
+
+            let path_str = path.to_string_lossy().replace('\\', "/");
+            let path_cstr = match CString::new(path_str.as_str()) {
+                Ok(c) => c,
+                Err(_) => { (lib.mpv_terminate_destroy)(ctx); return None; }
+            };
+            let cmd_cstr = cs("loadfile");
+            let replace_cstr = cs("replace");
+            let index_cstr = cs("0");
+            let args: [*const std::ffi::c_char; 5] = [
+                cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
+                index_cstr.as_ptr(), std::ptr::null(),
+            ];
+            (lib.mpv_command)(ctx, args.as_ptr());
+
+            // Wait for FILE_LOADED (or error) with a 5-second cap.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut duration_secs: Option<f64> = None;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let timeout = remaining.as_secs_f64().max(0.01);
+                let event = (lib.mpv_wait_event)(ctx, timeout);
+                if event.is_null() { break; }
+                let event_id = (*event).event_id;
+                if event_id == MPV_EVENT_FILE_LOADED {
+                    let mut val: f64 = 0.0;
+                    let name = cs("duration");
+                    let ret = (lib.mpv_get_property)(
+                        ctx, name.as_ptr(), MPV_FORMAT_DOUBLE,
+                        &mut val as *mut f64 as *mut c_void,
+                    );
+                    if ret == 0 && val > 0.0 { duration_secs = Some(val); }
+                    break;
+                }
+                if event_id == MPV_EVENT_SHUTDOWN { break; }
+                if Instant::now() >= deadline { break; }
+            }
+
+            (lib.mpv_terminate_destroy)(ctx);
+            duration_secs.map(|s| Duration::from_millis((s * 1000.0) as u64))
+        }
     }
 
     /// Enumerate all connected monitors.  Index 0 is always the primary.
@@ -318,6 +427,55 @@ impl VideoEngine {
         }]
     }
 
+    /// Resolve an ASIO driver name to the corresponding WASAPI endpoint name.
+    ///
+    /// mpv always uses its own WASAPI backend and cannot use ASIO directly.
+    /// When the user has selected an ASIO device (e.g. `"UMC ASIO Driver"`),
+    /// the same hardware is also exposed as a WASAPI endpoint whose friendly
+    /// name typically contains the ASIO driver name as a substring
+    /// (e.g. `"Speakers (UMC ASIO Driver)"`).
+    ///
+    /// This function enumerates all WASAPI output devices via cpal's default
+    /// host and returns the first whose name contains `asio_name` (case-
+    /// insensitive).  Returns `None` if no match is found, in which case mpv
+    /// will fall back to the system default output.
+    fn wasapi_name_for_asio(asio_name: &str) -> Option<String> {
+        use cpal::traits::HostTrait;
+        let host = cpal::default_host();
+        let asio_lower = asio_name.to_lowercase();
+        // Strip common suffixes to improve matching:
+        //   "UMC ASIO Driver" → "UMC"  (match "Speakers (UMC …)")
+        // We try progressively shorter prefixes until we find a match.
+        let candidates: Vec<String> = host
+            .output_devices()
+            .ok()?
+            .filter_map(|d| d.name().ok())
+            .collect();
+
+        log::info!("WASAPI devices for ASIO match (asio='{}'): {:?}", asio_name, candidates);
+
+        // First pass: exact substring match of the full ASIO name.
+        if let Some(name) = candidates.iter().find(|n| n.to_lowercase().contains(&asio_lower)) {
+            return Some(name.clone());
+        }
+
+        // Second pass: strip the word "ASIO" and "Driver" and try the
+        // remaining words.  "UMC ASIO Driver" → ["UMC"] → look for "UMC".
+        let words: Vec<&str> = asio_name
+            .split_whitespace()
+            .filter(|w| !w.eq_ignore_ascii_case("asio") && !w.eq_ignore_ascii_case("driver"))
+            .collect();
+        for word in &words {
+            let wl = word.to_lowercase();
+            if wl.len() < 3 { continue; } // skip single-letter tokens
+            if let Some(name) = candidates.iter().find(|n| n.to_lowercase().contains(wl.as_str())) {
+                return Some(name.clone());
+            }
+        }
+
+        None
+    }
+
     /// Begin playback of `file_path` and return the new [`VoiceId`].
     ///
     /// `screen_index` — when `Some(n)`, the window is moved to fill monitor n
@@ -333,6 +491,8 @@ impl VideoEngine {
         end_ms: Option<u64>,
         _fade_in: Option<&FadeSpec>,
         screen_index: Option<u32>,
+        audio_device: Option<&str>,
+        audio_backend: &crate::preferences::AudioBackend,
     ) -> Result<VoiceId> {
         let voice_id = Uuid::new_v4();
 
@@ -425,6 +585,49 @@ impl VideoEngine {
             let vol_str = cs(&format!("{vol_pct:.2}"));
             let prop_vol = cs("volume");
             (lib.mpv_set_property_string)(ctx, prop_vol.as_ptr(), vol_str.as_ptr());
+
+            // Route audio to the configured output device.
+            // mpv always uses its own WASAPI backend — ASIO is not available
+            // to mpv.  When the user selected an ASIO device we resolve it to
+            // the corresponding WASAPI endpoint name first.
+            let resolved_wasapi: Option<String> = match audio_device {
+                None => None,
+                Some(dev) => {
+                    use crate::preferences::AudioBackend;
+                    if matches!(audio_backend, AudioBackend::Asio) {
+                        // Resolve ASIO driver name → WASAPI endpoint name.
+                        let wasapi = Self::wasapi_name_for_asio(dev);
+                        log::info!(
+                            "ASIO→WASAPI: '{}' → {:?}",
+                            dev, wasapi
+                        );
+                        wasapi
+                    } else {
+                        Some(dev.to_owned())
+                    }
+                }
+            };
+
+            if let Some(dev) = resolved_wasapi {
+                let mpv_dev = if dev.starts_with("wasapi/") || dev.starts_with("alsa/") {
+                    dev.clone()
+                } else {
+                    format!("wasapi/{dev}")
+                };
+                log::info!("mpv audio-device → '{}'", mpv_dev);
+                let dev_cstr = cs(&mpv_dev);
+                let prop_dev = cs("audio-device");
+                let ret = (lib.mpv_set_property_string)(ctx, prop_dev.as_ptr(), dev_cstr.as_ptr());
+                if ret != 0 {
+                    log::warn!("mpv_set_property_string(audio-device) failed: {}", ret);
+                }
+            } else {
+                // No device configured or ASIO device has no matching WASAPI
+                // endpoint — use mpv's automatic selection (system default).
+                let prop_dev = cs("audio-device");
+                let auto_cstr = cs("auto");
+                (lib.mpv_set_property_string)(ctx, prop_dev.as_ptr(), auto_cstr.as_ptr());
+            }
 
             // Build per-file option string.
             let mut opts: Vec<String> = Vec::new();
@@ -557,6 +760,98 @@ impl VideoEngine {
                 toggle_fullscreen_impl(self.hwnd, &mut state);
             }
         }
+    }
+
+    /// Return the current playback peak levels `(L, R)` for the VU meter.
+    ///
+    /// Reads peaks captured by the WASAPI loopback thread.  Returns `(0.0, 0.0)`
+    /// when no voice is active so the meter stays dark between cues.
+    pub fn current_levels(&self) -> (f32, f32) {
+        if self.current_voice.lock().unwrap().is_none() {
+            return (0.0, 0.0);
+        }
+        let l = f32::from_bits(self.loopback_peak_l.load(Ordering::Relaxed));
+        let r = f32::from_bits(self.loopback_peak_r.load(Ordering::Relaxed));
+        (l.clamp(0.0, 1.0), r.clamp(0.0, 1.0))
+    }
+
+    /// Spawn a background thread that opens a WASAPI loopback capture stream on
+    /// the default render device and continuously writes instantaneous peak
+    /// values into the two shared atomics.
+    ///
+    /// The thread runs for the lifetime of the process.  If loopback is
+    /// unavailable (no output device, unsupported driver) it logs a warning
+    /// and exits silently — the meter will just show nothing for video.
+    fn start_loopback(peak_l: Arc<AtomicU32>, peak_r: Arc<AtomicU32>) {
+        std::thread::Builder::new()
+            .name("wincue-loopback".into())
+            .spawn(move || {
+                let host = cpal::default_host();
+                let device = match host.default_output_device() {
+                    Some(d) => d,
+                    None => {
+                        log::warn!("Loopback: no default output device");
+                        return;
+                    }
+                };
+                let config = match device.default_output_config() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("Loopback: default_output_config failed: {e}");
+                        return;
+                    }
+                };
+                let channels = config.channels() as usize;
+                log::info!(
+                    "WASAPI loopback capture: {} ch, {} Hz, {:?}",
+                    channels,
+                    config.sample_rate().0,
+                    config.sample_format()
+                );
+
+                let err_fn = |e: cpal::StreamError| {
+                    log::warn!("Loopback stream error: {e}");
+                };
+
+                // Build the capture stream.  cpal's WASAPI backend detects
+                // that `device` is a render endpoint and uses
+                // AUDCLNT_STREAMFLAGS_LOOPBACK automatically.
+                let stream = match device.build_input_stream(
+                    &config.into(),
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let ch = channels.max(1);
+                        let (mut pl, mut pr) = (0.0f32, 0.0f32);
+                        let mut i = 0;
+                        while i + ch <= data.len() {
+                            pl = pl.max(data[i].abs());
+                            pr = pr.max(data[if ch > 1 { i + 1 } else { i }].abs());
+                            i += ch;
+                        }
+                        peak_l.store(pl.to_bits(), Ordering::Relaxed);
+                        peak_r.store(pr.to_bits(), Ordering::Relaxed);
+                    },
+                    err_fn,
+                    None,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("Loopback: build_input_stream failed: {e}");
+                        return;
+                    }
+                };
+
+                if let Err(e) = stream.play() {
+                    log::warn!("Loopback: stream.play() failed: {e}");
+                    return;
+                }
+
+                // Keep the stream alive.  This thread parks forever while
+                // cpal's internal audio thread runs the callback.
+                loop {
+                    std::thread::park();
+                }
+            })
+            .ok();
     }
 
     /// No-op — kept for API compatibility.
@@ -837,7 +1132,7 @@ unsafe extern "system" fn video_wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DefWindowProcW, PostQuitMessage, ShowWindow,
-        SW_HIDE, WM_CLOSE, WM_DESTROY,
+        SW_HIDE, WM_CLOSE, WM_DESTROY, WM_NCCALCSIZE,
         WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_SETCURSOR,
         HTCLIENT, HTCAPTION,
     };
@@ -848,6 +1143,14 @@ unsafe extern "system" fn video_wnd_proc(
         WM_MOUSEACTIVATE => {
             // Never activate the window — the main WinCue window keeps focus.
             MA_NOACTIVATE
+        }
+        WM_NCCALCSIZE => {
+            // Return 0 to eliminate all non-client area (caption bar, borders).
+            // WS_SIZEBOX normally adds a non-client resize frame that shows as a
+            // white strip at the top.  By handling WM_NCCALCSIZE we keep the
+            // resize hit-testing (via WS_SIZEBOX in the style) but remove the
+            // visible non-client drawing.
+            0
         }
         WM_NCHITTEST => {
             // Let DefWindowProc detect resize borders (WS_SIZEBOX).

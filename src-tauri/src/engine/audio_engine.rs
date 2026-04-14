@@ -457,8 +457,11 @@ fn fill_buffer(
             let out_l = sample_l * gain_l * fade_gain;
             let out_r = sample_r * gain_r * fade_gain;
 
-            if channels >= 1 { output[out_base] += out_l; }
-            if channels >= 2 { output[out_base + 1] += out_r; }
+            // Route to the per-voice output channels (from Output Patch).
+            // Bounds-check at the sample level keeps the RT callback safe even
+            // if the patch references a channel the device does not have.
+            if voice.out_l < channels { output[out_base + voice.out_l] += out_l; }
+            if voice.out_r < channels { output[out_base + voice.out_r] += out_r; }
 
             peak_l = peak_l.max(out_l.abs());
             peak_r = peak_r.max(out_r.abs());

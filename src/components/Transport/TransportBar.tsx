@@ -1,6 +1,6 @@
 // Bottom transport bar: GO / STOP + running cue info + horizontal VU-meter + volume slider.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { go, stopAll, setMasterVolume, getPreferences } from "../../lib/commands";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTransportStore } from "../../stores/transportStore";
@@ -15,14 +15,33 @@ interface Props {
 
 const MIN_DB = -60;
 const MAX_DB = 0;
+const DB_RANGE = MAX_DB - MIN_DB; // 60
 
 function linearToDb(linear: number): number {
   return linear > 0 ? 20 * Math.log10(linear) : -Infinity;
 }
 
+/** Map a dB value to a 0–1 fill ratio for the meter bar. */
 function dbToRatio(db: number): number {
-  return Math.max(0, Math.min(1, (db - MIN_DB) / (MAX_DB - MIN_DB)));
+  return Math.max(0, Math.min(1, (db - MIN_DB) / DB_RANGE));
 }
+
+/** Convert a linear peak (0.0–1.0) to a meter fill percentage (0–100). */
+function peakToFillPct(linear: number): number {
+  return dbToRatio(linearToDb(linear)) * 100;
+}
+
+// Decay / hold constants
+/** Bar falls at this many dB per second. */
+const BAR_DECAY_DB_PER_SEC = 20;
+/** Converted to fill-% per animation frame (assuming ~60 fps). */
+const BAR_DECAY_PCT_PER_FRAME = (BAR_DECAY_DB_PER_SEC / DB_RANGE) * 100 / 60;
+
+/** Peak-hold needle stays pinned for this long (ms). */
+const PEAK_HOLD_MS = 1500;
+/** After hold expires, needle falls at this many dB per second. */
+const HOLD_DECAY_DB_PER_SEC = 8;
+const HOLD_DECAY_PCT_PER_FRAME = (HOLD_DECAY_DB_PER_SEC / DB_RANGE) * 100 / 60;
 
 const DB_TICKS = [0, -6, -12, -18, -24, -36];
 
@@ -32,16 +51,32 @@ const DB_TICKS = [0, -6, -12, -18, -24, -36];
 
 const BAR_W = 220;
 const BAR_H = 9;
-const LABEL_W = 10; // width of "L" / "R" / "" label column
-const GAP = 5;      // gap between label and bar
+const LABEL_W = 10;
+const GAP = 5;
 
 const METER_GRADIENT =
   "linear-gradient(to right, #4ade80 0%, #84cc16 55%, #facc15 72%, #f97316 85%, #ef4444 100%)";
 
-function MeterRow({ label, fillPct }: { label: string; fillPct: number }) {
+interface MeterRowProps {
+  label: string;
+  /** 0–100 fill percentage for the bar. */
+  fillPct: number;
+  /** 0–100 position of the peak-hold needle (0 = hidden). */
+  holdPct: number;
+}
+
+function MeterRow({ label, fillPct, holdPct }: MeterRowProps) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: GAP }}>
-      <span style={{ width: LABEL_W, fontSize: 9, color: "#475569", textAlign: "right", flexShrink: 0 }}>
+      <span
+        style={{
+          width: LABEL_W,
+          fontSize: 9,
+          color: "#475569",
+          textAlign: "right",
+          flexShrink: 0,
+        }}
+      >
         {label}
       </span>
       <div
@@ -56,6 +91,7 @@ function MeterRow({ label, fillPct }: { label: string; fillPct: number }) {
           flexShrink: 0,
         }}
       >
+        {/* Decaying fill bar — driven by rAF, no CSS transition */}
         <div
           style={{
             position: "absolute",
@@ -63,9 +99,22 @@ function MeterRow({ label, fillPct }: { label: string; fillPct: number }) {
             right: `${100 - fillPct}%`,
             background: METER_GRADIENT,
             backgroundSize: `${BAR_W}px ${BAR_H}px`,
-            transition: "right 40ms ease-out",
           }}
         />
+        {/* Peak-hold needle */}
+        {holdPct > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: `${holdPct}%`,
+              width: 2,
+              // Red needle when near clipping (>90% ≈ above -6 dB)
+              background: holdPct > 90 ? "#ef4444" : "#facc15",
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -74,9 +123,7 @@ function MeterRow({ label, fillPct }: { label: string; fillPct: number }) {
 function TickRow() {
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: GAP }}>
-      {/* Spacer matching the label column */}
       <div style={{ width: LABEL_W, flexShrink: 0 }} />
-      {/* Tick scale */}
       <div style={{ width: BAR_W, position: "relative", height: 14, flexShrink: 0 }}>
         {DB_TICKS.map((db) => (
           <div
@@ -109,10 +156,7 @@ function VolumeRow({
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: GAP }}>
-      {/* Spacer matching label column */}
       <div style={{ width: LABEL_W, flexShrink: 0 }} />
-
-      {/* Native range input — same width as the meter bars */}
       <input
         type="range"
         min={MIN_DB}
@@ -129,8 +173,6 @@ function VolumeRow({
           accentColor: "#475569",
         }}
       />
-
-      {/* Value readout — fixed width to prevent layout shift */}
       <span
         style={{
           fontSize: 10,
@@ -157,6 +199,69 @@ export function TransportBar({ onRefresh }: Props) {
 
   const [volumeDb, setVolumeDb] = useState(0);
 
+  // ---- VU meter animation state (rendered via rAF) ----
+  const [meterL, setMeterL] = useState({ fill: 0, hold: 0 });
+  const [meterR, setMeterR] = useState({ fill: 0, hold: 0 });
+
+  // Mutable refs shared between the Zustand effect and the rAF loop.
+  // Using refs avoids stale closure issues inside requestAnimationFrame.
+  const fillL = useRef(0);
+  const fillR = useRef(0);
+  const holdL = useRef(0);
+  const holdR = useRef(0);
+  const holdExpiryL = useRef(0); // performance.now() timestamp when hold expires
+  const holdExpiryR = useRef(0);
+  const rafId = useRef(0);
+
+  // When the backend emits a new peak, update fill and hold refs immediately.
+  useEffect(() => {
+    const fL = peakToFillPct(masterPeakL);
+    const fR = peakToFillPct(masterPeakR);
+
+    // Bar can only jump UP instantly; it decays in the rAF loop.
+    if (fL > fillL.current) fillL.current = fL;
+    if (fR > fillR.current) fillR.current = fR;
+
+    // Peak hold: bump the needle if the new peak exceeds the current hold.
+    const now = performance.now();
+    if (fL >= holdL.current) {
+      holdL.current = fL;
+      holdExpiryL.current = now + PEAK_HOLD_MS;
+    }
+    if (fR >= holdR.current) {
+      holdR.current = fR;
+      holdExpiryR.current = now + PEAK_HOLD_MS;
+    }
+  }, [masterPeakL, masterPeakR]);
+
+  // rAF decay loop — runs independently of Tauri events.
+  useEffect(() => {
+    const frame = () => {
+      const now = performance.now();
+
+      // Decay the fill bars downward each frame.
+      fillL.current = Math.max(0, fillL.current - BAR_DECAY_PCT_PER_FRAME);
+      fillR.current = Math.max(0, fillR.current - BAR_DECAY_PCT_PER_FRAME);
+
+      // Decay the hold needles after their hold period expires.
+      if (now >= holdExpiryL.current) {
+        holdL.current = Math.max(0, holdL.current - HOLD_DECAY_PCT_PER_FRAME);
+      }
+      if (now >= holdExpiryR.current) {
+        holdR.current = Math.max(0, holdR.current - HOLD_DECAY_PCT_PER_FRAME);
+      }
+
+      setMeterL({ fill: fillL.current, hold: holdL.current });
+      setMeterR({ fill: fillR.current, hold: holdR.current });
+
+      rafId.current = requestAnimationFrame(frame);
+    };
+
+    rafId.current = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(rafId.current);
+  }, []); // runs once on mount
+
+  // ---- Volume preference ----
   useEffect(() => {
     getPreferences()
       .then((prefs) => {
@@ -175,9 +280,6 @@ export function TransportBar({ onRefresh }: Props) {
   const runningCues = cues.filter(
     (c) => c.state === "running" || c.state === "paused"
   );
-
-  const fillL = dbToRatio(linearToDb(masterPeakL)) * 100;
-  const fillR = dbToRatio(linearToDb(masterPeakR)) * 100;
 
   return (
     <div
@@ -214,7 +316,7 @@ export function TransportBar({ onRefresh }: Props) {
         GO
       </button>
 
-      {/* STOP — click to stop all; mousedown-drag into cue list to insert a Stop cue */}
+      {/* STOP */}
       <button
         onMouseDown={(e) => {
           if (e.button !== 0) return;
@@ -268,10 +370,17 @@ export function TransportBar({ onRefresh }: Props) {
       </div>
 
       {/* Meter + slider block */}
-      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3 }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          gap: 3,
+        }}
+      >
         <TickRow />
-        <MeterRow label="L" fillPct={fillL} />
-        <MeterRow label="R" fillPct={fillR} />
+        <MeterRow label="L" fillPct={meterL.fill} holdPct={meterL.hold} />
+        <MeterRow label="R" fillPct={meterR.fill} holdPct={meterR.hold} />
         <VolumeRow valueDb={volumeDb} onChange={handleVolumeChange} />
       </div>
     </div>

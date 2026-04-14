@@ -175,6 +175,13 @@ pub struct Voice {
 
     /// Interior-mutable fields modified from the RT callback.
     pub inner: Arc<VoiceInner>,
+
+    /// Zero-based index of the output channel that receives the Left mix.
+    /// Defaults to 0.  Set from the cue's Output Patch before submitting.
+    pub out_l: usize,
+    /// Zero-based index of the output channel that receives the Right mix.
+    /// Defaults to 1.  Set from the cue's Output Patch before submitting.
+    pub out_r: usize,
 }
 
 // AtomicU64 is not in std for 32-bit targets, but for our Windows x64 target it is fine.
@@ -204,6 +211,8 @@ impl Voice {
                 fade: UnsafeCell::new(None),
                 end_frame: UnsafeCell::new(None),
             }),
+            out_l: 0,
+            out_r: 1,
         }
     }
 

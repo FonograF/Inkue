@@ -54,9 +54,9 @@ function WindowControls() {
 
   return (
     <div style={{ display: "flex", gap: 7, alignItems: "center", flexShrink: 0 }}>
+      {btn("close", "✕", "#ef4444", "#dc2626", handleClose)}
       {btn("min",   "–", "#f59e0b", "#d97706", handleMin)}
       {btn("max",   "▢", "#22c55e", "#16a34a", handleMax)}
-      {btn("close", "✕", "#ef4444", "#dc2626", handleClose)}
     </div>
   );
 }

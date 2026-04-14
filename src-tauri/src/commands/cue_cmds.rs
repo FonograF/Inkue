@@ -1,6 +1,6 @@
 //! Tauri commands for cue CRUD operations.
 
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Arc};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -580,6 +580,32 @@ pub fn set_video_file(
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     drop(registry);
     cue_list.cues[idx] = new_cue;
+
+    // Probe duration so the cue shows its length before the first play.
+    // Done in a background thread to avoid blocking the Tauri command.
+    {
+        let path = std::path::PathBuf::from(&file_path);
+        let cue_id = id;
+        let video_engine = Arc::clone(&state.video_engine);
+        let workspace2 = Arc::clone(&state.workspace);
+        let handle2 = app_handle.clone();
+        std::thread::Builder::new()
+            .name("wincue-video-probe".into())
+            .spawn(move || {
+                let lib = video_engine.mpv_lib();
+                if let Some(dur) = crate::engine::VideoEngine::probe_duration(lib, &path) {
+                    if let Ok(mut ws) = workspace2.lock() {
+                        if let Some(cl) = ws.active_cue_list_mut() {
+                            if let Some(idx2) = cl.index_of(&cue_id) {
+                                cl.cues[idx2].set_runtime_duration(dur);
+                                let _ = handle2.emit("workspace-modified", serde_json::json!({}));
+                            }
+                        }
+                    }
+                }
+            })
+            .ok();
+    }
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())

@@ -105,7 +105,7 @@ impl AudioCue {
             name: String::from("Audio Cue"),
             number: None,
             notes: String::new(),
-            color: CueColor::None,
+            color: CueColor::Blue,
             state: CueState::Standby,
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
@@ -161,7 +161,7 @@ impl AudioCue {
         };
 
         let gain = crate::cue::types::db_to_linear(self.volume_db) as f32;
-        let voice = Voice::new(
+        let mut voice = Voice::new(
             samples,
             self.decoded_channels,
             self.decoded_sample_rate,
@@ -200,6 +200,21 @@ impl AudioCue {
                     elapsed_samples: 0,
                     curve: Self::engine_curve(fi.curve),
                 });
+            }
+        }
+
+        // Apply Output Patch channel routing.  Look up the cue's assigned patch
+        // (falling back to the workspace default); if found, map its first two
+        // channel indices to the voice's L/R output slots.
+        if let Some(patch) = context.resolve_patch(self.output_patch_id) {
+            if let Some(&ch_l) = patch.channels.first() {
+                voice.out_l = ch_l as usize;
+            }
+            if let Some(&ch_r) = patch.channels.get(1) {
+                voice.out_r = ch_r as usize;
+            } else if let Some(&ch_l) = patch.channels.first() {
+                // Mono patch — route both L and R to the same channel.
+                voice.out_r = ch_l as usize;
             }
         }
 

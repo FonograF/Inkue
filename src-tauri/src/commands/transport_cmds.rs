@@ -15,17 +15,35 @@ use crate::{
 // Shared helper
 // ---------------------------------------------------------------------------
 
-/// Build a [`CueContext`] wired to both engines.
+/// Build a [`CueContext`] wired to both engines, with a snapshot of the
+/// workspace's Output Patch table and current audio device so cues can
+/// resolve their patch and route video audio at GO time.
 ///
 /// `stop_fade_ms` comes from `ws.preferences.audio.default_fade_out_ms` and
 /// is used by [`AudioCue::stop`] when no per-cue fade-out spec is set.
 fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
+    // Snapshot patches and audio prefs from the workspace without holding
+    // the lock during playback.
+    let (patches, default_patch_id, audio_device_id, audio_backend) = state
+        .workspace
+        .try_lock()
+        .map(|ws| (
+            ws.output_patches.clone(),
+            ws.default_output_patch_id,
+            ws.preferences.audio.device_id.clone(),
+            ws.preferences.audio.backend.clone(),
+        ))
+        .unwrap_or_else(|_| (Vec::new(), None, None, crate::preferences::AudioBackend::default()));
     CueContext::new(
         state.audio_engine.clone(),
         state.video_engine.clone(),
         tx,
         stop_fade_ms,
+        patches,
+        default_patch_id,
+        audio_device_id,
+        audio_backend,
     )
 }
 
@@ -51,6 +69,10 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         state.video_engine.clone(),
         tx,
         stop_fade_ms,
+        ws.output_patches.clone(),
+        ws.default_output_patch_id,
+        ws.preferences.audio.device_id.clone(),
+        ws.preferences.audio.backend.clone(),
     );
     let mut transport = Transport::new(context);
 

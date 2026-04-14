@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 
-use crate::engine::{video_engine::VideoEngine, AudioEngine};
+use crate::engine::{device_manager::OutputPatch, video_engine::VideoEngine, AudioEngine};
+use crate::preferences::AudioBackend;
 
 /// Events emitted by cues to the Show Engine during execution.
 #[derive(Debug, Clone)]
@@ -40,22 +41,51 @@ pub struct CueContext {
     /// Duration (ms) of the soft fade-out applied on Stop when the cue has no
     /// explicit `fade_out` spec set.  Comes from `AudioPreferences::default_fade_out_ms`.
     pub stop_fade_ms: u32,
+    /// Snapshot of the workspace's Output Patch table.  Cues look up their
+    /// patch here to resolve device names and channel indices at GO time.
+    /// An empty vec means no patches are configured — fall back to defaults.
+    pub output_patches: Arc<Vec<OutputPatch>>,
+    /// The workspace's default Output Patch ID, used when a cue has no
+    /// explicit patch assignment.
+    pub default_patch_id: Option<uuid::Uuid>,
+    /// OS device name currently selected for audio output (`AudioPreferences::device_id`).
+    /// `None` means use the system default.  Used by [`VideoCue`] to route mpv's
+    /// audio output to the same hardware as AudioEngine.
+    pub audio_device_id: Option<String>,
+    /// Audio backend in use (WASAPI shared/exclusive or ASIO).
+    /// Used by [`VideoCue`] to determine the correct mpv `audio-device` prefix.
+    pub audio_backend: AudioBackend,
 }
 
 impl CueContext {
-    /// Create a new context with the given engines, event sender and stop-fade duration.
+    /// Create a new context.
     pub fn new(
         audio_engine: Arc<AudioEngine>,
         video_engine: Arc<VideoEngine>,
         event_sender: Sender<CueEvent>,
         stop_fade_ms: u32,
+        output_patches: Vec<OutputPatch>,
+        default_patch_id: Option<uuid::Uuid>,
+        audio_device_id: Option<String>,
+        audio_backend: AudioBackend,
     ) -> Self {
         Self {
             audio_engine,
             video_engine,
             event_sender,
             stop_fade_ms,
+            output_patches: Arc::new(output_patches),
+            default_patch_id,
+            audio_device_id,
+            audio_backend,
         }
+    }
+
+    /// Resolve an Output Patch by ID, falling back to the workspace default,
+    /// then to `None` if neither is available.
+    pub fn resolve_patch(&self, patch_id: Option<uuid::Uuid>) -> Option<&OutputPatch> {
+        let id = patch_id.or(self.default_patch_id)?;
+        self.output_patches.iter().find(|p| p.id == id)
     }
 
     /// Convenience: emit an event through the context without unwrapping.

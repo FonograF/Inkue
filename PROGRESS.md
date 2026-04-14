@@ -1,4 +1,4 @@
-# WinCue — État du projet au 2026-04-13
+# WinCue — État du projet au 2026-04-14
 
 ## Version courante : 0.2.0
 
@@ -21,17 +21,17 @@
 | Types cue | `cue/types.rs` | ✅ Complet |
 | Trait Cue | `cue/traits.rs` | ✅ Complet |
 | CueRegistry | `cue/registry.rs` | ✅ Complet |
-| CueContext | `cue/context.rs` | ✅ Complet — `audio_engine`, `video_engine`, `stop_fade_ms` |
-| AudioCue | `cue/audio_cue.rs` | ✅ Complet — pre-wait, fade-in/out, loop, rate mismatch |
-| VideoCue | `cue/video_cue.rs` | ✅ Complet — lecture fonctionnelle, `screen_index` |
+| CueContext | `cue/context.rs` | ✅ Complet — `audio_engine`, `video_engine`, `stop_fade_ms`, `output_patches`, `audio_device_id`, `audio_backend` |
+| AudioCue | `cue/audio_cue.rs` | ✅ Complet — pre-wait, fade-in/out, loop, rate mismatch, routing `Voice.out_l/r` via OutputPatch |
+| VideoCue | `cue/video_cue.rs` | ✅ Complet — lecture fonctionnelle, `screen_index`, `output_patch_id`, routing ASIO→WASAPI |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complet |
 | StopCue | `cue/stop_cue.rs` | ✅ Complet |
-| VoiceState / FadeState | `engine/voice.rs` | ✅ Complet |
+| VoiceState / FadeState | `engine/voice.rs` | ✅ Complet — `out_l`, `out_r` pour routing canaux |
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complet |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complet |
-| AudioEngine | `engine/audio_engine.rs` | ✅ Complet — WASAPI/ASIO |
-| VideoEngine | `engine/video_engine.rs` | ✅ Complet — libmpv/Win32, plein écran, redimensionnable, `list_screens()` |
-| mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ Bindings libmpv compilés |
+| AudioEngine | `engine/audio_engine.rs` | ✅ Complet — WASAPI/ASIO, routing `Voice.out_l/r` dans `fill_buffer` |
+| VideoEngine | `engine/video_engine.rs` | ✅ Complet — libmpv/Win32, plein écran, redimensionnable, `list_screens()`, WASAPI loopback VU, routing ASIO→WASAPI |
+| mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ Bindings libmpv compilés — `mpv_free` ajouté |
 | CueList | `show/cue_list.rs` | ✅ Complet |
 | Workspace | `show/workspace.rs` | ✅ Complet |
 | Transport | `show/transport.rs` | ✅ Complet |
@@ -64,7 +64,7 @@
 | `components/Inspector/TimeTab.tsx` | ✅ Complet |
 | `components/Inspector/LevelsTab.tsx` | ✅ Complet — `isAudio` conditionnel sur Pan |
 | `components/Inspector/FadeTab.tsx` | ✅ Complet — types `AudioCueData \| VideoCueData` |
-| `components/Transport/TransportBar.tsx` | ✅ Complet |
+| `components/Transport/TransportBar.tsx` | ✅ Complet — rAF decay + peak hold, WASAPI loopback pour vidéo |
 | `components/Preferences/PreferencesModal.tsx` | ✅ Complet |
 | `components/WaveformModal.tsx` | ✅ Complet |
 
@@ -72,13 +72,40 @@
 
 ## Bugs connus (non résolus)
 
-### Routing Output Patch non implémenté
+### ASIO→WASAPI : résolution de nom à vérifier
 
-Tout l'audio sort sur le device par défaut. `OutputPatch` est stocké en workspace mais `AudioEngine` ne le consulte pas. C'est la prochaine priorité backend.
+Le routing vidéo vers ASIO est implémenté via `wasapi_name_for_asio()` dans `VideoEngine` : fuzzy match en deux passes (substring complet, puis mots-clés sans "ASIO"/"Driver"). La résolution compile et s'exécute mais n'a pas encore été vérifiée sur le matériel de l'utilisateur (UMC ASIO Driver → endpoint WASAPI inconnu). Si `None` est retourné, mpv bascule sur le device système par défaut.
 
 ---
 
 ## Historique des changements
+
+### Post-0.2.0 — VU meter, ASIO build, Output Patch routing (2026-04-14)
+
+#### 🎚️ VU Meter — mesures réelles
+
+- `VideoEngine` : thread WASAPI loopback (`cpal`) — capture audio sortant, atomics `loopback_peak_l/r` lus par le 30fps loop
+- `TransportBar.tsx` : rAF-based decay (20 dB/sec), peak hold 1,5 s, aiguille rouge > -6 dBFS
+- Suppression du fallback "volume configuré" pour la vidéo — uniquement vraies mesures loopback
+
+#### 🔧 ASIO build fix
+
+- SDK ASIO copié dans `vendor/asiosdk/` (hors portée du WalkDir)
+- `src-tauri/.cargo/config.toml` : `CPAL_ASIO_DIR = { value = "../vendor/asiosdk", relative = true }`
+- `pnpm tauri:dev -- --features asio-support` compile sans erreur
+
+#### 🔌 Output Patch routing — câblage complet
+
+- `Voice.out_l / out_r` (`engine/voice.rs`) — canaux cibles dans le buffer WASAPI/ASIO
+- `AudioEngine.fill_buffer` — utilise `voice.out_l / out_r` au lieu de 0/1 codés en dur
+- `CueContext` enrichi : `output_patches`, `default_patch_id`, `audio_device_id`, `audio_backend`
+- `AudioCue` : résout l'`OutputPatch` au GO, positionne `voice.out_l / out_r`
+- `VideoCue` : champ `output_patch_id`, résolution device + fallback `ws.preferences.audio.device_id`
+- `VideoEngine.play_voice()` : accepte `audio_device` + `audio_backend`, set mpv `audio-device`
+- `wasapi_name_for_asio()` : résolution ASIO→WASAPI par fuzzy match (deux passes)
+- `event_loop.rs` + `transport_cmds.rs` : snapshottent les préférences audio avant construction du `CueContext`
+
+---
 
 ### 0.2.0 — Video Cue fonctionnel + correctifs (2026-04-13)
 
@@ -170,7 +197,7 @@ Tout l'audio sort sur le device par défaut. `OutputPatch` est stocké mais `Aud
 
 ### Frontend
 
-Rien de bloquant. L'ensemble des fonctionnalités v0.2.0 est opérationnel.
+Rien de bloquant.
 
 ---
 
@@ -184,7 +211,7 @@ Rien de bloquant. L'ensemble des fonctionnalités v0.2.0 est opérationnel.
 | 4. AudioCue connectée à l'engine | ✅ |
 | 5. Frontend CueList + GO | ✅ |
 | 6. Playhead + transport | ✅ |
-| 7. Output Patches + DeviceManager | ⚠️ Modèle présent, routing audio non branché |
+| 7. Output Patches + DeviceManager | ✅ Routing audio + vidéo câblé — ASIO→WASAPI à valider sur hardware |
 | 8. Inspector panel | ✅ Complet audio + vidéo |
 | 9. Workspace save/load | ✅ |
 | 10. Keyboard shortcuts | ✅ |
@@ -196,4 +223,5 @@ Rien de bloquant. L'ensemble des fonctionnalités v0.2.0 est opérationnel.
 
 ## Prochaine priorité
 
-1. **Routing Output Patch** dans `AudioEngine` — brancher `OutputPatch` sur le device/canaux configurés
+1. **Valider ASIO→WASAPI** — lancer l'app, vérifier les logs `WASAPI devices for ASIO match` et `ASIO→WASAPI`, confirmer que mpv route bien l'audio vidéo vers le matériel ASIO
+2. **Retirer le log `[DIAG-1]`** dans `VideoEngine::new()` une fois le routing confirmé

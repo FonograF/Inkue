@@ -62,11 +62,15 @@ fn make_context(
     audio_engine: &Arc<AudioEngine>,
     video_engine: &Arc<VideoEngine>,
     stop_fade_ms: u32,
+    output_patches: Vec<crate::engine::device_manager::OutputPatch>,
+    default_patch_id: Option<uuid::Uuid>,
+    audio_device_id: Option<String>,
+    audio_backend: crate::preferences::AudioBackend,
 ) -> CueContext {
     // The receiver is intentionally dropped here; events from within the loop
     // are handled directly by reading status from the ring buffers / channels.
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    CueContext::new(audio_engine.clone(), video_engine.clone(), tx, stop_fade_ms)
+    CueContext::new(audio_engine.clone(), video_engine.clone(), tx, stop_fade_ms, output_patches, default_patch_id, audio_device_id, audio_backend)
 }
 
 fn tick(
@@ -129,8 +133,19 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 3. Emit master-level event (even when 0, to allow meter decay in UI).
+    // 3. Merge video peak levels into the master meter.
+    //    mpv's lavfi `astats` filter exposes per-frame peak metadata via the
+    //    `af-metadata` property, giving real dBFS values rather than the
+    //    configured playback volume.  Both L and R channels are read.
     // ------------------------------------------------------------------
+    let (vid_l, vid_r) = video_engine.current_levels();
+    if vid_l > 0.0 || vid_r > 0.0 {
+        master_peak_l = master_peak_l.max(vid_l);
+        master_peak_r = master_peak_r.max(vid_r);
+        has_master = true;
+    }
+
+    // Emit master-level whenever there is any active signal (audio or video).
     if has_master {
         let _ = handle.emit(
             "master-level",
@@ -147,6 +162,11 @@ fn tick(
     };
 
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    // Snapshot the patch table and audio prefs before taking the mutable cue-list borrow.
+    let ws_patches = ws.output_patches.clone();
+    let ws_default_patch = ws.default_output_patch_id;
+    let ws_audio_device = ws.preferences.audio.device_id.clone();
+    let ws_audio_backend = ws.preferences.audio.backend.clone();
 
     let cue_list = match ws.active_cue_list_mut() {
         Some(cl) => cl,
@@ -170,7 +190,7 @@ fn tick(
     //    (Must happen before the completion check so that a cue that
     //    completes its pre-wait and immediately finishes is detected.)
     // ------------------------------------------------------------------
-    let tick_ctx = make_context(audio_engine, video_engine, stop_fade_ms);
+    let tick_ctx = make_context(audio_engine, video_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_audio_device.clone(), ws_audio_backend.clone());
     for cue in cue_list.cues.iter_mut() {
         if cue.state() == CueState::Running {
             let _ = cue.tick(&tick_ctx);
@@ -288,7 +308,7 @@ fn tick(
     let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
-        let context = make_context(audio_engine, video_engine, stop_fade_ms);
+        let context = make_context(audio_engine, video_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_audio_device.clone(), ws_audio_backend.clone());
         let mut transport = Transport::new(context);
         if let Ok(ids) = transport.go(cue_list) {
             go_triggered = ids;

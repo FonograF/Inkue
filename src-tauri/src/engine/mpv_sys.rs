@@ -106,6 +106,9 @@ pub struct MpvLib {
     pub mpv_wakeup:               unsafe extern "C" fn(*mut c_void),
     pub mpv_error_string:         unsafe extern "C" fn(i32) -> *const c_char,
     pub mpv_request_log_messages: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+    /// Free a pointer returned by mpv (e.g. strings from `mpv_get_property` with
+    /// `MPV_FORMAT_STRING`).
+    pub mpv_free: unsafe extern "C" fn(*mut c_void),
     // IMPORTANT: `_lib` is last — drops after all fn-pointer fields.
     _lib: Library,
 }
@@ -150,6 +153,7 @@ impl MpvLib {
             mpv_wakeup:               sym!("mpv_wakeup":               unsafe extern "C" fn(*mut c_void)),
             mpv_error_string:         sym!("mpv_error_string":         unsafe extern "C" fn(i32) -> *const c_char),
             mpv_request_log_messages: sym!("mpv_request_log_messages": unsafe extern "C" fn(*mut c_void, *const c_char) -> i32),
+            mpv_free:                 sym!("mpv_free":                 unsafe extern "C" fn(*mut c_void)),
             _lib: lib,
         })
     }
