@@ -458,10 +458,12 @@ impl VideoEngine {
         // listening, causing zero frames to reach the ring buffer.
         let pipe_handle = unsafe { create_pipe_instance() }?;
         {
-            let ae = Arc::clone(&self.audio_engine);
+            let ae   = Arc::clone(&self.audio_engine);
+            let lib2 = Arc::clone(&self.mpv_lib);
+            let ctx2 = Arc::clone(&self.mpv_ctx);
             std::thread::Builder::new()
                 .name("wincue-mpv-pcm".into())
-                .spawn(move || handle_pcm_pipe_connection(ae, pipe_handle))
+                .spawn(move || handle_pcm_pipe_connection(ae, pipe_handle, lib2, ctx2))
                 .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
         }
 
@@ -748,19 +750,10 @@ fn mpv_event_loop(
                     PostMessageW(parent_hwnd, WM_SETUP_MPV_CHILD, 0, 0);
                 }
 
-                // Unpause immediately so mpv starts decoding and writing PCM
-                // to the named pipe.  play_voice() set pause=yes before
-                // loadfile so that frame 0 was rendered without a black-screen
-                // freeze; now that the file is loaded we let mpv run freely.
-                // AudioEngine's pre-roll gate (MIN_VIDEO_PREBUFFER) keeps the
-                // video voice silent until enough samples have buffered, so
-                // audio starts cleanly even though mpv is already running.
-                unsafe {
-                    let name = cs("pause");
-                    let val  = cs("no");
-                    (lib.mpv_set_property_string)(ctx.0, name.as_ptr(), val.as_ptr());
-                }
-                log::info!("[mpv] pause=no sent — mpv running, AudioEngine pre-roll active");
+                // Do NOT send pause=no here.  The pipe reader thread sends it
+                // immediately after ConnectNamedPipe() returns and the ring
+                // buffer is created — that is the only safe moment, because
+                // FILE_LOADED fires before the pipe handshake completes.
 
                 // Query total duration.
                 let mut duration_secs: f64 = 0.0;
@@ -903,18 +896,23 @@ unsafe fn create_pipe_instance() -> Result<isize> {
 ///
 /// `play_voice()` creates the pipe server, spawns this thread (which
 /// immediately blocks on `ConnectNamedPipe`), then sends `loadfile`.
-/// mpv opens the file, initialises its AO, and connects to the already-
-/// waiting pipe — no race, zero frames lost.  `mpv_event_loop` sends
-/// `pause=no` on `MPV_EVENT_FILE_LOADED`; by then `ConnectNamedPipe` has
-/// already returned, the ring buffer exists, and AudioEngine's pre-roll
-/// gate controls when audio actually starts.
+/// mpv opens the file and connects to the pipe.  Once `ConnectNamedPipe`
+/// returns and the ring buffer is installed, this thread sends `pause=no`
+/// — the only moment it is safe to do so, because `MPV_EVENT_FILE_LOADED`
+/// fires *before* the pipe handshake completes.  AudioEngine's pre-roll
+/// gate (`MIN_VIDEO_PREBUFFER`) then controls when audio actually starts.
 ///
 /// ## Rate control
 ///
 /// mpv with `ao=pcm` writes PCM as fast as decoding allows.  This thread
 /// throttles itself via pipe backpressure: when the ring buffer exceeds
 /// `max_prebuffer` samples it sleeps 1 ms, causing mpv's writes to block.
-fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
+fn handle_pcm_pipe_connection(
+    audio_engine: Arc<AudioEngine>,
+    handle: isize,
+    lib: Arc<MpvLib>,
+    ctx: Arc<MpvCtx>,
+) {
     // ~500 ms of stereo at 48 kHz — throttle threshold for backpressure.
     let max_prebuffer: usize = (audio_engine.sample_rate() as usize) / 2 * 2;
 
@@ -927,6 +925,16 @@ fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
     let ring_size = (audio_engine.sample_rate() as usize * 2 * 3).max(16384);
     let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
     audio_engine.set_video_pcm_consumer(Some(cons));
+
+    // Ring buffer is ready — safe to unpause mpv now.
+    // FILE_LOADED fires before the pipe handshake, so the event thread
+    // cannot send pause=no; this is the only guaranteed-safe moment.
+    unsafe {
+        let name = cs("pause");
+        let val  = cs("no");
+        (lib.mpv_set_property_string)(ctx.0, name.as_ptr(), val.as_ptr());
+    }
+    log::info!("PCM pipe: ring buffer ready — pause=no sent");
 
     let mut raw = [0u8; 4096];
     loop {
