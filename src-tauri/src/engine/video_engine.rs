@@ -258,17 +258,6 @@ impl VideoEngine {
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
 
-        // Spawn the named-pipe PCM reader thread.  It runs for the lifetime of
-        // the process; each mpv connection (one per video file) creates a fresh
-        // ring buffer and installs it in AudioEngine.
-        {
-            let ae = Arc::clone(&audio_engine);
-            std::thread::Builder::new()
-                .name("wincue-mpv-pcm".into())
-                .spawn(move || run_pcm_pipe_reader(ae))
-                .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
-        }
-
         Ok(Self {
             mpv_lib: lib,
             mpv_ctx,
@@ -461,6 +450,20 @@ impl VideoEngine {
         let path_str = file_path.to_string_lossy().replace('\\', "/");
         let path_cstr = CString::new(path_str.as_str())
             .map_err(|_| anyhow!("File path contains NUL byte"))?;
+
+        // Create the named-pipe server instance and spawn the per-video PCM
+        // reader thread BEFORE loadfile so that ConnectNamedPipe() is already
+        // blocking when mpv initialises its AO and opens the pipe as a client.
+        // This eliminates the race where mpv connected before our server was
+        // listening, causing zero frames to reach the ring buffer.
+        let pipe_handle = unsafe { create_pipe_instance() }?;
+        {
+            let ae = Arc::clone(&self.audio_engine);
+            std::thread::Builder::new()
+                .name("wincue-mpv-pcm".into())
+                .spawn(move || handle_pcm_pipe_connection(ae, pipe_handle))
+                .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
+        }
 
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -820,155 +823,146 @@ fn mpv_event_loop(
 // Named-pipe PCM reader  (thread: wincue-mpv-pcm)
 // ---------------------------------------------------------------------------
 
-/// Read decoded PCM from mpv's `ao=pcm` named-pipe output and feed it into
-/// [`AudioEngine`]'s video PCM ring buffer.
-///
-/// mpv opens `\\.\pipe\wincue-mpv-audio` as the audio output file.
-/// This function runs as a background thread for the lifetime of the process.
-///
-/// ## Startup sequencing
-///
-/// `play_voice()` sets `pause=yes` before `loadfile` so that frame 0 is
-/// rendered immediately.  `mpv_event_loop` sends `pause=no` on
-/// `MPV_EVENT_FILE_LOADED` so mpv starts writing PCM right away.
-/// AudioEngine's pre-roll gate (`MIN_VIDEO_PREBUFFER`) keeps the video
-/// voice silent until enough samples have buffered, then opens.
-/// This thread does not need to coordinate the pause/unpause; it just
-/// reads PCM and feeds the ring buffer.
-///
-/// ## Rate control
-///
-/// mpv with `ao=pcm` writes PCM as fast as decoding allows (no real-time
-/// pacing).  The reader thread throttles itself: when the ring buffer
-/// occupancy exceeds `max_prebuffer` samples it sleeps for 1 ms, letting
-/// AudioEngine drain.  This naturally limits mpv's write speed (via pipe
-/// backpressure) to approximately real-time, which keeps A/V in sync.
-///
-/// ## Per-video lifecycle
-///
-/// Each mpv connection (one per video file) creates a fresh ring buffer.
-/// After mpv disconnects (stop / EOF), the consumer is cleared from
-/// AudioEngine so the mixer produces silence until the next video starts.
-fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>) {
-    // Declare the Windows named-pipe and file-I/O APIs directly to avoid
-    // windows-sys feature-flag issues.  All functions are in kernel32.dll /
-    // advapi32.dll which are always linked on Windows.
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn CreateNamedPipeW(
-            lpname: *const u16,
-            dwopenmode: u32,
-            dwpipemode: u32,
-            nmaxinstances: u32,
-            noutbuffersize: u32,
-            ninbuffersize: u32,
-            ndefaulttimeout: u32,
-            lpsecurityattributes: *const std::ffi::c_void,
-        ) -> isize;
-        fn ConnectNamedPipe(hnamedpipe: isize, lpoverlapped: *mut std::ffi::c_void) -> i32;
-        fn DisconnectNamedPipe(hnamedpipe: isize) -> i32;
-        fn ReadFile(
-            hfile: isize,
-            lpbuffer: *mut std::ffi::c_void,
-            nnumberofbytestoread: u32,
-            lpnumberofbytesread: *mut u32,
-            lpoverlapped: *mut std::ffi::c_void,
-        ) -> i32;
-        fn CloseHandle(hobject: isize) -> i32;
-    }
+// Windows named-pipe and file-I/O APIs (kernel32.dll, always linked).
+// Declared at module level so both `create_pipe_instance` and
+// `handle_pcm_pipe_connection` can use them.
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateNamedPipeW(
+        lpname: *const u16,
+        dwopenmode: u32,
+        dwpipemode: u32,
+        nmaxinstances: u32,
+        noutbuffersize: u32,
+        ninbuffersize: u32,
+        ndefaulttimeout: u32,
+        lpsecurityattributes: *const std::ffi::c_void,
+    ) -> isize;
+    fn ConnectNamedPipe(hnamedpipe: isize, lpoverlapped: *mut std::ffi::c_void) -> i32;
+    fn DisconnectNamedPipe(hnamedpipe: isize) -> i32;
+    fn ReadFile(
+        hfile: isize,
+        lpbuffer: *mut std::ffi::c_void,
+        nnumberofbytestoread: u32,
+        lpnumberofbytesread: *mut u32,
+        lpoverlapped: *mut std::ffi::c_void,
+    ) -> i32;
+    fn CloseHandle(hobject: isize) -> i32;
+}
 
-    const PIPE_ACCESS_INBOUND: u32 = 0x0000_0001;
-    const PIPE_TYPE_BYTE: u32 = 0x0000_0000;
-    const PIPE_READMODE_BYTE: u32 = 0x0000_0000;
-    const PIPE_WAIT: u32 = 0x0000_0000;
-    const PIPE_UNLIMITED_INSTANCES: u32 = 255;
-    const INVALID_HANDLE_VALUE: isize = -1_isize;
+const PIPE_ACCESS_INBOUND: u32 = 0x0000_0001;
+const PIPE_TYPE_BYTE: u32     = 0x0000_0000;
+const PIPE_READMODE_BYTE: u32 = 0x0000_0000;
+const PIPE_WAIT: u32          = 0x0000_0000;
+const PIPE_UNLIMITED_INSTANCES: u32 = 255;
+const INVALID_HANDLE_VALUE: isize   = -1_isize;
 
-    // UTF-16 encoded pipe name (null-terminated).
+/// Create a server-side `\\.\pipe\wincue-mpv-audio` instance.
+///
+/// Called by [`VideoEngine::play_voice`] **before** `loadfile` so that
+/// [`ConnectNamedPipe`] is already blocking in the reader thread when mpv
+/// initialises its AO and opens the pipe as a client.  This eliminates the
+/// race where mpv connected before our server was ready, causing the entire
+/// PCM stream to be lost.
+///
+/// Returns the pipe HANDLE, or an error if `CreateNamedPipeW` fails.
+///
+/// # Safety
+/// Calls `CreateNamedPipeW`.
+unsafe fn create_pipe_instance() -> Result<isize> {
     let pipe_name: Vec<u16> = r"\\.\pipe\wincue-mpv-audio"
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
 
-    // Keep this many f32 samples pre-buffered before throttling mpv.
-    // ~500 ms of stereo audio at 48 kHz.  mpv is blocked via pipe backpressure
-    // once this is reached; the ring buffer provides an additional cushion.
-    let max_prebuffer: usize = (audio_engine.sample_rate() as usize) / 2 * 2; // sr/2 * 2ch
+    let handle = CreateNamedPipeW(
+        pipe_name.as_ptr(),
+        PIPE_ACCESS_INBOUND,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        PIPE_UNLIMITED_INSTANCES,
+        0,      // out-buffer (server-to-client; unused for inbound)
+        65536,  // in-buffer (client-to-server; receives mpv PCM)
+        0,      // default timeout
+        std::ptr::null(),
+    );
 
-    log::info!(r"PCM pipe reader: started (\\.\pipe\wincue-mpv-audio)");
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(anyhow!("CreateNamedPipeW failed"));
+    }
+    Ok(handle)
+}
 
+/// Block on [`ConnectNamedPipe`], then stream PCM from mpv into
+/// [`AudioEngine`]'s ring buffer until the pipe closes.
+///
+/// Spawned once per video GO by [`VideoEngine::play_voice`], immediately
+/// after [`create_pipe_instance`].  The thread exits when mpv closes the
+/// pipe (stop or EOF).
+///
+/// ## Startup sequencing
+///
+/// `play_voice()` creates the pipe server, spawns this thread (which
+/// immediately blocks on `ConnectNamedPipe`), then sends `loadfile`.
+/// mpv opens the file, initialises its AO, and connects to the already-
+/// waiting pipe — no race, zero frames lost.  `mpv_event_loop` sends
+/// `pause=no` on `MPV_EVENT_FILE_LOADED`; by then `ConnectNamedPipe` has
+/// already returned, the ring buffer exists, and AudioEngine's pre-roll
+/// gate controls when audio actually starts.
+///
+/// ## Rate control
+///
+/// mpv with `ao=pcm` writes PCM as fast as decoding allows.  This thread
+/// throttles itself via pipe backpressure: when the ring buffer exceeds
+/// `max_prebuffer` samples it sleeps 1 ms, causing mpv's writes to block.
+fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
+    // ~500 ms of stereo at 48 kHz — throttle threshold for backpressure.
+    let max_prebuffer: usize = (audio_engine.sample_rate() as usize) / 2 * 2;
+
+    // Block until mpv opens the pipe as a client.
+    log::info!("PCM pipe: waiting for mpv to connect...");
+    unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+    log::info!("PCM pipe: mpv connected — creating ring buffer");
+
+    // Fresh ring buffer: 3 s of stereo f32 so burst-writes never overflow.
+    let ring_size = (audio_engine.sample_rate() as usize * 2 * 3).max(16384);
+    let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
+    audio_engine.set_video_pcm_consumer(Some(cons));
+
+    let mut raw = [0u8; 4096];
     loop {
-        // Create a new server-side pipe instance for the next mpv connection.
-        let handle = unsafe {
-            CreateNamedPipeW(
-                pipe_name.as_ptr(),
-                PIPE_ACCESS_INBOUND,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                PIPE_UNLIMITED_INSTANCES,
-                0,      // out-buffer (server-to-client; not used for inbound)
-                65536,  // in-buffer (client-to-server; receives mpv's audio)
-                0,      // default timeout
-                std::ptr::null(),
+        // Backpressure: let AudioEngine drain before writing more.
+        while prod.occupied_len() > max_prebuffer {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let mut bytes_read: u32 = 0;
+        let ok = unsafe {
+            ReadFile(
+                handle,
+                raw.as_mut_ptr().cast(),
+                raw.len() as u32,
+                &mut bytes_read,
+                std::ptr::null_mut(),
             )
         };
 
-        if handle == INVALID_HANDLE_VALUE {
-            log::warn!("PCM pipe: CreateNamedPipeW failed — retrying in 500 ms");
-            std::thread::sleep(Duration::from_millis(500));
-            continue;
+        if ok == 0 || bytes_read == 0 {
+            break; // Pipe closed by mpv (stop or EOF).
         }
 
-        // Block until mpv opens the pipe as a client.
-        log::info!("PCM pipe: waiting for mpv to connect...");
-        unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
-        log::info!("PCM pipe: mpv connected — creating ring buffer");
-
-        // Fresh ring buffer for this video: 3 seconds of stereo f32.
-        // Sized generously so mpv burst-writes and scheduling jitter never
-        // overflow the buffer even when the writer thread is briefly preempted.
-        let ring_size = (audio_engine.sample_rate() as usize * 2 * 3).max(16384);
-        let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
-        audio_engine.set_video_pcm_consumer(Some(cons));
-
-        // Read raw f32-LE interleaved stereo PCM from mpv.
-        // Throttle when the ring buffer is near-full so pipe backpressure
-        // keeps mpv's write speed approximately real-time.
-        let mut raw = [0u8; 4096];
-
-        loop {
-            while prod.occupied_len() > max_prebuffer {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-
-            let mut bytes_read: u32 = 0;
-            let ok = unsafe {
-                ReadFile(
-                    handle,
-                    raw.as_mut_ptr().cast(),
-                    raw.len() as u32,
-                    &mut bytes_read,
-                    std::ptr::null_mut(),
-                )
-            };
-
-            if ok == 0 || bytes_read == 0 {
-                break; // Pipe closed by mpv (stop or EOF).
-            }
-
-            for chunk in raw[..bytes_read as usize].chunks_exact(4) {
-                // SAFETY: chunks_exact(4) guarantees exactly 4 bytes.
-                let sample = f32::from_le_bytes(chunk.try_into().unwrap());
-                let _ = prod.try_push(sample);
-            }
+        for chunk in raw[..bytes_read as usize].chunks_exact(4) {
+            // SAFETY: chunks_exact(4) guarantees exactly 4 bytes.
+            let sample = f32::from_le_bytes(chunk.try_into().unwrap());
+            let _ = prod.try_push(sample);
         }
+    }
 
-        log::info!("PCM pipe: mpv disconnected — clearing video PCM consumer");
-        audio_engine.set_video_pcm_consumer(None);
+    log::info!("PCM pipe: mpv disconnected — clearing video PCM consumer");
+    audio_engine.set_video_pcm_consumer(None);
 
-        unsafe {
-            DisconnectNamedPipe(handle);
-            CloseHandle(handle);
-        }
+    unsafe {
+        DisconnectNamedPipe(handle);
+        CloseHandle(handle);
     }
 }
 
