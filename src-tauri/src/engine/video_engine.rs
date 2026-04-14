@@ -571,6 +571,16 @@ impl VideoEngine {
                 opts_cstr.as_ptr(),
                 std::ptr::null(),
             ];
+            // Enable hardware video decoding and the fast processing profile
+            // to reduce CPU decode load on heavy files (e.g. H264 1080p @
+            // high bitrate).  mpv falls back to software decoding silently if
+            // the GPU does not support the codec — no crash risk.
+            // Set immediately before loadfile so they apply to this file only
+            // and don't interfere with mpv's own initialisation options.
+            (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
+            log::info!("[mpv] hwdec=auto profile=fast set — sending loadfile");
+
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
                 let err_cstr = (lib.mpv_error_string)(ret);
