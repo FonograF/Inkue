@@ -260,15 +260,12 @@ impl VideoEngine {
 
         // Spawn the named-pipe PCM reader thread.  It runs for the lifetime of
         // the process; each mpv connection (one per video file) creates a fresh
-        // ring buffer and installs it in AudioEngine.  The thread also holds
-        // the mpv lib/ctx so it can unpause mpv once pre-roll is complete.
+        // ring buffer and installs it in AudioEngine.
         {
-            let ae   = Arc::clone(&audio_engine);
-            let lib3 = Arc::clone(&lib);
-            let ctx3 = Arc::clone(&mpv_ctx);
+            let ae = Arc::clone(&audio_engine);
             std::thread::Builder::new()
                 .name("wincue-mpv-pcm".into())
-                .spawn(move || run_pcm_pipe_reader(ae, lib3, ctx3))
+                .spawn(move || run_pcm_pipe_reader(ae))
                 .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
         }
 
@@ -748,6 +745,20 @@ fn mpv_event_loop(
                     PostMessageW(parent_hwnd, WM_SETUP_MPV_CHILD, 0, 0);
                 }
 
+                // Unpause immediately so mpv starts decoding and writing PCM
+                // to the named pipe.  play_voice() set pause=yes before
+                // loadfile so that frame 0 was rendered without a black-screen
+                // freeze; now that the file is loaded we let mpv run freely.
+                // AudioEngine's pre-roll gate (MIN_VIDEO_PREBUFFER) keeps the
+                // video voice silent until enough samples have buffered, so
+                // audio starts cleanly even though mpv is already running.
+                unsafe {
+                    let name = cs("pause");
+                    let val  = cs("no");
+                    (lib.mpv_set_property_string)(ctx.0, name.as_ptr(), val.as_ptr());
+                }
+                log::info!("[mpv] pause=no sent — mpv running, AudioEngine pre-roll active");
+
                 // Query total duration.
                 let mut duration_secs: f64 = 0.0;
                 let ret = unsafe {
@@ -809,43 +820,36 @@ fn mpv_event_loop(
 // Named-pipe PCM reader  (thread: wincue-mpv-pcm)
 // ---------------------------------------------------------------------------
 
-/// Minimum samples (stereo f32) that must be queued before the video is
-/// unpaused.  Must be ≥ `MIN_VIDEO_PREBUFFER` in `audio_engine.rs` so that
-/// AudioEngine's pre-roll gate opens at the same moment mpv starts playing.
-/// At 48 kHz stereo ≈ 100 ms.
-const PCM_PREROLL_THRESHOLD: usize = 9_600;
-
 /// Read decoded PCM from mpv's `ao=pcm` named-pipe output and feed it into
 /// [`AudioEngine`]'s video PCM ring buffer.
 ///
 /// mpv opens `\\.\pipe\wincue-mpv-audio` as the audio output file.
 /// This function runs as a background thread for the lifetime of the process.
 ///
-/// ## Startup sequencing (pause / pre-roll / unpause)
+/// ## Startup sequencing
 ///
-/// `play_voice()` issues `set pause yes` before `loadfile` so that mpv
-/// renders the first video frame immediately without a black-screen freeze.
-/// Once the pipe connects and [`PCM_PREROLL_THRESHOLD`] samples have been
-/// buffered in the ring buffer, this thread sends `set pause no` so that
-/// video and audio start together.  AudioEngine's own pre-roll gate
-/// (`MIN_VIDEO_PREBUFFER`) is set to the same threshold so it starts
-/// outputting samples at exactly the same moment.
+/// `play_voice()` sets `pause=yes` before `loadfile` so that frame 0 is
+/// rendered immediately.  `mpv_event_loop` sends `pause=no` on
+/// `MPV_EVENT_FILE_LOADED` so mpv starts writing PCM right away.
+/// AudioEngine's pre-roll gate (`MIN_VIDEO_PREBUFFER`) keeps the video
+/// voice silent until enough samples have buffered, then opens.
+/// This thread does not need to coordinate the pause/unpause; it just
+/// reads PCM and feeds the ring buffer.
 ///
 /// ## Rate control
 ///
 /// mpv with `ao=pcm` writes PCM as fast as decoding allows (no real-time
-/// pacing).  After the pre-roll phase the reader thread throttles itself:
-/// when the ring buffer occupancy exceeds `max_prebuffer` samples it sleeps
-/// for 1 ms, letting AudioEngine drain.  This naturally limits mpv's write
-/// speed (via pipe backpressure) to approximately real-time, which keeps
-/// video and audio in sync.
+/// pacing).  The reader thread throttles itself: when the ring buffer
+/// occupancy exceeds `max_prebuffer` samples it sleeps for 1 ms, letting
+/// AudioEngine drain.  This naturally limits mpv's write speed (via pipe
+/// backpressure) to approximately real-time, which keeps A/V in sync.
 ///
 /// ## Per-video lifecycle
 ///
 /// Each mpv connection (one per video file) creates a fresh ring buffer.
 /// After mpv disconnects (stop / EOF), the consumer is cleared from
 /// AudioEngine so the mixer produces silence until the next video starts.
-fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>, lib: Arc<MpvLib>, ctx: Arc<MpvCtx>) {
+fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>) {
     // Declare the Windows named-pipe and file-I/O APIs directly to avoid
     // windows-sys feature-flag issues.  All functions are in kernel32.dll /
     // advapi32.dll which are always linked on Windows.
@@ -926,26 +930,14 @@ fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>, lib: Arc<MpvLib>, ctx: Ar
         let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
         audio_engine.set_video_pcm_consumer(Some(cons));
 
-        // Read raw f32-LE interleaved stereo PCM from mpv in two phases:
-        //
-        // Phase 1 — Pre-roll (no throttle):
-        //   Read until the ring buffer contains >= PCM_PREROLL_THRESHOLD samples
-        //   (≈ 100 ms at 48 kHz stereo), then unpause mpv so video and audio
-        //   start simultaneously.  AudioEngine's own pre-roll gate opens at the
-        //   same threshold so it begins outputting samples at the same moment.
-        //
-        // Phase 2 — Normal playback (throttled):
-        //   Continue reading with backpressure so mpv doesn't run ahead of
-        //   real time.
+        // Read raw f32-LE interleaved stereo PCM from mpv.
+        // Throttle when the ring buffer is near-full so pipe backpressure
+        // keeps mpv's write speed approximately real-time.
         let mut raw = [0u8; 4096];
-        let mut prerolled = false;
 
         loop {
-            // Phase 2 throttle — skip during pre-roll so we fill quickly.
-            if prerolled {
-                while prod.occupied_len() > max_prebuffer {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+            while prod.occupied_len() > max_prebuffer {
+                std::thread::sleep(Duration::from_millis(1));
             }
 
             let mut bytes_read: u32 = 0;
@@ -967,22 +959,6 @@ fn run_pcm_pipe_reader(audio_engine: Arc<AudioEngine>, lib: Arc<MpvLib>, ctx: Ar
                 // SAFETY: chunks_exact(4) guarantees exactly 4 bytes.
                 let sample = f32::from_le_bytes(chunk.try_into().unwrap());
                 let _ = prod.try_push(sample);
-            }
-
-            // Phase 1 → Phase 2 transition: once enough samples are buffered,
-            // unpause mpv so the video clock starts at the same instant that
-            // AudioEngine opens its pre-roll gate.
-            if !prerolled && prod.occupied_len() >= PCM_PREROLL_THRESHOLD {
-                prerolled = true;
-                unsafe {
-                    let name = cs("pause");
-                    let val  = cs("no");
-                    (lib.mpv_set_property_string)(ctx.0, name.as_ptr(), val.as_ptr());
-                }
-                log::info!(
-                    "PCM pipe: pre-roll complete ({PCM_PREROLL_THRESHOLD} samples) \
-                     — mpv unpaused"
-                );
             }
         }
 
