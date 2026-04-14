@@ -458,12 +458,10 @@ impl VideoEngine {
         // listening, causing zero frames to reach the ring buffer.
         let pipe_handle = unsafe { create_pipe_instance() }?;
         {
-            let ae   = Arc::clone(&self.audio_engine);
-            let lib2 = Arc::clone(&self.mpv_lib);
-            let ctx2 = Arc::clone(&self.mpv_ctx);
+            let ae = Arc::clone(&self.audio_engine);
             std::thread::Builder::new()
                 .name("wincue-mpv-pcm".into())
-                .spawn(move || handle_pcm_pipe_connection(ae, pipe_handle, lib2, ctx2))
+                .spawn(move || handle_pcm_pipe_connection(ae, pipe_handle))
                 .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
         }
 
@@ -573,24 +571,6 @@ impl VideoEngine {
                 opts_cstr.as_ptr(),
                 std::ptr::null(),
             ];
-            // Ensure mpv starts paused so that the first video frame is
-            // rendered immediately (no black-window freeze) while the PCM
-            // pipe completes its handshake and pre-rolls the ring buffer.
-            // The pipe reader thread will send "set pause no" once enough
-            // audio has accumulated (PCM_PREROLL_THRESHOLD samples ≈ 100ms).
-            {
-                let set_cstr    = cs("set");
-                let pause_name  = cs("pause");
-                let pause_yes   = cs("yes");
-                let set_args: [*const std::ffi::c_char; 4] = [
-                    set_cstr.as_ptr(),
-                    pause_name.as_ptr(),
-                    pause_yes.as_ptr(),
-                    std::ptr::null(),
-                ];
-                (lib.mpv_command)(ctx, set_args.as_ptr());
-            }
-
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
                 let err_cstr = (lib.mpv_error_string)(ret);
@@ -907,12 +887,7 @@ unsafe fn create_pipe_instance() -> Result<isize> {
 /// mpv with `ao=pcm` writes PCM as fast as decoding allows.  This thread
 /// throttles itself via pipe backpressure: when the ring buffer exceeds
 /// `max_prebuffer` samples it sleeps 1 ms, causing mpv's writes to block.
-fn handle_pcm_pipe_connection(
-    audio_engine: Arc<AudioEngine>,
-    handle: isize,
-    lib: Arc<MpvLib>,
-    ctx: Arc<MpvCtx>,
-) {
+fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
     // ~500 ms of stereo at 48 kHz — throttle threshold for backpressure.
     let max_prebuffer: usize = (audio_engine.sample_rate() as usize) / 2 * 2;
 
@@ -925,16 +900,6 @@ fn handle_pcm_pipe_connection(
     let ring_size = (audio_engine.sample_rate() as usize * 2 * 3).max(16384);
     let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
     audio_engine.set_video_pcm_consumer(Some(cons));
-
-    // Ring buffer is ready — safe to unpause mpv now.
-    // FILE_LOADED fires before the pipe handshake, so the event thread
-    // cannot send pause=no; this is the only guaranteed-safe moment.
-    unsafe {
-        let name = cs("pause");
-        let val  = cs("no");
-        (lib.mpv_set_property_string)(ctx.0, name.as_ptr(), val.as_ptr());
-    }
-    log::info!("PCM pipe: ring buffer ready — pause=no sent");
 
     let mut raw = [0u8; 4096];
     loop {
