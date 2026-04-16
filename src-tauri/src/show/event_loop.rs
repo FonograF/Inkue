@@ -301,6 +301,16 @@ fn tick(
         }
     }
 
+    // If an auto-GO fired, pre-arm the new playhead cue so the next manual
+    // GO is also instantaneous.
+    if !go_triggered.is_empty() {
+        crate::show::video_pre_arm::update_video_pre_arm(
+            cue_list.playhead_cue_id,
+            cue_list,
+            video_engine,
+        );
+    }
+
     // Release the workspace lock BEFORE emitting any events.
     drop(ws);
 

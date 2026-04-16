@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,33 @@ use super::mpv_sys::{
 pub type VoiceId = Uuid;
 /// Unique identifier for one video output surface.
 pub type SurfaceId = Uuid;
+
+// ---------------------------------------------------------------------------
+// ArmedVoice — pre-arm state
+// ---------------------------------------------------------------------------
+
+/// State for a video voice that has been pre-armed at the playhead.
+///
+/// The mpv instance has already received `loadfile` with `pause=yes`, the
+/// named-pipe server was created beforehand, and `ConnectNamedPipe` returned
+/// in the reader thread.  On GO the only remaining call is `pause=no`.
+struct ArmedVoice {
+    /// The VoiceId that will be used when this arm is activated on GO.
+    voice_id: VoiceId,
+    /// Opaque key identifying which cue owns this arm (matches the cue's UUID).
+    owner_id: Uuid,
+    /// Window layout to apply on activation.
+    screen_index: Option<u32>,
+    /// Set to `true` by the pipe thread once `ConnectNamedPipe` returns and
+    /// the ring buffer consumer is installed in `AudioEngine`.
+    ready: Arc<AtomicBool>,
+    /// The Win32 pipe server handle — stored so `cancel_pre_arm` can force-close
+    /// it and unblock a `ConnectNamedPipe` call that has not returned yet.
+    pipe_handle: isize,
+    /// Set to `true` by `cancel_pre_arm` before closing the handle.
+    /// The pipe thread checks this at exit to avoid double-closing.
+    cancelled: Arc<AtomicBool>,
+}
 
 /// Information about a connected monitor, returned by [`VideoEngine::list_screens`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,9 +185,11 @@ pub struct VideoEngine {
     default_surface_id: SurfaceId,
     /// Reference to the audio engine, used to install the video PCM consumer
     /// ring buffer when a video starts (so video audio flows through AudioEngine).
-    /// Kept alive here so the `run_pcm_pipe_reader` thread can always reach it.
     #[allow(dead_code)]
     audio_engine: Arc<AudioEngine>,
+    /// Pre-armed voice state, if any.  Set by `pre_arm_voice` when the
+    /// playhead lands on a `VideoCue`; consumed or cancelled before GO.
+    armed_voice: Arc<Mutex<Option<ArmedVoice>>>,
 }
 
 impl VideoEngine {
@@ -231,6 +261,34 @@ impl VideoEngine {
             opt_str(&lib, ctx, "audio-channels", "stereo");
             opt_str(&lib, ctx, "audio-format", "float");
 
+            // --------------------------------------------------------------
+            // A/V sync correction for ao=pcm.
+            //
+            // ao=pcm is a file-writer AO — it reports bytes as "played"
+            // the instant they hit the pipe, giving mpv a zero-latency
+            // (i.e. bogus) audio clock.  mpv's default sync behaviour
+            // misfires in two ways:
+            //
+            //  1. --initial-audio-sync (default: yes) inserts silence or
+            //     drops samples in the first second of playback to align
+            //     audio PTS with video PTS.  With our bogus audio clock
+            //     this correction fires at ~1 s and causes a ~300 ms
+            //     audible dropout.  Disable it.
+            //
+            //  2. --video-sync=audio slaves the video clock to the AO's
+            //     reported position.  Since that position races ahead of
+            //     reality, video frames are released too early and mpv
+            //     then stalls to catch up — visible as a first-frame
+            //     freeze.  Use video-sync=desync so video runs on the
+            //     display refresh clock, independent of the audio clock.
+            //
+            // audio-buffer=0.06 additionally caps mpv's AO pre-fill so
+            // the timing mismatch has less headroom to accumulate.
+            // --------------------------------------------------------------
+            opt_str(&lib, ctx, "audio-buffer", "0.06");
+            opt_str(&lib, ctx, "initial-audio-sync", "no");
+            opt_str(&lib, ctx, "video-sync", "desync");
+
             // Verbose log messages for diagnostics.
             let v = cs("v");
             (lib.mpv_request_log_messages)(ctx, v.as_ptr());
@@ -268,6 +326,7 @@ impl VideoEngine {
             status_rx: Mutex::new(status_rx),
             default_surface_id: Uuid::new_v4(),
             audio_engine,
+            armed_voice: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -416,6 +475,7 @@ impl VideoEngine {
     /// at its current position/size.
     pub fn play_voice(
         &self,
+        cue_id: Option<Uuid>,
         file_path: &Path,
         _surface_id: Option<SurfaceId>,
         volume_db: f64,
@@ -425,6 +485,39 @@ impl VideoEngine {
         _fade_in: Option<&FadeSpec>,
         screen_index: Option<u32>,
     ) -> Result<VoiceId> {
+        // ── Pre-arm fast path ─────────────────────────────────────────────────
+        // If the cue at the playhead was pre-armed, the pipe is already connected
+        // and the ring buffer consumer is installed.  The only step needed is
+        // `pause=no` — no pipe race is possible.
+        if let Some(owner_id) = cue_id {
+            let armed_opt = self.armed_voice.lock().unwrap().take();
+            if let Some(armed) = armed_opt {
+                if armed.owner_id == owner_id {
+                    // Wait up to 50 ms for the pipe thread to finish connecting.
+                    let deadline = Instant::now() + Duration::from_millis(50);
+                    while !armed.ready.load(Ordering::Acquire) {
+                        if Instant::now() >= deadline {
+                            log::warn!(
+                                "[pre-arm] cue {owner_id}: pipe not ready after 50 ms — \
+                                 falling back to fresh start"
+                            );
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+
+                    if armed.ready.load(Ordering::Acquire) {
+                        return self.activate_armed_voice(armed, volume_db);
+                    }
+                    // Not ready — fall through; mpv gets a fresh loadfile below.
+                }
+                // armed.owner_id != cue_id — drop armed, mpv's new loadfile replaces it.
+            }
+        }
+        // Cancel any residual pre-arm (defensive: different cue calling play_voice).
+        // The pipe thread will detect the upcoming loadfile replace and exit.
+        *self.armed_voice.lock().unwrap() = None;
+
         let voice_id = Uuid::new_v4();
 
         // If a video is already playing, complete it immediately.
@@ -458,72 +551,23 @@ impl VideoEngine {
         // listening, causing zero frames to reach the ring buffer.
         let pipe_handle = unsafe { create_pipe_instance() }?;
         {
-            let ae = Arc::clone(&self.audio_engine);
+            let ae  = Arc::clone(&self.audio_engine);
+            let lib = Arc::clone(&self.mpv_lib);
+            let ctx = Arc::clone(&self.mpv_ctx);
             std::thread::Builder::new()
                 .name("wincue-mpv-pcm".into())
-                .spawn(move || handle_pcm_pipe_connection(ae, pipe_handle))
+                .spawn(move || handle_pcm_pipe_connection(
+                    ae, pipe_handle, lib, ctx,
+                    true,                                    // send_pause_no — regular play
+                    Arc::new(AtomicBool::new(false)),        // ready_flag — unused here
+                    Arc::new(AtomicBool::new(false)),        // cancelled — never cancelled
+                ))
                 .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
         }
 
+        self.apply_window_layout(screen_index);
+
         unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED, SWP_NOZORDER,
-            };
-
-            // Position the window based on screen_index.
-            if let Some(idx) = screen_index {
-                // Fullscreen on a specific monitor — strip the resize border first.
-                let screens = Self::list_screens();
-                if let Some(s) = screens.into_iter().find(|s| s.index == idx) {
-                    if let Some(state_mutex) = VIDEO_WND_STATE.get() {
-                        if let Ok(mut state) = state_mutex.lock() {
-                            if !state.is_fullscreen {
-                                state.saved_rect = (100, 100, 100 + 1280, 100 + 720);
-                            }
-                            state.is_fullscreen = true;
-                        }
-                    }
-                    set_borderless(self.hwnd);
-                    SetWindowPos(
-                        self.hwnd, HWND_TOPMOST,
-                        s.x, s.y, s.width as i32, s.height as i32,
-                        SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                    );
-                }
-            } else {
-                // Floating window — restore resize border and windowed size.
-                if let Some(state_mutex) = VIDEO_WND_STATE.get() {
-                    if let Ok(mut state) = state_mutex.lock() {
-                        if state.is_fullscreen {
-                            let (l, t, r, b) = state.saved_rect;
-                            set_resizable(self.hwnd);
-                            SetWindowPos(
-                                self.hwnd, HWND_TOPMOST,
-                                l, t, r - l, b - t,
-                                SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                            );
-                            state.is_fullscreen = false;
-                        }
-                    }
-                }
-                // Always-on-top without activating (keeps WinCue focus).
-                SetWindowPos(
-                    self.hwnd, HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
-                );
-            }
-
-            // Show without activating — WinCue keeps keyboard focus.
-            ShowWindow(self.hwnd, SW_SHOWNA);
-
-            // Bring to the front visually (topmost, still no focus steal).
-            SetWindowPos(
-                self.hwnd, HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
 
             // Set playback volume.
             let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
@@ -571,6 +615,12 @@ impl VideoEngine {
                 opts_cstr.as_ptr(),
                 std::ptr::null(),
             ];
+            // Start paused so mpv initialises its AO (opens the named pipe)
+            // but does not write any PCM until we send pause=no from the pipe
+            // reader thread — after ConnectNamedPipe() returns and the ring
+            // buffer consumer is installed in AudioEngine.  This guarantees
+            // zero PCM frames are lost before the consumer is ready.
+            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
             // Enable hardware video decoding and the fast processing profile
             // to reduce CPU decode load on heavy files (e.g. H264 1080p @
             // high bitrate).  mpv falls back to software decoding silently if
@@ -579,7 +629,7 @@ impl VideoEngine {
             // and don't interfere with mpv's own initialisation options.
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
-            log::info!("[mpv] hwdec=auto profile=fast set — sending loadfile");
+            log::info!("[mpv] pause=yes hwdec=auto profile=fast set — sending loadfile");
 
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
@@ -592,6 +642,295 @@ impl VideoEngine {
         }
 
         Ok(voice_id)
+    }
+
+    // ── Window layout helper ─────────────────────────────────────────────────
+
+    /// Position and show the mpv window.
+    ///
+    /// `Some(idx)` moves the window to cover monitor `idx` in fullscreen mode.
+    /// `None` keeps the floating window at its current position but ensures it
+    /// is topmost and visible.
+    fn apply_window_layout(&self, screen_index: Option<u32>) {
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED, SWP_NOZORDER,
+            };
+
+            if let Some(idx) = screen_index {
+                let screens = Self::list_screens();
+                if let Some(s) = screens.into_iter().find(|s| s.index == idx) {
+                    if let Some(state_mutex) = VIDEO_WND_STATE.get() {
+                        if let Ok(mut state) = state_mutex.lock() {
+                            if !state.is_fullscreen {
+                                state.saved_rect = (100, 100, 100 + 1280, 100 + 720);
+                            }
+                            state.is_fullscreen = true;
+                        }
+                    }
+                    set_borderless(self.hwnd);
+                    SetWindowPos(
+                        self.hwnd, HWND_TOPMOST,
+                        s.x, s.y, s.width as i32, s.height as i32,
+                        SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    );
+                }
+            } else {
+                if let Some(state_mutex) = VIDEO_WND_STATE.get() {
+                    if let Ok(mut state) = state_mutex.lock() {
+                        if state.is_fullscreen {
+                            let (l, t, r, b) = state.saved_rect;
+                            set_resizable(self.hwnd);
+                            SetWindowPos(
+                                self.hwnd, HWND_TOPMOST,
+                                l, t, r - l, b - t,
+                                SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                            );
+                            state.is_fullscreen = false;
+                        }
+                    }
+                }
+                SetWindowPos(
+                    self.hwnd, HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
+
+            ShowWindow(self.hwnd, SW_SHOWNA);
+            SetWindowPos(
+                self.hwnd, HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    // ── Pre-arm ──────────────────────────────────────────────────────────────
+
+    /// Activate a pre-armed voice on GO.
+    ///
+    /// The pipe is already connected and the ring buffer consumer is installed.
+    /// We just register the voice, show the window, and send `pause=no`.
+    fn activate_armed_voice(&self, armed: ArmedVoice, volume_db: f64) -> Result<VoiceId> {
+        // Clear any playing voice (shouldn't be one since pre-arm only fires
+        // when mpv is idle, but handle it defensively).
+        if let Some(old_id) = self.current_voice.lock().unwrap().take() {
+            self.voices.lock().unwrap().remove(&old_id);
+            let _ = self.status_tx.send(VideoStatus::Completed { voice_id: old_id });
+        }
+
+        *self.current_voice.lock().unwrap() = Some(armed.voice_id);
+        self.voices.lock().unwrap().insert(
+            armed.voice_id,
+            VideoVoice { id: armed.voice_id, started_at: Instant::now(), duration: None },
+        );
+
+        self.apply_window_layout(armed.screen_index);
+
+        // Set volume at GO time (cue may have been edited since pre-arm).
+        let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
+        let vol_str = cs(&format!("{vol_pct:.2}"));
+        unsafe {
+            let prop = cs("volume");
+            (self.mpv_lib.mpv_set_property_string)(self.mpv_ctx.0, prop.as_ptr(), vol_str.as_ptr());
+            // Unpause — ring buffer consumer already installed; audio starts immediately.
+            (self.mpv_lib.mpv_set_property_string)(
+                self.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
+            );
+        }
+        log::info!(
+            "[pre-arm] GO: activated voice {} for cue {}",
+            armed.voice_id, armed.owner_id
+        );
+        Ok(armed.voice_id)
+    }
+
+    /// Pre-arm a `VideoCue` for instant GO.
+    ///
+    /// Sends `loadfile` with `pause=yes` and pre-connects the PCM named pipe
+    /// so that when GO is pressed the ring buffer consumer is already installed
+    /// in `AudioEngine` — `pause=no` is the only remaining step.
+    ///
+    /// This is a no-op when a video is already playing (single mpv context).
+    /// Calling it again for a different cue cancels the previous arm first.
+    pub fn pre_arm_voice(
+        &self,
+        owner_id: Uuid,
+        file_path: &Path,
+        _surface_id: Option<SurfaceId>,
+        volume_db: f64,
+        loop_count: u32,
+        start_ms: Option<u64>,
+        end_ms: Option<u64>,
+        _fade_in: Option<&FadeSpec>,
+        screen_index: Option<u32>,
+    ) -> Result<()> {
+        // Only one mpv context — do not pre-arm while another video is playing.
+        if self.current_voice.lock().unwrap().is_some() {
+            return Ok(());
+        }
+
+        // Cancel any previous pre-arm.
+        self.cancel_pre_arm();
+
+        let voice_id = Uuid::new_v4();
+        let ready    = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        let path_str = file_path.to_string_lossy().replace('\\', "/");
+        let path_cstr = CString::new(path_str.as_str())
+            .map_err(|_| anyhow!("File path contains NUL byte"))?;
+
+        // Create the pipe server before loadfile so ConnectNamedPipe is already
+        // blocking when mpv initialises its AO and opens the pipe.
+        let pipe_handle = unsafe { create_pipe_instance() }?;
+
+        // Store armed state BEFORE spawning the thread (thread may read it
+        // from ready_flag before this function returns).
+        *self.armed_voice.lock().unwrap() = Some(ArmedVoice {
+            voice_id,
+            owner_id,
+            screen_index,
+            ready: Arc::clone(&ready),
+            pipe_handle,
+            cancelled: Arc::clone(&cancelled),
+        });
+
+        {
+            let ae  = Arc::clone(&self.audio_engine);
+            let lib = Arc::clone(&self.mpv_lib);
+            let ctx = Arc::clone(&self.mpv_ctx);
+            let flag_r = Arc::clone(&ready);
+            let flag_c = Arc::clone(&cancelled);
+            std::thread::Builder::new()
+                .name("wincue-mpv-pcm-prearm".into())
+                .spawn(move || handle_pcm_pipe_connection(
+                    ae, pipe_handle, lib, ctx,
+                    false,   // send_pause_no: false — GO will send pause=no
+                    flag_r,  // set to true after ring buffer installed
+                    flag_c,  // cancellation flag
+                ))
+                .map_err(|e| anyhow!("Failed to spawn pre-arm PCM thread: {e}"))?;
+        }
+
+        let ctx = self.mpv_ctx.0;
+        let lib = &self.mpv_lib;
+
+        // Build per-file options (same as play_voice).
+        let mut opts: Vec<String> = Vec::new();
+        if let Some(start) = start_ms {
+            opts.push(format!("start={:.3}", start as f64 / 1000.0));
+        }
+        if let Some(end) = end_ms {
+            opts.push(format!("end={:.3}", end as f64 / 1000.0));
+        }
+        let loop_val = if loop_count == u32::MAX {
+            "inf".to_string()
+        } else if loop_count == 0 {
+            "no".to_string()
+        } else {
+            loop_count.to_string()
+        };
+        opts.push(format!("loop-file={loop_val}"));
+
+        let opts_str     = opts.join(",");
+        let opts_cstr    = cs(&opts_str);
+        let cmd_cstr     = cs("loadfile");
+        let replace_cstr = cs("replace");
+        let index_cstr   = cs("0");
+        let args: [*const std::ffi::c_char; 6] = [
+            cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
+            index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
+        ];
+
+        unsafe {
+            // Volume is set at GO time (activate_armed_voice) to pick up
+            // any inspector changes made between pre-arm and GO.
+            let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
+            let vol_str = cs(&format!("{vol_pct:.2}"));
+            let prop_vol = cs("volume");
+            (lib.mpv_set_property_string)(ctx, prop_vol.as_ptr(), vol_str.as_ptr());
+
+            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
+
+            let ret = (lib.mpv_command)(ctx, args.as_ptr());
+            if ret < 0 {
+                let err_cstr = (lib.mpv_error_string)(ret);
+                let err_msg = std::ffi::CStr::from_ptr(err_cstr).to_string_lossy();
+                *self.armed_voice.lock().unwrap() = None;
+                return Err(anyhow!("pre_arm loadfile failed (code {ret}): {err_msg}"));
+            }
+        }
+        log::info!("[pre-arm] loadfile sent for cue {owner_id}: {path_str}");
+
+        // --------------------------------------------------------------------
+        // D3D11 swap-chain warmup.
+        //
+        // Apply the window layout NOW so mpv's first decoded frame is
+        // presented to a visible, composited window during pre-arm — not at
+        // GO.  Without this, the first Present() call happens the instant
+        // `pause=no` fires, and the D3D11 pipeline / DWM composition /
+        // shader compile costs land on frame 1-2, producing the classic
+        // "freeze on an early frame, unfreeze, play" hiccup.
+        //
+        // Show-control convention (QLab et al.): an armed video cue is
+        // expected to display its first frame on the output so the operator
+        // can see what is queued.  `cancel_pre_arm` hides the window again
+        // when the playhead moves off the cue.
+        // --------------------------------------------------------------------
+        self.apply_window_layout(screen_index);
+
+        Ok(())
+    }
+
+    /// Cancel any pre-armed voice.
+    ///
+    /// Closes the pipe server handle (unblocking any pending `ConnectNamedPipe`
+    /// call) and sends `stop` to mpv so the AO closes.  The pipe thread detects
+    /// the error and exits without double-closing the handle.
+    pub fn cancel_pre_arm(&self) {
+        if let Some(a) = self.armed_voice.lock().unwrap().take() {
+            log::info!("[pre-arm] cancelling pre-arm for cue {}", a.owner_id);
+            // Signal the pipe thread that the handle is being closed externally.
+            a.cancelled.store(true, Ordering::Release);
+            // Clear the ring buffer consumer before the thread might install it
+            // (best-effort; the thread will clear it again on exit — no harm).
+            log::info!("[teardown] 1 — sending stop to mpv");
+            unsafe {
+                // Tell mpv to stop, which closes the AO connection.
+                let stop = cs("stop");
+                let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
+                (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+            }
+            log::info!("[teardown] 2 — stop sent");
+            log::info!("[teardown] 3 — closing pipe");
+            unsafe {
+                // Force-close the handle to unblock ConnectNamedPipe immediately.
+                CloseHandle(a.pipe_handle);
+            }
+            log::info!("[teardown] 4 — pipe closed");
+            log::info!("[teardown] 5 — dropping ring buffer");
+            self.audio_engine.set_video_pcm_consumer(None);
+            log::info!("[teardown] 6 — ring buffer dropped");
+            log::info!("[teardown] 7 — joining pipe reader thread");
+            // (pipe reader thread runs independently; we cannot join it here —
+            //  the cancelled flag above causes it to exit on its own)
+            log::info!("[teardown] 8 — pipe reader thread joined");
+
+            // Hide the warmup window so the output monitor goes black now
+            // that the playhead has moved off the armed cue.  pre_arm_voice
+            // showed it to warm up the D3D11 swap chain.
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                ShowWindow(self.hwnd, SW_HIDE);
+            }
+
+            log::info!("[teardown] 9 — teardown complete");
+        }
     }
 
     /// Stop the given voice.  `fade_ms` is an immediate cut for now.
@@ -878,38 +1217,82 @@ unsafe fn create_pipe_instance() -> Result<isize> {
 /// Block on [`ConnectNamedPipe`], then stream PCM from mpv into
 /// [`AudioEngine`]'s ring buffer until the pipe closes.
 ///
-/// Spawned once per video GO by [`VideoEngine::play_voice`], immediately
-/// after [`create_pipe_instance`].  The thread exits when mpv closes the
-/// pipe (stop or EOF).
+/// Spawned by both [`VideoEngine::play_voice`] and
+/// [`VideoEngine::pre_arm_voice`].  The thread exits when mpv closes the
+/// pipe (stop, EOF, or external cancellation via `cancel_pre_arm`).
 ///
-/// ## Startup sequencing
+/// ## Parameters
 ///
-/// `play_voice()` creates the pipe server, spawns this thread (which
-/// immediately blocks on `ConnectNamedPipe`), then sends `loadfile`.
-/// mpv opens the file and connects to the pipe.  Once `ConnectNamedPipe`
-/// returns and the ring buffer is installed, this thread sends `pause=no`
-/// — the only moment it is safe to do so, because `MPV_EVENT_FILE_LOADED`
-/// fires *before* the pipe handshake completes.  AudioEngine's pre-roll
-/// gate (`MIN_VIDEO_PREBUFFER`) then controls when audio actually starts.
+/// * `send_pause_no` — when `true` (regular play), sends `pause=no`
+///   immediately after the ring buffer is installed.  When `false`
+///   (pre-arm), omits the send; GO will call `pause=no` directly once it
+///   decides to activate the armed voice.
+/// * `ready_flag`   — set to `true` after ring buffer is installed so
+///   `play_voice`'s pre-arm check knows the arm is ready for instant GO.
+/// * `cancelled`    — set to `true` by `cancel_pre_arm` before the pipe
+///   handle is force-closed.  The thread uses this to skip the final
+///   `DisconnectNamedPipe` / `CloseHandle` (handle is already invalid).
 ///
 /// ## Rate control
 ///
 /// mpv with `ao=pcm` writes PCM as fast as decoding allows.  This thread
 /// throttles itself via pipe backpressure: when the ring buffer exceeds
 /// `max_prebuffer` samples it sleeps 1 ms, causing mpv's writes to block.
-fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
-    // ~500 ms of stereo at 48 kHz — throttle threshold for backpressure.
-    let max_prebuffer: usize = (audio_engine.sample_rate() as usize) / 2 * 2;
+fn handle_pcm_pipe_connection(
+    audio_engine: Arc<AudioEngine>,
+    handle: isize,
+    mpv_lib: Arc<MpvLib>,
+    mpv_ctx: Arc<MpvCtx>,
+    send_pause_no: bool,
+    ready_flag: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+) {
+    // ~60 ms of stereo — throttle threshold for backpressure.
+    //
+    // This must stay tight: every sample sitting in the ring buffer is a
+    // sample of added audio latency relative to what mpv considers "played"
+    // (ao=pcm reports bytes as played the instant they hit the pipe).  60 ms
+    // matches the mpv `--audio-buffer=0.06` option set at init so the mpv-
+    // side audio clock and our actual audible latency agree, keeping A/V in
+    // lock-step.  Value is in f32 samples (stereo → frames × 2).
+    let max_prebuffer: usize =
+        ((audio_engine.sample_rate() as usize) * 60 / 1000) * 2;
 
     // Block until mpv opens the pipe as a client.
     log::info!("PCM pipe: waiting for mpv to connect...");
     unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+
+    // If `cancel_pre_arm` closed the handle, exit without touching it again.
+    if cancelled.load(Ordering::Acquire) {
+        log::info!("PCM pipe: cancelled — handle closed externally, exiting");
+        return;
+    }
+
     log::info!("PCM pipe: mpv connected — creating ring buffer");
 
     // Fresh ring buffer: 3 s of stereo f32 so burst-writes never overflow.
     let ring_size = (audio_engine.sample_rate() as usize * 2 * 3).max(16384);
     let (mut prod, cons) = HeapRb::<f32>::new(ring_size).split();
     audio_engine.set_video_pcm_consumer(Some(cons));
+
+    // Signal that the arm is ready (play_voice's pre-arm check polls this).
+    ready_flag.store(true, Ordering::Release);
+
+    if send_pause_no {
+        // Regular play path: ring buffer consumer is now installed.  Unpause
+        // so mpv starts writing PCM — the only safe moment; the consumer is
+        // ready and zero frames will be lost before it is read.
+        unsafe {
+            (mpv_lib.mpv_set_property_string)(
+                mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
+            );
+        }
+        log::info!("PCM pipe: ring buffer ready — pause=no sent");
+    } else {
+        // Pre-arm path: stay paused.  GO will send pause=no via
+        // `activate_armed_voice` once it decides to use this armed voice.
+        log::info!("PCM pipe: pre-arm ready — ring buffer installed, waiting for GO");
+    }
 
     let mut raw = [0u8; 4096];
     loop {
@@ -930,7 +1313,7 @@ fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
         };
 
         if ok == 0 || bytes_read == 0 {
-            break; // Pipe closed by mpv (stop or EOF).
+            break; // Pipe closed by mpv (stop, EOF, or cancel).
         }
 
         for chunk in raw[..bytes_read as usize].chunks_exact(4) {
@@ -943,9 +1326,13 @@ fn handle_pcm_pipe_connection(audio_engine: Arc<AudioEngine>, handle: isize) {
     log::info!("PCM pipe: mpv disconnected — clearing video PCM consumer");
     audio_engine.set_video_pcm_consumer(None);
 
-    unsafe {
-        DisconnectNamedPipe(handle);
-        CloseHandle(handle);
+    // Only close the handle if we own it; cancel_pre_arm already closed it
+    // (and set `cancelled`) when it wanted to force-unblock this thread.
+    if !cancelled.load(Ordering::Acquire) {
+        unsafe {
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
+        }
     }
 }
 

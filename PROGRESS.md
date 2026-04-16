@@ -203,8 +203,7 @@ Après plusieurs itérations de débogage (session 2026-04-12 → 13), la lectur
 
 ### Backend
 
-#### Routing par Output Patch non implémenté
-Tout l'audio sort sur le device par défaut. `OutputPatch` est stocké mais `AudioEngine` ne le consulte pas.
+Rien de bloquant — le routing Output Patch est câblé (`Voice.out_l/out_r` + `fill_buffer`).
 
 ### Frontend
 

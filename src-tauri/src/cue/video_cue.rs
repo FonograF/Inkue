@@ -126,6 +126,7 @@ impl VideoCue {
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
 
         let voice_id = context.video_engine.play_voice(
+            Some(self.id),        // cue_id — enables pre-arm fast path
             path,
             self.output_surface_id,
             self.volume_db,

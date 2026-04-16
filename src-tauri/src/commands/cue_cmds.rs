@@ -288,6 +288,12 @@ pub fn set_playhead(
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     cue_list.set_playhead(id).map_err(|e| e.to_string())?;
 
+    crate::show::video_pre_arm::update_video_pre_arm(
+        cue_list.playhead_cue_id,
+        cue_list,
+        &state.video_engine,
+    );
+
     let _ = app_handle.emit(
         "playhead-moved",
         serde_json::json!({ "cue_id": id.map(|u| u.to_string()) }),
