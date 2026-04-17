@@ -41,6 +41,13 @@ pub struct AudioEngine {
     /// Accessed with `try_lock` in the RT callback — contention is
     /// near-zero since it is only swapped at GO/stop time.
     video_pcm_cons: Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>,
+    /// Gate that allows the audio callback to mix video PCM.
+    ///
+    /// Set to `false` whenever a new consumer is installed (at pre-arm or GO)
+    /// and set to `true` by the mpv event thread on `MPV_EVENT_PLAYBACK_RESTART`.
+    /// This ensures video audio is never mixed before mpv is actually presenting
+    /// frame-0-aligned output, preventing the ~1 s pre-arm A/V desync.
+    video_pcm_active: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // SAFETY: cpal::Stream is not Send on Windows when using WASAPI.
@@ -73,6 +80,9 @@ impl AudioEngine {
             Arc::new(Mutex::new(None));
         let cb_video_pcm = Arc::clone(&video_pcm_cons);
 
+        let video_pcm_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cb_video_active  = Arc::clone(&video_pcm_active);
+
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 &StreamConfig {
@@ -81,7 +91,7 @@ impl AudioEngine {
                     buffer_size: cpal::BufferSize::Default,
                 },
                 move |data: &mut [f32], _| {
-                    fill_buffer(data, channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain, &cb_video_pcm);
+                    fill_buffer(data, channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain, &cb_video_pcm, &cb_video_active);
                 },
                 |err| log::error!("cpal stream error: {err}"),
                 None,
@@ -97,7 +107,7 @@ impl AudioEngine {
                     },
                     move |data: &mut [i32], _| {
                         let n = data.len().min(scratch.len());
-                        fill_buffer(&mut scratch[..n], channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain, &cb_video_pcm);
+                        fill_buffer(&mut scratch[..n], channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain, &cb_video_pcm, &cb_video_active);
                         for (out, &s) in data.iter_mut().zip(scratch[..n].iter()) {
                             *out = (s.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
                         }
@@ -121,6 +131,7 @@ impl AudioEngine {
             output_channels: std::sync::atomic::AtomicU32::new(channels as u32),
             master_gain: engine_master_gain,
             video_pcm_cons,
+            video_pcm_active,
         }))
     }
 
@@ -141,14 +152,48 @@ impl AudioEngine {
     /// Install (or remove) the ring buffer consumer that carries decoded PCM
     /// from the video engine into the mix.
     ///
-    /// Called by [`VideoEngine`] just before starting a video (`Some(cons)`)
-    /// and on stop/disconnect (`None`).  The swap is protected by a Mutex that
-    /// is held only for the duration of the swap — the audio callback uses
-    /// `try_lock` and skips mixing if contended (one callback worth of silence).
+    /// Installing a new consumer (`Some`) also resets the `video_pcm_active`
+    /// gate to `false` — mixing is not allowed until `activate_video_pcm` is
+    /// called (done by the mpv event thread on `MPV_EVENT_PLAYBACK_RESTART`).
     pub fn set_video_pcm_consumer(&self, cons: Option<ringbuf::HeapCons<f32>>) {
+        // Deactivate before swapping — prevents stale pre-arm audio from leaking.
+        self.video_pcm_active
+            .store(false, std::sync::atomic::Ordering::Release);
         if let Ok(mut g) = self.video_pcm_cons.lock() {
             *g = cons;
         }
+    }
+
+    /// Drain all buffered video PCM samples without mixing them.
+    ///
+    /// Called at GO time to flush audio that ao=pcm wrote into the pipe during
+    /// pre-arm.  Returns the number of `f32` samples discarded so the caller
+    /// can log how much was pre-filled.
+    pub fn flush_video_pcm_consumer(&self) -> usize {
+        let mut count = 0usize;
+        if let Ok(mut g) = self.video_pcm_cons.lock() {
+            if let Some(cons) = g.as_mut() {
+                while cons.try_pop().is_some() {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Allow the audio callback to start mixing video PCM.
+    ///
+    /// Called by the mpv event thread when `MPV_EVENT_PLAYBACK_RESTART` fires,
+    /// signalling that mpv is presenting frame-0-aligned output.
+    pub fn activate_video_pcm(&self) {
+        self.video_pcm_active
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Expose the active flag so [`VideoEngine`] can share it with the mpv
+    /// event loop thread without passing the full `AudioEngine` reference.
+    pub fn video_pcm_active_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.video_pcm_active)
     }
 
     /// Add a pre-decoded voice to the pool and issue a Play command.
@@ -277,11 +322,12 @@ impl AudioEngine {
         // Build new stream — reuse same voices and master_gain.
         let cb_voices = Arc::clone(&self.voices);
         let cb_mg = Arc::clone(&self.master_gain);
-        // Clear the video PCM consumer — the sample rate may have changed and
-        // any buffered data would be at the wrong rate.  VideoEngine will
-        // install a new consumer on the next video GO (with a fresh pre-roll).
+        // Clear the video PCM consumer and deactivate the gate — sample rate
+        // may have changed; VideoEngine will install a fresh consumer on next GO.
+        self.video_pcm_active.store(false, std::sync::atomic::Ordering::Release);
         if let Ok(mut g) = self.video_pcm_cons.lock() { *g = None; }
-        let cb_vid = Arc::clone(&self.video_pcm_cons);
+        let cb_vid         = Arc::clone(&self.video_pcm_cons);
+        let cb_vid_active  = Arc::clone(&self.video_pcm_active);
 
         // For ASIO: route the internal stereo mix to the selected output pair.
         // pair_offset = first channel index of the selected pair (e.g. pair 1 → offset 2).
@@ -298,7 +344,7 @@ impl AudioEngine {
             cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
                 &stream_cfg,
                 move |data: &mut [f32], _| {
-                    fill_buffer(data, total_ch, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid);
+                    fill_buffer(data, total_ch, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid, &cb_vid_active);
                 },
                 |err| log::error!("cpal stream error: {err}"),
                 None,
@@ -306,12 +352,13 @@ impl AudioEngine {
             cpal::SampleFormat::F32 => {
                 // Route stereo mix to the selected pair; zero the rest.
                 let mut scratch = vec![0.0f32; 4096 * 2].into_boxed_slice();
+                let cb_vid_active2 = Arc::clone(&self.video_pcm_active);
                 device.build_output_stream(
                     &stream_cfg,
                     move |data: &mut [f32], _| {
                         let frames = data.len() / total_ch;
                         let n = (frames * 2).min(scratch.len());
-                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid);
+                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid, &cb_vid_active2);
                         data.fill(0.0);
                         for f in 0..frames {
                             data[f * total_ch + pair_offset]     = scratch[f * 2];
@@ -326,12 +373,13 @@ impl AudioEngine {
                 // Pre-allocate stereo scratch — no alloc inside the RT callback.
                 let scratch_len = (buffer_size as usize * 2).max(4096 * 2);
                 let mut scratch = vec![0.0f32; scratch_len].into_boxed_slice();
+                let cb_vid_active3 = Arc::clone(&self.video_pcm_active);
                 device.build_output_stream(
                     &stream_cfg,
                     move |data: &mut [i32], _| {
                         let frames = data.len() / total_ch;
                         let n = (frames * 2).min(scratch.len());
-                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid);
+                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg, &cb_vid, &cb_vid_active3);
                         data.fill(0);
                         for f in 0..frames {
                             data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
@@ -380,6 +428,7 @@ fn fill_buffer(
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
     master_gain: &Arc<std::sync::atomic::AtomicU32>,
     video_pcm_cons: &Arc<Mutex<Option<ringbuf::HeapCons<f32>>>>,
+    video_pcm_active: &Arc<std::sync::atomic::AtomicBool>,
 ) {
     output.fill(0.0);
 
@@ -505,24 +554,26 @@ fn fill_buffer(
         voice.frame_pos.store(frame_pos_f as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
-    // Mix decoded video PCM from the named-pipe ring buffer.
-    // Use try_lock — if the Mutex is held (consumer being swapped at GO/stop
-    // time), we skip video mixing for this one callback (inaudible glitch).
-    if let Ok(mut cons_guard) = video_pcm_cons.try_lock() {
-        if let Some(cons) = cons_guard.as_mut() {
-            for frame in 0..frames {
-                let out_base = frame * channels;
-                let l = cons.try_pop().unwrap_or(0.0);
-                let r = cons.try_pop().unwrap_or(l);
-                let out_l = l.clamp(-1.0, 1.0);
-                let out_r = r.clamp(-1.0, 1.0);
-                if channels >= 1 {
-                    output[out_base] += out_l;
-                    peak_l = peak_l.max(out_l.abs());
-                }
-                if channels >= 2 {
-                    output[out_base + 1] += out_r;
-                    peak_r = peak_r.max(out_r.abs());
+    // Mix decoded video PCM from the named-pipe ring buffer — but only after
+    // MPV_EVENT_PLAYBACK_RESTART has fired (gate prevents stale pre-arm audio
+    // from playing before the video clock is aligned to frame 0).
+    if video_pcm_active.load(std::sync::atomic::Ordering::Acquire) {
+        if let Ok(mut cons_guard) = video_pcm_cons.try_lock() {
+            if let Some(cons) = cons_guard.as_mut() {
+                for frame in 0..frames {
+                    let out_base = frame * channels;
+                    let l = cons.try_pop().unwrap_or(0.0);
+                    let r = cons.try_pop().unwrap_or(l);
+                    let out_l = l.clamp(-1.0, 1.0);
+                    let out_r = r.clamp(-1.0, 1.0);
+                    if channels >= 1 {
+                        output[out_base] += out_l;
+                        peak_l = peak_l.max(out_l.abs());
+                    }
+                    if channels >= 2 {
+                        output[out_base + 1] += out_r;
+                        peak_r = peak_r.max(out_r.abs());
+                    }
                 }
             }
         }

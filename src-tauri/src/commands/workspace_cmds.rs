@@ -116,6 +116,18 @@ pub fn load_workspace(
             .expect("Failed to spawn preload thread");
     }
 
+    // Pre-arm the video cue at the playhead so the first GO is instant.
+    {
+        let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        if let Some(cl) = ws.active_cue_list() {
+            crate::show::video_pre_arm::update_video_pre_arm(
+                cl.playhead_cue_id,
+                cl,
+                &state.video_engine,
+            );
+        }
+    }
+
     Ok(())
 }
 

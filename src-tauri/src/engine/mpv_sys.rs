@@ -34,6 +34,9 @@ pub const MPV_EVENT_LOG_MESSAGE: u32 = 2;
 pub const MPV_EVENT_START_FILE: u32 = 6;
 pub const MPV_EVENT_END_FILE: u32 = 7;
 pub const MPV_EVENT_FILE_LOADED: u32 = 8;
+pub const MPV_EVENT_SEEK: u32 = 20;
+pub const MPV_EVENT_VIDEO_RECONFIG: u32 = 17;
+pub const MPV_EVENT_PLAYBACK_RESTART: u32 = 21;
 pub const MPV_EVENT_PROPERTY_CHANGE: u32 = 22;
 
 // ---------------------------------------------------------------------------

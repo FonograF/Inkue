@@ -49,7 +49,8 @@ use super::mpv_sys::{
     MpvEventEndFile, MpvEventLogMessage, MpvLib,
     MPV_END_FILE_REASON_EOF, MPV_END_FILE_REASON_ERROR,
     MPV_EVENT_END_FILE, MPV_EVENT_FILE_LOADED, MPV_EVENT_LOG_MESSAGE,
-    MPV_EVENT_SHUTDOWN, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64,
+    MPV_EVENT_PLAYBACK_RESTART, MPV_EVENT_SEEK, MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
+    MPV_EVENT_VIDEO_RECONFIG, MPV_FORMAT_DOUBLE, MPV_FORMAT_FLAG, MPV_FORMAT_INT64,
 };
 
 /// Unique identifier for one playing video instance.
@@ -82,6 +83,8 @@ struct ArmedVoice {
     /// Set to `true` by `cancel_pre_arm` before closing the handle.
     /// The pipe thread checks this at exit to avoid double-closing.
     cancelled: Arc<AtomicBool>,
+    /// When `pre_arm_voice` was called — used to log how long video was paused.
+    armed_at: Instant,
 }
 
 /// Information about a connected monitor, returned by [`VideoEngine::list_screens`].
@@ -190,6 +193,17 @@ pub struct VideoEngine {
     /// Pre-armed voice state, if any.  Set by `pre_arm_voice` when the
     /// playhead lands on a `VideoCue`; consumed or cancelled before GO.
     armed_voice: Arc<Mutex<Option<ArmedVoice>>>,
+    /// Timestamp when `pause=no` was last sent to mpv (either from
+    /// `activate_armed_voice` or the PCM pipe thread).  Shared with the mpv
+    /// event loop so it can log how long after GO `MPV_EVENT_PLAYBACK_RESTART`
+    /// fires — that delta is the observable startup freeze duration.
+    go_sent_at: Arc<Mutex<Option<Instant>>>,
+    /// Shared with the mpv event loop.  `pre_arm_voice` stores the current
+    /// arm's `pipe_discard` flag here; the event loop takes it on
+    /// `MPV_EVENT_PLAYBACK_RESTART` (after GO) and flips it to `false` so the
+    /// pipe thread switches from drain mode to push mode atomically with the
+    /// audio gate opening.
+    armed_pipe_discard: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 }
 
 impl VideoEngine {
@@ -303,16 +317,22 @@ impl VideoEngine {
         let (status_tx, status_rx) = crossbeam_channel::unbounded();
         let current_voice: Arc<Mutex<Option<VoiceId>>> = Arc::new(Mutex::new(None));
         let mpv_ctx = Arc::new(MpvCtx(ctx));
+        let go_sent_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let armed_pipe_discard: Arc<Mutex<Option<Arc<AtomicBool>>>> =
+            Arc::new(Mutex::new(None));
 
         // Spawn the mpv event thread.
         {
-            let lib2 = Arc::clone(&lib);
-            let ctx2 = Arc::clone(&mpv_ctx);
-            let voice2 = Arc::clone(&current_voice);
-            let tx2 = status_tx.clone();
+            let lib2      = Arc::clone(&lib);
+            let ctx2      = Arc::clone(&mpv_ctx);
+            let voice2    = Arc::clone(&current_voice);
+            let tx2       = status_tx.clone();
+            let gsa2      = Arc::clone(&go_sent_at);
+            let pcm_flag  = audio_engine.video_pcm_active_flag();
+            let apd2      = Arc::clone(&armed_pipe_discard);
             std::thread::Builder::new()
                 .name("wincue-mpv-events".into())
-                .spawn(move || mpv_event_loop(lib2, ctx2, voice2, tx2, hwnd))
+                .spawn(move || mpv_event_loop(lib2, ctx2, voice2, tx2, hwnd, gsa2, pcm_flag, apd2))
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
 
@@ -327,6 +347,8 @@ impl VideoEngine {
             default_surface_id: Uuid::new_v4(),
             audio_engine,
             armed_voice: Arc::new(Mutex::new(None)),
+            go_sent_at,
+            armed_pipe_discard,
         })
     }
 
@@ -494,7 +516,7 @@ impl VideoEngine {
             if let Some(armed) = armed_opt {
                 if armed.owner_id == owner_id {
                     // Wait up to 50 ms for the pipe thread to finish connecting.
-                    let deadline = Instant::now() + Duration::from_millis(50);
+                    let deadline = Instant::now() + Duration::from_millis(200);
                     while !armed.ready.load(Ordering::Acquire) {
                         if Instant::now() >= deadline {
                             log::warn!(
@@ -561,6 +583,7 @@ impl VideoEngine {
                     true,                                    // send_pause_no — regular play
                     Arc::new(AtomicBool::new(false)),        // ready_flag — unused here
                     Arc::new(AtomicBool::new(false)),        // cancelled — never cancelled
+                    Arc::new(AtomicBool::new(false)),        // pipe_discard — push mode from start
                 ))
                 .map_err(|e| anyhow!("Failed to spawn PCM reader thread: {e}"))?;
         }
@@ -596,6 +619,10 @@ impl VideoEngine {
                 loop_count.to_string()
             };
             opts.push(format!("loop-file={loop_val}"));
+            // Pass pause=yes as a per-file option so it is applied atomically
+            // as part of the new session — mpv_set_property_string cannot
+            // survive the playback-state reset that `loadfile replace` performs.
+            opts.push("pause=yes".to_string());
 
             let opts_str = opts.join(",");
             let opts_cstr  = cs(&opts_str);
@@ -615,21 +642,14 @@ impl VideoEngine {
                 opts_cstr.as_ptr(),
                 std::ptr::null(),
             ];
-            // Start paused so mpv initialises its AO (opens the named pipe)
-            // but does not write any PCM until we send pause=no from the pipe
-            // reader thread — after ConnectNamedPipe() returns and the ring
-            // buffer consumer is installed in AudioEngine.  This guarantees
-            // zero PCM frames are lost before the consumer is ready.
-            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
-            // Enable hardware video decoding and the fast processing profile
-            // to reduce CPU decode load on heavy files (e.g. H264 1080p @
-            // high bitrate).  mpv falls back to software decoding silently if
-            // the GPU does not support the codec — no crash risk.
-            // Set immediately before loadfile so they apply to this file only
-            // and don't interfere with mpv's own initialisation options.
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
-            log::info!("[mpv] pause=yes hwdec=auto profile=fast set — sending loadfile");
+            // Re-assert ao=pcm A/V sync workarounds in case profile=fast
+            // overwrote them.
+            (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("audio-buffer").as_ptr(), cs("0.06").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("initial-audio-sync").as_ptr(), cs("no").as_ptr());
+            log::info!("[mpv] hwdec=auto profile=fast — sending loadfile (pause=yes in opts)");
 
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
@@ -732,18 +752,138 @@ impl VideoEngine {
         // Set volume at GO time (cue may have been edited since pre-arm).
         let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
         let vol_str = cs(&format!("{vol_pct:.2}"));
+
+        // Ring buffer is empty: the pipe thread has been in drain mode since
+        // pre-arm started, so no stale audio has accumulated.  No flush needed.
+
         unsafe {
             let prop = cs("volume");
             (self.mpv_lib.mpv_set_property_string)(self.mpv_ctx.0, prop.as_ptr(), vol_str.as_ptr());
+
+            // Reset both clocks to position 0 before unpausing.
+            //
+            // During pre-arm, ao=pcm writes PCM to the named pipe even while
+            // mpv is paused (pipe backpressure limits it to ~60ms, but the
+            // audio PTS still races ahead by ~1s).  A seek to absolute 0
+            // discards that pre-fill and aligns both clocks so the first
+            // audible sample is presented in sync with frame 0.
+            let seek_cmd   = cs("seek");
+            let seek_pos   = cs("0");
+            let seek_flags = cs("absolute+exact");
+            let seek_args: [*const std::ffi::c_char; 4] = [
+                seek_cmd.as_ptr(), seek_pos.as_ptr(), seek_flags.as_ptr(), std::ptr::null(),
+            ];
+            (self.mpv_lib.mpv_command)(self.mpv_ctx.0, seek_args.as_ptr());
+
+            // Diagnostic snapshot just before pause=no — these values confirm
+            // whether Fix 1 (cache=no / demuxer-readahead-secs=0) reduced the
+            // pre-arm pre-fill.  audio-pts should be ~0 if it worked.
+            let mut time_pos: f64 = -1.0;
+            if (self.mpv_lib.mpv_get_property)(
+                self.mpv_ctx.0, cs("time-pos").as_ptr(),
+                MPV_FORMAT_DOUBLE, &mut time_pos as *mut f64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] time-pos={time_pos:.3}s (before pause=no)");
+            }
+            let mut audio_pts: f64 = -1.0;
+            if (self.mpv_lib.mpv_get_property)(
+                self.mpv_ctx.0, cs("audio-pts").as_ptr(),
+                MPV_FORMAT_DOUBLE, &mut audio_pts as *mut f64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] audio-pts={audio_pts:.3}s (before pause=no)");
+            }
+            let mut cache_dur: f64 = -1.0;
+            if (self.mpv_lib.mpv_get_property)(
+                self.mpv_ctx.0, cs("demuxer-cache-duration").as_ptr(),
+                MPV_FORMAT_DOUBLE, &mut cache_dur as *mut f64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] demuxer-cache-duration={cache_dur:.3}s (before pause=no)");
+            }
+
             // Unpause — ring buffer consumer already installed; audio starts immediately.
             (self.mpv_lib.mpv_set_property_string)(
                 self.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
             );
         }
+        // Record when pause=no was sent so the event loop can compute the
+        // delta to MPV_EVENT_PLAYBACK_RESTART (= visible freeze duration).
+        *self.go_sent_at.lock().unwrap() = Some(Instant::now());
+
         log::info!(
-            "[pre-arm] GO: activated voice {} for cue {}",
-            armed.voice_id, armed.owner_id
+            "[pre-arm] GO: activated voice {} for cue {} \
+             (pre-armed for {}ms)",
+            armed.voice_id, armed.owner_id,
+            armed.armed_at.elapsed().as_millis(),
         );
+
+        // Diagnostic properties queried immediately after pause=no.
+        unsafe {
+            let ctx = self.mpv_ctx.0;
+            let lib = &self.mpv_lib;
+
+            // pause: confirm mpv was actually paused at the moment GO fired.
+            // If this reads 0 (not paused), audio was leaking during pre-arm.
+            let mut was_paused: i64 = 0;
+            if (lib.mpv_get_property)(
+                ctx, cs("pause").as_ptr(),
+                MPV_FORMAT_FLAG, &mut was_paused as *mut i64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] pause={was_paused} at GO time (1=was paused, 0=was playing)");
+            }
+
+            // paused-for-cache: 1 means mpv is stalled waiting for the
+            // demuxer cache to fill — the video will not advance until it
+            // clears.  Seeing 1 here would explain a startup freeze.
+            let mut paused_cache: i64 = 0;
+            if (lib.mpv_get_property)(
+                ctx, cs("paused-for-cache").as_ptr(),
+                MPV_FORMAT_FLAG, &mut paused_cache as *mut i64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] paused-for-cache={paused_cache}");
+            }
+
+            // demuxer-cache-duration: how many seconds of video are buffered.
+            let mut cache_dur: f64 = 0.0;
+            if (lib.mpv_get_property)(
+                ctx, cs("demuxer-cache-duration").as_ptr(),
+                MPV_FORMAT_DOUBLE, &mut cache_dur as *mut f64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] demuxer-cache-duration={cache_dur:.3}s");
+            }
+
+            // time-pos: video position in seconds at the moment of GO.
+            let mut time_pos: f64 = 0.0;
+            if (lib.mpv_get_property)(
+                ctx, cs("time-pos").as_ptr(),
+                MPV_FORMAT_DOUBLE, &mut time_pos as *mut f64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] time-pos={time_pos:.3}s at GO");
+            }
+
+            // audio-pts: the audio clock position — if different from
+            // time-pos, mpv will try to compensate on resume.
+            let mut audio_pts: f64 = 0.0;
+            if (lib.mpv_get_property)(
+                ctx, cs("audio-pts").as_ptr(),
+                MPV_FORMAT_DOUBLE, &mut audio_pts as *mut f64 as *mut c_void,
+            ) == 0 {
+                log::info!("[diag] audio-pts={audio_pts:.3}s at GO (diff={:.3}s)",
+                    time_pos - audio_pts);
+            }
+
+            // video-sync: confirm profile=fast did not override our setting.
+            let mut vs_val = std::ptr::null_mut::<std::ffi::c_char>();
+            if (lib.mpv_get_property)(
+                ctx, cs("video-sync").as_ptr(),
+                super::mpv_sys::MPV_FORMAT_STRING,
+                &mut vs_val as *mut *mut std::ffi::c_char as *mut c_void,
+            ) == 0 && !vs_val.is_null() {
+                let vs = std::ffi::CStr::from_ptr(vs_val).to_string_lossy().into_owned();
+                (lib.mpv_free)(vs_val as *mut c_void);
+                log::info!("[diag] video-sync={vs} at GO");
+            }
+        }
+
         Ok(armed.voice_id)
     }
 
@@ -772,16 +912,31 @@ impl VideoEngine {
             return Ok(());
         }
 
+        // Clear the GO timestamp so PLAYBACK_RESTART events that fire during
+        // pre-arm (mpv fires one when the first frame is decoded, even while
+        // paused) do not open the audio gate prematurely.  The gate must only
+        // open on PLAYBACK_RESTART that follows the actual pause=no at GO time.
+        *self.go_sent_at.lock().unwrap() = None;
+
         // Cancel any previous pre-arm.
         self.cancel_pre_arm();
 
         let voice_id = Uuid::new_v4();
-        let ready    = Arc::new(AtomicBool::new(false));
+        let ready     = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
+        // Start in drain mode: pipe thread reads from OS pipe but discards
+        // bytes so the ring buffer stays empty during pre-arm.  Flipped to
+        // false by the mpv event loop on PLAYBACK_RESTART after GO.
+        let pipe_discard = Arc::new(AtomicBool::new(true));
 
         let path_str = file_path.to_string_lossy().replace('\\', "/");
         let path_cstr = CString::new(path_str.as_str())
             .map_err(|_| anyhow!("File path contains NUL byte"))?;
+
+        // Publish the pipe_discard flag so the mpv event loop can flip it on
+        // PLAYBACK_RESTART.  This must happen before loadfile (the event loop
+        // may fire PLAYBACK_RESTART very quickly for cached files).
+        *self.armed_pipe_discard.lock().unwrap() = Some(Arc::clone(&pipe_discard));
 
         // Create the pipe server before loadfile so ConnectNamedPipe is already
         // blocking when mpv initialises its AO and opens the pipe.
@@ -796,6 +951,7 @@ impl VideoEngine {
             ready: Arc::clone(&ready),
             pipe_handle,
             cancelled: Arc::clone(&cancelled),
+            armed_at: Instant::now(),
         });
 
         {
@@ -804,6 +960,7 @@ impl VideoEngine {
             let ctx = Arc::clone(&self.mpv_ctx);
             let flag_r = Arc::clone(&ready);
             let flag_c = Arc::clone(&cancelled);
+            let flag_d = Arc::clone(&pipe_discard);
             std::thread::Builder::new()
                 .name("wincue-mpv-pcm-prearm".into())
                 .spawn(move || handle_pcm_pipe_connection(
@@ -811,6 +968,7 @@ impl VideoEngine {
                     false,   // send_pause_no: false — GO will send pause=no
                     flag_r,  // set to true after ring buffer installed
                     flag_c,  // cancellation flag
+                    flag_d,  // pipe discard mode flag (true = drain, false = push)
                 ))
                 .map_err(|e| anyhow!("Failed to spawn pre-arm PCM thread: {e}"))?;
         }
@@ -834,6 +992,14 @@ impl VideoEngine {
             loop_count.to_string()
         };
         opts.push(format!("loop-file={loop_val}"));
+        // pause=yes: atomic per-file option — survives the loadfile replace
+        // state reset that runtime property writes cannot survive.
+        opts.push("pause=yes".to_string());
+        // Note: cache=no / demuxer-readahead-secs=0 were previously added here
+        // to prevent ao=pcm pre-fill during pre-arm, but they caused mpv to run
+        // dry during playback (stalls, A/V desync warning).  The pipe drain mode
+        // (pipe_discard=true) now handles pre-arm audio isolation without
+        // restricting the demuxer — so these options are no longer needed.
 
         let opts_str     = opts.join(",");
         let opts_cstr    = cs(&opts_str);
@@ -853,9 +1019,12 @@ impl VideoEngine {
             let prop_vol = cs("volume");
             (lib.mpv_set_property_string)(ctx, prop_vol.as_ptr(), vol_str.as_ptr());
 
-            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
+            // Re-assert A/V sync settings in case profile=fast overwrote them.
+            (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("audio-buffer").as_ptr(), cs("0.06").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("initial-audio-sync").as_ptr(), cs("no").as_ptr());
 
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
@@ -865,7 +1034,7 @@ impl VideoEngine {
                 return Err(anyhow!("pre_arm loadfile failed (code {ret}): {err_msg}"));
             }
         }
-        log::info!("[pre-arm] loadfile sent for cue {owner_id}: {path_str}");
+        log::info!("[pre-arm] loadfile sent for cue {owner_id}: {path_str} opts=[{opts_str}]");
 
         // --------------------------------------------------------------------
         // D3D11 swap-chain warmup.
@@ -1038,6 +1207,9 @@ fn mpv_event_loop(
     current_voice: Arc<Mutex<Option<VoiceId>>>,
     status_tx: Sender<VideoStatus>,
     parent_hwnd: isize,
+    go_sent_at: Arc<Mutex<Option<Instant>>>,
+    video_pcm_active: Arc<std::sync::atomic::AtomicBool>,
+    pipe_discard_flag: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 ) {
     loop {
         let event = unsafe { (lib.mpv_wait_event)(ctx.0, 2.0) };
@@ -1048,6 +1220,50 @@ fn mpv_event_loop(
 
         match event_id {
             MPV_EVENT_SHUTDOWN => break,
+
+            MPV_EVENT_START_FILE => {
+                log::info!("[mpv] MPV_EVENT_START_FILE");
+            }
+
+            MPV_EVENT_SEEK => {
+                log::info!("[mpv] MPV_EVENT_SEEK");
+            }
+
+            MPV_EVENT_VIDEO_RECONFIG => {
+                log::info!("[mpv] MPV_EVENT_VIDEO_RECONFIG (video output reconfigured)");
+            }
+
+            // Fires when mpv finishes seeking/loading and begins presenting
+            // frames — including once during pre-arm when the first frame is
+            // decoded (even while paused).  We must NOT open the audio gate
+            // for that pre-arm event; only activate on the PLAYBACK_RESTART
+            // that follows the actual `pause=no` sent at GO time.
+            // `go_sent_at` is None during pre-arm and set to Some(Instant)
+            // immediately after `pause=no` in `activate_armed_voice`.
+            MPV_EVENT_PLAYBACK_RESTART => {
+                let go_time = *go_sent_at.lock().unwrap();
+                if let Some(t) = go_time {
+                    let ms = t.elapsed().as_millis();
+                    // Switch pipe thread from drain → push mode first so that
+                    // when the audio gate opens the ring buffer already has
+                    // fresh post-seek samples ready to mix.
+                    if let Some(flag) = pipe_discard_flag.lock().unwrap().take() {
+                        flag.store(false, std::sync::atomic::Ordering::Release);
+                        log::info!("[mpv] pipe_discard → false (pipe thread now pushing to ring buffer)");
+                    }
+                    // Open the gate: the audio callback may now mix video PCM.
+                    video_pcm_active.store(true, std::sync::atomic::Ordering::Release);
+                    log::info!(
+                        "[mpv] MPV_EVENT_PLAYBACK_RESTART — {ms}ms after pause=no \
+                         (video PCM mixing activated)"
+                    );
+                } else {
+                    log::info!(
+                        "[mpv] MPV_EVENT_PLAYBACK_RESTART during pre-arm \
+                         (gate stays closed — expected)"
+                    );
+                }
+            }
 
             MPV_EVENT_LOG_MESSAGE => {
                 let data = unsafe { (*event).data as *const MpvEventLogMessage };
@@ -1106,11 +1322,25 @@ fn mpv_event_loop(
             }
 
             MPV_EVENT_END_FILE => {
-                log::info!("[mpv] MPV_EVENT_END_FILE received");
                 let data_ptr = unsafe { (*event).data };
                 if let Some(end_data) =
                     unsafe { (data_ptr as *mut MpvEventEndFile).as_ref() }
                 {
+                    use crate::engine::mpv_sys::{
+                        MPV_END_FILE_REASON_STOP, MPV_END_FILE_REASON_QUIT,
+                    };
+                    let reason_name = match end_data.reason {
+                        MPV_END_FILE_REASON_EOF   => "EOF",
+                        MPV_END_FILE_REASON_STOP  => "STOP",
+                        MPV_END_FILE_REASON_QUIT  => "QUIT",
+                        MPV_END_FILE_REASON_ERROR => "ERROR",
+                        _                          => "UNKNOWN",
+                    };
+                    log::info!(
+                        "[mpv] MPV_EVENT_END_FILE reason={reason_name} ({})",
+                        end_data.reason
+                    );
+
                     let voice_id = match end_data.reason {
                         MPV_END_FILE_REASON_EOF | MPV_END_FILE_REASON_ERROR => {
                             current_voice.lock().unwrap().take()
@@ -1246,6 +1476,7 @@ fn handle_pcm_pipe_connection(
     send_pause_no: bool,
     ready_flag: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    pipe_discard: Arc<AtomicBool>,
 ) {
     // ~60 ms of stereo — throttle threshold for backpressure.
     //
@@ -1295,10 +1526,21 @@ fn handle_pcm_pipe_connection(
     }
 
     let mut raw = [0u8; 4096];
+    let mut samples_pushed: u64 = 0;
+    let mut was_discarding = true; // track transitions for logging
     loop {
-        // Backpressure: let AudioEngine drain before writing more.
-        while prod.occupied_len() > max_prebuffer {
+        let discarding = pipe_discard.load(Ordering::Acquire);
+
+        // Log the drain→push transition once so the operator can confirm timing.
+        if was_discarding && !discarding {
+            log::info!("PCM pipe: discard mode OFF — pushing audio to ring buffer");
+            was_discarding = false;
+        }
+
+        // Backpressure: only needed in push mode so the ring buffer never overflows.
+        if !discarding && prod.occupied_len() > max_prebuffer {
             std::thread::sleep(Duration::from_millis(1));
+            continue;
         }
 
         let mut bytes_read: u32 = 0;
@@ -1316,14 +1558,26 @@ fn handle_pcm_pipe_connection(
             break; // Pipe closed by mpv (stop, EOF, or cancel).
         }
 
+        if discarding {
+            // Drain mode: consume OS pipe bytes so ao=pcm never blocks, but
+            // do not push to the ring buffer — no stale audio accumulates.
+            continue;
+        }
+
         for chunk in raw[..bytes_read as usize].chunks_exact(4) {
             // SAFETY: chunks_exact(4) guarantees exactly 4 bytes.
             let sample = f32::from_le_bytes(chunk.try_into().unwrap());
             let _ = prod.try_push(sample);
+            samples_pushed += 1;
         }
     }
 
-    log::info!("PCM pipe: mpv disconnected — clearing video PCM consumer");
+    let sample_rate = 48_000u64; // approximate — engine rate not available here
+    log::info!(
+        "PCM pipe: mpv disconnected — {samples_pushed} samples written total \
+         ({:.1}ms @ ~48kHz stereo) — clearing video PCM consumer",
+        samples_pushed as f64 / 2.0 / sample_rate as f64 * 1000.0,
+    );
     audio_engine.set_video_pcm_consumer(None);
 
     // Only close the handle if we own it; cancel_pre_arm already closed it
