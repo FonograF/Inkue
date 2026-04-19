@@ -72,9 +72,9 @@ pub fn get_all_cues(state: State<'_, AppState>) -> Result<Vec<CueSummary>, Strin
         .map(|c| {
             let mut s = summarise(c.as_ref());
             s.is_loading = loading.contains(&c.id());
-            // Populate file_path for file-based cues (Audio + Video) via the
+            // Populate file_path for file-based cues (Audio, Video, Image) via the
             // serialised form — avoids unsafe downcasting.
-            if matches!(c.cue_type(), CueType::Audio | CueType::Video) {
+            if matches!(c.cue_type(), CueType::Audio | CueType::Video | CueType::Image) {
                 let json = c.serialize();
                 s.file_path = json
                     .get("file_path")
@@ -621,4 +621,76 @@ pub fn set_video_file(
 #[tauri::command]
 pub fn list_video_screens() -> Vec<crate::engine::video_engine::ScreenInfo> {
     crate::engine::VideoEngine::list_screens()
+}
+
+// ---------------------------------------------------------------------------
+// Image file management
+// ---------------------------------------------------------------------------
+
+/// Set the file path of an Image Cue.
+///
+/// Unlike [`set_audio_file`], no background decoding is needed — the image is
+/// read into memory by [`ImageEngine`] at GO time.
+#[tauri::command]
+pub fn set_image_file(
+    cue_id: String,
+    file_path: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let registry = state.registry.lock().map_err(|e| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+
+    let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
+    if cue_list.cues[idx].cue_type() != CueType::Image {
+        return Err("set_image_file only applies to Image Cues".to_string());
+    }
+
+    let mut json = cue_list.cues[idx].serialize();
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("file_path".to_string(), serde_json::json!(file_path));
+    }
+    let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
+    drop(registry);
+    cue_list.cues[idx] = new_cue;
+
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Called by an image surface window when its fade-out CSS transition ends.
+///
+/// Pushes a [`FadedOut`](crate::engine::image_engine::ImageStatus::FadedOut)
+/// status so the event loop can detect cue completion and fire continue modes.
+#[tauri::command]
+pub fn report_image_faded_out(
+    voice_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::engine::image_engine::ImageStatus;
+    let id: Uuid = voice_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    state
+        .image_engine
+        .push_status(ImageStatus::FadedOut { voice_id: id });
+    Ok(())
+}
+
+/// Return the image display data (base64 data URL + fade-in duration) for an
+/// image surface window.  Called by the surface's React component on mount so
+/// the timing of window creation is not an issue.
+#[tauri::command]
+pub fn get_image_surface_data(
+    voice_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let id: Uuid = voice_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    state
+        .image_engine
+        .get_surface_data(id)
+        .map_err(|e| e.to_string())
 }

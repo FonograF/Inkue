@@ -31,6 +31,7 @@ fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     CueContext::new(
         state.audio_engine.clone(),
         state.video_engine.clone(),
+        state.image_engine.clone(),
         tx,
         stop_fade_ms,
         patches,
@@ -58,6 +59,7 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     let context = CueContext::new(
         state.audio_engine.clone(),
         state.video_engine.clone(),
+        state.image_engine.clone(),
         tx,
         stop_fade_ms,
         ws.output_patches.clone(),

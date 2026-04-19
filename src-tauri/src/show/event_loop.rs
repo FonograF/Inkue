@@ -22,6 +22,7 @@ use crate::{
         types::{ContinueMode, CueId, CueState},
     },
     engine::{
+        image_engine::{ImageEngine, ImageStatus},
         ring_command::AudioStatus,
         video_engine::{VideoEngine, VideoStatus},
         AudioEngine,
@@ -37,6 +38,7 @@ pub fn run(
     handle: tauri::AppHandle,
     audio_engine: Arc<AudioEngine>,
     video_engine: Arc<VideoEngine>,
+    image_engine: Arc<ImageEngine>,
     workspace: Arc<Mutex<Workspace>>,
 ) {
     // Tracks Auto-Follow completions waiting for their Post-Wait timer.
@@ -48,6 +50,7 @@ pub fn run(
             &handle,
             &audio_engine,
             &video_engine,
+            &image_engine,
             &workspace,
             &mut auto_follow_pending,
         );
@@ -61,6 +64,7 @@ pub fn run(
 fn make_context(
     audio_engine: &Arc<AudioEngine>,
     video_engine: &Arc<VideoEngine>,
+    image_engine: &Arc<ImageEngine>,
     stop_fade_ms: u32,
     output_patches: Vec<crate::engine::device_manager::OutputPatch>,
     default_patch_id: Option<uuid::Uuid>,
@@ -68,13 +72,22 @@ fn make_context(
     // The receiver is intentionally dropped here; events from within the loop
     // are handled directly by reading status from the ring buffers / channels.
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    CueContext::new(audio_engine.clone(), video_engine.clone(), tx, stop_fade_ms, output_patches, default_patch_id)
+    CueContext::new(
+        audio_engine.clone(),
+        video_engine.clone(),
+        image_engine.clone(),
+        tx,
+        stop_fade_ms,
+        output_patches,
+        default_patch_id,
+    )
 }
 
 fn tick(
     handle: &tauri::AppHandle,
     audio_engine: &Arc<AudioEngine>,
     video_engine: &Arc<VideoEngine>,
+    image_engine: &Arc<ImageEngine>,
     workspace: &Arc<Mutex<Workspace>>,
     auto_follow_pending: &mut HashMap<CueId, Instant>,
 ) {
@@ -130,6 +143,20 @@ fn tick(
         }
     }
 
+    // ------------------------------------------------------------------
+    // 3. Drain the image status channel.
+    // ------------------------------------------------------------------
+    for s in image_engine.drain_status() {
+        match s {
+            ImageStatus::FadedOut { voice_id } => {
+                // Merge image completions into the same list as audio/video so
+                // the completion detection below stays uniform.
+                completed_voice_ids.push(voice_id);
+                image_engine.gc_voice(voice_id);
+            }
+        }
+    }
+
     // Emit master-level whenever there is any active signal.
     // Video audio flows through AudioEngine (via the named pipe), so its
     // levels are already included in MasterLevels from the audio callback.
@@ -175,7 +202,7 @@ fn tick(
     //    (Must happen before the completion check so that a cue that
     //    completes its pre-wait and immediately finishes is detected.)
     // ------------------------------------------------------------------
-    let tick_ctx = make_context(audio_engine, video_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch);
+    let tick_ctx = make_context(audio_engine, video_engine, image_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch);
     for cue in cue_list.cues.iter_mut() {
         if cue.state() == CueState::Running {
             let _ = cue.tick(&tick_ctx);
@@ -293,7 +320,7 @@ fn tick(
     let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
-        let context = make_context(audio_engine, video_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch);
+        let context = make_context(audio_engine, video_engine, image_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch);
         let mut transport = Transport::new(context);
         if let Ok(ids) = transport.go(cue_list) {
             go_triggered = ids;

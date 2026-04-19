@@ -74,6 +74,12 @@ export const reportVideoStatus = (
 export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
+export const setImageFile = (cueId: CueId, filePath: string) =>
+  invoke<void>("set_image_file", { cueId, filePath });
+export const getImageSurfaceData = (voiceId: string) =>
+  invoke<{ data_url: string; fade_in_ms: number }>("get_image_surface_data", { voiceId });
+export const reportImageFadedOut = (voiceId: string) =>
+  invoke<void>("report_image_faded_out", { voiceId });
 
 export const previewCue = (cueId: CueId, startMs?: number, endMs?: number) =>
   invoke<string>("preview_cue", {

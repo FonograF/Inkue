@@ -8,23 +8,27 @@ export function BasicsTab({
   cue,
   isAudio,
   isVideo,
+  isImage,
   onSave,
   onBrowse,
   onBrowseVideo,
+  onBrowseImage,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cue: any;
   isAudio: boolean;
   isVideo?: boolean;
+  isImage?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onSave: (p: Partial<any>) => void;
   onBrowse: () => void;
   onBrowseVideo?: () => void;
+  onBrowseImage?: () => void;
 }) {
   const [screens, setScreens] = useState<ScreenInfo[]>([]);
   useEffect(() => {
-    if (isVideo) listVideoScreens().then(setScreens).catch(console.error);
-  }, [isVideo]);
+    if (isVideo || isImage) listVideoScreens().then(setScreens).catch(console.error);
+  }, [isVideo, isImage]);
 
   return (
     <>
@@ -49,7 +53,7 @@ export function BasicsTab({
           onBlur={(e) => onSave({ notes: e.target.value })}
         />
       </Field>
-      {(isAudio || isVideo) && (
+      {(isAudio || isVideo || isImage) && (
         <Field label="File">
           <div style={{ display: "flex", gap: 4 }}>
             <input
@@ -69,14 +73,14 @@ export function BasicsTab({
                 fontSize: 12,
                 flexShrink: 0,
               }}
-              onClick={isVideo ? onBrowseVideo : onBrowse}
+              onClick={isVideo ? onBrowseVideo : isImage ? onBrowseImage : onBrowse}
             >
               Browse…
             </button>
           </div>
         </Field>
       )}
-      {isVideo && (
+      {(isVideo || isImage) && (
         <Field label="Screen">
           <select
             style={inputStyle}

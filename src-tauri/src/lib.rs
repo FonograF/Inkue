@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use commands::{
     cue_cmds::{
-        add_cue, duplicate_cue, get_all_cues, get_cue, get_playhead, get_waveform_peaks,
-        list_video_screens, move_cue, preview_cue, remove_cue, set_audio_file, set_playhead,
-        set_video_file, stop_preview, update_cue,
+        add_cue, duplicate_cue, get_all_cues, get_cue, get_image_surface_data, get_playhead,
+        get_waveform_peaks, list_video_screens, move_cue, preview_cue, remove_cue,
+        report_image_faded_out, set_audio_file, set_image_file, set_playhead, set_video_file,
+        stop_preview, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     preferences_cmds::{
@@ -26,7 +27,7 @@ use commands::{
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
-use engine::{AudioEngine, VideoEngine};
+use engine::{AudioEngine, ImageEngine, VideoEngine};
 use state::AppState;
 use tauri::Manager;
 /// Build and run the Tauri application.
@@ -54,8 +55,13 @@ pub fn run() {
                     .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                         as Box<dyn std::error::Error>)?,
             );
+            let image_engine = Arc::new(ImageEngine::new(app.handle().clone()));
 
-            let app_state = AppState::new(audio_engine, Arc::clone(&video_engine));
+            let app_state = AppState::new(
+                audio_engine,
+                Arc::clone(&video_engine),
+                Arc::clone(&image_engine),
+            );
             app.manage(app_state);
 
             // ----------------------------------------------------------------
@@ -64,12 +70,13 @@ pub fn run() {
             let handle = app.handle().clone();
             let a_engine = app.state::<AppState>().audio_engine.clone();
             let v_engine = Arc::clone(&video_engine);
+            let i_engine = Arc::clone(&image_engine);
             let workspace = app.state::<AppState>().workspace.clone();
 
             std::thread::Builder::new()
                 .name("wincue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, a_engine, v_engine, workspace);
+                    crate::show::event_loop::run(handle, a_engine, v_engine, i_engine, workspace);
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -96,10 +103,13 @@ pub fn run() {
             get_playhead,
             set_audio_file,
             set_video_file,
+            set_image_file,
             get_waveform_peaks,
             list_video_screens,
             preview_cue,
             stop_preview,
+            get_image_surface_data,
+            report_image_faded_out,
             // Undo / Redo / Copy / Paste
             undo,
             redo,

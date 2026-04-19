@@ -6,6 +6,7 @@ export function TimeTab({
   cue,
   isAudio,
   isVideo,
+  isImage,
   onSave,
   onOpenWaveform,
 }: {
@@ -13,6 +14,7 @@ export function TimeTab({
   cue: any;
   isAudio: boolean;
   isVideo?: boolean;
+  isImage?: boolean;
   onSave: (p: Partial<AudioCueData>) => void;
   onOpenWaveform: () => void;
 }) {
@@ -46,6 +48,31 @@ export function TimeTab({
           }
         />
       </Field>
+      {isImage && (
+        <Field label="Display Duration (s)">
+          <input
+            style={inputStyle}
+            type="number"
+            step="0.1"
+            min="0"
+            key={`display-dur-${cue.display_duration_ms}`}
+            defaultValue={
+              cue.display_duration_ms != null
+                ? (cue.display_duration_ms / 1000).toFixed(1)
+                : ""
+            }
+            placeholder="stay until stopped"
+            onBlur={(e) =>
+              onSave({
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                display_duration_ms: e.target.value
+                  ? Math.round(parseFloat(e.target.value) * 1000)
+                  : null,
+              } as any)
+            }
+          />
+        </Field>
+      )}
       {isAudio && cue.file_path && (
         <WaveformViewer cue={cue} onSave={onSave} onExpand={onOpenWaveform} />
       )}

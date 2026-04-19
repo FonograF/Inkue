@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.1.2** — Audio, Video, Stop, and Memo cue types are implemented. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
+WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.3.0** — Audio, Video, Image, Stop, and Memo cue types exist in the codebase. Audio, Stop, and Memo are fully functional; Video has a known glitch; Image is currently broken. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
 
 The full specification is in `wincue-prompt.md` at the project root.
 **Before starting any implementation work, read `PROGRESS.md`** — it reflects the current state of the codebase, known bugs, and next priorities. `wincue-prompt.md` is useful for spec details (trait methods, event names, save format), but PROGRESS.md is the ground truth for what is done.
@@ -11,6 +11,8 @@ The full specification is in `wincue-prompt.md` at the project root.
 
 - Backend: Rust (engine, audio, show logic)
 - Audio: cpal (WASAPI/ASIO) + symphonia (decoding WAV/MP3/FLAC/OGG)
+- Video: libmpv (FFI) + Win32 window, `gpu-api=d3d11`, audio via `ao=pcm` through a named pipe into AudioEngine
+- Image: (under debug — see PROGRESS.md)
 - Lock-free comms: ringbuf or crossbeam
 - UI: Tauri v2 + React + TypeScript
 - State: Zustand
@@ -19,19 +21,22 @@ The full specification is in `wincue-prompt.md` at the project root.
 ## Build & run commands
 
 ```
-pnpm install              # install frontend deps (first time)
-pnpm tauri dev            # run in dev mode (compiles Rust + starts frontend)
-pnpm tauri build          # production build
-cargo build               # compile Rust only (from src-tauri/)
-cargo test                # run Rust tests (from src-tauri/)
-cargo clippy              # lint Rust (from src-tauri/)
+pnpm install                               # install frontend deps (first time)
+pnpm tauri dev                             # run in dev mode (compiles Rust + starts frontend)
+pnpm tauri:dev -- --features asio-support  # dev mode with ASIO support (needs vendor/asiosdk/)
+pnpm tauri build                           # production build
+cargo build                                # compile Rust only (from src-tauri/)
+cargo test                                 # run Rust tests (from src-tauri/)
+cargo clippy                               # lint Rust (from src-tauri/)
 ```
+
+Runtime dependency: `vendor/mpv/libmpv-2.dll` must be present for video playback (not versioned, ~113 MB).
 
 ## Architecture rules — DO NOT VIOLATE
 
 ### Cue system extensibility
 
-The entire app revolves around the `Cue` trait in `src-tauri/src/cue/traits.rs`. Every cue type (Audio, Memo, Wait, Group, MIDI, Video...) implements this trait. The `CueRegistry` in `registry.rs` maps `CueType` to `CueFactory` instances.
+The entire app revolves around the `Cue` trait in `src-tauri/src/cue/traits.rs`. Every cue type (Audio, Video, Image, Memo, Stop, Wait, Group, MIDI...) implements this trait. The `CueRegistry` in `registry.rs` maps `CueType` to `CueFactory` instances.
 
 **Adding a new cue type must NEVER require modifying:**
 - The transport logic (`show/transport.rs`)
@@ -50,13 +55,14 @@ The cpal audio callback in `engine/audio_engine.rs` runs in a high-priority thre
 - All communication uses lock-free ring buffers (ringbuf crate)
 - Commands TO the audio thread: ring buffer of command enums
 - Status FROM the audio thread: ring buffer of status structs
+- Video PCM samples are mixed into the same callback via a lock-free consumer (see `AudioEngine.set_video_pcm_consumer`)
 
 ### Separation of concerns
 
 Three distinct layers, never mix them:
-1. **Audio Engine** (`engine/`): knows about samples, devices, voices, mixing. Does NOT know about cues or shows.
-2. **Cue System** (`cue/`): knows about cue lifecycle, timing, serialization. AudioCue talks to AudioEngine but the trait itself is engine-agnostic.
-3. **Show/Transport** (`show/`): knows about cue lists, playhead, GO logic, continue modes. Does NOT know audio internals.
+1. **Engines** (`engine/`): `AudioEngine` knows about samples, devices, voices, mixing. `VideoEngine` knows about libmpv, Win32 windows, screens. Engines do NOT know about cues or shows.
+2. **Cue System** (`cue/`): knows about cue lifecycle, timing, serialization. AudioCue/VideoCue/ImageCue talk to their engines, but the `Cue` trait itself is engine-agnostic.
+3. **Show/Transport** (`show/`): knows about cue lists, playhead, GO logic, continue modes. Does NOT know engine internals.
 
 ### Frontend-backend communication
 
@@ -123,20 +129,34 @@ Run tests with `cargo test` from the `src-tauri/` directory.
 
 ## Current state & open work
 
-**All core development steps are complete** (scaffold, cue system, audio engine, frontend, transport, inspector, workspace, shortcuts, fades, drag-drop, undo/redo, color tags). The project compiles with zero warnings and 20 tests pass.
+Core development is complete (scaffold, cue system, audio engine, video engine, frontend, transport, inspector, workspace, shortcuts, fades, drag-drop, undo/redo, color tags). The project compiles with zero warnings and 20 tests pass.
+
+### Cue type status
+
+| Cue type | Status |
+|---|---|
+| Audio | ✅ 100% functional (including Output Patch routing, fades, loops) |
+| Stop   | ✅ Functional |
+| Memo   | ✅ Functional |
+| Video  | ⚠️ Plays correctly, but freezes ~0.5s at launch (first-frame/startup glitch) |
+| Image  | 🔴 Broken — freezes the app on GO (critical bug) |
 
 ### Known bugs / next priorities
 
-1. **Inspector — Video Cue display bugs** (`InspectorPanel.tsx`, `BasicsTab.tsx`, `TimeTab.tsx`, `LevelsTab.tsx`, `FadeTab.tsx`)
-   - Fields not properly conditioned on `isVideo` / `cue_type`
-   - `LevelsTab` / `FadeTab` cast to `AudioCueData` even for video cues — unsafe
+1. **🔴 CRITICAL — Image Cue freezes the app on launch** (`cue/image_cue.rs`, likely an image engine or display path)
+   - The app becomes unresponsive the moment an Image cue is triggered
+   - Suspect: blocking I/O on the UI thread, a deadlock, or a Win32 window creation issue (similar to early Video Cue issues)
+   - Likely causes to investigate first: synchronous file decode on the main thread, a lock held across a Win32 call, or a message-loop starvation
+   - Must be fixed before any other work — a cue type that freezes the app is a showstopper for live use
 
-2. **Video playback non-functional** (`engine/video_engine.rs`, `cue/video_cue.rs`)
-   - Architecture complete (libmpv FFI, Win32 window, event loop), but no render on GO
-   - Requires `vendor/mpv/libmpv-2.dll` at runtime (not versioned, 113 MB)
-   - Debug: Win32 window creation, HWND `wid` injection, `loadfile` path, MPV event reception
+2. **⚠️ Video Cue — 0.5s freeze on GO** (`engine/video_engine.rs`, `cue/video_cue.rs`)
+   - Playback itself is correct, but the first ~500 ms after GO block the UI / playhead
+   - Suspect: synchronous libmpv initialization, Win32 window creation, or `loadfile` blocking the transport thread
+   - Possible mitigations: pre-create the mpv instance and window on workspace load (warm pool), move `loadfile` off the transport thread, or pre-roll videos when the playhead lands on them
+   - See PROGRESS.md for the current video architecture details
 
-3. **Output Patch routing not wired** (`engine/audio_engine.rs`)
-   - `OutputPatch` is stored in workspace but `AudioEngine` always uses the default device
+3. **Output Patch routing — ASIO→WASAPI validation**
+   - Audio routing through `Voice.out_l/out_r` is wired, but the ASIO path still needs validation on hardware
+   - Verify VU meter moves during video playback (confirms the `ao=pcm` named-pipe path into AudioEngine is active)
 
 See `PROGRESS.md` for the full detailed state of every module.

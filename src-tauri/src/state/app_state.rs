@@ -11,13 +11,14 @@ use uuid::Uuid;
 use crate::{
     cue::{
         audio_cue::AudioCueFactory,
+        image_cue::ImageCueFactory,
         memo_cue::MemoCueFactory,
         registry::CueRegistry,
         stop_cue::StopCueFactory,
         types::CueType,
         video_cue::VideoCueFactory,
     },
-    engine::{AudioEngine, VideoEngine},
+    engine::{AudioEngine, ImageEngine, VideoEngine},
     show::{undo_stack::UndoStack, Workspace},
 };
 
@@ -29,6 +30,8 @@ pub struct AppState {
     pub audio_engine: Arc<AudioEngine>,
     /// The video engine (shared; manages output surface windows).
     pub video_engine: Arc<VideoEngine>,
+    /// The image engine (shared; manages image display windows).
+    pub image_engine: Arc<ImageEngine>,
     /// The cue type registry used for workspace de/serialisation.
     pub registry: Arc<Mutex<CueRegistry>>,
     /// Set of cue IDs whose audio files are currently being decoded in the
@@ -44,9 +47,13 @@ impl AppState {
     /// Build the initial application state from already-constructed engines.
     ///
     /// The engines are created in `lib.rs`'s Tauri `setup` closure (not here)
-    /// so that [`VideoEngine`] can receive the [`tauri::AppHandle`] it needs to
-    /// emit events to surface windows.
-    pub fn new(audio_engine: Arc<AudioEngine>, video_engine: Arc<VideoEngine>) -> Self {
+    /// so that [`VideoEngine`] and [`ImageEngine`] can receive the
+    /// [`tauri::AppHandle`] they need to manage output surface windows.
+    pub fn new(
+        audio_engine: Arc<AudioEngine>,
+        video_engine: Arc<VideoEngine>,
+        image_engine: Arc<ImageEngine>,
+    ) -> Self {
         let workspace = Workspace::new("Untitled");
 
         let mut registry = CueRegistry::new();
@@ -54,11 +61,13 @@ impl AppState {
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
         registry.register(CueType::Stop, Box::new(StopCueFactory));
         registry.register(CueType::Video, Box::new(VideoCueFactory));
+        registry.register(CueType::Image, Box::new(ImageCueFactory));
 
         Self {
             workspace: Arc::new(Mutex::new(workspace)),
             audio_engine,
             video_engine,
+            image_engine,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
             undo_stack: Arc::new(Mutex::new(UndoStack::new())),

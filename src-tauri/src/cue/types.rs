@@ -19,6 +19,8 @@ pub enum CueType {
     Stop,
     /// Plays a video file on a video output surface window.
     Video,
+    /// Displays a static or animated image on an output surface window.
+    Image,
 }
 
 impl std::fmt::Display for CueType {
@@ -31,6 +33,7 @@ impl std::fmt::Display for CueType {
             CueType::Fade => write!(f, "fade"),
             CueType::Stop => write!(f, "stop"),
             CueType::Video => write!(f, "video"),
+            CueType::Image => write!(f, "image"),
         }
     }
 }
