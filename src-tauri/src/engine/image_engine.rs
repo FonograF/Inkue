@@ -80,31 +80,52 @@ impl ImageEngine {
         let voice_id = Uuid::new_v4();
         let label = format!("image-surface-{voice_id}");
 
-        let window = WebviewWindowBuilder::new(
-            &self.app_handle,
-            &label,
-            WebviewUrl::App("".into()),
-        )
-        .decorations(false)
-        .always_on_top(true)
-        .fullscreen(false)
-        .skip_taskbar(true)
-        .focused(false)
-        .visible(false) // Hidden until positioned; we call show() below.
-        .build()
-        .map_err(|e| anyhow!("ImageEngine: failed to create surface window: {e}"))?;
-
-        position_window_on_screen(&window, screen_index)?;
-        window.show().map_err(|e| anyhow!("ImageEngine: show(): {e}"))?;
-
+        // Register the voice data up front so `get_image_surface_data` can be
+        // served as soon as the surface window's React code mounts, even though
+        // the window itself is created asynchronously below.
         self.voices.lock().unwrap().insert(
             voice_id,
             ImageVoiceData {
                 data_url,
                 fade_in_ms,
-                window_label: label,
+                window_label: label.clone(),
             },
         );
+
+        // `WebviewWindowBuilder::build()` must not run on the main thread (the
+        // Tao event loop must be free to service the window-creation request).
+        // Sync Tauri commands may execute on the main thread, so we dispatch
+        // window creation to a background OS thread and return the voice id
+        // immediately — GO stays non-blocking.
+        let app_handle = self.app_handle.clone();
+        std::thread::spawn(move || {
+            let window = match WebviewWindowBuilder::new(
+                &app_handle,
+                &label,
+                WebviewUrl::App("".into()),
+            )
+            .decorations(false)
+            .always_on_top(true)
+            .fullscreen(false)
+            .skip_taskbar(true)
+            .focused(false)
+            .visible(false)
+            .build()
+            {
+                Ok(w) => w,
+                Err(e) => {
+                    log::warn!("ImageEngine: failed to create surface window: {e}");
+                    return;
+                }
+            };
+
+            if let Err(e) = position_window_on_screen(&window, screen_index) {
+                log::warn!("ImageEngine: position_window_on_screen: {e}");
+            }
+            if let Err(e) = window.show() {
+                log::warn!("ImageEngine: window.show(): {e}");
+            }
+        });
 
         Ok(voice_id)
     }
@@ -144,9 +165,16 @@ impl ImageEngine {
     pub fn gc_voice(&self, voice_id: ImageVoiceId) {
         let mut voices = self.voices.lock().unwrap();
         if let Some(data) = voices.remove(&voice_id) {
-            if let Some(win) = self.app_handle.get_webview_window(&data.window_label) {
-                let _ = win.close();
-            }
+            // `close()` blocks waiting on the main-thread event loop. Dispatch
+            // on a worker thread so callers on the transport thread are never
+            // stalled.
+            let app_handle = self.app_handle.clone();
+            let label = data.window_label;
+            std::thread::spawn(move || {
+                if let Some(win) = app_handle.get_webview_window(&label) {
+                    let _ = win.close();
+                }
+            });
         }
     }
 
