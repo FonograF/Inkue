@@ -680,17 +680,15 @@ pub fn report_image_faded_out(
     Ok(())
 }
 
-/// Return the image display data (base64 data URL + fade-in duration) for an
-/// image surface window.  Called by the surface's React component on mount so
-/// the timing of window creation is not an issue.
+/// Return the current pending voice data for a surface window.
+///
+/// Called by the surface's React component on mount to resolve the
+/// window-creation timing race: by the time React mounts, the engine has
+/// already stored the voice data under the surface label.
 #[tauri::command]
-pub fn get_image_surface_data(
-    voice_id: String,
+pub fn get_surface_current_voice(
+    surface_label: String,
     state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let id: Uuid = voice_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    state
-        .image_engine
-        .get_surface_data(id)
-        .map_err(|e| e.to_string())
+) -> Result<Option<crate::engine::image_engine::VoiceInitData>, String> {
+    Ok(state.image_engine.get_surface_current_voice(&surface_label))
 }

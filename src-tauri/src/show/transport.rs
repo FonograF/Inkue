@@ -55,6 +55,20 @@ impl Transport {
         // Advance playhead before triggering (matches QLab behaviour).
         cue_list.advance_playhead();
 
+        // Stop any running cues that should automatically stop on the next GO
+        // (e.g. Image Cues in StopOnNextCue mode).
+        let stop_ids: Vec<CueId> = cue_list
+            .cues
+            .iter()
+            .filter(|c| c.is_running() && c.stop_on_next_go() && c.id() != cue_id)
+            .map(|c| c.id())
+            .collect();
+        for id in stop_ids {
+            if let Some(cue) = cue_list.get_mut(&id) {
+                let _ = cue.stop(&self.context);
+            }
+        }
+
         // Trigger the cue.
         {
             let cue = cue_list

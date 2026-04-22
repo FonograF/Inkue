@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use commands::{
     cue_cmds::{
-        add_cue, duplicate_cue, get_all_cues, get_cue, get_image_surface_data, get_playhead,
-        get_waveform_peaks, list_video_screens, move_cue, preview_cue, remove_cue,
-        report_image_faded_out, set_audio_file, set_image_file, set_playhead, set_video_file,
+        add_cue, duplicate_cue, get_all_cues, get_cue, get_playhead,
+        get_surface_current_voice, get_waveform_peaks, list_video_screens, move_cue, preview_cue,
+        remove_cue, report_image_faded_out, set_audio_file, set_image_file, set_playhead,
+        set_video_file,
         stop_preview, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
@@ -108,7 +109,7 @@ pub fn run() {
             list_video_screens,
             preview_cue,
             stop_preview,
-            get_image_surface_data,
+            get_surface_current_voice,
             report_image_faded_out,
             // Undo / Redo / Copy / Paste
             undo,

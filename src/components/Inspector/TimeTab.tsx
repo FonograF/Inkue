@@ -49,29 +49,46 @@ export function TimeTab({
         />
       </Field>
       {isImage && (
-        <Field label="Display Duration (s)">
-          <input
-            style={inputStyle}
-            type="number"
-            step="0.1"
-            min="0"
-            key={`display-dur-${cue.display_duration_ms}`}
-            defaultValue={
-              cue.display_duration_ms != null
-                ? (cue.display_duration_ms / 1000).toFixed(1)
-                : ""
-            }
-            placeholder="stay until stopped"
-            onBlur={(e) =>
-              onSave({
+        <>
+          <Field label="Stop Mode">
+            <select
+              style={inputStyle}
+              value={cue.stop_mode ?? "stop_on_next_cue"}
+              onChange={(e) =>
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                display_duration_ms: e.target.value
-                  ? Math.round(parseFloat(e.target.value) * 1000)
-                  : null,
-              } as any)
-            }
-          />
-        </Field>
+                onSave({ stop_mode: e.target.value } as any)
+              }
+            >
+              <option value="stop_on_next_cue">Stop when another cue plays</option>
+              <option value="display_duration">Display Duration</option>
+            </select>
+          </Field>
+          {cue.stop_mode === "display_duration" && (
+            <Field label="Duration (s)">
+              <input
+                style={inputStyle}
+                type="number"
+                step="0.1"
+                min="0"
+                key={`display-dur-${cue.display_duration_ms}`}
+                defaultValue={
+                  cue.display_duration_ms != null
+                    ? (cue.display_duration_ms / 1000).toFixed(1)
+                    : ""
+                }
+                placeholder="0.0"
+                onBlur={(e) =>
+                  onSave({
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    display_duration_ms: e.target.value
+                      ? Math.round(parseFloat(e.target.value) * 1000)
+                      : null,
+                  } as any)
+                }
+              />
+            </Field>
+          )}
+        </>
       )}
       {isAudio && cue.file_path && (
         <WaveformViewer cue={cue} onSave={onSave} onExpand={onOpenWaveform} />

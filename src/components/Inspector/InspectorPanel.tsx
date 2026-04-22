@@ -185,7 +185,7 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
           />
         )}
         {activeTab === "levels" && (isAudio || isVideo) && (
-          <LevelsTab cue={cueData} isAudio={isAudio} onSave={save} />
+          <LevelsTab cue={cueData as AudioCueData | VideoCueData} isAudio={isAudio} onSave={save} />
         )}
         {activeTab === "fade" && (isAudio || isVideo || isImage) && (
           <FadeTab cue={cueData} onSave={save} />

@@ -16,6 +16,20 @@ use uuid::Uuid;
 
 use crate::engine::image_engine::ImageVoiceId;
 
+// ---------------------------------------------------------------------------
+// ImageStopMode
+// ---------------------------------------------------------------------------
+
+/// Controls when a running Image Cue stops displaying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageStopMode {
+    /// Stop automatically when the next GO fires (default).
+    StopOnNextCue,
+    /// Stay visible until the `display_duration` timer expires.
+    DisplayDuration,
+}
+
 use super::{
     context::{CueContext, CueEvent},
     traits::{Cue, CueFactory, RuntimeState},
@@ -50,7 +64,9 @@ pub struct ImageCue {
     // --- Image-specific ---
     /// Absolute (or workspace-relative) path to the image file.
     pub file_path: Option<PathBuf>,
-    /// How long to display the image.  `None` = stay until [`stop`](Self::stop) is called.
+    /// Whether to stop on the next GO or use a timed display duration.
+    pub stop_mode: ImageStopMode,
+    /// Duration to display the image when `stop_mode == DisplayDuration`.
     pub display_duration: Option<Duration>,
     /// Optional fade-in applied when the image first appears.
     pub fade_in: Option<FadeSpec>,
@@ -86,6 +102,7 @@ impl ImageCue {
             action_started_at: None,
             continue_mode: ContinueMode::DoNotContinue,
             file_path: None,
+            stop_mode: ImageStopMode::StopOnNextCue,
             display_duration: None,
             fade_in: None,
             fade_out: None,
@@ -177,7 +194,7 @@ impl Cue for ImageCue {
                 .fade_out
                 .as_ref()
                 .map(|f| f.duration_ms as u32)
-                .unwrap_or(500); // Default 500 ms fade-out, matching QLab.
+                .unwrap_or(0);
             let _ = context.image_engine.hide_voice(vid, fade_ms);
             // Close the window immediately; we don't wait for the FadedOut
             // callback because the cue is already transitioning to Standby.
@@ -244,11 +261,10 @@ impl Cue for ImageCue {
             return Ok(());
         }
 
-        // Phase 2: if a display_duration is set, trigger the fade-out once it
-        // expires.  The event loop detects completion via FadedOut status
-        // (voice_done path) because duration() returns None and time_done
-        // never fires directly.
-        if !self.in_pre_wait {
+        // Phase 2: if stop_mode is DisplayDuration, trigger the fade-out once
+        // the timer expires.  The event loop detects completion via FadedOut
+        // status (voice_done path).
+        if !self.in_pre_wait && self.stop_mode == ImageStopMode::DisplayDuration {
             if let Some(disp_dur) = self.display_duration {
                 if self.action_elapsed() >= disp_dur {
                     if let Some(vid) = self.active_voice_id {
@@ -315,6 +331,10 @@ impl Cue for ImageCue {
         self.active_voice_id
     }
 
+    fn stop_on_next_go(&self) -> bool {
+        self.stop_mode == ImageStopMode::StopOnNextCue
+    }
+
     fn play_generation(&self) -> u64 { self.play_generation }
     fn is_auto_continue_fired(&self) -> bool { self.auto_continue_fired }
     fn mark_auto_continue_fired(&mut self) { self.auto_continue_fired = true; }
@@ -354,6 +374,7 @@ impl Cue for ImageCue {
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
             "file_path": self.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "stop_mode": self.stop_mode,
             "display_duration_ms": self.display_duration.map(|d| d.as_millis() as u64),
             "fade_in_ms": self.fade_in.as_ref().map(|f| f.duration_ms),
             "fade_in_curve": self.fade_in.as_ref().map(|f| f.curve),
@@ -409,6 +430,11 @@ impl CueFactory for ImageCueFactory {
         }
         if let Some(path) = value.get("file_path").and_then(|v| v.as_str()) {
             cue.file_path = Some(PathBuf::from(path));
+        }
+        if let Some(sm) = value.get("stop_mode") {
+            if let Ok(mode) = serde_json::from_value(sm.clone()) {
+                cue.stop_mode = mode;
+            }
         }
         if let Some(ms) = value.get("display_duration_ms").and_then(|v| v.as_u64()) {
             cue.display_duration = Some(Duration::from_millis(ms));

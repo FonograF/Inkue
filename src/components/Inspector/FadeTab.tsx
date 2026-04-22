@@ -81,7 +81,7 @@ export function FadeTab({
                 ? (cue.fade_out_ms / 1000).toFixed(2)
                 : ""
             }
-            placeholder="none (0.5s on Stop)"
+            placeholder="none"
             onBlur={(e) =>
               onSave({
                 fade_out_ms: e.target.value

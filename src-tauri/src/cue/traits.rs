@@ -265,6 +265,13 @@ pub trait Cue: Send {
     /// window).  Non-video cues can ignore this call (default no-op).
     fn set_runtime_duration(&mut self, _duration: std::time::Duration) {}
 
+    /// If `true`, [`Transport::go`] will automatically stop this cue when the
+    /// next GO fires.  Default: `false`.  Image cues override this based on
+    /// their configured stop mode.
+    fn stop_on_next_go(&self) -> bool {
+        false
+    }
+
     /// Capture the volatile runtime state so it can be transplanted into a
     /// freshly-rebuilt instance.  Called by `update_cue` just before the
     /// old cue is replaced.  Default returns a Standby snapshot with no voice

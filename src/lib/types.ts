@@ -76,10 +76,13 @@ export interface VideoCueData extends CueSummary {
   screen_index: number | null;
 }
 
+export type ImageStopMode = "stop_on_next_cue" | "display_duration";
+
 /** Full cue data returned by get_cue for an Image Cue. */
 export interface ImageCueData extends CueSummary {
   notes: string;
-  /** Null = stay displayed until stopped. */
+  stop_mode: ImageStopMode;
+  /** Duration in ms when stop_mode is "display_duration". */
   display_duration_ms: number | null;
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;

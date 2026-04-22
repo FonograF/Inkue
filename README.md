@@ -9,18 +9,21 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 ## Features
 
 - **Audio Cues** — play WAV, MP3, FLAC, OGG, AAC files with sample-accurate playback
+- **Video Cues** — play video files fullscreen on any connected monitor, or in a resizable floating window; audio routed through the same WASAPI/ASIO device as audio cues
+- **Image Cues** — display images fullscreen or in a draggable floating window with configurable fade-in/out; stop automatically when the next cue fires or after a set display duration
 - **Stop Cues** — instantly stop all running cues when triggered; drag the ■ STOP button or `+ Stop` directly into the cue list to insert at any position
 - **WASAPI & ASIO support** — low-latency audio on Windows via [cpal](https://github.com/RustAudio/cpal) + Steinberg ASIO SDK
 - **Resizable, reorderable, hideable columns** — customisable cue list layout persisted to localStorage
 - **Drag-and-drop cue reordering** — rearrange cues with a live drop indicator
-- **Toolbar button drag** — drag `+ Audio` or `+ Stop` from the toolbar to insert a new cue at any position in the list
-- **File drag-and-drop** — drop audio files onto the cue list; hover the centre of a row to assign the file, or the edge to insert a new cue between existing ones
+- **Toolbar button drag** — drag `+ Audio`, `+ Video`, `+ Image`, or `+ Stop` from the toolbar to insert a new cue at any position in the list
+- **File drag-and-drop** — drop audio/video/image files onto the cue list; hover the centre of a row to assign the file, or the edge to insert a new cue between existing ones
 - **Continue modes** — Do Not Continue, Auto-Continue (overlap with Post-Wait), Auto-Follow (trigger next on completion)
 - **Waveform editor** — visual trim of Start/End points with real-time preview playhead
-- **Inspector panel** — edit cue properties (name, number, volume, fade, trim, output patch, continue mode)
+- **Inspector panel** — edit cue properties (name, number, volume, fade-in/out, trim, output patch, continue mode, stop mode)
 - **Workspace save / load** — `.wincue` JSON format with relative file paths
 - **Output Patches** — named mappings to audio devices and channel pairs
 - **Level meters** — real-time master VU meters at 30 fps
+- **Undo / redo** — full snapshot-based undo history
 - **Dark theme** — purpose-built UI with custom scrollbars
 
 ---
@@ -29,19 +32,20 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 
 ```
 src-tauri/src/
-├── cue/            # Cue trait, CueRegistry, AudioCue, MemoCue
-├── engine/         # AudioEngine (cpal), DeviceManager, lock-free ring buffers
-├── show/           # CueList, Transport (GO/STOP/PAUSE), 30fps event loop
+├── cue/            # Cue trait, CueRegistry, AudioCue, VideoCue, ImageCue, MemoCue, StopCue
+├── engine/         # AudioEngine (cpal), VideoEngine (libmpv), ImageEngine (Tauri WebviewWindow)
+├── show/           # CueList, Transport (GO/STOP/PAUSE), 30fps event loop, UndoStack
 ├── state/          # AppState (Tauri state)
 ├── commands/       # Tauri IPC commands (transport, cues, workspace, devices, prefs)
 └── preferences.rs  # Persistent user preferences
 
 src/
 ├── components/
-│   ├── CueList/    # CueListView, CueRow, columns config
-│   ├── Inspector/  # InspectorPanel (4 tabs)
-│   ├── Transport/  # TransportBar
-│   ├── Preferences/# PreferencesModal
+│   ├── CueList/        # CueListView, CueRow, columns config
+│   ├── Inspector/      # InspectorPanel (Basics, Levels, Fade, Time tabs)
+│   ├── Transport/      # TransportBar (GO/STOP, VU meters, master volume)
+│   ├── Preferences/    # PreferencesModal
+│   ├── ImageSurface.tsx# OutputSurface — fullscreen image display window
 │   └── WaveformModal.tsx
 ├── stores/         # Zustand stores (workspace, transport, timing)
 ├── hooks/          # useTauriEvents, useKeyboardShortcuts
@@ -49,6 +53,10 @@ src/
 ```
 
 The audio engine runs in a dedicated high-priority thread. All communication with the rest of the app uses lock-free ring buffers — zero allocations, zero locks, zero I/O inside the audio callback.
+
+Video audio is routed through a named pipe (`ao=pcm`) into the AudioEngine, so video and audio cues share the same output device and VU meters.
+
+Image output uses persistent Tauri WebviewWindow instances — one per screen, created lazily and kept alive to avoid flicker between consecutive image cues.
 
 ---
 
@@ -62,6 +70,7 @@ The audio engine runs in a dedicated high-priority thread. All communication wit
 | Backend | Rust 2021 edition |
 | Audio I/O | cpal (WASAPI / ASIO) |
 | Audio decoding | Symphonia (WAV, MP3, FLAC, OGG, AAC) |
+| Video playback | libmpv (D3D11, Win32 window) |
 | Lock-free comms | ringbuf + crossbeam-channel |
 
 ---
@@ -73,14 +82,15 @@ The audio engine runs in a dedicated high-priority thread. All communication wit
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) + [pnpm](https://pnpm.io/)
 - Windows 10/11
-- *(Optional)* [Steinberg ASIO SDK](https://www.steinberg.net/developers/) for ASIO support
+- `vendor/mpv/libmpv-2.dll` — required for video playback (not versioned, ~113 MB)
+- *(Optional)* [Steinberg ASIO SDK](https://www.steinberg.net/developers/) in `vendor/asiosdk/` for ASIO support
 
 ### Development
 
 ```bash
 pnpm install
 pnpm tauri dev          # without ASIO
-pnpm tauri:dev          # with ASIO (requires CPAL_ASIO_DIR env var)
+pnpm tauri:dev          # with ASIO (requires vendor/asiosdk/)
 ```
 
 ### Production build

@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.3.0** — Audio, Video, Image, Stop, and Memo cue types exist in the codebase. Audio, Stop, and Memo are fully functional; Video has a known glitch; Image is currently broken. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
+WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.3.1** — Audio, Video, Image, Stop, and Memo cue types all exist and are functional. Video has a minor startup-latency glitch. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
 
 The full specification is in `wincue-prompt.md` at the project root.
 **Before starting any implementation work, read `PROGRESS.md`** — it reflects the current state of the codebase, known bugs, and next priorities. `wincue-prompt.md` is useful for spec details (trait methods, event names, save format), but PROGRESS.md is the ground truth for what is done.
@@ -12,7 +12,7 @@ The full specification is in `wincue-prompt.md` at the project root.
 - Backend: Rust (engine, audio, show logic)
 - Audio: cpal (WASAPI/ASIO) + symphonia (decoding WAV/MP3/FLAC/OGG)
 - Video: libmpv (FFI) + Win32 window, `gpu-api=d3d11`, audio via `ao=pcm` through a named pipe into AudioEngine
-- Image: (under debug — see PROGRESS.md)
+- Image: Tauri WebviewWindow (`output-surface-*`), persistent per screen, CSS fade via direct DOM
 - Lock-free comms: ringbuf or crossbeam
 - UI: Tauri v2 + React + TypeScript
 - State: Zustand
@@ -138,24 +138,18 @@ Core development is complete (scaffold, cue system, audio engine, video engine, 
 | Audio | ✅ 100% functional (including Output Patch routing, fades, loops) |
 | Stop   | ✅ Functional |
 | Memo   | ✅ Functional |
-| Video  | ⚠️ Plays correctly, but freezes ~0.5s at launch (first-frame/startup glitch) |
-| Image  | 🔴 Broken — freezes the app on GO (critical bug) |
+| Video  | ⚠️ Plays correctly, but freezes ~0.5s on first GO (pre-arm mitigates for playhead-reached cues) |
+| Image  | ✅ Functional — persistent surface windows, fade-in/out, stop modes, draggable float |
 
 ### Known bugs / next priorities
 
-1. **🔴 CRITICAL — Image Cue freezes the app on launch** (`cue/image_cue.rs`, likely an image engine or display path)
-   - The app becomes unresponsive the moment an Image cue is triggered
-   - Suspect: blocking I/O on the UI thread, a deadlock, or a Win32 window creation issue (similar to early Video Cue issues)
-   - Likely causes to investigate first: synchronous file decode on the main thread, a lock held across a Win32 call, or a message-loop starvation
-   - Must be fixed before any other work — a cue type that freezes the app is a showstopper for live use
-
-2. **⚠️ Video Cue — 0.5s freeze on GO** (`engine/video_engine.rs`, `cue/video_cue.rs`)
+1. **⚠️ Video Cue — 0.5s freeze on first GO** (`engine/video_engine.rs`, `cue/video_cue.rs`)
    - Playback itself is correct, but the first ~500 ms after GO block the UI / playhead
-   - Suspect: synchronous libmpv initialization, Win32 window creation, or `loadfile` blocking the transport thread
-   - Possible mitigations: pre-create the mpv instance and window on workspace load (warm pool), move `loadfile` off the transport thread, or pre-roll videos when the playhead lands on them
-   - See PROGRESS.md for the current video architecture details
+   - Suspect: synchronous libmpv initialization or Win32 window creation
+   - Possible fix: pre-create the mpv instance and window on workspace load (warm pool)
+   - See PROGRESS.md for details
 
-3. **Output Patch routing — ASIO→WASAPI validation**
+2. **Output Patch routing — ASIO→WASAPI validation**
    - Audio routing through `Voice.out_l/out_r` is wired, but the ASIO path still needs validation on hardware
    - Verify VU meter moves during video playback (confirms the `ao=pcm` named-pipe path into AudioEngine is active)
 
