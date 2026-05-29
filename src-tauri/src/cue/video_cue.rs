@@ -125,9 +125,8 @@ impl VideoCue {
         let fade_out_ms = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
 
         let voice_id = context.output_engine.show_content(
-            Some(self.id),         // cue_id — enables pre-arm fast path
             path,
-            false,                 // is_image
+            false,
             fade_in_ms,
             fade_out_ms,
             self.volume_db,

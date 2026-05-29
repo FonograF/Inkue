@@ -10,12 +10,20 @@ use super::types::{FadePending, FadePendingParams};
 use super::{cs, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB};
 
 /// Set the fade overlay alpha (0 = transparent, 255 = opaque black).
+///
+/// Also updates `FADE_STATE.current_alpha` so stop/start transitions can
+/// read the correct starting alpha for their animations.
 pub(super) fn set_overlay_alpha(alpha: u8) {
     if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::SetLayeredWindowAttributes;
             const LWA_ALPHA: u32 = 0x2;
             SetLayeredWindowAttributes(overlay, 0, alpha, LWA_ALPHA);
+        }
+    }
+    if let Some(fs) = FADE_STATE.get() {
+        if let Ok(mut state) = fs.lock() {
+            state.current_alpha = alpha;
         }
     }
 }
@@ -53,6 +61,17 @@ pub(super) fn execute_fade_pending(hwnd: isize) {
             }
         }
         Some(FadePending::Stop) => {
+            // Guard: if new content was loaded while the stop fade was running, don't
+            // send mpv stop — that would kill the new content.  Just clear the overlay.
+            let has_new_content = super::OUTPUT_CURRENT_VOICE
+                .get()
+                .and_then(|cv| cv.lock().ok())
+                .map(|cv| cv.is_some())
+                .unwrap_or(false);
+            if has_new_content {
+                set_overlay_alpha(0);
+                return;
+            }
             if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
                 unsafe {
                     let stop = cs("stop");

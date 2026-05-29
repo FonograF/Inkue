@@ -43,13 +43,12 @@
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer` |
-| OutputEngine | `engine/output_engine.rs` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); pre-arm preserved; `toggle_visibility()` |
+| OutputEngine | `engine/output_engine.rs` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); `toggle_visibility()` |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
 | Workspace | `show/workspace.rs` | ✅ Complete |
 | Transport | `show/transport.rs` | ✅ Complete — `stop_on_next_go()` called before each GO |
 | 30fps event loop | `show/event_loop.rs` | ✅ Complete — drains `OutputStatus` |
-| Video pre-arm | `show/video_pre_arm.rs` | ✅ Complete — uses `OutputEngine` |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
 | AppState | `state/app_state.rs` | ✅ Complete — `output_engine: Arc<OutputEngine>` |
 | Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences::output_screen: Option<u32>` |
@@ -99,7 +98,7 @@ The `ao=pcm` → named pipe → `AudioEngine` architecture compiles and works on
 
 ## Change history
 
-### 0.4.1 — Persistent PCM pipe + pre-arm first-frame fix (2026-05-28)
+### 0.4.1 — Persistent PCM pipe (2026-05-28)
 
 #### ✅ Root cause fixed: multiple videos broken, no audio on 2nd+ video
 
@@ -108,17 +107,11 @@ The `ao=pcm` → named pipe → `AudioEngine` architecture compiles and works on
 **Solution:** Single persistent `pcm_pipe_manager` thread (spawned at engine init). It loops: create pipe server → `ConnectNamedPipe` (blocks until mpv connects on first file load) → read samples until pipe closes (mpv exits or goes idle) → repeat.
 
 A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
-- `true` (idle / pre-arm / image): bytes consumed from OS buffer and discarded so mpv never blocks writing
+- `true` (idle / image): bytes consumed from OS buffer and discarded so mpv never blocks writing
 - `false` (video actively playing): samples pushed to ring buffer for `AudioEngine` mixing
 
-#### ✅ Pre-arm first-frame no longer visible on output
-
-**Problem:** `loadfile pause=yes` during pre-arm still decoded and displayed the first video frame on the output window.
-
-**Solution:** `pre_arm_voice` sets the fade overlay to alpha=255 (fully black) before sending `loadfile`. When GO activates the armed voice, `activate_armed_voice` restores alpha=0 (or starts a fade-in animation if configured).
-
 **Files changed:**
-- `engine/output_engine.rs` — persistent `pcm_pipe_manager` replaces per-video `handle_pcm_pipe_connection`; `ArmedVoice` simplified (removed `pipe_handle`/`ready`/`cancelled`); `OutputEngine` struct simplified (removed `armed_pipe_discard`); `mpv_event_loop` signature simplified (removed `pipe_discard_flag` param); `stop_content` now resets `video_pcm_active` and `OUTPUT_PCM_DISCARD`; `MPV_EVENT_END_FILE` EOF resets audio flags; pre-arm sets overlay alpha=255
+- `engine/output_engine.rs` — persistent `pcm_pipe_manager` replaces per-video `handle_pcm_pipe_connection`; `stop_content` now resets `video_pcm_active` and `OUTPUT_PCM_DISCARD`; `MPV_EVENT_END_FILE` EOF resets audio flags
 
 ---
 
@@ -138,7 +131,6 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 - Fade-bypass bug fixed: `show_content()` correctly applies the previous cue's `fade_out_ms` before loading new content
 - First-GO freeze eliminated: mpv instance created at `OutputEngine::new()` (not lazily on first GO)
 - F9 shortcut toggles output window visibility; View menu also has the option
-- Pre-arm mechanism preserved intact (uses `OutputEngine` instead of `VideoEngine`)
 - Cross-stop rule preserved: any new cue GO stops the currently playing visual content
 
 **Files changed:**
@@ -148,7 +140,6 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 - `cue/image_cue.rs` — removed `ImageStopMode`, uses `output_engine.show_content()`/`stop_content()`
 - `cue/video_cue.rs` — uses `output_engine.show_content()`/`stop_voice()`/`pause_voice()`/`resume_voice()`
 - `show/event_loop.rs` — drains `OutputStatus` instead of `VideoStatus + ImageStatus`
-- `show/video_pre_arm.rs` — uses `OutputEngine`
 - `state/app_state.rs` — `output_engine: Arc<OutputEngine>`
 - `lib.rs` — constructs `OutputEngine::new(audio_engine)`, removed `ImageEngine`/`surface_pinned`
 - `commands/cue_cmds.rs` — removed image surface commands, added `toggle_output_window`/`get_output_window_visible`
@@ -172,7 +163,7 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 - `preferences.rs` — `DisplayPreferences::output_screen: Option<u32>` (serde default `None`)
 - `preferences_cmds.rs` — `get_output_screen` / `set_output_screen` Tauri commands
 - `cue/context.rs` — `output_screen: Option<u32>` snapshot field in `CueContext`
-- `engine/video_engine.rs` — `position_window` (no `ShowWindow`) + `show_window`; pre-arm only calls `position_window`
+- `engine/video_engine.rs` — `position_window` (no `ShowWindow`) + `show_window`
 - `engine/image_engine.rs` — `Option<SurfaceInfo>` (was `HashMap`); fixed label `"output-surface"`
 - `cue/video_cue.rs` — removed `screen_index`; calls `image_engine.hard_stop_all()` on GO
 - `cue/image_cue.rs` — removed `screen_index`; calls `video_engine.stop_current_voice(0)` on GO

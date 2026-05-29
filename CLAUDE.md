@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.4.0** — Audio, Video, Image, Stop, and Memo cue types all exist and are fully functional. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
+WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.4.1** — Audio, Video, Image, Stop, and Memo cue types all exist and are fully functional. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
 
 The full specification is in `wincue-prompt.md` at the project root.
 **Before starting any implementation work, read `PROGRESS.md`** — it reflects the current state of the codebase, known bugs, and next priorities. `wincue-prompt.md` is useful for spec details (trait methods, event names, save format), but PROGRESS.md is the ground truth for what is done.

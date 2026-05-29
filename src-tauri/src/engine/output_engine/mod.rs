@@ -25,8 +25,7 @@ mod win32_window;
 
 pub use types::{OutputStatus, OutputSurface, ScreenInfo, SurfaceId, VoiceId};
 use types::{
-    ArmedVoice, FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice,
-    OutputWndState,
+    FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice, OutputWndState,
 };
 
 use std::collections::HashMap;
@@ -89,7 +88,6 @@ pub struct OutputEngine {
     status_rx: Mutex<Receiver<OutputStatus>>,
     default_surface_id: SurfaceId,
     audio_engine: Arc<AudioEngine>,
-    armed_voice: Arc<Mutex<Option<ArmedVoice>>>,
     go_sent_at: Arc<Mutex<Option<Instant>>>,
     /// Whether the output window is currently user-visible.
     visible: Arc<AtomicBool>,
@@ -205,7 +203,6 @@ impl OutputEngine {
             status_rx: Mutex::new(status_rx),
             default_surface_id: Uuid::new_v4(),
             audio_engine,
-            armed_voice: Arc::new(Mutex::new(None)),
             go_sent_at,
             visible: Arc::new(AtomicBool::new(true)),
         })
@@ -354,7 +351,6 @@ impl OutputEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn show_content(
         &self,
-        cue_id: Option<Uuid>,
         file_path: &Path,
         is_image: bool,
         fade_in_ms: u32,
@@ -365,26 +361,6 @@ impl OutputEngine {
         end_ms: Option<u64>,
         screen_index: Option<u32>,
     ) -> Result<VoiceId> {
-        // ── Pre-arm fast path (video only) ───────────────────────────────────
-        if !is_image {
-            if let Some(owner_id) = cue_id {
-                let armed_opt = self.armed_voice.lock().unwrap().take();
-                if let Some(armed) = armed_opt {
-                    if armed.owner_id == owner_id {
-                        if let Some(m) = OUTPUT_CURRENT_FADE_OUT_MS.get() {
-                            *m.lock().unwrap() = this_fade_out_ms;
-                        }
-                        return self.activate_armed_voice(
-                            armed, volume_db, screen_index, fade_in_ms,
-                        );
-                    }
-                    log::info!("[pre-arm] stale pre-arm discarded (cue mismatch)");
-                    self.cancel_pre_arm_inner();
-                }
-            }
-            *self.armed_voice.lock().unwrap() = None;
-        }
-
         let voice_id = Uuid::new_v4();
 
         if let Some(old_id) = self.current_voice.lock().unwrap().take() {
@@ -448,6 +424,19 @@ impl OutputEngine {
                 PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
             }
         } else {
+            // Abort any in-progress stop fade so the timer cannot kill this new content
+            // or keep the overlay dark over it.
+            if let Some(fs) = FADE_STATE.get() {
+                if let Ok(mut state) = fs.lock() {
+                    if matches!(state.pending, Some(FadePending::Stop)) {
+                        state.pending = None;
+                        state.target_alpha = 0;
+                        state.current_alpha = 0;
+                        state.start_alpha = 0;
+                        state.duration_ms = 0;
+                    }
+                }
+            }
             fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
             if fade_in_ms > 0 {
                 if let Some(fs) = FADE_STATE.get() {
@@ -464,8 +453,13 @@ impl OutputEngine {
                     use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                     PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
                 }
-            } else {
+            } else if is_image {
+                // Images don't fire PLAYBACK_RESTART with go_sent_at set, reveal immediately.
                 fade::set_overlay_alpha(0);
+            } else {
+                // Video: keep overlay at 255 — MPV_EVENT_PLAYBACK_RESTART will reveal
+                // once the first live frame is actually rendered (no frame-0 freeze).
+                fade::set_overlay_alpha(255);
             }
         }
 
@@ -535,7 +529,6 @@ impl OutputEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn play_voice(
         &self,
-        cue_id: Option<Uuid>,
         file_path: &Path,
         _surface_id: Option<SurfaceId>,
         volume_db: f64,
@@ -546,7 +539,7 @@ impl OutputEngine {
         screen_index: Option<u32>,
     ) -> Result<VoiceId> {
         self.show_content(
-            cue_id, file_path, false,
+            file_path, false,
             0, 0, volume_db, loop_count, start_ms, end_ms, screen_index,
         )
     }
@@ -647,127 +640,6 @@ impl OutputEngine {
         }
     }
 
-    // ── Pre-arm (video only) ─────────────────────────────────────────────────
-
-    /// Pre-arm a video cue for instant GO.
-    #[allow(clippy::too_many_arguments)]
-    pub fn pre_arm_voice(
-        &self,
-        owner_id: Uuid,
-        file_path: &Path,
-        _surface_id: Option<SurfaceId>,
-        volume_db: f64,
-        loop_count: u32,
-        start_ms: Option<u64>,
-        end_ms: Option<u64>,
-        _fade_in: Option<&FadeSpec>,
-        screen_index: Option<u32>,
-    ) -> Result<()> {
-        if self.current_voice.lock().unwrap().is_some() {
-            return Ok(());
-        }
-
-        *self.go_sent_at.lock().unwrap() = None;
-        self.cancel_pre_arm();
-
-        if let Some(d) = OUTPUT_PCM_DISCARD.get() {
-            d.store(true, Ordering::Release);
-        }
-        fade::set_overlay_alpha(255);
-
-        let voice_id = Uuid::new_v4();
-        let path_str = file_path.to_string_lossy().replace('\\', "/");
-        let path_cstr = CString::new(path_str.as_str())
-            .map_err(|_| anyhow!("File path contains NUL byte"))?;
-
-        *self.armed_voice.lock().unwrap() = Some(ArmedVoice {
-            voice_id,
-            owner_id,
-            armed_at: Instant::now(),
-        });
-
-        let ctx = self.mpv_ctx.0;
-        let lib = &self.mpv_lib;
-
-        let mut opts: Vec<String> = Vec::new();
-        if let Some(start) = start_ms {
-            opts.push(format!("start={:.3}", start as f64 / 1000.0));
-        }
-        if let Some(end) = end_ms {
-            opts.push(format!("end={:.3}", end as f64 / 1000.0));
-        }
-        let loop_val = if loop_count == u32::MAX {
-            "inf".to_string()
-        } else if loop_count == 0 {
-            "no".to_string()
-        } else {
-            loop_count.to_string()
-        };
-        opts.push(format!("loop-file={loop_val}"));
-        opts.push("pause=yes".to_string());
-
-        let opts_str     = opts.join(",");
-        let opts_cstr    = cs(&opts_str);
-        let cmd_cstr     = cs("loadfile");
-        let replace_cstr = cs("replace");
-        let index_cstr   = cs("0");
-        let args: [*const std::ffi::c_char; 6] = [
-            cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-            index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
-        ];
-
-        unsafe {
-            let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
-            let vol_str = cs(&format!("{vol_pct:.2}"));
-            (lib.mpv_set_property_string)(ctx, cs("volume").as_ptr(), vol_str.as_ptr());
-            (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
-            (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
-            (lib.mpv_set_property_string)(
-                ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr(),
-            );
-            (lib.mpv_set_property_string)(
-                ctx, cs("audio-buffer").as_ptr(), cs("0.06").as_ptr(),
-            );
-            (lib.mpv_set_property_string)(
-                ctx, cs("initial-audio-sync").as_ptr(), cs("no").as_ptr(),
-            );
-
-            let ret = (lib.mpv_command)(ctx, args.as_ptr());
-            if ret < 0 {
-                let err_cstr = (lib.mpv_error_string)(ret);
-                let err_msg = std::ffi::CStr::from_ptr(err_cstr).to_string_lossy();
-                *self.armed_voice.lock().unwrap() = None;
-                return Err(anyhow!("pre_arm loadfile failed (code {ret}): {err_msg}"));
-            }
-        }
-
-        log::info!(
-            "[pre-arm] loadfile sent for cue {owner_id}: {path_str} opts=[{opts_str}]"
-        );
-
-        self.position_window(screen_index);
-
-        Ok(())
-    }
-
-    /// Cancel any pre-armed voice.
-    pub fn cancel_pre_arm(&self) {
-        self.cancel_pre_arm_inner();
-    }
-
-    fn cancel_pre_arm_inner(&self) {
-        if let Some(a) = self.armed_voice.lock().unwrap().take() {
-            log::info!("[pre-arm] cancelling pre-arm for cue {}", a.owner_id);
-            unsafe {
-                let stop = cs("stop");
-                let args: [*const std::ffi::c_char; 2] =
-                    [stop.as_ptr(), std::ptr::null()];
-                (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
-            }
-            fade::set_overlay_alpha(0);
-        }
-    }
-
     // ── Status / GC ──────────────────────────────────────────────────────────
 
     /// No-op kept for API compatibility.
@@ -793,8 +665,8 @@ impl OutputEngine {
     fn position_window(&self, screen_index: Option<u32>) {
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, HWND_TOPMOST,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED, SWP_NOZORDER,
+                SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED,
             };
 
             if let Some(idx) = screen_index {
@@ -815,96 +687,33 @@ impl OutputEngine {
                         SWP_NOACTIVATE | SWP_FRAMECHANGED,
                     );
                 }
-            } else {
-                if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
-                    if let Ok(mut state) = state_mutex.lock() {
-                        if state.is_fullscreen {
-                            let (l, t, r, b) = state.saved_rect;
-                            win32_window::set_resizable(self.hwnd);
-                            SetWindowPos(
-                                self.hwnd, HWND_TOPMOST,
-                                l, t, r - l, b - t,
-                                SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                            );
-                            state.is_fullscreen = false;
-                        }
+            } else if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
+                if let Ok(mut state) = state_mutex.lock() {
+                    if state.is_fullscreen {
+                        let (l, t, r, b) = state.saved_rect;
+                        win32_window::set_resizable(self.hwnd);
+                        SetWindowPos(
+                            self.hwnd, HWND_TOPMOST,
+                            l, t, r - l, b - t,
+                            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                        );
+                        state.is_fullscreen = false;
                     }
                 }
-                SetWindowPos(
-                    self.hwnd, HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
-                );
             }
+
+            // Always show and raise to TOPMOST when content is displayed.
+            // Mirrors the original VideoEngine apply_window_layout behaviour.
+            self.visible.store(true, Ordering::Relaxed);
+            ShowWindow(self.hwnd, SW_SHOWNA);
+            SetWindowPos(
+                self.hwnd, HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
     }
 
-    fn activate_armed_voice(
-        &self,
-        armed: ArmedVoice,
-        volume_db: f64,
-        screen_index: Option<u32>,
-        fade_in_ms: u32,
-    ) -> Result<VoiceId> {
-        if let Some(old_id) = self.current_voice.lock().unwrap().take() {
-            self.voices.lock().unwrap().remove(&old_id);
-            let _ = self.status_tx.send(OutputStatus::Completed { voice_id: old_id });
-        }
-
-        *self.current_voice.lock().unwrap() = Some(armed.voice_id);
-        self.voices.lock().unwrap().insert(
-            armed.voice_id,
-            OutputVoice { id: armed.voice_id, started_at: Instant::now(), duration: None },
-        );
-        if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
-            *cv.lock().unwrap() = Some(armed.voice_id);
-        }
-
-        self.position_window(screen_index);
-
-        if let Some(d) = OUTPUT_PCM_DISCARD.get() {
-            d.store(false, Ordering::Release);
-        }
-        *self.go_sent_at.lock().unwrap() = Some(Instant::now());
-
-        let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
-        let vol_str = cs(&format!("{vol_pct:.2}"));
-        unsafe {
-            (self.mpv_lib.mpv_set_property_string)(
-                self.mpv_ctx.0, cs("volume").as_ptr(), vol_str.as_ptr(),
-            );
-            (self.mpv_lib.mpv_set_property_string)(
-                self.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
-            );
-        }
-
-        log::info!(
-            "[pre-arm] GO: activated voice {} for cue {} (armed {}ms ago)",
-            armed.voice_id, armed.owner_id,
-            armed.armed_at.elapsed().as_millis(),
-        );
-
-        if fade_in_ms > 0 {
-            if let Some(fs) = FADE_STATE.get() {
-                let mut state = fs.lock().unwrap();
-                state.start_alpha = 255;
-                state.current_alpha = 255;
-                state.target_alpha = 0;
-                state.duration_ms = fade_in_ms;
-                state.start_time = Instant::now();
-                state.timer_active = false;
-                state.pending = None;
-            }
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-            }
-        } else {
-            fade::set_overlay_alpha(0);
-        }
-
-        Ok(armed.voice_id)
-    }
 }
 
 impl Drop for OutputEngine {

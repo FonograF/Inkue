@@ -285,16 +285,8 @@ pub fn set_playhead(
         .transpose()?;
 
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-    let output_screen = ws.preferences.display.output_screen;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     cue_list.set_playhead(id).map_err(|e| e.to_string())?;
-
-    crate::show::video_pre_arm::update_video_pre_arm(
-        cue_list.playhead_cue_id,
-        cue_list,
-        &state.output_engine,
-        output_screen,
-    );
 
     let _ = app_handle.emit(
         "playhead-moved",

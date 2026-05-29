@@ -66,7 +66,6 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         ws.preferences.display.output_screen,
     );
     let mut transport = Transport::new(context);
-    let output_screen = ws.preferences.display.output_screen;
 
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
@@ -88,15 +87,6 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     }
 
     let triggered = transport.go(cue_list).map_err(|e| e.to_string())?;
-
-    // Pre-arm the new playhead cue (if it is a VideoCue) so the next GO
-    // is instantaneous — pipe pre-connected, ring buffer consumer installed.
-    crate::show::video_pre_arm::update_video_pre_arm(
-        cue_list.playhead_cue_id,
-        cue_list,
-        &state.output_engine,
-        output_screen,
-    );
 
     // Handle any events emitted synchronously during go() — notably StopAll
     // from a StopCue, which must stop all running cues immediately.

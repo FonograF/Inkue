@@ -99,15 +99,14 @@ impl ImageCue {
         let fade_out_ms = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
 
         let voice_id = context.output_engine.show_content(
-            None,
             path,
-            true,          // is_image
+            true,
             fade_in_ms,
             fade_out_ms,
-            0.0,           // volume_db — ignored for images
-            0,             // loop_count — ignored
-            None,          // start_ms
-            None,          // end_ms
+            0.0,
+            0,
+            None,
+            None,
             context.output_screen,
         )?;
 

@@ -57,6 +57,16 @@ pub(super) fn mpv_event_loop(
                 if let Some(t) = go_time {
                     let ms = t.elapsed().as_millis();
                     video_pcm_active.store(true, Ordering::Release);
+                    // Reveal content now that the first live frame is rendering.
+                    // Checking timer_active avoids interrupting a fade-in animation.
+                    let fade_active = super::FADE_STATE
+                        .get()
+                        .and_then(|fs| fs.lock().ok())
+                        .map(|s| s.timer_active)
+                        .unwrap_or(false);
+                    if !fade_active {
+                        super::fade::set_overlay_alpha(0);
+                    }
                     log::info!(
                         "[output-mpv] MPV_EVENT_PLAYBACK_RESTART — {ms}ms after GO \
                          (video PCM mixing activated)"

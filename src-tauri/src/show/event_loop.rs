@@ -298,15 +298,6 @@ fn tick(
         }
     }
 
-    if !go_triggered.is_empty() {
-        crate::show::video_pre_arm::update_video_pre_arm(
-            cue_list.playhead_cue_id,
-            cue_list,
-            output_engine,
-            ws_output_screen,
-        );
-    }
-
     drop(ws);
 
     // ------------------------------------------------------------------
