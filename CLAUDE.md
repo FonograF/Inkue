@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.3.1** — Audio, Video, Image, Stop, and Memo cue types all exist and are functional. Video has a minor startup-latency glitch. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
+WinCue is a show control application for Windows, inspired by QLab (macOS). It manages cue lists for live events (theatre, concerts, corporate). **Current version: 0.4.0** — Audio, Video, Image, Stop, and Memo cue types all exist and are fully functional. The architecture must support any future cue type (MIDI, OSC, Fade, Group, Wait, Network, Script) without modifying existing code.
 
 The full specification is in `wincue-prompt.md` at the project root.
 **Before starting any implementation work, read `PROGRESS.md`** — it reflects the current state of the codebase, known bugs, and next priorities. `wincue-prompt.md` is useful for spec details (trait methods, event names, save format), but PROGRESS.md is the ground truth for what is done.
@@ -11,8 +11,7 @@ The full specification is in `wincue-prompt.md` at the project root.
 
 - Backend: Rust (engine, audio, show logic)
 - Audio: cpal (WASAPI/ASIO) + symphonia (decoding WAV/MP3/FLAC/OGG)
-- Video: libmpv (FFI) + Win32 window, `gpu-api=d3d11`, audio via `ao=pcm` through a named pipe into AudioEngine
-- Image: Tauri WebviewWindow (`output-surface-*`), persistent per screen, CSS fade via direct DOM
+- Video + Image: `OutputEngine` — single persistent Win32 popup window, libmpv renders both video files and images (`loadfile image.jpg audio=no,image-display-duration=inf`), dip-to-black fade overlay (`WS_EX_LAYERED` child window), audio via `ao=pcm` through a named pipe into AudioEngine
 - Lock-free comms: ringbuf or crossbeam
 - UI: Tauri v2 + React + TypeScript
 - State: Zustand
@@ -60,7 +59,7 @@ The cpal audio callback in `engine/audio_engine.rs` runs in a high-priority thre
 ### Separation of concerns
 
 Three distinct layers, never mix them:
-1. **Engines** (`engine/`): `AudioEngine` knows about samples, devices, voices, mixing. `VideoEngine` knows about libmpv, Win32 windows, screens. Engines do NOT know about cues or shows.
+1. **Engines** (`engine/`): `AudioEngine` knows about samples, devices, voices, mixing. `OutputEngine` knows about libmpv, Win32 windows, screens, and fade overlays — handles both video and image display. Engines do NOT know about cues or shows.
 2. **Cue System** (`cue/`): knows about cue lifecycle, timing, serialization. AudioCue/VideoCue/ImageCue talk to their engines, but the `Cue` trait itself is engine-agnostic.
 3. **Show/Transport** (`show/`): knows about cue lists, playhead, GO logic, continue modes. Does NOT know engine internals.
 
@@ -129,28 +128,36 @@ Run tests with `cargo test` from the `src-tauri/` directory.
 
 ## Current state & open work
 
-Core development is complete (scaffold, cue system, audio engine, video engine, frontend, transport, inspector, workspace, shortcuts, fades, drag-drop, undo/redo, color tags). The project compiles with zero warnings and 20 tests pass.
+Core development is complete (scaffold, cue system, audio engine, output engine, frontend, transport, inspector, workspace, shortcuts, fades, drag-drop, undo/redo, color tags). The project compiles with zero warnings and 27 tests pass.
 
 ### Cue type status
 
 | Cue type | Status |
 |---|---|
-| Audio | ✅ 100% functional (including Output Patch routing, fades, loops) |
+| Audio | ✅ 100% functional (Output Patch routing, fades, loops, rate, waveform, VU meter) |
 | Stop   | ✅ Functional |
 | Memo   | ✅ Functional |
-| Video  | ⚠️ Plays correctly, but freezes ~0.5s on first GO (pre-arm mitigates for playhead-reached cues) |
-| Image  | ✅ Functional — persistent surface windows, fade-in/out, stop modes, draggable float |
+| Video  | ✅ Functional — single persistent Win32 window, no first-GO freeze, dip-to-black fades |
+| Image  | ✅ Functional — same Win32 window via libmpv, dip-to-black fades, stop-on-next-cue |
 
-### Known bugs / next priorities
+### Known issues / next priorities
 
-1. **⚠️ Video Cue — 0.5s freeze on first GO** (`engine/video_engine.rs`, `cue/video_cue.rs`)
-   - Playback itself is correct, but the first ~500 ms after GO block the UI / playhead
-   - Suspect: synchronous libmpv initialization or Win32 window creation
-   - Possible fix: pre-create the mpv instance and window on workspace load (warm pool)
-   - See PROGRESS.md for details
-
-2. **Output Patch routing — ASIO→WASAPI validation**
+1. **Output Patch routing — ASIO→WASAPI validation**
    - Audio routing through `Voice.out_l/out_r` is wired, but the ASIO path still needs validation on hardware
    - Verify VU meter moves during video playback (confirms the `ao=pcm` named-pipe path into AudioEngine is active)
 
+### Output engine architecture (unified — since 0.4.0)
+
+Video and Image cues share a **single `OutputEngine`** with one persistent Win32 window:
+- `engine/output_engine.rs` — replaces both `VideoEngine` (display) and `ImageEngine`
+- Target screen chosen globally in Preferences → Display (not per-cue); `DisplayPreferences::output_screen: Option<u32>`
+- Win32 window is always visible (black when idle) — never hidden/closed between cues
+- libmpv renders video (`loadfile file.mp4`) and images (`loadfile img.jpg audio=no,image-display-duration=inf`)
+- Fade overlay: `WS_EX_LAYERED | WS_EX_TRANSPARENT` child window, alpha animated via 16 ms Win32 timer
+- **Cross-stop rule**: any new `show_content()` call stops the current content first (applies its `fade_out_ms`)
+- **F9** toggles output window visibility; `toggle_output_window` / `get_output_window_visible` Tauri commands
+- Old `.wincue` files with `ImageStopMode`, `display_duration_ms`, or per-cue `screen_index` load silently (fields ignored by serde)
+
 See `PROGRESS.md` for the full detailed state of every module.
+
+Update CLAUDE.md and PROGRESS.md at any major change

@@ -9,7 +9,7 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead } from "./lib/commands";
+import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible } from "./lib/commands";
 import { PreferencesModal } from "./components/Preferences/PreferencesModal";
 import type { CueSummary } from "./lib/types";
 
@@ -305,23 +305,104 @@ function FileMenu({
 }
 
 // ---------------------------------------------------------------------------
+// View menu
+// ---------------------------------------------------------------------------
+
+function ViewMenu({
+  surfaceVisible,
+  onToggle,
+}: {
+  surfaceVisible: boolean;
+  onToggle: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  const close = () => setOpen(false);
+
+  const handleToggle = () => {
+    close();
+    onToggle();
+  };
+
+  return (
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      {open && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9990 }} onClick={close} />
+      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        style={{
+          background: open ? "#1e293b" : "transparent",
+          border: "none", color: "#cbd5e1", cursor: "pointer",
+          fontSize: 12, padding: "3px 8px", borderRadius: 4, userSelect: "none",
+        }}
+      >
+        View
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute", left: 0, top: "100%", marginTop: 2,
+            background: "#1e293b", border: "1px solid #334155", borderRadius: 6,
+            padding: "4px 0", minWidth: 200,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.7)", zIndex: 9999,
+          }}
+        >
+          <button
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={(e) => { e.stopPropagation(); handleToggle(); }}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              width: "100%", padding: "6px 14px",
+              background: hovered ? "#334155" : "transparent",
+              border: "none", color: "#e2e8f0", fontSize: 13,
+              cursor: "pointer", textAlign: "left",
+            }}
+          >
+            <span style={{ width: 14, textAlign: "center", color: "#94a3b8" }}>
+              {surfaceVisible ? "✓" : ""}
+            </span>
+            <span>Output Surface</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Root component
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, workspaceInfo, selectedCueId, cues } =
+  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, cues } =
     useWorkspaceStore();
 
-  const [inspectorOpen, setInspectorOpen]     = useState(true);
-  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
-  const [prefsOpen, setPrefsOpen]             = useState(false);
-  const [gotoOpen, setGotoOpen]               = useState(false);
+  const [inspectorOpen, setInspectorOpen]         = useState(true);
+  const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
+  const [prefsOpen, setPrefsOpen]                 = useState(false);
+  const [gotoOpen, setGotoOpen]                   = useState(false);
+  const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
+
+  // Apply theme CSS variables whenever display prefs change
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--wc-bg-app",     displayPrefs.bg_app);
+    root.style.setProperty("--wc-bg-surface", displayPrefs.bg_surface);
+    root.style.setProperty("--wc-bg-panel",   displayPrefs.bg_panel);
+    root.style.setProperty("--wc-accent",     displayPrefs.accent);
+    root.style.setProperty("--wc-text",       displayPrefs.text_primary);
+  }, [displayPrefs]);
 
   // Bootstrap
   useEffect(() => {
     refreshCues();
     refreshWorkspaceInfo();
     loadGeneralPrefs();
+    loadDisplayPrefs();
+    void getOutputWindowVisible().then(setOutputSurfaceVisible);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // -------------------------------------------------------------------------
@@ -422,9 +503,15 @@ export default function App() {
     () => void handleOpen(),
     () => setInspectorOpen((v) => !v),
     () => setGotoOpen(true),
+    () => void handleToggleSurface(),
   );
 
   const selectedCue = cues.find((c) => c.id === selectedCueId) ?? null;
+
+  const handleToggleSurface = async () => {
+    await toggleOutputWindow().catch(console.error);
+    setOutputSurfaceVisible((v) => !v);
+  };
 
   const handleAddAudio = async () => {
     const { selectedCueId, cues } = useWorkspaceStore.getState();
@@ -471,7 +558,7 @@ export default function App() {
     <div
       style={{
         display: "flex", flexDirection: "column", height: "100vh",
-        background: "#020617", color: "#e2e8f0",
+        background: "var(--wc-bg-app, #020617)", color: "var(--wc-text, #e2e8f0)",
         fontFamily: "'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
         overflow: "hidden",
       }}
@@ -499,7 +586,7 @@ export default function App() {
         data-tauri-drag-region
         style={{
           display: "flex", alignItems: "center", height: 36, padding: "0 12px",
-          background: "#0f172a", borderBottom: "1px solid #1e293b",
+          background: "var(--wc-bg-surface, #0f172a)", borderBottom: "1px solid #1e293b",
           flexShrink: 0, gap: 12, userSelect: "none", WebkitUserSelect: "none",
         }}
       >
@@ -510,6 +597,10 @@ export default function App() {
           onOpen={() => void handleOpen()}
           onNew={() => void handleNew()}
           onPreferences={() => setPrefsOpen(true)}
+        />
+        <ViewMenu
+          surfaceVisible={outputSurfaceVisible}
+          onToggle={() => void handleToggleSurface()}
         />
 
         {/* Drag region: app name + workspace name */}

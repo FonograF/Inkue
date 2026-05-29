@@ -1,7 +1,7 @@
-//! [`VideoCue`] — plays a video file on a [`VideoEngine`] output surface.
+//! [`VideoCue`] — plays a video file on the unified [`OutputEngine`] window.
 //!
-//! The cue delegates actual playback to the [`VideoEngine`], which manages
-//! Tauri output surface windows containing an HTML5 `<video>` element.
+//! The cue delegates actual playback to the [`OutputEngine`], which manages
+//! the persistent Win32 + libmpv output window.
 //! The lifecycle (go / stop / pause / resume / pre-wait) mirrors [`AudioCue`]
 //! exactly, so the Transport and event loop need no special-casing.
 
@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::engine::video_engine::{SurfaceId, VoiceId};
+use crate::engine::output_engine::{SurfaceId, VoiceId};
 
 use super::{
     context::{CueContext, CueEvent},
@@ -24,7 +24,7 @@ use super::{
 // VideoCue
 // ---------------------------------------------------------------------------
 
-/// A cue that plays a video file on a [`VideoEngine`] output surface.
+/// A cue that plays a video file on the unified [`OutputEngine`] output window.
 pub struct VideoCue {
     // --- Identity ---
     id: CueId,
@@ -62,8 +62,6 @@ pub struct VideoCue {
     pub loop_count: u32,
     /// Output surface to render on.  `None` uses the default surface.
     pub output_surface_id: Option<SurfaceId>,
-    /// Monitor index to play on (0 = primary).  `None` keeps the floating window.
-    pub screen_index: Option<u32>,
     /// Output Patch to route video audio through.  `None` uses the workspace
     /// default patch (or system default if none is configured).
     pub output_patch_id: Option<uuid::Uuid>,
@@ -105,7 +103,6 @@ impl VideoCue {
             end_time: None,
             loop_count: 0,
             output_surface_id: None,
-            screen_index: None,
             output_patch_id: None,
             active_voice_id: None,
             cached_duration: None,
@@ -124,17 +121,20 @@ impl VideoCue {
 
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
+        let fade_in_ms = self.fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+        let fade_out_ms = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
 
-        let voice_id = context.video_engine.play_voice(
-            Some(self.id),        // cue_id — enables pre-arm fast path
+        let voice_id = context.output_engine.show_content(
+            Some(self.id),         // cue_id — enables pre-arm fast path
             path,
-            self.output_surface_id,
+            false,                 // is_image
+            fade_in_ms,
+            fade_out_ms,
             self.volume_db,
             self.loop_count,
             start_ms,
             end_ms,
-            self.fade_in.as_ref(),
-            self.screen_index,
+            context.output_screen,
         )?;
 
         self.active_voice_id = Some(voice_id);
@@ -174,7 +174,7 @@ impl Cue for VideoCue {
     // -----------------------------------------------------------------------
 
     fn load(&mut self, _context: &CueContext) -> Result<()> {
-        // Video files stream directly from disk via the VideoEngine — no
+        // Video files stream directly from disk via the OutputEngine — no
         // pre-decoding step is needed.
         Ok(())
     }
@@ -206,7 +206,7 @@ impl Cue for VideoCue {
                 .as_ref()
                 .map(|f| f.duration_ms as u32)
                 .unwrap_or(500); // Default 500 ms fade-out, matching QLab.
-            let _ = context.video_engine.stop_voice(vid, fade_ms);
+            let _ = context.output_engine.stop_voice(vid, fade_ms);
         }
 
         self.state = CueState::Standby;
@@ -222,7 +222,7 @@ impl Cue for VideoCue {
             return Ok(()); // Cannot pause during pre-wait.
         }
         if let Some(vid) = self.active_voice_id {
-            context.video_engine.pause_voice(vid)?;
+            context.output_engine.pause_voice(vid)?;
         }
         self.state = CueState::Paused;
         Ok(())
@@ -230,7 +230,7 @@ impl Cue for VideoCue {
 
     fn resume(&mut self, context: &CueContext) -> Result<()> {
         if let Some(vid) = self.active_voice_id {
-            context.video_engine.resume_voice(vid)?;
+            context.output_engine.resume_voice(vid)?;
         }
         self.state = CueState::Running;
         Ok(())
@@ -240,7 +240,7 @@ impl Cue for VideoCue {
         self.in_pre_wait = false;
 
         if let Some(vid) = self.active_voice_id.take() {
-            let _ = context.video_engine.stop_voice(vid, 0); // Immediate cut.
+            let _ = context.output_engine.stop_voice(vid, 0); // Immediate cut.
         }
 
         self.state = CueState::Standby;
@@ -372,7 +372,6 @@ impl Cue for VideoCue {
             "end_time_ms": self.end_time.map(|d| d.as_millis() as u64),
             "loop_count": self.loop_count,
             "output_surface_id": self.output_surface_id,
-            "screen_index": self.screen_index,
             "output_patch_id": self.output_patch_id,
         })
     }
@@ -453,9 +452,8 @@ impl CueFactory for VideoCueFactory {
         if let Some(sid_str) = value.get("output_surface_id").and_then(|v| v.as_str()) {
             cue.output_surface_id = sid_str.parse().ok();
         }
-        if let Some(si) = value.get("screen_index").and_then(|v| v.as_u64()) {
-            cue.screen_index = Some(si as u32);
-        }
+        // "screen_index" was a per-cue field in older workspaces; it is now a
+        // global preference (DisplayPreferences::output_screen) and is ignored here.
         if let Some(pid_str) = value.get("output_patch_id").and_then(|v| v.as_str()) {
             cue.output_patch_id = pid_str.parse().ok();
         }

@@ -18,7 +18,7 @@ use crate::{
         types::CueType,
         video_cue::VideoCueFactory,
     },
-    engine::{AudioEngine, ImageEngine, VideoEngine},
+    engine::{AudioEngine, OutputEngine},
     show::{undo_stack::UndoStack, Workspace},
 };
 
@@ -28,10 +28,8 @@ pub struct AppState {
     pub workspace: Arc<Mutex<Workspace>>,
     /// The audio engine (shared; owns its own real-time thread internally).
     pub audio_engine: Arc<AudioEngine>,
-    /// The video engine (shared; manages output surface windows).
-    pub video_engine: Arc<VideoEngine>,
-    /// The image engine (shared; manages image display windows).
-    pub image_engine: Arc<ImageEngine>,
+    /// The unified output engine (video + image via libmpv Win32 window).
+    pub output_engine: Arc<OutputEngine>,
     /// The cue type registry used for workspace de/serialisation.
     pub registry: Arc<Mutex<CueRegistry>>,
     /// Set of cue IDs whose audio files are currently being decoded in the
@@ -45,15 +43,7 @@ pub struct AppState {
 
 impl AppState {
     /// Build the initial application state from already-constructed engines.
-    ///
-    /// The engines are created in `lib.rs`'s Tauri `setup` closure (not here)
-    /// so that [`VideoEngine`] and [`ImageEngine`] can receive the
-    /// [`tauri::AppHandle`] they need to manage output surface windows.
-    pub fn new(
-        audio_engine: Arc<AudioEngine>,
-        video_engine: Arc<VideoEngine>,
-        image_engine: Arc<ImageEngine>,
-    ) -> Self {
+    pub fn new(audio_engine: Arc<AudioEngine>, output_engine: Arc<OutputEngine>) -> Self {
         let workspace = Workspace::new("Untitled");
 
         let mut registry = CueRegistry::new();
@@ -66,8 +56,7 @@ impl AppState {
         Self {
             workspace: Arc::new(Mutex::new(workspace)),
             audio_engine,
-            video_engine,
-            image_engine,
+            output_engine,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
             undo_stack: Arc::new(Mutex::new(UndoStack::new())),

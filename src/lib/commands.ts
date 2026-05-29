@@ -10,6 +10,7 @@ import type {
   CueSummary,
   CueType,
   DeviceInfo,
+  DisplayPreferences,
   GeneralPreferences,
   OutputPatch,
   ScreenInfo,
@@ -64,22 +65,11 @@ export const setAudioFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_audio_file", { cueId, filePath });
 export const setVideoFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_video_file", { cueId, filePath });
-export const reportVideoStatus = (
-  voiceId: string,
-  statusType: "completed" | "duration" | "error",
-  durationMs: number | null,
-  errorMessage: string | null,
-) =>
-  invoke<void>("report_video_status", { voiceId, statusType, durationMs, errorMessage });
 export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
 export const setImageFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_image_file", { cueId, filePath });
-export const getImageSurfaceData = (voiceId: string) =>
-  invoke<{ data_url: string; fade_in_ms: number }>("get_image_surface_data", { voiceId });
-export const reportImageFadedOut = (voiceId: string) =>
-  invoke<void>("report_image_faded_out", { voiceId });
 
 export const previewCue = (cueId: CueId, startMs?: number, endMs?: number) =>
   invoke<string>("preview_cue", {
@@ -127,11 +117,19 @@ export const updateAudioPreferences = (prefs: AudioPreferences) =>
   invoke<void>("update_audio_preferences", { prefs });
 export const updateGeneralPreferences = (prefs: GeneralPreferences) =>
   invoke<void>("update_general_preferences", { prefs });
+export const updateDisplayPreferences = (prefs: DisplayPreferences) =>
+  invoke<void>("update_display_preferences", { prefs });
 export async function listAudioDevices(backend?: string): Promise<DeviceInfo[]> {
   return invoke<DeviceInfo[]>("list_audio_devices", { backend: backend ?? null });
 }
 export const testAudioDevice = (deviceId: string, backend: string) =>
   invoke<void>("test_audio_device", { deviceId, backend });
+export const getOutputScreen = () =>
+  invoke<number | null>("get_output_screen");
+export const setOutputScreen = (screen: number | null) =>
+  invoke<void>("set_output_screen", { screen });
+export const toggleOutputWindow = () => invoke<void>("toggle_output_window");
+export const getOutputWindowVisible = () => invoke<boolean>("get_output_window_visible");
 
 // ---------------------------------------------------------------------------
 // Devices

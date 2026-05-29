@@ -1,8 +1,8 @@
 // Zustand store: workspace data, cue list, selection, and playhead.
 
 import { create } from "zustand";
-import type { CueId, CueSummary, GeneralPreferences, WorkspaceInfo } from "../lib/types";
-import { DEFAULT_GENERAL_PREFS } from "../lib/types";
+import type { CueId, CueSummary, DisplayPreferences, GeneralPreferences, WorkspaceInfo } from "../lib/types";
+import { DEFAULT_DISPLAY_PREFS, DEFAULT_GENERAL_PREFS } from "../lib/types";
 import { getAllCues, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
 
 interface WorkspaceState {
@@ -11,6 +11,7 @@ interface WorkspaceState {
   playheadCueId: CueId | null;
   workspaceInfo: WorkspaceInfo | null;
   generalPrefs: GeneralPreferences;
+  displayPrefs: DisplayPreferences;
 
   // Actions
   refreshCues: () => Promise<void>;
@@ -20,6 +21,8 @@ interface WorkspaceState {
   updateCueState: (cueId: CueId, state: CueSummary["state"]) => void;
   loadGeneralPrefs: () => Promise<void>;
   setGeneralPrefs: (p: GeneralPreferences) => void;
+  loadDisplayPrefs: () => Promise<void>;
+  setDisplayPrefs: (p: DisplayPreferences) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
@@ -28,6 +31,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   playheadCueId: null,
   workspaceInfo: null,
   generalPrefs: DEFAULT_GENERAL_PREFS,
+  displayPrefs: { ...DEFAULT_DISPLAY_PREFS, output_screen: null },
 
   refreshCues: async () => {
     try {
@@ -68,4 +72,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   },
 
   setGeneralPrefs: (p) => set({ generalPrefs: p }),
+
+  loadDisplayPrefs: async () => {
+    try {
+      const prefs = await getPreferences();
+      set({ displayPrefs: { ...DEFAULT_DISPLAY_PREFS, ...prefs.display } });
+    } catch (e) {
+      console.error("Failed to load display preferences:", e);
+    }
+  },
+
+  setDisplayPrefs: (p) => set({ displayPrefs: p }),
 }));

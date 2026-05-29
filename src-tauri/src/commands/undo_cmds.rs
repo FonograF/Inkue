@@ -250,7 +250,7 @@ pub fn paste_cue(
         new_json["file_path"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .map(|s| std::path::PathBuf::from(s))
+            .map(std::path::PathBuf::from)
     } else {
         None
     };

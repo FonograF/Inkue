@@ -39,6 +39,12 @@ pub struct UndoStack {
     future: Vec<Snapshot>,
 }
 
+impl Default for UndoStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UndoStack {
     /// Create an empty history.
     pub fn new() -> Self {

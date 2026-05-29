@@ -12,15 +12,16 @@ use std::sync::Arc;
 use commands::{
     cue_cmds::{
         add_cue, duplicate_cue, get_all_cues, get_cue, get_playhead,
-        get_surface_current_voice, get_waveform_peaks, list_video_screens, move_cue, preview_cue,
-        remove_cue, report_image_faded_out, set_audio_file, set_image_file, set_playhead,
-        set_video_file,
-        stop_preview, update_cue,
+        get_output_window_visible, get_waveform_peaks,
+        list_video_screens, move_cue, preview_cue,
+        remove_cue, set_audio_file, set_image_file, set_playhead,
+        set_video_file, stop_preview, toggle_output_window, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     preferences_cmds::{
-        get_asio_output_pairs, get_available_backends, get_preferences, list_audio_devices,
-        test_audio_device, update_audio_preferences, update_general_preferences,
+        get_asio_output_pairs, get_available_backends, get_output_screen, get_preferences,
+        list_audio_devices, set_output_screen, test_audio_device, update_audio_preferences,
+        update_display_preferences, update_general_preferences,
     },
     transport_cmds::{
         go, hard_stop_all, pause_cue, resume_cue, set_master_volume, stop_all, stop_cue,
@@ -28,15 +29,13 @@ use commands::{
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
-use engine::{AudioEngine, ImageEngine, VideoEngine};
+use engine::{AudioEngine, OutputEngine};
 use state::AppState;
 use tauri::Manager;
+
 /// Build and run the Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Default to info-level for the wincue crate so mpv renderer messages are
-    // visible in the terminal without needing to set RUST_LOG manually.
-    // Override with: RUST_LOG=debug pnpm tauri dev
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("wincue=info"),
     )
@@ -48,21 +47,18 @@ pub fn run() {
         .setup(|app| {
             // ----------------------------------------------------------------
             // Initialise engines and managed state.
-            // VideoEngine creates its own native Win32 window + libmpv context.
+            // OutputEngine creates the persistent Win32 window + libmpv context
+            // at startup (window is shown immediately — no first-GO freeze).
             // ----------------------------------------------------------------
             let audio_engine = AudioEngine::new()?;
-            let video_engine = Arc::new(
-                VideoEngine::new(Arc::clone(&audio_engine))
-                    .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                        as Box<dyn std::error::Error>)?,
+            let output_engine = Arc::new(
+                OutputEngine::new(Arc::clone(&audio_engine))
+                    .map_err(|e| Box::new(std::io::Error::other(
+                        e.to_string(),
+                    )) as Box<dyn std::error::Error>)?,
             );
-            let image_engine = Arc::new(ImageEngine::new(app.handle().clone()));
 
-            let app_state = AppState::new(
-                audio_engine,
-                Arc::clone(&video_engine),
-                Arc::clone(&image_engine),
-            );
+            let app_state = AppState::new(audio_engine, Arc::clone(&output_engine));
             app.manage(app_state);
 
             // ----------------------------------------------------------------
@@ -70,14 +66,13 @@ pub fn run() {
             // ----------------------------------------------------------------
             let handle = app.handle().clone();
             let a_engine = app.state::<AppState>().audio_engine.clone();
-            let v_engine = Arc::clone(&video_engine);
-            let i_engine = Arc::clone(&image_engine);
+            let o_engine = Arc::clone(&output_engine);
             let workspace = app.state::<AppState>().workspace.clone();
 
             std::thread::Builder::new()
                 .name("wincue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, a_engine, v_engine, i_engine, workspace);
+                    crate::show::event_loop::run(handle, a_engine, o_engine, workspace);
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -109,8 +104,8 @@ pub fn run() {
             list_video_screens,
             preview_cue,
             stop_preview,
-            get_surface_current_voice,
-            report_image_faded_out,
+            toggle_output_window,
+            get_output_window_visible,
             // Undo / Redo / Copy / Paste
             undo,
             redo,
@@ -132,10 +127,13 @@ pub fn run() {
             get_preferences,
             update_audio_preferences,
             update_general_preferences,
+            update_display_preferences,
             list_audio_devices,
             test_audio_device,
             get_available_backends,
             get_asio_output_pairs,
+            get_output_screen,
+            set_output_screen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinCue");

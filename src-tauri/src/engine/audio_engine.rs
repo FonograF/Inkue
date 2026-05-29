@@ -420,6 +420,7 @@ impl AudioEngine {
 // Audio callback — real-time safe
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn fill_buffer(
     output: &mut [f32],
     channels: usize,

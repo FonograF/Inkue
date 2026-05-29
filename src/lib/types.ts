@@ -72,24 +72,15 @@ export interface VideoCueData extends CueSummary {
   end_time_ms: number | null;
   loop_count: number;
   output_surface_id: string | null;
-  /** Monitor index (0 = primary). null = floating window. */
-  screen_index: number | null;
 }
-
-export type ImageStopMode = "stop_on_next_cue" | "display_duration";
 
 /** Full cue data returned by get_cue for an Image Cue. */
 export interface ImageCueData extends CueSummary {
   notes: string;
-  stop_mode: ImageStopMode;
-  /** Duration in ms when stop_mode is "display_duration". */
-  display_duration_ms: number | null;
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;
   fade_out_ms: number | null;
   fade_out_curve: FadeCurve | null;
-  /** Monitor index (0 = primary). null = floating window. */
-  screen_index: number | null;
 }
 
 /** Information about a connected monitor. */
@@ -160,11 +151,29 @@ export const DEFAULT_GENERAL_PREFS: GeneralPreferences = {
   cue_row_height: "normal",
 };
 
+export interface DisplayPreferences {
+  /** Monitor index for the unified output surface. null = floating window. */
+  output_screen: number | null;
+  bg_app: string;
+  bg_surface: string;
+  bg_panel: string;
+  accent: string;
+  text_primary: string;
+}
+
+export const DEFAULT_DISPLAY_PREFS: Pick<DisplayPreferences, "bg_app" | "bg_surface" | "bg_panel" | "accent" | "text_primary"> = {
+  bg_app:       "#020617",
+  bg_surface:   "#0f172a",
+  bg_panel:     "#1e293b",
+  accent:       "#3b82f6",
+  text_primary: "#e2e8f0",
+};
+
 export interface AppPreferences {
   audio: AudioPreferences;
   general: GeneralPreferences;
   network: Record<string, never>;
-  display: Record<string, never>;
+  display: DisplayPreferences;
 }
 
 // ---------------------------------------------------------------------------

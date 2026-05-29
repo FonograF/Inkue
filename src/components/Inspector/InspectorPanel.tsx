@@ -179,7 +179,6 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
             cue={cueData}
             isAudio={isAudio}
             isVideo={isVideo}
-            isImage={isImage}
             onSave={save}
             onOpenWaveform={() => setWaveformModalOpen(true)}
           />

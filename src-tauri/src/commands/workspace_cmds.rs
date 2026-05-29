@@ -123,7 +123,8 @@ pub fn load_workspace(
             crate::show::video_pre_arm::update_video_pre_arm(
                 cl.playhead_cue_id,
                 cl,
-                &state.video_engine,
+                &state.output_engine,
+                ws.preferences.display.output_screen,
             );
         }
     }

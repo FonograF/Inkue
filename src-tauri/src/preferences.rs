@@ -13,18 +13,13 @@ use crate::cue::types::FadeCurve;
 // ---------------------------------------------------------------------------
 
 /// Which WASAPI/ASIO mode the engine uses for output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBackend {
+    #[default]
     WasapiShared,
     WasapiExclusive,
     Asio,
-}
-
-impl Default for AudioBackend {
-    fn default() -> Self {
-        Self::WasapiShared
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,9 +136,56 @@ impl Default for GeneralPreferences {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkPreferences {}
 
-/// Display preferences (text size, timecode display, kiosk mode, …).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DisplayPreferences {}
+/// Display preferences (output surface, colour theme, …).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplayPreferences {
+    /// Monitor index for the unified output surface.
+    /// `None` = floating windowed (no fixed screen).
+    /// `Some(n)` = fullscreen on monitor n (0 = primary).
+    #[serde(default)]
+    pub output_screen: Option<u32>,
+
+    /// Main window background colour (CSS hex, e.g. `"#020617"`).
+    #[serde(default = "DisplayPreferences::default_bg_app")]
+    pub bg_app: String,
+
+    /// Title-bar and modal-surface background colour.
+    #[serde(default = "DisplayPreferences::default_bg_surface")]
+    pub bg_surface: String,
+
+    /// Panel, button, and sidebar background colour.
+    #[serde(default = "DisplayPreferences::default_bg_panel")]
+    pub bg_panel: String,
+
+    /// Accent colour used for selection highlights and the playhead indicator.
+    #[serde(default = "DisplayPreferences::default_accent")]
+    pub accent: String,
+
+    /// Primary text colour.
+    #[serde(default = "DisplayPreferences::default_text_primary")]
+    pub text_primary: String,
+}
+
+impl DisplayPreferences {
+    fn default_bg_app()       -> String { "#020617".into() }
+    fn default_bg_surface()   -> String { "#0f172a".into() }
+    fn default_bg_panel()     -> String { "#1e293b".into() }
+    fn default_accent()       -> String { "#3b82f6".into() }
+    fn default_text_primary() -> String { "#e2e8f0".into() }
+}
+
+impl Default for DisplayPreferences {
+    fn default() -> Self {
+        Self {
+            output_screen: None,
+            bg_app:        Self::default_bg_app(),
+            bg_surface:    Self::default_bg_surface(),
+            bg_panel:      Self::default_bg_panel(),
+            accent:        Self::default_accent(),
+            text_primary:  Self::default_text_primary(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Root preferences struct

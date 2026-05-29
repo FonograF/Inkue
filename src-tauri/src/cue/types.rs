@@ -39,10 +39,11 @@ impl std::fmt::Display for CueType {
 }
 
 /// Lifecycle state of a cue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CueState {
     /// Ready to be triggered; not currently playing.
+    #[default]
     Standby,
     /// Currently executing its action (pre-wait, action, or post-wait phase).
     Running,
@@ -50,12 +51,6 @@ pub enum CueState {
     Paused,
     /// Execution has finished naturally.
     Completed,
-}
-
-impl Default for CueState {
-    fn default() -> Self {
-        CueState::Standby
-    }
 }
 
 /// Determines what happens after the Post-Wait expires.
@@ -89,19 +84,14 @@ pub enum CueColor {
 }
 
 /// Available fade curve shapes, matching QLab's options.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FadeCurve {
     Linear,
     /// Smooth S-shaped curve (QLab default).
+    #[default]
     SCurve,
     Exponential,
-}
-
-impl Default for FadeCurve {
-    fn default() -> Self {
-        FadeCurve::SCurve
-    }
 }
 
 impl FadeCurve {

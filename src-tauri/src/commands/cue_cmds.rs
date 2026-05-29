@@ -285,13 +285,15 @@ pub fn set_playhead(
         .transpose()?;
 
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let output_screen = ws.preferences.display.output_screen;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     cue_list.set_playhead(id).map_err(|e| e.to_string())?;
 
     crate::show::video_pre_arm::update_video_pre_arm(
         cue_list.playhead_cue_id,
         cue_list,
-        &state.video_engine,
+        &state.output_engine,
+        output_screen,
     );
 
     let _ = app_handle.emit(
@@ -592,14 +594,14 @@ pub fn set_video_file(
     {
         let path = std::path::PathBuf::from(&file_path);
         let cue_id = id;
-        let video_engine = Arc::clone(&state.video_engine);
+        let output_engine = Arc::clone(&state.output_engine);
         let workspace2 = Arc::clone(&state.workspace);
         let handle2 = app_handle.clone();
         std::thread::Builder::new()
             .name("wincue-video-probe".into())
             .spawn(move || {
-                let lib = video_engine.mpv_lib();
-                if let Some(dur) = crate::engine::VideoEngine::probe_duration(lib, &path) {
+                let lib = output_engine.mpv_lib();
+                if let Some(dur) = crate::engine::OutputEngine::probe_duration(lib, &path) {
                     if let Ok(mut ws) = workspace2.lock() {
                         if let Some(cl) = ws.active_cue_list_mut() {
                             if let Some(idx2) = cl.index_of(&cue_id) {
@@ -619,8 +621,8 @@ pub fn set_video_file(
 
 /// Return the list of connected monitors for the Screen selector in the inspector.
 #[tauri::command]
-pub fn list_video_screens() -> Vec<crate::engine::video_engine::ScreenInfo> {
-    crate::engine::VideoEngine::list_screens()
+pub fn list_video_screens() -> Vec<crate::engine::output_engine::ScreenInfo> {
+    crate::engine::OutputEngine::list_screens()
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +632,7 @@ pub fn list_video_screens() -> Vec<crate::engine::video_engine::ScreenInfo> {
 /// Set the file path of an Image Cue.
 ///
 /// Unlike [`set_audio_file`], no background decoding is needed — the image is
-/// read into memory by [`ImageEngine`] at GO time.
+/// passed to the OutputEngine at GO time via mpv loadfile.
 #[tauri::command]
 pub fn set_image_file(
     cue_id: String,
@@ -663,32 +665,14 @@ pub fn set_image_file(
     Ok(())
 }
 
-/// Called by an image surface window when its fade-out CSS transition ends.
-///
-/// Pushes a [`FadedOut`](crate::engine::image_engine::ImageStatus::FadedOut)
-/// status so the event loop can detect cue completion and fire continue modes.
+/// Toggle the output window visibility (F9 / View menu).
 #[tauri::command]
-pub fn report_image_faded_out(
-    voice_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    use crate::engine::image_engine::ImageStatus;
-    let id: Uuid = voice_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    state
-        .image_engine
-        .push_status(ImageStatus::FadedOut { voice_id: id });
-    Ok(())
+pub fn toggle_output_window(state: State<'_, AppState>) {
+    state.output_engine.toggle_visibility();
 }
 
-/// Return the current pending voice data for a surface window.
-///
-/// Called by the surface's React component on mount to resolve the
-/// window-creation timing race: by the time React mounts, the engine has
-/// already stored the voice data under the surface label.
+/// Return whether the output window is currently visible.
 #[tauri::command]
-pub fn get_surface_current_voice(
-    surface_label: String,
-    state: State<'_, AppState>,
-) -> Result<Option<crate::engine::image_engine::VoiceInitData>, String> {
-    Ok(state.image_engine.get_surface_current_voice(&surface_label))
+pub fn get_output_window_visible(state: State<'_, AppState>) -> bool {
+    state.output_engine.is_visible()
 }

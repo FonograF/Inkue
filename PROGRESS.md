@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-04-22
+# WinCue — Project state as of 2026-05-28
 
-## Current version: 0.3.1
+## Current version: 0.4.1
 
 ## cargo build result
 
@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**20 tests pass, 0 failures.**
+**27 tests pass, 0 failures.**
 
 ---
 
@@ -16,11 +16,11 @@
 
 | Cue type | Status | Details |
 |---|---|---|
-| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate mismatch, Output Patch routing, pan, master volume, waveform, VU meter |
+| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter |
 | Stop  | ✅ **Functional** | Targeted Stop and Stop All, default 0.5 s fade |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
-| Video | ⚠️ **Functional with glitch** | Plays correctly, but **freezes ~0.5 s on first GO** (pre-arm mitigates when playhead lands on the cue) |
-| Image | ✅ **Functional** | Persistent surface windows, fade-in/out, stop-on-next-go, draggable floating window |
+| Video | ✅ **Functional** | Single persistent Win32 window, no first-GO freeze, dip-to-black fades, loop |
+| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
 
 ---
 
@@ -33,80 +33,63 @@
 | Cue types | `cue/types.rs` | ✅ Complete |
 | Cue trait | `cue/traits.rs` | ✅ Complete — includes `stop_on_next_go()` |
 | CueRegistry | `cue/registry.rs` | ✅ Complete |
-| CueContext | `cue/context.rs` | ✅ Complete — `audio_engine`, `video_engine`, `image_engine`, `stop_fade_ms`, `output_patches` |
-| AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate mismatch, `Voice.out_l/r` routing via OutputPatch |
-| VideoCue | `cue/video_cue.rs` | ⚠️ Plays correctly, ~0.5 s freeze on first GO (pre-arm on playhead landing) |
-| ImageCue | `cue/image_cue.rs` | ✅ Functional — persistent surface windows, stop modes, fade-in/out |
+| CueContext | `cue/context.rs` | ✅ Complete — `audio_engine`, `output_engine`, `stop_fade_ms`, `output_patches`, `output_screen` |
+| AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch |
+| VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()` |
+| ImageCue | `cue/image_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_content()`. No DisplayDuration mode (StopOnNextCue only). |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete |
 | StopCue | `cue/stop_cue.rs` | ✅ Complete |
 | VoiceState / FadeState | `engine/voice.rs` | ✅ Complete — `out_l`, `out_r` for channel routing |
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer` |
-| VideoEngine | `engine/video_engine.rs` | ⚠️ Playback OK, ~0.5 s startup freeze |
-| ImageEngine | `engine/image_engine.rs` | ✅ Functional — persistent `output-surface-{key}` WebviewWindows, one per screen |
+| OutputEngine | `engine/output_engine.rs` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); pre-arm preserved; `toggle_visibility()` |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
 | Workspace | `show/workspace.rs` | ✅ Complete |
 | Transport | `show/transport.rs` | ✅ Complete — `stop_on_next_go()` called before each GO |
-| 30fps event loop | `show/event_loop.rs` | ✅ Complete |
+| 30fps event loop | `show/event_loop.rs` | ✅ Complete — drains `OutputStatus` |
+| Video pre-arm | `show/video_pre_arm.rs` | ✅ Complete — uses `OutputEngine` |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
-| AppState | `state/app_state.rs` | ✅ Complete |
-| Preferences | `preferences.rs` | ✅ Complete |
+| AppState | `state/app_state.rs` | ✅ Complete — `output_engine: Arc<OutputEngine>` |
+| Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences::output_screen: Option<u32>` |
 | Transport commands | `commands/transport_cmds.rs` | ✅ Complete |
-| Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `get_surface_current_voice`, `report_image_faded_out` |
+| Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `toggle_output_window`, `get_output_window_visible` |
 | Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete |
 | Device commands | `commands/device_cmds.rs` | ✅ Complete |
-| Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete |
+| Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete — `get_output_screen`, `set_output_screen` |
 | Undo commands | `commands/undo_cmds.rs` | ✅ Complete |
 
 ### React / TypeScript frontend
 
 | File | Status |
 |---|---|
-| `lib/types.ts` | ✅ Complete — `ImageCueData` with `stop_mode`, `display_duration_ms` |
-| `lib/commands.ts` | ✅ Complete — `getSurfaceCurrentVoice` |
+| `lib/types.ts` | ✅ Complete — `ImageCueData` simplified (no `stop_mode`/`display_duration_ms`), `DisplayPreferences` typed |
+| `lib/commands.ts` | ✅ Complete — `toggleOutputWindow`, `getOutputWindowVisible`, `getOutputScreen`, `setOutputScreen` |
 | `stores/workspaceStore.ts` | ✅ Complete |
 | `stores/transportStore.ts` | ✅ Complete |
 | `stores/timingStore.ts` | ✅ Complete |
 | `hooks/useTauriEvents.ts` | ✅ Complete |
-| `hooks/useKeyboardShortcuts.ts` | ✅ Complete |
-| `App.tsx` | ✅ Complete |
+| `hooks/useKeyboardShortcuts.ts` | ✅ Complete — F9 toggles output window |
+| `App.tsx` | ✅ Complete — `handleToggleSurface` wired to F9 + View menu |
 | `components/CueList/` | ✅ Complete |
 | `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image |
-| `components/Inspector/BasicsTab.tsx` | ✅ Complete — video + image screen selector |
-| `components/Inspector/TimeTab.tsx` | ✅ Complete — Image stop mode selector |
-| `components/Inspector/LevelsTab.tsx` | ✅ Complete — Pan conditional on `isAudio` |
-| `components/Inspector/FadeTab.tsx` | ✅ Complete — Fade-in/out for audio, video, image |
-| `components/Transport/TransportBar.tsx` | ✅ Complete — rAF decay + peak hold |
+| `components/Inspector/BasicsTab.tsx` | ✅ Complete — no per-cue screen selector |
+| `components/Inspector/TimeTab.tsx` | ✅ Complete — no ImageStopMode UI (StopOnNextCue only, no `isImage` prop) |
+| `components/Inspector/LevelsTab.tsx` | ✅ Complete |
+| `components/Inspector/FadeTab.tsx` | ✅ Complete — fade-in/out for audio, video, image |
+| `components/Transport/TransportBar.tsx` | ✅ Complete |
 | `components/Preferences/PreferencesModal.tsx` | ✅ Complete |
 | `components/WaveformModal.tsx` | ✅ Complete |
-| `components/ImageSurface.tsx` (`OutputSurface`) | ✅ Complete — direct DOM fade, force reflow |
+| `main.tsx` | ✅ Simplified — no output-surface branch, renders `<App />` only |
 
 ---
 
-## Known bugs — to fix
+## Known issues
 
-### ⚠️ VideoCue — ~0.5 s freeze on first GO
+### ⚠️ Video/Audio routing — ASIO hardware validation pending (unchanged)
 
-**Symptom:** video playback is correct (fullscreen, routed audio, loop OK), but the ~500 ms following the first GO on a video cue block the UI. The freeze disappears once the video starts. Pre-arm (when the playhead lands on the cue) avoids the freeze for cues reached via the playhead, but not for manual GOs on arbitrary cues.
-
-**Investigation leads:**
-
-1. **Synchronous `mpv_create()` + `mpv_initialize()` on GO**
-   - libmpv takes ~200–400 ms to initialize on first use
-   - Fix: pre-create a pool of mpv instances when the workspace opens, reuse one on GO
-2. **Win32 window creation on GO**
-   - `CreateWindowExW` + `ShowWindow` + `wid` injection take time
-   - Fix: pre-create the window (hidden) when the workspace loads, show it on GO
-3. **Blocking `loadfile` on the transport thread**
-   - Fix: move `loadfile` to the dedicated `VideoEngine` thread
-
----
-
-### ⚠️ Video Output Patch routing — needs ASIO hardware validation
-
-The `ao=pcm` → named pipe → `AudioEngine` architecture compiles and works on default WASAPI. Still to verify on an ASIO interface:
+The `ao=pcm` → named pipe → `AudioEngine` architecture compiles and works on default WASAPI.  Still to verify on an ASIO interface:
 
 1. `PCM pipe: mpv connected` logs appear on video GO
 2. VU meter moves during video playback
@@ -116,101 +99,123 @@ The `ao=pcm` → named pipe → `AudioEngine` architecture compiles and works on
 
 ## Change history
 
+### 0.4.1 — Persistent PCM pipe + pre-arm first-frame fix (2026-05-28)
+
+#### ✅ Root cause fixed: multiple videos broken, no audio on 2nd+ video
+
+**Problem:** `ao=pcm` in mpv keeps the named-pipe connection open across `loadfile` calls. The old code created a new pipe server instance per video, but mpv never reconnected to those new instances — only the first pipe was ever used. Result: every video after the first had no audio and appeared frozen (ring buffer empty, `video_pcm_active` never set).
+
+**Solution:** Single persistent `pcm_pipe_manager` thread (spawned at engine init). It loops: create pipe server → `ConnectNamedPipe` (blocks until mpv connects on first file load) → read samples until pipe closes (mpv exits or goes idle) → repeat.
+
+A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
+- `true` (idle / pre-arm / image): bytes consumed from OS buffer and discarded so mpv never blocks writing
+- `false` (video actively playing): samples pushed to ring buffer for `AudioEngine` mixing
+
+#### ✅ Pre-arm first-frame no longer visible on output
+
+**Problem:** `loadfile pause=yes` during pre-arm still decoded and displayed the first video frame on the output window.
+
+**Solution:** `pre_arm_voice` sets the fade overlay to alpha=255 (fully black) before sending `loadfile`. When GO activates the armed voice, `activate_armed_voice` restores alpha=0 (or starts a fade-in animation if configured).
+
+**Files changed:**
+- `engine/output_engine.rs` — persistent `pcm_pipe_manager` replaces per-video `handle_pcm_pipe_connection`; `ArmedVoice` simplified (removed `pipe_handle`/`ready`/`cancelled`); `OutputEngine` struct simplified (removed `armed_pipe_discard`); `mpv_event_loop` signature simplified (removed `pipe_discard_flag` param); `stop_content` now resets `video_pcm_active` and `OUTPUT_PCM_DISCARD`; `MPV_EVENT_END_FILE` EOF resets audio flags; pre-arm sets overlay alpha=255
+
+---
+
+### 0.4.0 — Unified OutputEngine (Win32 + libmpv) (2026-05-28)
+
+#### ✅ Single persistent Win32 window for all visual cues
+
+**Problem solved:** Two separate window technologies (Tauri WebviewWindow for images, Win32 native for video) caused window disappearing between cues, new window appearing at different position — unusable for professional events.
+
+**New architecture:**
+- `engine/output_engine.rs` — new unified engine replacing both `VideoEngine` (for display) and `ImageEngine`
+- Single persistent `WS_POPUP` Win32 window created at startup, always visible (black when idle), never closed
+- libmpv renders both video files (`loadfile video.mp4`) and image files (`loadfile img.jpg audio=no,image-display-duration=inf`)
+- Fade overlay: child window with `WS_EX_LAYERED | WS_EX_TRANSPARENT`, alpha animated via 16 ms Win32 timer for dip-to-black transitions
+- Per-cue configurable `fade_in_ms` / `fade_out_ms`; default is no fade (cut)
+- `Hard Stop` always cuts immediately (bypasses fade_out)
+- Fade-bypass bug fixed: `show_content()` correctly applies the previous cue's `fade_out_ms` before loading new content
+- First-GO freeze eliminated: mpv instance created at `OutputEngine::new()` (not lazily on first GO)
+- F9 shortcut toggles output window visibility; View menu also has the option
+- Pre-arm mechanism preserved intact (uses `OutputEngine` instead of `VideoEngine`)
+- Cross-stop rule preserved: any new cue GO stops the currently playing visual content
+
+**Files changed:**
+- `engine/output_engine.rs` — new file (~700 lines)
+- `engine/mod.rs` — removed `ImageEngine`/`VideoEngine` exports, added `OutputEngine`
+- `cue/context.rs` — `output_engine: Arc<OutputEngine>` replaces `video_engine + image_engine`
+- `cue/image_cue.rs` — removed `ImageStopMode`, uses `output_engine.show_content()`/`stop_content()`
+- `cue/video_cue.rs` — uses `output_engine.show_content()`/`stop_voice()`/`pause_voice()`/`resume_voice()`
+- `show/event_loop.rs` — drains `OutputStatus` instead of `VideoStatus + ImageStatus`
+- `show/video_pre_arm.rs` — uses `OutputEngine`
+- `state/app_state.rs` — `output_engine: Arc<OutputEngine>`
+- `lib.rs` — constructs `OutputEngine::new(audio_engine)`, removed `ImageEngine`/`surface_pinned`
+- `commands/cue_cmds.rs` — removed image surface commands, added `toggle_output_window`/`get_output_window_visible`
+- `commands/transport_cmds.rs` — uses `output_engine`
+- `src/main.tsx` — simplified (no output-surface branch)
+- `src/lib/commands.ts` — removed image surface commands, added `toggleOutputWindow`/`getOutputWindowVisible`
+- `src/lib/types.ts` — removed `ImageStopMode`, simplified `ImageCueData`
+- `src/App.tsx` — `handleToggleSurface` toggle handler, View menu uses `onToggle`
+- `src/hooks/useKeyboardShortcuts.ts` — F9 → `onToggleOutputWindow`
+- `src/components/Inspector/TimeTab.tsx` — removed `isImage` prop, removed stop_mode/display_duration controls
+- `src/components/Inspector/InspectorPanel.tsx` — removed `isImage` from `<TimeTab>` call
+
+**Backward compatibility:** old `.wincue` files containing `ImageStopMode`, `display_duration_ms`, or per-cue `screen_index` load silently — fields are ignored by serde.
+
+---
+
+### 0.3.2 — Unified output surface (2026-04-28)
+
+#### ✅ Single output surface for all visual cues (Tauri WebviewWindow era)
+
+- `preferences.rs` — `DisplayPreferences::output_screen: Option<u32>` (serde default `None`)
+- `preferences_cmds.rs` — `get_output_screen` / `set_output_screen` Tauri commands
+- `cue/context.rs` — `output_screen: Option<u32>` snapshot field in `CueContext`
+- `engine/video_engine.rs` — `position_window` (no `ShowWindow`) + `show_window`; pre-arm only calls `position_window`
+- `engine/image_engine.rs` — `Option<SurfaceInfo>` (was `HashMap`); fixed label `"output-surface"`
+- `cue/video_cue.rs` — removed `screen_index`; calls `image_engine.hard_stop_all()` on GO
+- `cue/image_cue.rs` — removed `screen_index`; calls `video_engine.stop_current_voice(0)` on GO
+- `components/Preferences/PreferencesModal.tsx` — Display tab with screen selector
+- `components/Inspector/BasicsTab.tsx` — per-cue screen selector removed
+- `components/ImageSurface.tsx` — `isFloating` derived from `get_output_screen` at mount
+- `src/main.tsx` — label check `=== "output-surface"`
+- `capabilities/image-surface.json` — window pattern `"output-surface"`
+
+---
+
 ### 0.3.1 — Image Cue fully functional (2026-04-22)
 
-#### ✅ Image Cue — freeze fixed, full feature set
-
-The Image Cue was completely non-functional in 0.3.0. This release makes it production-ready.
-
-**Architecture: persistent surface windows**
-- Replaced per-voice Win32 window approach with persistent Tauri `WebviewWindow` per screen
-- One `output-surface-{index}` window created lazily on first use, hidden (not closed) between cues
-- Consecutive image cues on the same screen share the window — no close/reopen flicker
-- `surface-show-image` / `surface-hide-image` Tauri events drive the React component
-
-**Focus fix**
-- Image surface window no longer steals keyboard focus from the main window
-- `main.set_focus()` called after every `win.show()` ensures GO/STOP shortcuts keep working
-
-**Stop mode**
-- New `ImageStopMode` enum: `stop_on_next_cue` (default) or `display_duration`
-- `stop_on_next_go()` trait method (default `false`) — Transport calls it before each GO
-- Inspector Time tab shows a stop-mode selector; duration field appears only in `display_duration` mode
-
-**Fade-in / fade-out**
-- Rewrote `OutputSurface` to use direct DOM manipulation instead of React state for opacity
-- `getBoundingClientRect()` forces a browser reflow before the CSS transition starts, making
-  the fade reliable under React 18's automatic batching
-- Removed the hardcoded 500 ms default fade-out — no implicit fade; only configured values apply
-
-**Draggable floating window**
-- Full-window `onMouseDown` → `win.startDragging()` on the floating surface
-- Added `core:window:allow-start-dragging` to `capabilities/image-surface.json`
-
-**Bug fixes**
-- TypeScript build error in `InspectorPanel.tsx` — `ImageCueData` cast to `AudioCueData | VideoCueData` for `LevelsTab`
-- Capability file updated: `output-surface-*` glob instead of `image-surface-*`
+- Persistent `WebviewWindow` per screen, hidden between cues (no close/reopen flicker)
+- `stop_on_next_go()` trait method; `ImageStopMode` enum
+- Direct DOM manipulation for reliable fade-in/out under React 18 batching
+- Draggable floating window via `win.startDragging()`
 
 ---
 
 ### 0.3.0 — Image Cue type added (non-functional) (2026-04-19)
 
-#### 🔴 ImageCue introduced but non-functional
-- `cue/image_cue.rs` skeleton in place, registered in the `CueRegistry`
-- Workspace serialization/deserialization OK
-- **Blocking bug**: GO on an Image cue froze the app — fixed in 0.3.1
-
-#### ⚠️ VideoCue — startup latency
-- A ~0.5 s freeze appears on video GO
-- Playback itself remains correct
-- Pre-arm added in a subsequent commit: video pre-loads when playhead lands on the cue
+- `cue/image_cue.rs` skeleton; workspace serialization OK; GO froze the app (fixed in 0.3.1)
 
 ---
 
 ### 0.2.0 — Audio/video architecture overhaul (2026-04-14)
 
-#### 🔧 ASIO build fix
-- ASIO SDK copied to `vendor/asiosdk/` (outside WalkDir reach)
-- `src-tauri/.cargo/config.toml`: `CPAL_ASIO_DIR = { value = "../vendor/asiosdk", relative = true }`
-- `pnpm tauri:dev -- --features asio-support` compiles cleanly
-
-#### 🔌 Output Patch audio routing (AudioCue)
-- `Voice.out_l / out_r` (`engine/voice.rs`) — target channels in the WASAPI/ASIO buffer
-- `AudioEngine.fill_buffer` — uses `voice.out_l / out_r` instead of hardcoded 0/1
-- `CueContext`: `output_patches`, `default_patch_id` to resolve patches on GO
-- `AudioCue`: resolves `OutputPatch` on GO, sets `voice.out_l / out_r`
-
-#### 🎚️ VU Meter + Video PCM through AudioEngine (`ao=pcm` + named pipe)
-
-**New architecture:**
-- `mpv ao=pcm` writes float32 stereo PCM to `\\.\pipe\wincue-mpv-audio`
-- `wincue-mpv-pcm` thread reads the pipe → ring buffer → `AudioEngine.set_video_pcm_consumer()`
-- `AudioEngine.fill_buffer` mixes video PCM with audio voices (same WASAPI/ASIO device)
-- VU meter reads `AudioStatus::MasterLevels` from AudioEngine's ring buffer — includes audio + video
-- `TransportBar.tsx`: rAF-based decay (20 dB/sec), 1.5 s peak hold, red needle > -6 dBFS
-
-#### 🎬 Video Cue — playback operational
-- D3D11 backend, `loop-file=no`, `keep-open=no`, `WS_EX_NOACTIVATE`, `HWND_TOPMOST`
-- Drag and fullscreen double-click, resize, focus-stealing prevention
-- Screen selection in inspector (`list_video_screens` command)
+- ASIO SDK + `CPAL_ASIO_DIR` build fix
+- `Voice.out_l / out_r` + `OutputPatch` routing wired
+- `ao=pcm` → named pipe → `AudioEngine` for video audio mixing
+- VU meter: rAF-based decay, peak hold, red needle > -6 dBFS
+- Video Cue playback: D3D11, loop, fullscreen double-click, drag, focus fix
 
 ---
 
 ### 0.1.2 (2026-04-11)
-- Stop Cue
-- Drag & drop reworked (CustomEvent, no Tauri conflict)
-- Fix immediate Auto-Continue (synchronous resolution in Transport)
-- Fix loop playback
-- Fix duplicate/paste cue with no audio
+- Stop Cue, drag & drop rework, immediate Auto-Continue fix, loop fix, duplicate/paste fix
 
 ---
 
 ### 0.1.1 (2026-04-11)
-- `CueList::renumber_all()`
-- `set_master_volume`
-- Missing shortcuts
-- `CurveSelect` with SVG preview
-- TransportBar rework
+- `CueList::renumber_all()`, `set_master_volume`, shortcuts, CurveSelect, TransportBar rework
 
 ---
 
@@ -230,14 +235,13 @@ The Image Cue was completely non-functional in 0.3.0. This release makes it prod
 | 10. Keyboard shortcuts | ✅ |
 | 11. Fades, waveform, level meters | ✅ |
 | 12. Drag-drop, undo/redo, color tags | ✅ |
-| 13. Video Cue | ⚠️ Functional with 0.5 s freeze on first GO |
-| 14. Image Cue | ✅ Functional — persistent windows, fades, stop modes |
+| 13. Video Cue | ✅ Freeze fixed, unified OutputEngine, dip-to-black fades |
+| 14. Image Cue | ✅ Unified OutputEngine, dip-to-black fades, stop-on-next-cue |
 | 15. Stop Cue | ✅ Functional |
 
 ---
 
-## Next priorities (in order)
+## Next priorities
 
-1. **⚠️ Eliminate VideoCue's 0.5 s freeze** — pre-create mpv instance + window on workspace load, or a hot pool of mpv handles
-2. **⚠️ Validate video routing on ASIO hardware** — verify `PCM pipe: mpv connected` + VU meter + audio output
-3. **Future cue types** — Wait, Fade, Group, MIDI, OSC (architecture is ready; add via `CueRegistry` without touching transport)
+1. **⚠️ Validate video routing on ASIO hardware** — verify `PCM pipe: mpv connected` + VU meter + audio output
+2. **Future cue types** — Wait, Fade, Group, MIDI, OSC (architecture is ready; add via `CueRegistry` without touching transport)

@@ -3,16 +3,21 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import type { AppPreferences, AudioPreferences, DeviceInfo, GeneralPreferences } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, ScreenInfo } from "../../lib/types";
+import { DEFAULT_DISPLAY_PREFS } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   getAsioOutputPairs,
   getAvailableBackends,
+  getOutputScreen,
   getPreferences,
   listAudioDevices,
+  listVideoScreens,
+  setOutputScreen,
   testAudioDevice,
   updateAudioPreferences,
+  updateDisplayPreferences,
   updateGeneralPreferences,
 } from "../../lib/commands";
 
@@ -309,6 +314,98 @@ function GeneralContent({ prefs, onChange }: {
 }
 
 // ---------------------------------------------------------------------------
+// Display content
+// ---------------------------------------------------------------------------
+
+const THEME_COLORS: { key: keyof typeof DEFAULT_DISPLAY_PREFS; label: string; hint: string }[] = [
+  { key: "bg_app",       label: "App Background", hint: "Main window background" },
+  { key: "bg_surface",   label: "Surface",        hint: "Title bar, modals, inputs" },
+  { key: "bg_panel",     label: "Panel",          hint: "Sidebars, buttons, menus" },
+  { key: "accent",       label: "Accent",         hint: "Selection, playhead, active states" },
+  { key: "text_primary", label: "Primary Text",   hint: "Main text colour" },
+];
+
+function DisplayContent({ outputScreen, onScreenChange, theme, onThemeChange }: {
+  outputScreen: number | null;
+  onScreenChange: (screen: number | null) => void;
+  theme: typeof DEFAULT_DISPLAY_PREFS;
+  onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
+}) {
+  const [screens, setScreens] = useState<ScreenInfo[]>([]);
+
+  useEffect(() => {
+    listVideoScreens().then(setScreens).catch(console.error);
+  }, []);
+
+  return (
+    <>
+      <Section title="Output Surface">
+        <Row label="Output Screen">
+          <select
+            style={selectStyle}
+            value={outputScreen ?? "floating"}
+            onChange={(e) => {
+              const v = e.target.value;
+              onScreenChange(v === "floating" ? null : parseInt(v));
+            }}
+          >
+            <option value="floating">Floating window</option>
+            {screens.map((s) => (
+              <option key={s.index} value={s.index}>
+                {s.is_primary
+                  ? `Screen ${s.index + 1} (primary, ${s.width}×${s.height})`
+                  : `Screen ${s.index + 1} (${s.width}×${s.height})`}
+              </option>
+            ))}
+          </select>
+        </Row>
+        <Row label="">
+          <span style={{ fontSize: 11, color: "#475569" }}>
+            Applies to all Video and Image cues. Takes effect on the next GO.
+          </span>
+        </Row>
+      </Section>
+
+      <Section title="Colour Theme">
+        {THEME_COLORS.map(({ key, label, hint }) => (
+          <Row key={key} label={label}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
+              <input
+                type="color"
+                value={theme[key]}
+                onChange={(e) => onThemeChange({ ...theme, [key]: e.target.value })}
+                style={{
+                  width: 36, height: 26, padding: 2, cursor: "pointer",
+                  background: "#1e293b", border: "1px solid #334155", borderRadius: 4,
+                }}
+              />
+              <input
+                type="text"
+                value={theme[key]}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (/^#[0-9a-fA-F]{0,6}$/.test(v)) onThemeChange({ ...theme, [key]: v });
+                }}
+                style={{ ...inputStyle, width: 90, fontFamily: "monospace" }}
+              />
+              <span style={{ fontSize: 11, color: "#475569" }}>{hint}</span>
+            </div>
+          </Row>
+        ))}
+        <Row label="">
+          <button
+            onClick={() => onThemeChange({ ...DEFAULT_DISPLAY_PREFS })}
+            style={{ ...btnStyle, padding: "4px 14px", fontSize: 11 }}
+          >
+            Reset to defaults
+          </button>
+        </Row>
+      </Section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Draggable floating modal
 // ---------------------------------------------------------------------------
 
@@ -320,10 +417,14 @@ const MODAL_W = 740;
 const MODAL_H = 520;
 
 export function PreferencesModal({ onClose }: Props) {
-  const { setGeneralPrefs } = useWorkspaceStore();
+  const { setGeneralPrefs, setDisplayPrefs } = useWorkspaceStore();
   const [category, setCategory] = useState<Category>("audio");
   const [prefs, setPrefs] = useState<AppPreferences | null>(null);
   const [draft, setDraft] = useState<AppPreferences | null>(null);
+  const [outputScreen, setOutputScreen_] = useState<number | null>(null);
+  const [draftOutputScreen, setDraftOutputScreen] = useState<number | null>(null);
+  const [theme, setTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
+  const [draftTheme, setDraftTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [availableBackends, setAvailableBackends] = useState<string[]>(["wasapi_shared", "wasapi_exclusive"]);
   const [applyError, setApplyError] = useState<string | null>(null);
 
@@ -333,8 +434,15 @@ export function PreferencesModal({ onClose }: Props) {
   const dragRef = useRef<{ startMouseX: number; startMouseY: number; startPosX: number; startPosY: number } | null>(null);
 
   useEffect(() => {
-    getPreferences().then((p) => { setPrefs(p); setDraft(p); }).catch(console.error);
+    getPreferences().then((p) => {
+      setPrefs(p);
+      setDraft(p);
+      const t = { ...DEFAULT_DISPLAY_PREFS, ...p.display };
+      setTheme(t);
+      setDraftTheme(t);
+    }).catch(console.error);
     getAvailableBackends().then(setAvailableBackends).catch(console.error);
+    getOutputScreen().then((s) => { setOutputScreen_(s); setDraftOutputScreen(s); }).catch(console.error);
   }, []);
 
   // Escape closes without applying
@@ -382,8 +490,13 @@ export function PreferencesModal({ onClose }: Props) {
     try {
       await updateAudioPreferences(draft.audio);
       await updateGeneralPreferences(draft.general);
+      await setOutputScreen(draftOutputScreen);
+      await updateDisplayPreferences({ ...draftTheme, output_screen: draftOutputScreen ?? undefined } as DisplayPreferences);
       setGeneralPrefs(draft.general);
+      setDisplayPrefs({ ...draftTheme, output_screen: draftOutputScreen });
       setPrefs(draft);
+      setOutputScreen_(draftOutputScreen);
+      setTheme(draftTheme);
       onClose();
     } catch (e) {
       setApplyError(String(e));
@@ -405,7 +518,7 @@ export function PreferencesModal({ onClose }: Props) {
     }
   }, [draft]);
 
-  const handleCancel = () => { setDraft(prefs); onClose(); };
+  const handleCancel = () => { setDraft(prefs); setDraftOutputScreen(outputScreen); setDraftTheme(theme); onClose(); };
 
   if (!draft) return null;
 
@@ -497,7 +610,15 @@ export function PreferencesModal({ onClose }: Props) {
                 onChange={(general) => setDraft({ ...draft, general })}
               />
             )}
-            {category !== "audio" && category !== "general" && (
+            {category === "display" && (
+              <DisplayContent
+                outputScreen={draftOutputScreen}
+                onScreenChange={setDraftOutputScreen}
+                theme={draftTheme}
+                onThemeChange={setDraftTheme}
+              />
+            )}
+            {category !== "audio" && category !== "general" && category !== "display" && (
               <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#475569", fontSize: 13 }}>
                 Coming soon
               </div>

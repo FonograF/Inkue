@@ -16,7 +16,13 @@ interface ImageLayer {
 export function OutputSurface() {
   const win = getCurrentWindow();
   const label = win.label;
-  const isFloating = label === "output-surface-float";
+  const [isFloating, setIsFloating] = useState(false);
+
+  useEffect(() => {
+    invoke<number | null>("get_output_screen")
+      .then((screen) => setIsFloating(screen === null))
+      .catch(() => setIsFloating(true));
+  }, []);
 
   const [layer, setLayer] = useState<ImageLayer | null>(null);
 

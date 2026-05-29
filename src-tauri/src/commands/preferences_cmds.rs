@@ -6,7 +6,7 @@ use tauri::{Emitter, State};
 
 use crate::{
     engine::device_manager::DeviceInfo,
-    preferences::{AppPreferences, AudioPreferences, GeneralPreferences},
+    preferences::{AppPreferences, AudioPreferences, DisplayPreferences, GeneralPreferences},
     state::AppState,
 };
 
@@ -132,6 +132,52 @@ pub fn update_general_preferences(
 ) -> Result<(), String> {
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.preferences.general = prefs;
+    ws.mark_modified();
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Return the current output screen index from display preferences.
+///
+/// `None` means floating windowed; `Some(n)` means fullscreen on monitor n.
+#[tauri::command]
+pub fn get_output_screen(state: State<'_, AppState>) -> Result<Option<u32>, String> {
+    let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    Ok(ws.preferences.display.output_screen)
+}
+
+/// Set the output screen index in display preferences and mark the workspace modified.
+///
+/// Pass `None` for floating windowed, `Some(n)` for fullscreen on monitor n.
+#[tauri::command]
+pub fn set_output_screen(
+    screen: Option<u32>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.preferences.display.output_screen = screen;
+    ws.mark_modified();
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Overwrite the colour-theme fields in display preferences and mark the workspace modified.
+///
+/// The frontend applies these values as CSS variables — no engine restart needed.
+#[tauri::command]
+pub fn update_display_preferences(
+    prefs: DisplayPreferences,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    // Preserve output_screen (managed by set_output_screen), only update colour fields.
+    ws.preferences.display.bg_app        = prefs.bg_app;
+    ws.preferences.display.bg_surface    = prefs.bg_surface;
+    ws.preferences.display.bg_panel      = prefs.bg_panel;
+    ws.preferences.display.accent        = prefs.accent;
+    ws.preferences.display.text_primary  = prefs.text_primary;
     ws.mark_modified();
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())

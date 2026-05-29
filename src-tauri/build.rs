@@ -16,7 +16,7 @@ fn main() {
         let dll_dst = target_dir.join("libmpv-2.dll");
 
         if dll_src.exists() {
-            std::fs::copy(&dll_src, &dll_dst)
+            std::fs::copy(dll_src, &dll_dst)
                 .expect("Failed to copy vendor/mpv/libmpv-2.dll to target dir");
             println!("cargo:rerun-if-changed=vendor/mpv/libmpv-2.dll");
         } else {

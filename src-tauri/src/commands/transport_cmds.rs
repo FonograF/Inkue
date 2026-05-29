@@ -23,19 +23,19 @@ use crate::{
 /// is used by [`AudioCue::stop`] when no per-cue fade-out spec is set.
 fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    let (patches, default_patch_id) = state
+    let (patches, default_patch_id, output_screen) = state
         .workspace
         .try_lock()
-        .map(|ws| (ws.output_patches.clone(), ws.default_output_patch_id))
-        .unwrap_or_else(|_| (Vec::new(), None));
+        .map(|ws| (ws.output_patches.clone(), ws.default_output_patch_id, ws.preferences.display.output_screen))
+        .unwrap_or_else(|_| (Vec::new(), None, None));
     CueContext::new(
         state.audio_engine.clone(),
-        state.video_engine.clone(),
-        state.image_engine.clone(),
+        state.output_engine.clone(),
         tx,
         stop_fade_ms,
         patches,
         default_patch_id,
+        output_screen,
     )
 }
 
@@ -58,14 +58,15 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     let (tx, rx) = crossbeam_channel::unbounded::<CueEvent>();
     let context = CueContext::new(
         state.audio_engine.clone(),
-        state.video_engine.clone(),
-        state.image_engine.clone(),
+        state.output_engine.clone(),
         tx,
         stop_fade_ms,
         ws.output_patches.clone(),
         ws.default_output_patch_id,
+        ws.preferences.display.output_screen,
     );
     let mut transport = Transport::new(context);
+    let output_screen = ws.preferences.display.output_screen;
 
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
@@ -93,7 +94,8 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     crate::show::video_pre_arm::update_video_pre_arm(
         cue_list.playhead_cue_id,
         cue_list,
-        &state.video_engine,
+        &state.output_engine,
+        output_screen,
     );
 
     // Handle any events emitted synchronously during go() — notably StopAll

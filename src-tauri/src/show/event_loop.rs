@@ -2,7 +2,7 @@
 //!
 //! This task bridges the engines and the Tauri frontend:
 //! - Drains [`AudioStatus`] messages from the audio engine's ring buffer.
-//! - Drains [`VideoStatus`] messages from the video engine's channel.
+//! - Drains [`OutputStatus`] messages from the output engine's channel.
 //! - Marks cues as completed when their voice ends.
 //! - Applies video duration updates to the owning cue.
 //! - Fires Auto-Continue chains (Post-Wait based).
@@ -22,9 +22,8 @@ use crate::{
         types::{ContinueMode, CueId, CueState},
     },
     engine::{
-        image_engine::{ImageEngine, ImageStatus},
+        output_engine::{OutputEngine, OutputStatus},
         ring_command::AudioStatus,
-        video_engine::{VideoEngine, VideoStatus},
         AudioEngine,
     },
     show::{transport::Transport, workspace::Workspace},
@@ -37,11 +36,9 @@ const TICK_MS: u64 = 33;
 pub fn run(
     handle: tauri::AppHandle,
     audio_engine: Arc<AudioEngine>,
-    video_engine: Arc<VideoEngine>,
-    image_engine: Arc<ImageEngine>,
+    output_engine: Arc<OutputEngine>,
     workspace: Arc<Mutex<Workspace>>,
 ) {
-    // Tracks Auto-Follow completions waiting for their Post-Wait timer.
     let mut auto_follow_pending: HashMap<CueId, Instant> = HashMap::new();
 
     loop {
@@ -49,8 +46,7 @@ pub fn run(
         tick(
             &handle,
             &audio_engine,
-            &video_engine,
-            &image_engine,
+            &output_engine,
             &workspace,
             &mut auto_follow_pending,
         );
@@ -63,31 +59,28 @@ pub fn run(
 
 fn make_context(
     audio_engine: &Arc<AudioEngine>,
-    video_engine: &Arc<VideoEngine>,
-    image_engine: &Arc<ImageEngine>,
+    output_engine: &Arc<OutputEngine>,
     stop_fade_ms: u32,
     output_patches: Vec<crate::engine::device_manager::OutputPatch>,
     default_patch_id: Option<uuid::Uuid>,
+    output_screen: Option<u32>,
 ) -> CueContext {
-    // The receiver is intentionally dropped here; events from within the loop
-    // are handled directly by reading status from the ring buffers / channels.
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     CueContext::new(
         audio_engine.clone(),
-        video_engine.clone(),
-        image_engine.clone(),
+        output_engine.clone(),
         tx,
         stop_fade_ms,
         output_patches,
         default_patch_id,
+        output_screen,
     )
 }
 
 fn tick(
     handle: &tauri::AppHandle,
     audio_engine: &Arc<AudioEngine>,
-    video_engine: &Arc<VideoEngine>,
-    image_engine: &Arc<ImageEngine>,
+    output_engine: &Arc<OutputEngine>,
     workspace: &Arc<Mutex<Workspace>>,
     auto_follow_pending: &mut HashMap<CueId, Instant>,
 ) {
@@ -116,50 +109,30 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 2. Drain the video status channel.
+    // 2. Drain the output engine status channel.
     // ------------------------------------------------------------------
-    let video_statuses = video_engine.drain_status();
+    let output_statuses = output_engine.drain_status();
 
     let mut video_duration_updates: Vec<(CueId, Duration)> = Vec::new();
     let mut emit_workspace_modified = false;
 
-    for s in video_statuses {
+    for s in output_statuses {
         match s {
-            VideoStatus::Completed { voice_id } => {
-                // Merge video completions into the same list as audio ones so
-                // the completion detection below stays uniform.
+            OutputStatus::Completed { voice_id } => {
                 completed_voice_ids.push(voice_id);
-                video_engine.gc_voice(voice_id);
+                output_engine.gc_voice(voice_id);
             }
-            VideoStatus::Duration { voice_id, duration_ms } => {
-                // Collect duration updates; we'll apply them after acquiring
-                // the workspace lock.
+            OutputStatus::Duration { voice_id, duration_ms } => {
                 video_duration_updates.push((voice_id, Duration::from_millis(duration_ms)));
                 emit_workspace_modified = true;
             }
-            VideoStatus::Error { voice_id, message } => {
-                log::warn!("Video voice {voice_id} error: {message}");
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 3. Drain the image status channel.
-    // ------------------------------------------------------------------
-    for s in image_engine.drain_status() {
-        match s {
-            ImageStatus::FadedOut { voice_id } => {
-                // Merge image completions into the same list as audio/video so
-                // the completion detection below stays uniform.
-                completed_voice_ids.push(voice_id);
-                image_engine.gc_voice(voice_id);
+            OutputStatus::Error { voice_id, message } => {
+                log::warn!("Output voice {voice_id} error: {message}");
             }
         }
     }
 
     // Emit master-level whenever there is any active signal.
-    // Video audio flows through AudioEngine (via the named pipe), so its
-    // levels are already included in MasterLevels from the audio callback.
     if has_master {
         let _ = handle.emit(
             "master-level",
@@ -168,7 +141,7 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 4. Lock the workspace (non-blocking; skip tick if a command holds it).
+    // 3. Lock the workspace (non-blocking; skip tick if a command holds it).
     // ------------------------------------------------------------------
     let mut ws = match workspace.try_lock() {
         Ok(w) => w,
@@ -176,9 +149,9 @@ fn tick(
     };
 
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
-    // Snapshot the patch table before taking the mutable cue-list borrow.
     let ws_patches = ws.output_patches.clone();
     let ws_default_patch = ws.default_output_patch_id;
+    let ws_output_screen = ws.preferences.display.output_screen;
 
     let cue_list = match ws.active_cue_list_mut() {
         Some(cl) => cl,
@@ -186,7 +159,7 @@ fn tick(
     };
 
     // ------------------------------------------------------------------
-    // 5. Apply video duration updates to cues.
+    // 4. Apply video duration updates to cues.
     // ------------------------------------------------------------------
     for (voice_id, duration) in &video_duration_updates {
         for cue in cue_list.cues.iter_mut() {
@@ -198,11 +171,9 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 6. Tick all Running cues so they can handle pre-wait transitions.
-    //    (Must happen before the completion check so that a cue that
-    //    completes its pre-wait and immediately finishes is detected.)
+    // 5. Tick all Running cues so they can handle pre-wait transitions.
     // ------------------------------------------------------------------
-    let tick_ctx = make_context(audio_engine, video_engine, image_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch);
+    let tick_ctx = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen);
     for cue in cue_list.cues.iter_mut() {
         if cue.state() == CueState::Running {
             let _ = cue.tick(&tick_ctx);
@@ -210,8 +181,7 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 7. Detect cue completions.
-    //    Each entry: (cue_id, continue_mode, post_wait).
+    // 6. Detect cue completions.
     // ------------------------------------------------------------------
     let mut newly_completed: Vec<(CueId, ContinueMode, Duration)> = Vec::new();
 
@@ -240,7 +210,7 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 8. Collect cue-time-update data for still-running cues.
+    // 7. Collect cue-time-update data for still-running cues.
     // ------------------------------------------------------------------
     #[derive(Clone)]
     struct TimeSnapshot {
@@ -266,7 +236,7 @@ fn tick(
         .collect();
 
     // ------------------------------------------------------------------
-    // 9. Auto-Continue (delayed) / Auto-Follow detection.
+    // 8. Auto-Continue / Auto-Follow detection.
     // ------------------------------------------------------------------
     let mut should_go = false;
 
@@ -314,13 +284,13 @@ fn tick(
     });
 
     // ------------------------------------------------------------------
-    // 10. Fire Auto-Continue / Auto-Follow GO.
+    // 9. Fire Auto-Continue / Auto-Follow GO.
     // ------------------------------------------------------------------
     let mut go_triggered: Vec<CueId> = Vec::new();
     let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
-        let context = make_context(audio_engine, video_engine, image_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch);
+        let context = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen);
         let mut transport = Transport::new(context);
         if let Ok(ids) = transport.go(cue_list) {
             go_triggered = ids;
@@ -328,21 +298,19 @@ fn tick(
         }
     }
 
-    // If an auto-GO fired, pre-arm the new playhead cue so the next manual
-    // GO is also instantaneous.
     if !go_triggered.is_empty() {
         crate::show::video_pre_arm::update_video_pre_arm(
             cue_list.playhead_cue_id,
             cue_list,
-            video_engine,
+            output_engine,
+            ws_output_screen,
         );
     }
 
-    // Release the workspace lock BEFORE emitting any events.
     drop(ws);
 
     // ------------------------------------------------------------------
-    // 11. Emit all events now that the workspace lock is released.
+    // 10. Emit all events.
     // ------------------------------------------------------------------
 
     for (cue_id, _, _) in &newly_completed {
@@ -384,13 +352,12 @@ fn tick(
         }
     }
 
-    // Emit workspace-modified if any video duration arrived (updates duration column).
     if emit_workspace_modified {
         let _ = handle.emit("workspace-modified", serde_json::json!({}));
     }
 
     // ------------------------------------------------------------------
-    // 12. Garbage-collect finished audio voices.
+    // 11. Garbage-collect finished audio voices.
     // ------------------------------------------------------------------
     audio_engine.gc_voices();
 }

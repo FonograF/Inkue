@@ -27,6 +27,7 @@ export function useKeyboardShortcuts(
   onOpen?: () => void,
   onToggleInspector?: () => void,
   onGoto?: () => void,
+  onToggleOutputWindow?: () => void,
 ) {
   const lastEscapeRef = useRef<number>(0);
   const lastGoRef = useRef<number>(0);
@@ -223,6 +224,11 @@ export function useKeyboardShortcuts(
           }
           break;
         }
+        case "F9": {
+          e.preventDefault();
+          onToggleOutputWindow?.();
+          break;
+        }
         default:
           break;
       }
@@ -230,5 +236,5 @@ export function useKeyboardShortcuts(
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedCueId, generalPrefs, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto]);
+  }, [selectedCueId, generalPrefs, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto, onToggleOutputWindow]);
 }

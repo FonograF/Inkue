@@ -43,6 +43,7 @@ pub trait CueFactory: Send + Sync {
     fn create(&self) -> Box<dyn Cue>;
 
     /// Deserialise a cue from its JSON representation.
+    #[allow(clippy::wrong_self_convention)]
     fn from_json(&self, value: Value) -> Result<Box<dyn Cue>>;
 }
 

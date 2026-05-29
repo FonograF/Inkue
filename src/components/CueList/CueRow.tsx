@@ -92,9 +92,10 @@ export function CueRow({
       ? Math.min(100, (timing.action_elapsed_ms / cue.duration_ms) * 100)
       : null;
 
+  const accentColor = getComputedStyle(document.documentElement).getPropertyValue("--wc-accent").trim() || "#3b82f6";
   let bg = "transparent";
-  if (isDragOver)   bg = "#1e3a5f";
-  else if (isSelected) bg = "#1d4ed8";
+  if (isDragOver)      bg = "#1e3a5f";
+  else if (isSelected) bg = accentColor;
   else if (isRunning)  bg = "#14532d";
   else if (isPaused)   bg = "#78350f";
 

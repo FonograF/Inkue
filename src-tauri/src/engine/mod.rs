@@ -1,10 +1,8 @@
-//! Audio, video, and image engine modules.
+//! Audio and output engine modules.
 //!
-//! Contains the real-time audio pipeline, the video playback engine, and the
-//! image display engine:
+//! Contains the real-time audio pipeline and the unified output engine:
 //! - [`audio_engine::AudioEngine`]: top-level audio coordinator
-//! - [`video_engine::VideoEngine`]: libmpv-based video output (Win32 window)
-//! - [`image_engine::ImageEngine`]: Tauri WebviewWindow-based image display
+//! - [`output_engine::OutputEngine`]: unified libmpv output for video and image (Win32 window)
 //! - [`device_manager::DeviceManager`]: OS device enumeration + Output Patches
 //! - [`voice::Voice`]: a single playing audio stream
 //! - [`ring_command`]: command/status types for lock-free RT communication
@@ -12,12 +10,10 @@
 
 pub mod audio_engine;
 pub mod device_manager;
-pub mod image_engine;
 pub mod mpv_sys;
+pub mod output_engine;
 pub mod ring_command;
-pub mod video_engine;
 pub mod voice;
 
 pub use audio_engine::AudioEngine;
-pub use image_engine::ImageEngine;
-pub use video_engine::VideoEngine;
+pub use output_engine::OutputEngine;
