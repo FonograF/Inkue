@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     cue::{
         traits::Cue,
-        types::{ContinueMode, CueColor, CueState, CueType},
+        types::{ContinueMode, CueColor, CueState, CueType, GroupMode},
     },
     engine::{ring_command::FadeCurve, voice::Voice},
     state::AppState,
@@ -36,6 +36,12 @@ pub struct CueSummary {
     pub file_path: Option<String>,
     /// True while the audio file is being decoded in a background thread.
     pub is_loading: bool,
+    /// For Group cues: their direct children summaries (recursive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<CueSummary>>,
+    /// For Group cues: the playback mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_mode: Option<GroupMode>,
 }
 
 fn summarise(cue: &dyn Cue) -> CueSummary {
@@ -52,7 +58,21 @@ fn summarise(cue: &dyn Cue) -> CueSummary {
         duration_ms: cue.duration().map(|d| d.as_millis() as u64),
         file_path: None, // populated below for file-based cues
         is_loading: false, // populated below
+        children: cue.child_cues().map(|ch| ch.iter().map(|c| summarise_recursive(c.as_ref())).collect()),
+        group_mode: cue.group_mode(),
     }
+}
+
+/// Recursively build a CueSummary, including children for Group cues.
+fn summarise_recursive(cue: &dyn Cue) -> CueSummary {
+    let mut s = summarise(cue);
+    // file_path and is_loading for nested audio cues.
+    if cue.cue_type() == CueType::Audio {
+        if let Some(fp) = cue.serialize().get("file_path").and_then(|v| v.as_str()) {
+            s.file_path = Some(fp.to_string());
+        }
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +182,51 @@ pub fn move_cue(
     Ok(())
 }
 
+/// Remove multiple cues in one atomic operation.
+#[tauri::command]
+pub fn remove_cues(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let ids: Vec<Uuid> = ids
+        .iter()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list.remove_many(&ids).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Move a group of cues immediately before `before_id`, or to the end if `None`.
+#[tauri::command]
+pub fn move_cues(
+    ids: Vec<String>,
+    before_id: Option<String>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let ids: Vec<Uuid> = ids
+        .iter()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let before_id: Option<Uuid> = before_id
+        .as_deref()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .transpose()?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list.move_before(&ids, before_id).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
 /// Duplicate a cue (creates a copy with a new ID, inserted immediately after).
 #[tauri::command]
 pub fn duplicate_cue(
@@ -202,6 +267,68 @@ pub fn duplicate_cue(
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(new_id)
+}
+
+/// Duplicate multiple cues as a block inserted after the last selected cue.
+///
+/// All copies are inserted in order immediately after the highest-index source
+/// cue, giving [1, 2, 1', 2'] instead of the interleaved [1, 1', 2, 2'] that
+/// sequential single-duplicate calls would produce.
+#[tauri::command]
+pub fn duplicate_cues(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<String>, String> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let ids: Vec<Uuid> = ids
+        .iter()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let registry = state.registry.lock().map_err(|e| e.to_string())?;
+
+    // Collect serialised copies and preserved audio for each source cue.
+    let copies = {
+        let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
+        ids.iter()
+            .map(|id| {
+                let cue = cue_list.get(id).ok_or_else(|| format!("Cue {id:?} not found"))?;
+                let mut j = cue.serialize();
+                j["id"] = serde_json::json!(Uuid::new_v4().to_string());
+                let audio = cue.extract_decoded_audio();
+                Ok((j, audio))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+
+    // Insertion point: immediately after the last source cue in the list.
+    let insert_after = {
+        let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
+        ids.iter()
+            .filter_map(|id| cue_list.index_of(id))
+            .max()
+            .ok_or("No valid cue indices found")?
+    };
+
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    let mut new_ids = Vec::with_capacity(copies.len());
+    for (i, (json, audio)) in copies.into_iter().enumerate() {
+        let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
+        if let Some((samples, channels, sample_rate, duration)) = audio {
+            new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
+        }
+        new_ids.push(new_cue.id().to_string());
+        cue_list.insert(insert_after + 1 + i, new_cue);
+    }
+    drop(registry);
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(new_ids)
 }
 
 /// Update cue properties from a partial JSON object.
@@ -702,4 +829,135 @@ pub fn toggle_output_window(state: State<'_, AppState>) {
 #[tauri::command]
 pub fn get_output_window_visible(state: State<'_, AppState>) -> bool {
     state.output_engine.is_visible()
+}
+
+// ---------------------------------------------------------------------------
+// Group Cue commands
+// ---------------------------------------------------------------------------
+
+/// Wrap the given cues in a new Group Cue inserted at the first selected position.
+/// Returns the new Group's ID.
+#[tauri::command]
+pub fn group_cues(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let ids: Vec<Uuid> = ids
+        .iter()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    let group_id = cue_list.group_cues(&ids).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(group_id.to_string())
+}
+
+/// Dissolve a Group: move its children into the parent list and remove the Group.
+#[tauri::command]
+pub fn ungroup(
+    group_id: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let id: Uuid = group_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list.ungroup(&id).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Change the playback mode of a Group Cue (simultaneous | sequential).
+#[tauri::command]
+pub fn set_group_mode(
+    group_id: String,
+    mode: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let id: Uuid = group_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let group_mode: GroupMode = serde_json::from_value(serde_json::json!(mode))
+        .map_err(|_| format!("Unknown group mode: {mode}"))?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    let cue = cue_list.get_mut(&id).ok_or("Group cue not found")?;
+    cue.set_group_mode(group_mode);
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Move a top-level cue into a Group's children (position = −1 for append).
+#[tauri::command]
+pub fn add_cue_to_group(
+    cue_id: String,
+    group_id: String,
+    position: i32,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let cue_uuid: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let grp_uuid: Uuid = group_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list
+        .add_to_group(&cue_uuid, &grp_uuid, position)
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Move a cue from anywhere in the hierarchy to the top-level list, immediately
+/// before `before_id` (or at the end if `before_id` is `null`).
+#[tauri::command]
+pub fn move_to_top_level(
+    cue_id: String,
+    before_id: Option<String>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let cue_uuid: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let before_uuid: Option<Uuid> = before_id
+        .as_deref()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .transpose()?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list
+        .move_to_top_level_before(&cue_uuid, before_uuid.as_ref())
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Remove a child cue from a Group and place it after the Group in the main list.
+#[tauri::command]
+pub fn remove_cue_from_group(
+    group_id: String,
+    cue_id: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let grp_uuid: Uuid = group_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let cue_uuid: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list
+        .remove_from_group(&grp_uuid, &cue_uuid)
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
 }

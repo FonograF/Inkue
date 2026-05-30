@@ -62,6 +62,8 @@ export const addCueToGroup = (cueId: CueId, groupId: CueId, position = -1) =>
   invoke<void>("add_cue_to_group", { cueId, groupId, position });
 export const removeCueFromGroup = (groupId: CueId, cueId: CueId) =>
   invoke<void>("remove_cue_from_group", { groupId, cueId });
+export const moveToTopLevel = (cueId: CueId, beforeId: CueId | null) =>
+  invoke<void>("move_to_top_level", { cueId, beforeId });
 export const duplicateCue = (cueId: CueId) =>
   invoke<CueId>("duplicate_cue", { cueId });
 export const duplicateCues = (ids: CueId[]) =>

@@ -1,9 +1,60 @@
 //! [`CueList`] — an ordered sequence of cues with a Playhead.
 
+use std::collections::{HashMap, HashSet, BTreeMap};
+
 use anyhow::{anyhow, Result};
 use uuid::Uuid;
 
 use crate::cue::{registry::CueRegistry, traits::Cue, types::CueId};
+
+// ---------------------------------------------------------------------------
+// Recursive helpers (free functions to avoid borrow-checker conflicts)
+// ---------------------------------------------------------------------------
+
+/// Extract a cue from anywhere in the hierarchy (top-level or inside any group).
+fn extract_cue_anywhere(cues: &mut Vec<Box<dyn Cue>>, id: &CueId) -> Option<Box<dyn Cue>> {
+    if let Some(idx) = cues.iter().position(|c| c.id() == *id) {
+        return Some(cues.remove(idx));
+    }
+    for cue in cues.iter_mut() {
+        if let Some(children) = cue.child_cues_mut() {
+            if let Some(extracted) = extract_cue_anywhere(children, id) {
+                return Some(extracted);
+            }
+        }
+    }
+    None
+}
+
+/// Add `child` to the group identified by `group_id`, searching recursively.
+/// Returns `Ok(None)` when placed successfully, `Ok(Some(child))` when the
+/// group was not found (caller must handle the returned child to avoid losing it).
+fn add_child_to_group_anywhere(
+    cues: &mut Vec<Box<dyn Cue>>,
+    group_id: &CueId,
+    child: Box<dyn Cue>,
+    position: i32,
+) -> Result<Option<Box<dyn Cue>>> {
+    // First pass: check if any entry IS the target group (avoids mid-loop borrow).
+    for cue in cues.iter_mut() {
+        if cue.id() == *group_id {
+            cue.add_child(child, position)?;
+            return Ok(None);
+        }
+    }
+    // Second pass: recurse into children.
+    let mut child_opt = Some(child);
+    for cue in cues.iter_mut() {
+        if let Some(children) = cue.child_cues_mut() {
+            let c = child_opt.take().expect("invariant: always Some here");
+            match add_child_to_group_anywhere(children, group_id, c, position)? {
+                None => return Ok(None),
+                Some(returned) => child_opt = Some(returned),
+            }
+        }
+    }
+    Ok(child_opt)
+}
 
 /// An ordered list of cues with a Playhead indicating the next cue to GO.
 pub struct CueList {
@@ -114,6 +165,217 @@ impl CueList {
         let cue = self.cues.remove(from);
         let to = to_index.min(self.cues.len());
         self.cues.insert(to, cue);
+        self.renumber_all();
+        Ok(())
+    }
+
+    /// Remove multiple cues at once.  If the Playhead is among the removed
+    /// cues it advances to the first remaining cue at or after the lowest
+    /// removed position, falling back to the last remaining cue.
+    pub fn remove_many(&mut self, ids: &[CueId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let ids_set: HashSet<CueId> = ids.iter().cloned().collect();
+        for id in ids {
+            if self.index_of(id).is_none() {
+                return Err(anyhow!("Cue {:?} not found", id));
+            }
+        }
+
+        let new_playhead = if self.playhead_cue_id.is_some_and(|ph| ids_set.contains(&ph)) {
+            let ph_idx = self
+                .playhead_cue_id
+                .and_then(|id| self.index_of(&id))
+                .unwrap_or(0);
+            // First non-removed cue at or after ph_idx.
+            self.cues
+                .iter()
+                .skip(ph_idx)
+                .find(|c| !ids_set.contains(&c.id()))
+                .or_else(|| self.cues.iter().rev().find(|c| !ids_set.contains(&c.id())))
+                .map(|c| c.id())
+        } else {
+            self.playhead_cue_id
+        };
+
+        let all = std::mem::take(&mut self.cues);
+        self.cues = all.into_iter().filter(|c| !ids_set.contains(&c.id())).collect();
+        self.playhead_cue_id = new_playhead;
+        self.renumber_all();
+        Ok(())
+    }
+
+    /// Move `ids` (preserving their relative order) so they appear immediately
+    /// before `before_id` in the list, or at the end if `before_id` is `None`.
+    /// If `before_id` is one of the moved cues the call is a no-op.
+    pub fn move_before(&mut self, ids: &[CueId], before_id: Option<CueId>) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let ids_set: HashSet<CueId> = ids.iter().cloned().collect();
+        for id in ids {
+            if self.index_of(id).is_none() {
+                return Err(anyhow!("Cue {:?} not found", id));
+            }
+        }
+        if before_id.is_some_and(|bid| ids_set.contains(&bid)) {
+            return Ok(());
+        }
+
+        let all = std::mem::take(&mut self.cues);
+        let mut staying: Vec<Box<dyn Cue>> = Vec::with_capacity(all.len());
+        let mut moving_map: HashMap<CueId, Box<dyn Cue>> = HashMap::new();
+        for cue in all {
+            if ids_set.contains(&cue.id()) {
+                moving_map.insert(cue.id(), cue);
+            } else {
+                staying.push(cue);
+            }
+        }
+        let moving: Vec<Box<dyn Cue>> = ids.iter().filter_map(|id| moving_map.remove(id)).collect();
+
+        let insert_at = before_id
+            .and_then(|id| staying.iter().position(|c| c.id() == id))
+            .unwrap_or(staying.len());
+
+        let mut result = Vec::with_capacity(staying.len() + moving.len());
+        result.extend(staying.drain(..insert_at));
+        result.extend(moving);
+        result.extend(staying);
+        self.cues = result;
+        self.renumber_all();
+        Ok(())
+    }
+
+    /// Wrap the given cues in a new [`GroupCue`] inserted at the first selected
+    /// position.  Returns the new Group's ID.
+    pub fn group_cues(&mut self, ids: &[CueId]) -> Result<CueId> {
+        if ids.is_empty() {
+            return Err(anyhow!("No cues to group"));
+        }
+        let ids_set: HashSet<CueId> = ids.iter().cloned().collect();
+
+        // Record original order for computing insertion position.
+        let original: Vec<CueId> = self.cues.iter().map(|c| c.id()).collect();
+        let min_pos = ids
+            .iter()
+            .filter_map(|id| original.iter().position(|o| o == id))
+            .min()
+            .ok_or_else(|| anyhow!("Cue not found"))?;
+
+        // Count non-selected cues that appear before min_pos — that is the
+        // insertion index in the `staying` list.
+        let insert_at = original[..min_pos]
+            .iter()
+            .filter(|id| !ids_set.contains(*id))
+            .count();
+
+        // Partition into staying / children; preserve ids order for children.
+        let all = std::mem::take(&mut self.cues);
+        let mut staying: Vec<Box<dyn Cue>> = Vec::with_capacity(all.len());
+        let mut children_map: BTreeMap<usize, Box<dyn Cue>> = BTreeMap::new();
+        for cue in all {
+            if let Some(order_pos) = ids.iter().position(|id| *id == cue.id()) {
+                children_map.insert(order_pos, cue);
+            } else {
+                staying.push(cue);
+            }
+        }
+        let children: Vec<Box<dyn Cue>> = children_map.into_values().collect();
+
+        let mut group = crate::cue::group_cue::GroupCue::new();
+        group.children = children;
+        let group_id = group.id;
+
+        staying.insert(insert_at.min(staying.len()), Box::new(group));
+        self.cues = staying;
+        self.renumber_all();
+        Ok(group_id)
+    }
+
+    /// Dissolve a Group: insert its children at the Group's position and remove
+    /// the Group itself.
+    pub fn ungroup(&mut self, group_id: &CueId) -> Result<()> {
+        let idx = self
+            .index_of(group_id)
+            .ok_or_else(|| anyhow!("Group {:?} not found", group_id))?;
+
+        let mut group_box = self.cues.remove(idx);
+        let children = group_box
+            .take_children()
+            .ok_or_else(|| anyhow!("Cue is not a Group"))?;
+
+        // Adjust playhead if it pointed to the group.
+        if self.playhead_cue_id == Some(*group_id) {
+            self.playhead_cue_id = children.first().map(|c| c.id());
+        }
+
+        for (i, child) in children.into_iter().enumerate() {
+            self.cues.insert(idx + i, child);
+        }
+
+        self.renumber_all();
+        Ok(())
+    }
+
+    /// Move a cue (from anywhere in the hierarchy) into a group's children at
+    /// the given position (−1 = append).  Both source and target are searched
+    /// recursively so nested cues and nested groups are handled correctly.
+    pub fn add_to_group(
+        &mut self,
+        cue_id: &CueId,
+        group_id: &CueId,
+        position: i32,
+    ) -> Result<()> {
+        let cue = extract_cue_anywhere(&mut self.cues, cue_id)
+            .ok_or_else(|| anyhow!("Cue {:?} not found", cue_id))?;
+
+        if self.playhead_cue_id == Some(*cue_id) {
+            self.playhead_cue_id = self.cues.first().map(|c| c.id());
+        }
+
+        match add_child_to_group_anywhere(&mut self.cues, group_id, cue, position)? {
+            None => {
+                self.renumber_all();
+                Ok(())
+            }
+            Some(_) => Err(anyhow!("Group {:?} not found", group_id)),
+        }
+    }
+
+    /// Remove a child from a group and reinsert it into the main list
+    /// immediately after the group.
+    pub fn remove_from_group(&mut self, group_id: &CueId, cue_id: &CueId) -> Result<()> {
+        let group_idx = self
+            .index_of(group_id)
+            .ok_or_else(|| anyhow!("Group {:?} not found", group_id))?;
+
+        let child = self.cues[group_idx].remove_child(cue_id)?;
+        self.cues.insert(group_idx + 1, child);
+        self.renumber_all();
+        Ok(())
+    }
+
+    /// Move a cue from anywhere in the hierarchy to the top-level list,
+    /// immediately before `before_id` (or at the end if `None`).
+    pub fn move_to_top_level_before(
+        &mut self,
+        cue_id: &CueId,
+        before_id: Option<&CueId>,
+    ) -> Result<()> {
+        let cue = extract_cue_anywhere(&mut self.cues, cue_id)
+            .ok_or_else(|| anyhow!("Cue {:?} not found", cue_id))?;
+
+        if self.playhead_cue_id == Some(*cue_id) {
+            self.playhead_cue_id = self.cues.first().map(|c| c.id());
+        }
+
+        let insert_at = before_id
+            .and_then(|id| self.index_of(id))
+            .unwrap_or(self.cues.len());
+
+        self.cues.insert(insert_at, cue);
         self.renumber_all();
         Ok(())
     }
@@ -274,6 +536,57 @@ mod tests {
         list.move_cue(&id3, 0).unwrap();
         assert_eq!(list.cues[0].id(), id3);
         assert_eq!(list.cues[1].id(), id1);
+    }
+
+    #[test]
+    fn remove_many_basic() {
+        let mut list = CueList::new("Test");
+        let c1 = memo(); let id1 = c1.id();
+        let c2 = memo(); let id2 = c2.id();
+        let c3 = memo(); let id3 = c3.id();
+        list.push(c1); list.push(c2); list.push(c3);
+        list.remove_many(&[id1, id3]).unwrap();
+        assert_eq!(list.cues.len(), 1);
+        assert_eq!(list.cues[0].id(), id2);
+    }
+
+    #[test]
+    fn remove_many_advances_playhead() {
+        let mut list = CueList::new("Test");
+        let c1 = memo(); let id1 = c1.id();
+        let c2 = memo(); let id2 = c2.id();
+        let c3 = memo(); let id3 = c3.id();
+        list.push(c1); list.push(c2); list.push(c3);
+        // Playhead starts at c1.
+        list.remove_many(&[id1, id2]).unwrap();
+        // Only c3 remains; playhead should advance to it.
+        assert_eq!(list.playhead_cue_id, Some(id3));
+    }
+
+    #[test]
+    fn move_before_reorders_group() {
+        let mut list = CueList::new("Test");
+        let c1 = memo(); let id1 = c1.id();
+        let c2 = memo(); let id2 = c2.id();
+        let c3 = memo(); let id3 = c3.id();
+        list.push(c1); list.push(c2); list.push(c3);
+        // Move c2 and c3 before c1 → [c2, c3, c1]
+        list.move_before(&[id2, id3], Some(id1)).unwrap();
+        assert_eq!(list.cues[0].id(), id2);
+        assert_eq!(list.cues[1].id(), id3);
+        assert_eq!(list.cues[2].id(), id1);
+    }
+
+    #[test]
+    fn move_before_none_appends_to_end() {
+        let mut list = CueList::new("Test");
+        let c1 = memo(); let id1 = c1.id();
+        let c2 = memo();
+        let c3 = memo(); let id3 = c3.id();
+        list.push(c1); list.push(c2); list.push(c3);
+        list.move_before(&[id1], None).unwrap();
+        assert_eq!(list.cues.last().unwrap().id(), id1);
+        assert_eq!(list.cues[1].id(), id3);
     }
 
     #[test]
