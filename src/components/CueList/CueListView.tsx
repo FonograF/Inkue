@@ -311,6 +311,17 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       return flatItemsRef.current.length;
     }
 
+    // Return the child-list position for inserting into `groupId` such that
+    // the new child lands just before flatIndex `dropIdx`.
+    function resolveChildPositionInGroup(groupId: string, dropIdx: number): number {
+      const items = flatItemsRef.current;
+      let pos = 0;
+      for (let i = 0; i < dropIdx; i++) {
+        if (items[i].parentGroupId === groupId) pos++;
+      }
+      return pos;
+    }
+
     // Return the ID of the first top-level cue at or after flatIndex `idx`.
     // Used when a child cue is dragged to a between-rows drop position.
     function resolveTopLevelBeforeId(idx: number): string | null {
@@ -322,8 +333,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     }
 
     // Like calcInsertIdxFromY but also detects when the cursor is over the
-    // middle portion of a top-level Group row (drop-into-group zone).
-    // Returns { insertIdx, groupId } — exactly one will be non-null.
+    // middle portion of a Group row (drop-into-group zone).
+    // Returns { insertIdx, groupId } — groupId is non-null only for group drops.
+    //
+    // Uses the same midpoint-first traversal as calcInsertIdxFromY so it
+    // correctly returns insertIdx=0 when the cursor is above the first row.
     function calcDropTarget(clientY: number): { insertIdx: number; groupId: string | null } {
       const rowEls = rowsScrollRef.current
         ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
@@ -331,25 +345,24 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
       for (const el of rowEls) {
         const rect = el.getBoundingClientRect();
-        if (clientY < rect.top) continue;
-        if (clientY <= rect.bottom) {
-          // Cursor is inside this row.
-          const isTopLevelGroup = el.dataset.isGroup === "true";
-          if (isTopLevelGroup) {
-            const DEAD = rect.height * 0.28;
-            const relY = clientY - rect.top;
-            if (relY >= DEAD && relY <= rect.height - DEAD) {
-              // Middle of a group row — drop into the group.
-              return { insertIdx: Number(el.dataset.cueIndex ?? 0), groupId: el.dataset.cueId ?? null };
-            }
+        const idx = Number(el.dataset.cueIndex ?? 0);
+
+        // Check group middle zone first (only when cursor is inside the row).
+        if (el.dataset.isGroup === "true" && clientY >= rect.top && clientY <= rect.bottom) {
+          const DEAD = rect.height * 0.28;
+          const relY = clientY - rect.top;
+          if (relY >= DEAD && relY <= rect.height - DEAD) {
+            return { insertIdx: idx, groupId: el.dataset.cueId ?? null };
           }
-          // Edge or non-group row — compute insert index by midpoint.
-          if (clientY < rect.top + rect.height / 2) {
-            return { insertIdx: Number(el.dataset.cueIndex ?? 0), groupId: null };
-          } else {
-            return { insertIdx: Number(el.dataset.cueIndex ?? 0) + 1, groupId: null };
-          }
+          // In the dead zone: fall through to midpoint logic below.
         }
+
+        // Standard midpoint logic (identical to calcInsertIdxFromY).
+        // Cursor above this row's midpoint → insert before this row.
+        if (clientY < rect.top + rect.height / 2) {
+          return { insertIdx: idx, groupId: null };
+        }
+        // Cursor at/below midpoint → check next row.
       }
       return { insertIdx: flatItemsRef.current.length, groupId: null };
     }
@@ -482,10 +495,20 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
             Promise.all(promises).then(onRefresh).catch(console.error);
           } else if (drag.dropIdx !== null) {
             if (drag.parentGroupId) {
-              // Dragging a child cue to a top-level position.
-              // Find the first top-level cue at or after the drop index to use as beforeId.
-              const beforeId = resolveTopLevelBeforeId(drag.dropIdx);
-              moveToTopLevel(drag.id, beforeId).then(onRefresh).catch(console.error);
+              // Check if the drop lands within the same group (rearrange)
+              // or outside of it (extract to top level).
+              const dropItem  = flatItemsRef.current[drag.dropIdx];
+              const prevItem  = drag.dropIdx > 0 ? flatItemsRef.current[drag.dropIdx - 1] : null;
+              const sameGroup =
+                dropItem?.parentGroupId === drag.parentGroupId ||
+                prevItem?.parentGroupId === drag.parentGroupId;
+              if (sameGroup) {
+                const childPos = resolveChildPositionInGroup(drag.parentGroupId, drag.dropIdx);
+                addCueToGroup(drag.id, drag.parentGroupId, childPos).then(onRefresh).catch(console.error);
+              } else {
+                const beforeId = resolveTopLevelBeforeId(drag.dropIdx);
+                moveToTopLevel(drag.id, beforeId).then(onRefresh).catch(console.error);
+              }
             } else if (drag.ids.length > 1) {
               const beforeId = flatItemsRef.current[drag.dropIdx]?.cue.id ?? null;
               const draggingSet = new Set(drag.ids);
@@ -988,8 +1011,14 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
             {isDragging && fileDragInsertIdx === flatIndex && (
               <div style={{ height: 2, background: "#3b82f6", margin: `0 ${8 + depth * 20}px`, borderRadius: 1, pointerEvents: "none" }} />
             )}
-            {draggingCueId !== null && dropInsertIndex === flatIndex && depth === 0 && (
-              <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
+            {draggingCueId !== null && dropInsertIndex === flatIndex && (
+              depth === 0 || cueDragRef.current?.parentGroupId != null
+            ) && (
+              <div style={{
+                height: 2, background: "#3b82f6",
+                margin: `0 ${8 + depth * 20}px`,
+                borderRadius: 1, pointerEvents: "none",
+              }} />
             )}
             {newCueDragType !== null && newCueDragInsertIdx === flatIndex && (
               <div style={{ height: 2, background: "#ef4444", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />

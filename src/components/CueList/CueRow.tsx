@@ -127,7 +127,11 @@ export function CueRow({
     userSelect: "none",
     background: isGroup && !isSelected ? (bg === "transparent" ? "#0d1b2a" : bg) : bg,
     borderBottom: isDragOver ? "1px solid #3b82f6" : "1px solid #1e293b",
-    outline: isGroupDropTarget ? "2px solid #22d3ee" : isDragOver ? "1px solid #3b82f6" : "none",
+    boxShadow: isGroupDropTarget
+      ? "inset 0 0 0 2px #22d3ee"
+      : isDragOver
+      ? "inset 0 0 0 1px #3b82f6"
+      : "none",
     fontSize: 13,
     color: "#e2e8f0",
     minHeight: rowHeight,
