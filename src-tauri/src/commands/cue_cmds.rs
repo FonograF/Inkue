@@ -581,28 +581,63 @@ pub fn set_video_file(
     drop(registry);
     cue_list.cues[idx] = new_cue;
 
-    // Probe duration so the cue shows its length before the first play.
-    // Done in a background thread to avoid blocking the Tauri command.
+    // Mark as loading — the audio track is decoded off-thread (the indicator
+    // clears when decoding finishes), mirroring Audio Cues.
+    {
+        let mut loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
+        loading.insert(id);
+    }
+
+    drop(ws); // release the workspace lock before any background work
+
+    // Probe the video duration (mpv) and decode the audio track (symphonia) so
+    // the cue shows its length and has synced audio ready before the first GO.
     {
         let path = std::path::PathBuf::from(&file_path);
         let cue_id = id;
         let output_engine = Arc::clone(&state.output_engine);
         let workspace2 = Arc::clone(&state.workspace);
+        let loading_cues = state.loading_cues.clone();
         let handle2 = app_handle.clone();
         std::thread::Builder::new()
-            .name("wincue-video-probe".into())
+            .name("wincue-video-load".into())
             .spawn(move || {
                 let lib = output_engine.mpv_lib();
-                if let Some(dur) = crate::engine::OutputEngine::probe_duration(lib, &path) {
-                    if let Ok(mut ws) = workspace2.lock() {
-                        if let Some(cl) = ws.active_cue_list_mut() {
-                            if let Some(idx2) = cl.index_of(&cue_id) {
+                let duration = crate::engine::OutputEngine::probe_duration(lib, &path);
+                let audio = crate::cue::media_decode::decode_audio_track(&path);
+
+                if let Ok(mut ws) = workspace2.lock() {
+                    if let Some(cl) = ws.active_cue_list_mut() {
+                        if let Some(idx2) = cl.index_of(&cue_id) {
+                            if let Some(dur) = duration {
                                 cl.cues[idx2].set_runtime_duration(dur);
-                                let _ = handle2.emit("workspace-modified", serde_json::json!({}));
+                            }
+                            match audio {
+                                Ok(Some((samples, channels, sample_rate))) => {
+                                    let dur = std::time::Duration::from_secs_f64(
+                                        samples.len() as f64
+                                            / channels.max(1) as f64
+                                            / sample_rate.max(1) as f64,
+                                    );
+                                    cl.cues[idx2].accept_preloaded_audio(
+                                        std::sync::Arc::new(samples),
+                                        channels,
+                                        sample_rate,
+                                        dur,
+                                    );
+                                }
+                                Ok(None) => {} // silent video — no audio track
+                                Err(e) => {
+                                    log::warn!("Video audio decode failed for {path:?}: {e}");
+                                }
                             }
                         }
                     }
                 }
+                if let Ok(mut loading) = loading_cues.lock() {
+                    loading.remove(&cue_id);
+                }
+                let _ = handle2.emit("workspace-modified", serde_json::json!({}));
             })
             .ok();
     }

@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-05-28
+# WinCue — Project state as of 2026-05-30
 
-## Current version: 0.4.1
+## Current version: 0.4.2
 
 ## cargo build result
 
@@ -19,7 +19,7 @@
 | Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter |
 | Stop  | ✅ **Functional** | Targeted Stop and Stop All, default 0.5 s fade |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
-| Video | ✅ **Functional** | Single persistent Win32 window, no first-GO freeze, dip-to-black fades, loop |
+| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, loop |
 | Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
 
 ---
@@ -86,17 +86,72 @@
 
 ## Known issues
 
-### ⚠️ Video/Audio routing — ASIO hardware validation pending (unchanged)
+### Long-video A/V drift (minor, future tuning)
 
-The `ao=pcm` → named pipe → `AudioEngine` architecture compiles and works on default WASAPI.  Still to verify on an ASIO interface:
-
-1. `PCM pipe: mpv connected` logs appear on video GO
-2. VU meter moves during video playback
-3. Video audio comes out of the ASIO device (not default WASAPI)
+Video frames are timed by mpv's display clock; the video's audio voice plays on
+the cpal device clock.  These are independent oscillators, so over a long video
+(several minutes) audio and video can drift by a few ms.  For typical event
+clips this is imperceptible.  Future refinement: periodically nudge the audio
+voice rate to track mpv's `time-pos`.  Looping videos re-align at each loop only
+to within this drift.
 
 ---
 
 ## Change history
+
+### 0.4.2 — Video freeze fixed: muted mpv + separate audio voice (2026-05-30)
+
+#### ✅ Root cause fixed: frozen first frame / replay hang from `ao=pcm`
+
+**Problem.** Two layered faults. (1) On GO mpv `loadfile` started **playing
+immediately** while the d3d11 decoder was still warming up, so frame 0 sat frozen
+while audio ran ahead.  (2) The deeper cause: video audio was piped out of mpv
+via `ao=pcm` into the AudioEngine.  `ao=pcm` gives mpv **no real audio clock**, so
+pacing it required back-pressuring its audio writes — which stalls mpv's demuxer
+and starves the video decoder (mpv itself logged *"Audio/Video desynchronisation
+detected"*).  Replaying a cue could deadlock the whole app on the pipe state
+machine.  This had been patched every release (pre-arm, discard throttle, PCM
+gate, pipe resizing) without ever fixing the clock.
+
+**Solution — mpv plays video muted; the audio track is a normal AudioEngine voice.**
+- mpv is initialised with `ao=null` + `audio=no`: it renders **video only**, so
+  its display clock is never perturbed by audio sync and never freezes.
+- Each video's audio track is decoded with symphonia (shared
+  `cue/media_decode::decode_audio_track`, which selects the first audio track so
+  it works on `.mp4` containers) and played as an ordinary `Voice` — inheriting
+  **Output Patch routing, master volume, VU metering and fades**, exactly like an
+  Audio Cue.  This is the unified professional signal path the project wants.
+- **Lockstep start:** the audio voice is submitted *paused* at GO
+  (`play_voice_paused`).  The video is loaded *paused*; the first
+  `MPV_EVENT_PLAYBACK_RESTART` (frame 0 decoded, decoder warm) reveals the
+  overlay, unpauses mpv **and** resumes the audio voice — both from frame 0, so
+  there is no A/V offset and no warmup freeze.
+- Stop / pause / resume / cross-stop / EOF drive the paired audio voice in step
+  with the video; a never-revealed paused voice hard-stops (no blip).
+- The entire `ao=pcm` named-pipe machinery is deleted, removing the desync source
+  **and** the replay deadlock.  A 2.5 s watchdog still guarantees the output can
+  never hang on a permanent black screen if `PLAYBACK_RESTART` is ever missing.
+
+**Files changed:**
+- `cue/media_decode.rs` — **new** shared audio-track decoder (Option-returning;
+  selects the first audio track, so it decodes a video container's audio)
+- `cue/audio_cue.rs` — `decode_file` delegates to the shared decoder
+- `cue/video_cue.rs` — decodes its audio track (`load` / `accept_preloaded_audio`
+  / `extract_decoded_audio`); builds + submits the paused audio voice and hands
+  its id to the OutputEngine
+- `engine/audio_engine.rs` — `play_voice_paused`; `Stop` hard-stops a paused
+  voice; removed all video-PCM plumbing
+- `engine/output_engine/mod.rs` — `ao=null`/`audio=no`; `OUTPUT_CURRENT_AUDIO_VOICE`;
+  `show_content` takes the audio voice id and cross-stops the previous one;
+  pause/resume/stop/volume drive the paired audio; PCM thread removed
+- `engine/output_engine/fade.rs` — video loads paused with `audio=no`
+- `engine/output_engine/mpv_events.rs` — resumes the audio voice at the first
+  frame; stops it on EOF/error; event loop now takes the `AudioEngine`
+- `engine/output_engine/pcm_pipe.rs` — **deleted**
+- `commands/cue_cmds.rs`, `commands/workspace_cmds.rs` — background-decode video
+  audio on file-assign and on workspace load
+
+---
 
 ### 0.4.1 — Persistent PCM pipe (2026-05-28)
 
@@ -234,5 +289,5 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 
 ## Next priorities
 
-1. **⚠️ Validate video routing on ASIO hardware** — verify `PCM pipe: mpv connected` + VU meter + audio output
+1. **Optional: active A/V resync** — nudge the video audio voice's rate to track mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
 2. **Future cue types** — Wait, Fade, Group, MIDI, OSC (architecture is ready; add via `CueRegistry` without touching transport)

@@ -4,18 +4,12 @@
 //! symphonia and submits a [`Voice`](crate::engine::voice::Voice) to the
 //! [`AudioEngine`](crate::engine::AudioEngine) when triggered.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use uuid::Uuid;
 
 use crate::engine::{
@@ -231,128 +225,12 @@ impl AudioCue {
     ///
     /// This is a pure function (no `self` mutation) and must be called on a
     /// non-RT thread without holding any workspace locks.  The result is
-    /// pushed back into the cue via [`accept_preloaded_audio`].
-    pub fn decode_file(path: &PathBuf) -> Result<(Vec<f32>, u16, u32)> {
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("Cannot open audio file: {}", path.display()))?;
-
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-
-        let probed = symphonia::default::get_probe()
-            .format(
-                &hint,
-                mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
-            )
-            .with_context(|| format!("Unsupported audio format: {}", path.display()))?;
-
-        let mut format = probed.format;
-
-        let track = format
-            .default_track()
-            .ok_or_else(|| anyhow!("No default audio track in file: {}", path.display()))?;
-
-        let track_id = track.id;
-        let codec_params = track.codec_params.clone();
-
-        let channels = codec_params
-            .channels
-            .map(|c| c.count() as u16)
-            .unwrap_or(2);
-        let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&codec_params, &DecoderOptions::default())
-            .with_context(|| "Failed to create audio decoder")?;
-
-        // Pre-allocate using the known frame count from the codec header.
-        // Without this, Vec doubles in size on each realloc, causing multiple
-        // full-file-sized copies to exist simultaneously for large audio files.
-        let estimated_samples = codec_params
-            .n_frames
-            .map(|n| n as usize * channels as usize)
-            .unwrap_or(44_100 * 2 * 60); // fall back to ~1 min stereo
-        let mut samples: Vec<f32> = Vec::with_capacity(estimated_samples);
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(p) => p,
-                Err(symphonia::core::errors::Error::IoError(_)) => break,
-                Err(symphonia::core::errors::Error::ResetRequired) => {
-                    decoder.reset();
-                    continue;
-                }
-                Err(e) => return Err(anyhow!("Decode error: {e}")),
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            let decoded = decoder.decode(&packet)?;
-
-            // Reserve once per packet — amortises Vec growth across the decode loop.
-            let n_frames = decoded.frames();
-            let n_ch = decoded.spec().channels.count();
-            samples.reserve(n_frames * n_ch);
-
-            match decoded {
-                AudioBufferRef::F32(buf) => {
-                    for frame in 0..n_frames {
-                        for ch in 0..n_ch {
-                            samples.push(buf.chan(ch)[frame]);
-                        }
-                    }
-                }
-                AudioBufferRef::S16(buf) => {
-                    for frame in 0..n_frames {
-                        for ch in 0..n_ch {
-                            samples.push(buf.chan(ch)[frame] as f32 / i16::MAX as f32);
-                        }
-                    }
-                }
-                AudioBufferRef::S32(buf) => {
-                    for frame in 0..n_frames {
-                        for ch in 0..n_ch {
-                            samples.push(buf.chan(ch)[frame] as f32 / i32::MAX as f32);
-                        }
-                    }
-                }
-                AudioBufferRef::U8(buf) => {
-                    for frame in 0..n_frames {
-                        for ch in 0..n_ch {
-                            samples.push(buf.chan(ch)[frame] as f32 / 128.0 - 1.0);
-                        }
-                    }
-                }
-                // Handle all other formats (S24, F64, U16, U24, …) via conversion.
-                // make_equivalent() creates the destination with n_capacity == src.n_capacity,
-                // satisfying convert()'s assertion.
-                other => {
-                    let mut f32_buf = other.make_equivalent::<f32>();
-                    other.convert(&mut f32_buf);
-                    let n_frames = f32_buf.frames();
-                    let n_ch = f32_buf.spec().channels.count();
-                    for frame in 0..n_frames {
-                        for ch in 0..n_ch {
-                            samples.push(f32_buf.chan(ch)[frame]);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Release over-allocated capacity before the Vec is wrapped in Arc and
-        // shared with the audio callback — avoids wasting RAM for the lifetime
-        // of the cue.
-        samples.shrink_to_fit();
-        Ok((samples, channels, sample_rate))
+    /// pushed back into the cue via [`accept_preloaded_audio`].  Delegates to
+    /// the shared [`media_decode::decode_audio_track`] so audio files and the
+    /// audio track of video containers decode through one code path.
+    pub fn decode_file(path: &Path) -> Result<(Vec<f32>, u16, u32)> {
+        crate::cue::media_decode::decode_audio_track(path)?
+            .ok_or_else(|| anyhow!("No audio track in file: {}", path.display()))
     }
 }
 

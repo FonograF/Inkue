@@ -6,6 +6,7 @@
 //! exactly, so the Transport and event loop need no special-casing.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -13,11 +14,13 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::engine::output_engine::{SurfaceId, VoiceId};
+use crate::engine::ring_command::FadeCurve as EngineFadeCurve;
+use crate::engine::voice::{FadeDirection, FadeState, Voice};
 
 use super::{
     context::{CueContext, CueEvent},
     traits::{Cue, CueFactory, RuntimeState},
-    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve, FadeSpec},
+    types::{db_to_linear, ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve, FadeSpec},
 };
 
 // ---------------------------------------------------------------------------
@@ -69,6 +72,11 @@ pub struct VideoCue {
     // --- Runtime ---
     /// The video voice ID currently in use, if any.
     active_voice_id: Option<VoiceId>,
+    /// The video's audio track, decoded to interleaved f32 by `load()` /
+    /// background preload.  `None` when the file has no audio track.
+    decoded_samples: Option<Arc<Vec<f32>>>,
+    decoded_channels: u16,
+    decoded_sample_rate: u32,
     /// Total media duration — set by [`Cue::set_runtime_duration`] when the
     /// surface reports its `loadedmetadata` event.
     cached_duration: Option<Duration>,
@@ -105,6 +113,9 @@ impl VideoCue {
             output_surface_id: None,
             output_patch_id: None,
             active_voice_id: None,
+            decoded_samples: None,
+            decoded_channels: 2,
+            decoded_sample_rate: 44100,
             cached_duration: None,
             in_pre_wait: false,
             play_generation: 0,
@@ -112,28 +123,106 @@ impl VideoCue {
         }
     }
 
+    /// Convert a [`FadeCurve`] from the cue layer to the engine layer.
+    fn engine_curve(c: FadeCurve) -> EngineFadeCurve {
+        match c {
+            FadeCurve::Linear => EngineFadeCurve::Linear,
+            FadeCurve::SCurve => EngineFadeCurve::SCurve,
+            FadeCurve::Exponential => EngineFadeCurve::Exponential,
+        }
+    }
+
+    /// Build the audio voice for this video's audio track and submit it to the
+    /// AudioEngine in the **paused** state, returning its id.
+    ///
+    /// The voice carries the cue's volume, fade-in, loop, start/end markers and
+    /// Output Patch routing — exactly like an Audio Cue — so video audio gets
+    /// the full professional signal path (routing, master volume, VU, fades).
+    /// Returns `Ok(None)` when the video has no audio track.
+    fn submit_paused_audio(&self, context: &CueContext) -> Result<Option<VoiceId>> {
+        let samples = match &self.decoded_samples {
+            Some(s) => Arc::clone(s),
+            None => return Ok(None), // Silent video — no audio voice.
+        };
+
+        let gain = db_to_linear(self.volume_db) as f32;
+        let mut voice = Voice::new(samples, self.decoded_channels, self.decoded_sample_rate, gain, 0.0);
+
+        voice
+            .inner
+            .loops_remaining
+            .store(self.loop_count, std::sync::atomic::Ordering::Relaxed);
+
+        // Compensate for any sample-rate mismatch between the decoded audio and
+        // the output device so the audio plays at the correct pitch/speed.
+        let device_sr = context.audio_engine.sample_rate();
+        let sr_ratio = self.decoded_sample_rate as f64 / device_sr.max(1) as f64;
+        voice.inner.set_rate(sr_ratio as f32);
+
+        if let Some(end) = self.end_time {
+            let end_frame = (end.as_secs_f64() * self.decoded_sample_rate as f64) as u64;
+            // SAFETY: written once before submission; the RT thread never sees
+            // this voice until play_voice_paused pushes it.
+            unsafe { *voice.inner.end_frame.get() = Some(end_frame); }
+        }
+        if let Some(start) = self.start_time {
+            let start_frame = (start.as_secs_f64() * self.decoded_sample_rate as f64) as u64;
+            voice.frame_pos.store(start_frame, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if let Some(ref fi) = self.fade_in {
+            let total = (fi.duration_ms * self.decoded_sample_rate as u64) / 1000;
+            // SAFETY: single writer before submission.
+            unsafe {
+                *voice.inner.fade.get() = Some(FadeState {
+                    direction: FadeDirection::In,
+                    total_samples: total,
+                    elapsed_samples: 0,
+                    curve: Self::engine_curve(fi.curve),
+                });
+            }
+        }
+
+        if let Some(patch) = context.resolve_patch(self.output_patch_id) {
+            if let Some(&ch_l) = patch.channels.first() {
+                voice.out_l = ch_l as usize;
+            }
+            if let Some(&ch_r) = patch.channels.get(1) {
+                voice.out_r = ch_r as usize;
+            } else if let Some(&ch_l) = patch.channels.first() {
+                voice.out_r = ch_l as usize;
+            }
+        }
+
+        Ok(Some(context.audio_engine.play_voice_paused(voice)?))
+    }
+
     /// Kick off video playback.  Called directly from `go()` when there is no
     /// pre-wait, or from `tick()` once the pre-wait timer has elapsed.
     fn start_video_action(&mut self, context: &CueContext) -> Result<()> {
-        let path = self.file_path.as_ref().ok_or_else(|| {
-            anyhow!("VideoCue '{}': no file assigned — set a file in the inspector", self.name)
-        })?;
-
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
         let fade_in_ms = self.fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
         let fade_out_ms = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+
+        // Submit the audio voice (paused) first so it is ready to resume the
+        // instant the video's first frame is presented.
+        let audio_voice_id = self.submit_paused_audio(context)?;
+
+        let path = self.file_path.as_ref().ok_or_else(|| {
+            anyhow!("VideoCue '{}': no file assigned — set a file in the inspector", self.name)
+        })?;
 
         let voice_id = context.output_engine.show_content(
             path,
             false,
             fade_in_ms,
             fade_out_ms,
-            self.volume_db,
             self.loop_count,
             start_ms,
             end_ms,
             context.output_screen,
+            audio_voice_id,
         )?;
 
         self.active_voice_id = Some(voice_id);
@@ -173,9 +262,35 @@ impl Cue for VideoCue {
     // -----------------------------------------------------------------------
 
     fn load(&mut self, _context: &CueContext) -> Result<()> {
-        // Video files stream directly from disk via the OutputEngine — no
-        // pre-decoding step is needed.
+        // The video frames stream directly from disk via the OutputEngine, but
+        // the audio track must be decoded so it can play as an AudioEngine voice
+        // in sync with the (muted) video.
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+        if let Some((samples, channels, sample_rate)) =
+            crate::cue::media_decode::decode_audio_track(&path)?
+        {
+            self.decoded_channels = channels;
+            self.decoded_sample_rate = sample_rate;
+            self.decoded_samples = Some(Arc::new(samples));
+        }
         Ok(())
+    }
+
+    fn accept_preloaded_audio(
+        &mut self,
+        samples: Arc<Vec<f32>>,
+        channels: u16,
+        sample_rate: u32,
+        _duration: Duration,
+    ) {
+        // Store the decoded audio track.  The video's own duration comes from
+        // the mpv probe (set_runtime_duration), so the decoded length is ignored.
+        self.decoded_channels = channels;
+        self.decoded_sample_rate = sample_rate;
+        self.decoded_samples = Some(samples);
     }
 
     fn go(&mut self, context: &CueContext) -> Result<()> {
@@ -317,6 +432,12 @@ impl Cue for VideoCue {
 
     fn playing_voice_id(&self) -> Option<CueId> {
         self.active_voice_id
+    }
+
+    fn extract_decoded_audio(&self) -> Option<(Arc<Vec<f32>>, u16, u32, Duration)> {
+        let samples = self.decoded_samples.as_ref()?;
+        let duration = self.cached_duration?;
+        Some((Arc::clone(samples), self.decoded_channels, self.decoded_sample_rate, duration))
     }
 
     fn play_generation(&self) -> u64 { self.play_generation }

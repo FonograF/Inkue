@@ -40,13 +40,14 @@ pub fn load_workspace(
         .map_err(|e| e.to_string())?;
     drop(registry);
 
-    // Collect audio cue IDs + file paths before storing the workspace.
+    // Collect audio + video cue IDs + file paths before storing the workspace.
+    // Both decode an audio track (a video's audio plays as an AudioEngine voice).
     let cues_to_preload: Vec<(uuid::Uuid, PathBuf)> = loaded
         .active_cue_list()
         .map(|cl| {
             cl.cues
                 .iter()
-                .filter(|c| c.cue_type() == CueType::Audio)
+                .filter(|c| matches!(c.cue_type(), CueType::Audio | CueType::Video))
                 .filter_map(|c| {
                     let json = c.serialize();
                     let p = json.get("file_path")?.as_str()?;
@@ -84,10 +85,12 @@ pub fn load_workspace(
         std::thread::Builder::new()
             .name("wincue-preload".into())
             .spawn(move || {
-                match crate::cue::audio_cue::AudioCue::decode_file(&file_path) {
-                    Ok((samples, channels, sample_rate)) => {
+                match crate::cue::media_decode::decode_audio_track(&file_path) {
+                    Ok(Some((samples, channels, sample_rate))) => {
                         let duration = Duration::from_secs_f64(
-                            samples.len() as f64 / channels as f64 / sample_rate as f64,
+                            samples.len() as f64
+                                / channels.max(1) as f64
+                                / sample_rate.max(1) as f64,
                         );
                         let samples = Arc::new(samples);
                         if let Ok(mut ws) = workspace.lock() {
@@ -99,19 +102,14 @@ pub fn load_workspace(
                                 }
                             }
                         }
-                        if let Ok(mut loading) = loading_cues.lock() {
-                            loading.remove(&cue_id);
-                        }
-                        let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
                     }
-                    Err(e) => {
-                        if let Ok(mut loading) = loading_cues.lock() {
-                            loading.remove(&cue_id);
-                        }
-                        log::warn!("Preload failed for cue {cue_id}: {e}");
-                        let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
-                    }
+                    Ok(None) => {} // silent video — nothing to preload
+                    Err(e) => log::warn!("Preload failed for cue {cue_id}: {e}"),
                 }
+                if let Ok(mut loading) = loading_cues.lock() {
+                    loading.remove(&cue_id);
+                }
+                let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
             })
             .expect("Failed to spawn preload thread");
     }

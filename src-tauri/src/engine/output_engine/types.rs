@@ -88,7 +88,6 @@ pub(crate) struct FadePendingParams {
     pub is_image: bool,
     pub voice_id: Uuid,
     pub fade_in_ms: u32,
-    pub volume_db: f64,
     pub loop_count: u32,
     pub start_ms: Option<u64>,
     pub end_ms: Option<u64>,
@@ -97,6 +96,17 @@ pub(crate) struct FadePendingParams {
 pub(crate) enum FadePending {
     Load(FadePendingParams),
     Stop,
+}
+
+/// State carried from a video `loadfile` (issued paused) to the
+/// `MPV_EVENT_PLAYBACK_RESTART` that fires once frame 0 is decoded and on
+/// screen.  At that point the engine reveals the overlay and unpauses, so
+/// audio and video both start from frame 0 with no A/V offset and no
+/// decoder-warmup freeze.
+pub(crate) struct PendingVideoStart {
+    /// Fade-from-black duration to run when the first frame is revealed
+    /// (0 = hard cut).
+    pub fade_in_ms: u32,
 }
 
 pub(crate) struct FadeAnimState {

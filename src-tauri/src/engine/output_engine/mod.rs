@@ -19,13 +19,13 @@
 
 mod fade;
 mod mpv_events;
-mod pcm_pipe;
 mod types;
 mod win32_window;
 
 pub use types::{OutputStatus, OutputSurface, ScreenInfo, SurfaceId, VoiceId};
 use types::{
     FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice, OutputWndState,
+    PendingVideoStart,
 };
 
 use std::collections::HashMap;
@@ -57,8 +57,14 @@ pub(super) static OUTPUT_MPV_LIB: OnceLock<Arc<MpvLib>> = OnceLock::new();
 pub(super) static OUTPUT_STATUS_TX: OnceLock<Sender<OutputStatus>> = OnceLock::new();
 pub(super) static OUTPUT_CURRENT_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
 pub(super) static OUTPUT_CURRENT_FADE_OUT_MS: OnceLock<Mutex<u32>> = OnceLock::new();
-/// `true` = discard PCM samples (pre-arm / idle / image), `false` = push to ring buffer.
-pub(super) static OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+/// Set when a video `loadfile` is issued paused; consumed by the first
+/// `MPV_EVENT_PLAYBACK_RESTART` to reveal + unpause once frame 0 is ready.
+pub(super) static OUTPUT_PENDING_VIDEO_START: OnceLock<Mutex<Option<PendingVideoStart>>> =
+    OnceLock::new();
+/// The AudioEngine voice carrying the current video's audio track, if any.
+/// Resumed at the first PLAYBACK_RESTART (start in lockstep with frame 0),
+/// paused/resumed/stopped together with the video.
+pub(super) static OUTPUT_CURRENT_AUDIO_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -120,8 +126,9 @@ impl OutputEngine {
 
             opt_str(&lib, ctx, "vo", "gpu");
             opt_str(&lib, ctx, "gpu-api", "d3d11");
+            opt_str(&lib, ctx, "d3d11-sync-interval", "0"); // non-blocking Present(); video-sync=desync needs this
             opt_str(&lib, ctx, "force-window", "immediate");
-            opt_str(&lib, ctx, "hwdec", "no");
+            opt_str(&lib, ctx, "hwdec", "auto");
 
             opt_str(&lib, ctx, "osc", "no");
             opt_str(&lib, ctx, "osd-level", "0");
@@ -132,16 +139,13 @@ impl OutputEngine {
             opt_str(&lib, ctx, "keep-open", "no");
             opt_str(&lib, ctx, "idle", "yes");
 
-            opt_str(&lib, ctx, "ao", "pcm");
-            opt_str(&lib, ctx, "ao-pcm-file", r"\\.\pipe\wincue-mpv-audio");
-            opt_str(&lib, ctx, "ao-pcm-waveheader", "no");
-            let sr_str = audio_engine.sample_rate().to_string();
-            opt_str(&lib, ctx, "audio-samplerate", &sr_str);
-            opt_str(&lib, ctx, "audio-channels", "stereo");
-            opt_str(&lib, ctx, "audio-format", "float");
-
-            opt_str(&lib, ctx, "audio-buffer", "0.06");
-            opt_str(&lib, ctx, "initial-audio-sync", "no");
+            // mpv plays VIDEO ONLY.  Each video's audio track is decoded
+            // separately by the cue and played as a normal AudioEngine voice
+            // (Output Patch routing, master volume, VU, fades).  Disabling mpv
+            // audio entirely keeps its display clock free of the A/V-sync
+            // breakage that piping mpv audio out (ao=pcm) used to cause.
+            opt_str(&lib, ctx, "ao", "null");
+            opt_str(&lib, ctx, "audio", "no");
             opt_str(&lib, ctx, "video-sync", "desync");
 
             let v = cs("v");
@@ -164,31 +168,21 @@ impl OutputEngine {
         OUTPUT_STATUS_TX.get_or_init(|| status_tx.clone());
         OUTPUT_CURRENT_VOICE.get_or_init(|| Mutex::new(None));
         OUTPUT_CURRENT_FADE_OUT_MS.get_or_init(|| Mutex::new(0));
+        OUTPUT_PENDING_VIDEO_START.get_or_init(|| Mutex::new(None));
+        OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
         FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
 
-        let pcm_discard = Arc::new(AtomicBool::new(true));
-        OUTPUT_PCM_DISCARD.get_or_init(|| Arc::clone(&pcm_discard));
-
         {
-            let ae = Arc::clone(&audio_engine);
-            let d  = Arc::clone(&pcm_discard);
-            std::thread::Builder::new()
-                .name("wincue-output-pcm".into())
-                .spawn(move || pcm_pipe::pcm_pipe_manager(ae, d))
-                .map_err(|e| anyhow!("Failed to spawn PCM pipe manager: {e}"))?;
-        }
-
-        {
-            let lib2     = Arc::clone(&lib);
-            let ctx2     = Arc::clone(&mpv_ctx);
-            let voice2   = Arc::clone(&current_voice);
-            let tx2      = status_tx.clone();
-            let gsa2     = Arc::clone(&go_sent_at);
-            let pcm_flag = audio_engine.video_pcm_active_flag();
+            let lib2  = Arc::clone(&lib);
+            let ctx2  = Arc::clone(&mpv_ctx);
+            let voice2 = Arc::clone(&current_voice);
+            let tx2   = status_tx.clone();
+            let gsa2  = Arc::clone(&go_sent_at);
+            let ae    = Arc::clone(&audio_engine);
             std::thread::Builder::new()
                 .name("wincue-output-mpv-events".into())
                 .spawn(move || {
-                    mpv_events::mpv_event_loop(lib2, ctx2, voice2, tx2, hwnd, gsa2, pcm_flag)
+                    mpv_events::mpv_event_loop(lib2, ctx2, voice2, tx2, hwnd, gsa2, ae)
                 })
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
@@ -355,11 +349,11 @@ impl OutputEngine {
         is_image: bool,
         fade_in_ms: u32,
         this_fade_out_ms: u32,
-        volume_db: f64,
         loop_count: u32,
         start_ms: Option<u64>,
         end_ms: Option<u64>,
         screen_index: Option<u32>,
+        audio_voice_id: Option<VoiceId>,
     ) -> Result<VoiceId> {
         let voice_id = Uuid::new_v4();
 
@@ -387,11 +381,32 @@ impl OutputEngine {
             *m.lock().unwrap() = this_fade_out_ms;
         }
 
+        // Cross-stop the previous video's audio voice and install the new one
+        // (None for an image, which silences any prior video's audio).  A
+        // playing previous voice fades out over the dip duration; a paused,
+        // never-revealed one hard-stops (handled inside the AudioEngine).
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            let previous = {
+                let mut g = av.lock().unwrap();
+                std::mem::replace(&mut *g, audio_voice_id)
+            };
+            if let Some(prev_id) = previous {
+                let _ = self.audio_engine.stop_voice(
+                    prev_id,
+                    current_fade_out_ms,
+                    crate::engine::ring_command::FadeCurve::SCurve,
+                );
+            }
+        }
+
+        // go_sent_at marks GO time and tags the next PLAYBACK_RESTART as a video
+        // reveal (vs an idle/image restart).  The video is loaded *paused* (see
+        // execute_load_params); the first PLAYBACK_RESTART reveals the overlay,
+        // unpauses, and resumes the paired audio voice — all from frame 0.
         if !is_image {
             *self.go_sent_at.lock().unwrap() = Some(Instant::now());
-            if let Some(d) = OUTPUT_PCM_DISCARD.get() {
-                d.store(false, Ordering::Release);
-            }
+        } else {
+            *self.go_sent_at.lock().unwrap() = None;
         }
 
         let path_str = file_path.to_string_lossy().replace('\\', "/");
@@ -403,7 +418,6 @@ impl OutputEngine {
             is_image,
             voice_id,
             fade_in_ms,
-            volume_db,
             loop_count,
             start_ms,
             end_ms,
@@ -437,29 +451,35 @@ impl OutputEngine {
                     }
                 }
             }
-            fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
-            if fade_in_ms > 0 {
-                if let Some(fs) = FADE_STATE.get() {
-                    let mut state = fs.lock().unwrap();
-                    state.start_alpha = 255;
-                    state.current_alpha = 255;
-                    state.target_alpha = 0;
-                    state.duration_ms = fade_in_ms;
-                    state.start_time = Instant::now();
-                    state.timer_active = false;
-                    state.pending = None;
+            if is_image {
+                fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
+                if fade_in_ms > 0 {
+                    // Images do not go through the gated PLAYBACK_RESTART reveal,
+                    // so start the fade-from-black immediately.
+                    if let Some(fs) = FADE_STATE.get() {
+                        let mut state = fs.lock().unwrap();
+                        state.start_alpha = 255;
+                        state.current_alpha = 255;
+                        state.target_alpha = 0;
+                        state.duration_ms = fade_in_ms;
+                        state.start_time = Instant::now();
+                        state.timer_active = false;
+                        state.pending = None;
+                    }
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+                        PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
+                    }
+                } else {
+                    fade::set_overlay_alpha(0);
                 }
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                    PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-                }
-            } else if is_image {
-                // Images don't fire PLAYBACK_RESTART with go_sent_at set, reveal immediately.
-                fade::set_overlay_alpha(0);
             } else {
-                // Video: keep overlay at 255 — MPV_EVENT_PLAYBACK_RESTART will reveal
-                // once the first live frame is actually rendered (no frame-0 freeze).
+                // Video: black out the overlay *before* loading so the
+                // loadfile/d3d11 reconfigure flash is hidden.  The first
+                // PLAYBACK_RESTART then reveals + unpauses once frame 0 is decoded
+                // (applying fade_in_ms there if set), aligned with the first frame.
                 fade::set_overlay_alpha(255);
+                fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
             }
         }
 
@@ -468,12 +488,18 @@ impl OutputEngine {
 
     /// Stop the content identified by `voice_id` with an optional fade-to-black.
     pub fn stop_content(&self, voice_id: VoiceId, fade_out_ms: u32) {
-        {
+        // Only the *current* voice may touch the output.  A newer cue may have
+        // already replaced this one (its `Completed` event has not been processed
+        // yet); stopping it then would wrongly black out / mute the new content.
+        let was_current = {
             let mut cv = self.current_voice.lock().unwrap();
             if *cv == Some(voice_id) {
                 *cv = None;
+                true
+            } else {
+                false
             }
-        }
+        };
         if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
             let mut cv_lock = cv.lock().unwrap();
             if *cv_lock == Some(voice_id) {
@@ -481,6 +507,10 @@ impl OutputEngine {
             }
         }
         self.voices.lock().unwrap().remove(&voice_id);
+
+        if !was_current {
+            return;
+        }
 
         if fade_out_ms > 0 {
             if let Some(fs) = FADE_STATE.get() {
@@ -509,10 +539,24 @@ impl OutputEngine {
             *m.lock().unwrap() = 0;
         }
 
-        if let Some(d) = OUTPUT_PCM_DISCARD.get() {
-            d.store(true, Ordering::Release);
+        // Cancel any in-flight paused-load reveal so a late PLAYBACK_RESTART
+        // cannot unpause / reveal content that has just been stopped.
+        if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
+            *m.lock().unwrap() = None;
         }
-        self.audio_engine.video_pcm_active_flag().store(false, Ordering::Release);
+        *self.go_sent_at.lock().unwrap() = None;
+
+        // Stop the paired audio voice with the same fade as the video dip.
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            let audio_id = av.lock().unwrap().take();
+            if let Some(aid) = audio_id {
+                let _ = self.audio_engine.stop_voice(
+                    aid,
+                    fade_out_ms,
+                    crate::engine::ring_command::FadeCurve::SCurve,
+                );
+            }
+        }
     }
 
     /// Hard-stop all content immediately (no fade).
@@ -531,7 +575,7 @@ impl OutputEngine {
         &self,
         file_path: &Path,
         _surface_id: Option<SurfaceId>,
-        volume_db: f64,
+        _volume_db: f64,
         loop_count: u32,
         start_ms: Option<u64>,
         end_ms: Option<u64>,
@@ -540,7 +584,7 @@ impl OutputEngine {
     ) -> Result<VoiceId> {
         self.show_content(
             file_path, false,
-            0, 0, volume_db, loop_count, start_ms, end_ms, screen_index,
+            0, 0, loop_count, start_ms, end_ms, screen_index, None,
         )
     }
 
@@ -555,34 +599,42 @@ impl OutputEngine {
         self.hard_stop_current();
     }
 
-    /// Pause the given voice.
+    /// Pause the given voice — both the mpv video and the paired audio voice.
     pub fn pause_voice(&self, _voice_id: VoiceId) -> Result<()> {
         unsafe {
             (self.mpv_lib.mpv_set_property_string)(
                 self.mpv_ctx.0, cs("pause").as_ptr(), cs("yes").as_ptr(),
             );
         }
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            if let Some(aid) = *av.lock().unwrap() {
+                let _ = self.audio_engine.pause_voice(aid);
+            }
+        }
         Ok(())
     }
 
-    /// Resume a paused voice.
+    /// Resume a paused voice — both the mpv video and the paired audio voice.
     pub fn resume_voice(&self, _voice_id: VoiceId) -> Result<()> {
         unsafe {
             (self.mpv_lib.mpv_set_property_string)(
                 self.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
             );
         }
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            if let Some(aid) = *av.lock().unwrap() {
+                let _ = self.audio_engine.resume_voice(aid);
+            }
+        }
         Ok(())
     }
 
-    /// Update the playback volume of a running voice.
+    /// Update the playback volume of a running voice (the paired audio voice).
     pub fn set_voice_volume(&self, _voice_id: VoiceId, volume_db: f64) -> Result<()> {
-        unsafe {
-            let vol_pct = (100.0 * db_to_linear(volume_db)).clamp(0.0, 1000.0);
-            let val = cs(&format!("{vol_pct:.2}"));
-            (self.mpv_lib.mpv_set_property_string)(
-                self.mpv_ctx.0, cs("volume").as_ptr(), val.as_ptr(),
-            );
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            if let Some(aid) = *av.lock().unwrap() {
+                let _ = self.audio_engine.set_voice_gain(aid, db_to_linear(volume_db) as f32);
+            }
         }
         Ok(())
     }

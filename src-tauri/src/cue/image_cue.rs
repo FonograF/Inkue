@@ -103,11 +103,11 @@ impl ImageCue {
             true,
             fade_in_ms,
             fade_out_ms,
-            0.0,
             0,
             None,
             None,
             context.output_screen,
+            None,
         )?;
 
         self.active_voice_id = Some(voice_id);

@@ -3,11 +3,13 @@
 use std::ffi::{c_void, CString};
 use std::time::Instant;
 
-use crate::cue::types::db_to_linear;
 use crate::engine::mpv_sys::MpvLib;
 
-use super::types::{FadePending, FadePendingParams};
-use super::{cs, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB};
+use super::types::{FadePending, FadePendingParams, PendingVideoStart};
+use super::{
+    cs, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB,
+    OUTPUT_PENDING_VIDEO_START,
+};
 
 /// Set the fade overlay alpha (0 = transparent, 255 = opaque black).
 ///
@@ -40,25 +42,29 @@ pub(super) fn execute_fade_pending(hwnd: isize) {
             if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
                 execute_load_params(&params, lib, ctx.0);
             }
-            let fade_in_ms = params.fade_in_ms;
-            if fade_in_ms > 0 {
-                if let Some(fs) = FADE_STATE.get() {
-                    let mut state = fs.lock().unwrap();
-                    state.start_alpha = 255;
-                    state.current_alpha = 255;
-                    state.target_alpha = 0;
-                    state.duration_ms = fade_in_ms;
-                    state.start_time = Instant::now();
-                    state.timer_active = true;
-                    state.pending = None;
+            if params.is_image {
+                // Images are not gated on PLAYBACK_RESTART — reveal them now.
+                if params.fade_in_ms > 0 {
+                    if let Some(fs) = FADE_STATE.get() {
+                        let mut state = fs.lock().unwrap();
+                        state.start_alpha = 255;
+                        state.current_alpha = 255;
+                        state.target_alpha = 0;
+                        state.duration_ms = params.fade_in_ms;
+                        state.start_time = Instant::now();
+                        state.timer_active = true;
+                        state.pending = None;
+                    }
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::SetTimer;
+                        SetTimer(hwnd, FADE_TIMER_ID, 16, None);
+                    }
+                } else {
+                    set_overlay_alpha(0);
                 }
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::SetTimer;
-                    SetTimer(hwnd, FADE_TIMER_ID, 16, None);
-                }
-            } else {
-                set_overlay_alpha(0);
             }
+            // Video: leave the overlay black.  The first PLAYBACK_RESTART reveals,
+            // unpauses and runs the fade-in (params.fade_in_ms) once frame 0 is up.
         }
         Some(FadePending::Stop) => {
             // Guard: if new content was loaded while the stop fade was running, don't
@@ -101,6 +107,15 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
         };
 
         if params.is_image {
+            // An image must display immediately — make sure mpv is not left
+            // paused from a prior video load, and clear any armed video reveal.
+            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
+            if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
+                if let Ok(mut p) = m.lock() {
+                    *p = None;
+                }
+            }
+
             let file_opts = cs("audio=no,image-display-duration=inf");
             let cmd   = cs("loadfile");
             let flags = cs("replace");
@@ -114,11 +129,10 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
                 log::warn!("[output] mpv loadfile (image) failed: {ret}");
             }
         } else {
-            let vol_pct = (100.0 * db_to_linear(params.volume_db)).clamp(0.0, 1000.0);
-            let vol_str = cs(&format!("{vol_pct:.2}"));
-            (lib.mpv_set_property_string)(ctx, cs("volume").as_ptr(), vol_str.as_ptr());
-
-            let mut opts: Vec<String> = Vec::new();
+            // Video is muted — `audio=no` keeps mpv's display clock free of any
+            // audio-sync logic.  The audio track is decoded separately and played
+            // as an AudioEngine voice, resumed in lockstep at the first frame.
+            let mut opts: Vec<String> = vec!["audio=no".to_string()];
             if let Some(start) = params.start_ms {
                 opts.push(format!("start={:.3}", start as f64 / 1000.0));
             }
@@ -148,18 +162,25 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             (lib.mpv_set_property_string)(
                 ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr(),
             );
-            (lib.mpv_set_property_string)(
-                ctx, cs("audio-buffer").as_ptr(), cs("0.06").as_ptr(),
-            );
-            (lib.mpv_set_property_string)(
-                ctx, cs("initial-audio-sync").as_ptr(), cs("no").as_ptr(),
-            );
+
+            // Load the video *paused*.  While paused mpv finishes opening the
+            // file, initialises the d3d11 hardware decoder and buffers the first
+            // frames — all behind the black overlay.  The first PLAYBACK_RESTART
+            // then reveals, unpauses and resumes the paired audio voice, so
+            // playback starts from frame 0 with a warm decoder and zero A/V
+            // offset (no frozen-frame-while-audio-plays startup).
+            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
+            if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
+                if let Ok(mut p) = m.lock() {
+                    *p = Some(PendingVideoStart { fade_in_ms: params.fade_in_ms });
+                }
+            }
 
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
                 log::warn!("[output] mpv loadfile (video) failed: {ret}");
             }
-            log::info!("[output] loadfile sent: {} opts=[{opts_str}]", params.path);
+            log::info!("[output] loadfile (paused) sent: {} opts=[{opts_str}]", params.path);
         }
     }
 }
