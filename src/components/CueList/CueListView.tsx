@@ -9,6 +9,7 @@
 // rows regardless of window width.
 
 import { useEffect, useRef, useState, useMemo, Fragment } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { CueRow } from "./CueRow";
@@ -27,6 +28,7 @@ import {
   addCue,
   removeCue,
   duplicateCue,
+  groupCues,
   moveCue,
   moveCues,
   ungroup,
@@ -652,7 +654,6 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     let unlisten: (() => void) | undefined;
 
     (async () => {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
       // Tauri drag-drop positions are in physical (DPI-scaled) pixels.
       // Convert to logical CSS pixels before comparing with getBoundingClientRect().
       // Cursor in the top/bottom 8 logical px of a row → insert line.
@@ -1182,9 +1183,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                         label={label}
                         onClick={async () => {
                           closeCtx();
-                          const newGroupId = await import("../../lib/commands")
-                            .then(m => m.groupCues(ids))
-                            .catch(() => null);
+                          const newGroupId = await groupCues(ids).catch(() => null);
                           if (newGroupId) {
                             setSelectedCueId(newGroupId);
                             setSelectedCueIds([newGroupId]);
