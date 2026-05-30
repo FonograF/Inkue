@@ -52,6 +52,15 @@ impl Transport {
             None => return Ok(vec![]), // Nothing at the playhead.
         };
 
+        // If the cue wants to absorb this GO (e.g., a Sequential Group paused
+        // mid-sequence), delegate to the cue and skip outer Playhead advancement.
+        if cue_list.get(&cue_id).is_some_and(|c| c.absorbs_go()) {
+            if let Some(cue) = cue_list.get_mut(&cue_id) {
+                cue.go(&self.context)?;
+            }
+            return Ok(vec![cue_id]);
+        }
+
         // Advance playhead before triggering (matches QLab behaviour).
         cue_list.advance_playhead();
 

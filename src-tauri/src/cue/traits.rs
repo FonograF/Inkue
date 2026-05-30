@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{
     context::CueContext,
-    types::{ContinueMode, CueColor, CueId, CueState, CueType},
+    types::{ContinueMode, CueColor, CueId, CueState, CueType, GroupMode},
 };
 
 // ---------------------------------------------------------------------------
@@ -193,6 +193,17 @@ pub trait Cue: Send {
     // Runtime helpers
     // -----------------------------------------------------------------------
 
+    /// Seek to `position_ms` from the start of the cue's action.
+    ///
+    /// For audio cues this repositions the audio voice.  For video cues it
+    /// issues an mpv seek and re-anchors the paired audio voice.  Non-seekable
+    /// cue types (Memo, Stop, …) use the default no-op.
+    ///
+    /// The caller is responsible for updating any transport-level timing only
+    /// when the cue is actually running or paused; calling seek on a standby
+    /// cue has no effect.
+    fn seek(&mut self, _position_ms: u64, _ctx: &CueContext) {}
+
     /// Inject pre-decoded audio samples that were decoded *outside* the
     /// workspace mutex.  The caller decodes on a background thread, then
     /// briefly re-acquires the mutex to call this method.  Non-audio cues
@@ -290,6 +301,67 @@ pub trait Cue: Send {
     /// Called by `update_cue` after rebuilding so a running cue continues
     /// uninterrupted.  Default is a no-op.
     fn restore_runtime_state(&mut self, _snap: RuntimeState) {}
+
+    // -----------------------------------------------------------------------
+    // Group support
+    // -----------------------------------------------------------------------
+
+    /// Returns `true` once the cue has naturally finished all of its work and
+    /// is ready to be reset.  The default (`false`) means the event loop uses
+    /// voice-completion and time-based detection instead.
+    ///
+    /// [`GroupCue`](crate::cue::group_cue::GroupCue) overrides this: it
+    /// becomes `true` when every child has completed.
+    fn is_complete(&self) -> bool {
+        false
+    }
+
+    /// Read-only view of direct child cues.  Returns `None` for non-Group cues.
+    fn child_cues(&self) -> Option<&[Box<dyn Cue>]> {
+        None
+    }
+
+    /// Mutable view of direct child cues.  Returns `None` for non-Group cues.
+    fn child_cues_mut(&mut self) -> Option<&mut Vec<Box<dyn Cue>>> {
+        None
+    }
+
+    /// Consume and return all children (for `ungroup`).  Returns `None` for
+    /// non-Group cues.
+    fn take_children(&mut self) -> Option<Vec<Box<dyn Cue>>> {
+        None
+    }
+
+    /// Add a child cue at `position` (−1 = append).  Returns `Err` for
+    /// non-Group cues.
+    fn add_child(&mut self, _child: Box<dyn Cue>, _position: i32) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("Not a Group cue"))
+    }
+
+    /// Remove and return the child with the given ID.  Returns `Err` for
+    /// non-Group cues or if the child is not found.
+    fn remove_child(&mut self, _id: &CueId) -> anyhow::Result<Box<dyn Cue>> {
+        Err(anyhow::anyhow!("Not a Group cue"))
+    }
+
+    /// The mode of this Group cue (`None` for non-Group cues).
+    fn group_mode(&self) -> Option<GroupMode> {
+        None
+    }
+
+    /// Update the Group mode.  No-op for non-Group cues.
+    fn set_group_mode(&mut self, _mode: GroupMode) {}
+
+    /// Returns `true` if this cue wants to consume the next outer GO press
+    /// without the transport advancing the Playhead.
+    ///
+    /// Only [`GroupCue`](crate::cue::group_cue::GroupCue) in Sequential mode
+    /// overrides this: when the internal sequence has paused at a
+    /// `DoNotContinue` child and more children remain, it absorbs GO to fire
+    /// the next child internally instead of advancing the outer Playhead.
+    fn absorbs_go(&self) -> bool {
+        false
+    }
 
     // -----------------------------------------------------------------------
     // Serialisation

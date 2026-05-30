@@ -56,9 +56,19 @@ interface Props {
   isDragOver?: boolean;
   /** True while this cue is being dragged (dims the row). */
   isDragSource?: boolean;
+  /** Nesting depth — 0 = top-level, 1 = inside a group, etc. */
+  depth?: number;
+  /** True if this is a Group cue. */
+  isGroup?: boolean;
+  /** Whether the group is currently expanded. */
+  isGroupExpanded?: boolean;
+  /** Toggle the group's expand/collapse state. */
+  onToggleExpand?: () => void;
+  /** True when a cue is being dragged over the middle of this group row (drop-into-group). */
+  isGroupDropTarget?: boolean;
   /** Called on mousedown to start a cue drag operation. */
   onCueDragStart: (e: React.MouseEvent) => void;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }
@@ -77,6 +87,11 @@ export function CueRow({
   isAtPlayhead,
   isDragOver,
   isDragSource,
+  depth = 0,
+  isGroup = false,
+  isGroupExpanded = false,
+  onToggleExpand,
+  isGroupDropTarget = false,
   onCueDragStart,
   onClick,
   onDoubleClick,
@@ -103,15 +118,16 @@ export function CueRow({
 
   const rowStyle: React.CSSProperties = {
     ...gridStyle,
+    position: "relative",
     alignItems: "center",
     paddingTop: 2,
     paddingBottom: 2,
+    paddingLeft: depth > 0 ? `${8 + depth * 20}px` : undefined,
     cursor: isDragSource ? "grabbing" : "grab",
     userSelect: "none",
-    background: bg,
+    background: isGroup && !isSelected ? (bg === "transparent" ? "#0d1b2a" : bg) : bg,
     borderBottom: isDragOver ? "1px solid #3b82f6" : "1px solid #1e293b",
-    borderLeft: `4px solid ${colorAccent}`,
-    outline: isDragOver ? "1px solid #3b82f6" : "none",
+    outline: isGroupDropTarget ? "2px solid #22d3ee" : isDragOver ? "1px solid #3b82f6" : "none",
     fontSize: 13,
     color: "#e2e8f0",
     minHeight: rowHeight,
@@ -126,6 +142,21 @@ export function CueRow({
   const renderCell = (id: string) => {
     switch (id) {
       case "playhead":
+        if (isGroup) {
+          return (
+            <button
+              style={{
+                background: "none", border: "none", cursor: "pointer",
+                color: "#64748b", fontSize: 10, padding: "0 4px",
+                lineHeight: 1, display: "flex", alignItems: "center",
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onToggleExpand?.(); }}
+            >
+              {isGroupExpanded ? "▼" : "▶"}
+            </button>
+          );
+        }
         return <PlayheadIndicator visible={isAtPlayhead} />;
 
       case "number":
@@ -233,11 +264,25 @@ export function CueRow({
       style={rowStyle}
       data-cue-id={cue.id}
       data-cue-index={cueIndex}
+      data-is-group={isGroup ? "true" : undefined}
+      data-cue-depth={depth}
       onMouseDown={onCueDragStart}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
     >
+      {/* Color indicator strip — shifts right with nesting depth (4 px per level) */}
+      <div
+        style={{
+          position: "absolute",
+          left: depth * 4,
+          top: 0,
+          bottom: 0,
+          width: 4,
+          background: colorAccent,
+          pointerEvents: "none",
+        }}
+      />
       {visibleDefs.map((col) => (
         <div key={col.id} style={{ minWidth: 0, overflow: "hidden" }}>
           {renderCell(col.id)}

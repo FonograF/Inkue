@@ -28,6 +28,10 @@ import {
   removeCue,
   duplicateCue,
   moveCue,
+  moveCues,
+  ungroup,
+  removeCueFromGroup,
+  addCueToGroup,
   setAudioFile,
   setVideoFile,
   setImageFile,
@@ -163,8 +167,10 @@ interface Props {
 }
 
 export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
-  const { cues, selectedCueId, playheadCueId, setSelectedCueId, setPlayheadCueId, generalPrefs } =
-    useWorkspaceStore();
+  const {
+    cues, selectedCueId, selectedCueIds, playheadCueId,
+    setSelectedCueId, setSelectedCueIds, setPlayheadCueId, generalPrefs,
+  } = useWorkspaceStore();
 
   const rowHeight = generalPrefs.cue_row_height === "compact" ? 22
     : generalPrefs.cue_row_height === "tall" ? 32
@@ -181,6 +187,45 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   const [colConfig, setColConfig] = useState<ColumnConfig>(loadColumnConfig);
   const [colMenuPos, setColMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [draggingColId, setDraggingColId] = useState<ColumnId | null>(null);
+  const [hoveredResizeId, setHoveredResizeId] = useState<ColumnId | null>(null);
+
+  // ---------- Group expand/collapse ----------
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+
+  function toggleGroupExpand(groupId: string) {
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }
+
+  // Flatten nested cue tree into a display list respecting expansion state.
+  const flatItems = useMemo(() => {
+    function flatten(
+      src: CueSummary[],
+      depth: number,
+      parentGroupId: string | null,
+    ): Array<{ cue: CueSummary; depth: number; parentGroupId: string | null }> {
+      const result: Array<{ cue: CueSummary; depth: number; parentGroupId: string | null }> = [];
+      for (const cue of src) {
+        result.push({ cue, depth, parentGroupId });
+        if (cue.cue_type === "group" && expandedGroupIds.has(cue.id) && cue.children?.length) {
+          result.push(...flatten(cue.children, depth + 1, cue.id));
+        }
+      }
+      return result;
+    }
+    return flatten(cues, 0, null);
+  }, [cues, expandedGroupIds]);
+
+  // ---------- Multi-selection anchors ----------
+  // anchorCueIdRef: the fixed end of a range selection (set by plain click / plain arrow).
+  // selectionEndRef: the moving end (updated by shift+click / shift+arrow).
+  const anchorCueIdRef = useRef<string | null>(null);
+  const selectionEndRef = useRef<string | null>(null);
+  const selectedCueSet = useMemo(() => new Set(selectedCueIds), [selectedCueIds]);
 
   useEffect(() => { saveColumnConfig(colConfig); }, [colConfig]);
 
@@ -191,8 +236,9 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   setColConfigRef.current = setColConfig;
 
   // ---------- Cue drag-and-drop state ----------
-  const [draggingCueId,   setDraggingCueId]   = useState<string | null>(null);
-  const [dropInsertIndex, setDropInsertIndex]  = useState<number | null>(null);
+  const [draggingCueId,     setDraggingCueId]     = useState<string | null>(null);
+  const [dropInsertIndex,   setDropInsertIndex]    = useState<number | null>(null);
+  const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
 
   // ---------- New-cue drag state (toolbar buttons dragged into list) ----------
   // Driven by a CustomEvent "wincue:cue-drag-start" dispatched by external buttons.
@@ -213,13 +259,16 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
   // Tracks an in-progress cue drag entirely in a ref (no re-render on every
   // pixel moved). dropIdx is mirrored here so the mouseup closure can read it.
+  // ids: all cues being dragged (single or multi-selection drag).
   const cueDragRef = useRef<{
     id: string;
+    ids: string[];
     fromIndex: number;
     startX: number;
     startY: number;
     active: boolean;
     dropIdx: number | null;
+    dropGroupId: string | null;
   } | null>(null);
 
   // Set to true for one event loop tick after a drag completes so the row's
@@ -246,8 +295,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
   // Combined document-level pointer tracker for resize + reorder.
   useEffect(() => {
-    // Scan all visible cue rows by midpoint to find the correct insert index.
-    // More robust than elementFromPoint: works between rows, over scrollbar, etc.
+    // Compute insert index from cursor Y, identical to the previous logic.
     function calcInsertIdxFromY(clientY: number): number {
       const rowEls = rowsScrollRef.current
         ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
@@ -258,7 +306,41 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           return Number(el.dataset.cueIndex ?? 0);
         }
       }
-      return cuesRef.current.length;
+      return flatItemsRef.current.length;
+    }
+
+    // Like calcInsertIdxFromY but also detects when the cursor is over the
+    // middle portion of a top-level Group row (drop-into-group zone).
+    // Returns { insertIdx, groupId } — exactly one will be non-null.
+    function calcDropTarget(clientY: number): { insertIdx: number; groupId: string | null } {
+      const rowEls = rowsScrollRef.current
+        ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
+        : [];
+
+      for (const el of rowEls) {
+        const rect = el.getBoundingClientRect();
+        if (clientY < rect.top) continue;
+        if (clientY <= rect.bottom) {
+          // Cursor is inside this row.
+          const isTopLevelGroup =
+            el.dataset.isGroup === "true" && el.dataset.cueDepth === "0";
+          if (isTopLevelGroup) {
+            const DEAD = rect.height * 0.28;
+            const relY = clientY - rect.top;
+            if (relY >= DEAD && relY <= rect.height - DEAD) {
+              // Middle of a group row — drop into the group.
+              return { insertIdx: Number(el.dataset.cueIndex ?? 0), groupId: el.dataset.cueId ?? null };
+            }
+          }
+          // Edge or non-group row — compute insert index by midpoint.
+          if (clientY < rect.top + rect.height / 2) {
+            return { insertIdx: Number(el.dataset.cueIndex ?? 0), groupId: null };
+          } else {
+            return { insertIdx: Number(el.dataset.cueIndex ?? 0) + 1, groupId: null };
+          }
+        }
+      }
+      return { insertIdx: flatItemsRef.current.length, groupId: null };
     }
 
     const onMove = (e: MouseEvent) => {
@@ -327,9 +409,18 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           document.body.style.cursor = "grabbing";
           setDraggingCueId(drag.id);
         }
-        const newDrop = calcInsertIdxFromY(e.clientY);
-        drag.dropIdx = newDrop;
-        setDropInsertIndex(newDrop);
+        const { insertIdx, groupId } = calcDropTarget(e.clientY);
+        // Don't allow dropping a cue onto itself as a group target.
+        const resolvedGroupId = drag.ids.includes(groupId ?? "") ? null : groupId;
+        drag.dropIdx = insertIdx;
+        drag.dropGroupId = resolvedGroupId;
+        if (resolvedGroupId) {
+          setDropTargetGroupId(resolvedGroupId);
+          setDropInsertIndex(null);
+        } else {
+          setDropTargetGroupId(null);
+          setDropInsertIndex(insertIdx);
+        }
         return;
       }
     };
@@ -370,12 +461,27 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       }
       if (cueDragRef.current) {
         const drag = cueDragRef.current;
-        if (drag.active && drag.dropIdx !== null) {
-          // Compute the insertion index in the post-removal array.
-          const from   = cuesRef.current.findIndex((c) => c.id === drag.id);
-          const newPos = from < drag.dropIdx ? drag.dropIdx - 1 : drag.dropIdx;
-          if (from >= 0 && newPos !== from) {
-            moveCue(drag.id, newPos).then(onRefresh).catch(console.error);
+        if (drag.active) {
+          if (drag.dropGroupId) {
+            // Drop onto a group — add the dragged cue(s) as children.
+            const promises = drag.ids.map((id) =>
+              addCueToGroup(id, drag.dropGroupId!, -1).catch(console.error)
+            );
+            Promise.all(promises).then(onRefresh).catch(console.error);
+          } else if (drag.dropIdx !== null) {
+            if (drag.ids.length > 1) {
+              const beforeId = flatItemsRef.current[drag.dropIdx]?.cue.id ?? null;
+              const draggingSet = new Set(drag.ids);
+              if (!draggingSet.has(beforeId ?? "")) {
+                moveCues(drag.ids, beforeId).then(onRefresh).catch(console.error);
+              }
+            } else {
+              const from   = cuesRef.current.findIndex((c) => c.id === drag.id);
+              const newPos = from < drag.dropIdx ? drag.dropIdx - 1 : drag.dropIdx;
+              if (from >= 0 && newPos !== from) {
+                moveCue(drag.id, newPos).then(onRefresh).catch(console.error);
+              }
+            }
           }
           // Suppress the spurious onClick that fires after mouseup.
           justDroppedRef.current = true;
@@ -385,6 +491,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         document.body.style.cursor = "";
         setDraggingCueId(null);
         setDropInsertIndex(null);
+        setDropTargetGroupId(null);
         return;
       }
     };
@@ -403,6 +510,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           document.body.style.cursor = "";
           setDraggingCueId(null);
           setDropInsertIndex(null);
+          setDropTargetGroupId(null);
         }
         if (newCueDragRef.current?.active) {
           newCueDragRef.current = null;
@@ -461,26 +569,36 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     // Don't steal the event if a column resize handle was clicked.
     if ((e.target as HTMLElement).closest("[data-resize]")) return;
     e.preventDefault();
+    // Drag all selected cues if this cue is part of the current selection.
+    const dragIds = selectedCueSet.has(cueId) && selectedCueIds.length > 1
+      ? [...selectedCueIds]
+      : [cueId];
     cueDragRef.current = {
       id: cueId,
+      ids: dragIds,
       fromIndex: index,
       startX: e.clientX,
       startY: e.clientY,
       active: false,
       dropIdx: null,
+      dropGroupId: null,
     };
   }
 
   // ---------- File drag-drop state ----------
   const [dragOverCueId,    setDragOverCueId]    = useState<string | null>(null);
+  const [dragOverGroupId,  setDragOverGroupId]  = useState<string | null>(null);
   const [isDragging,       setIsDragging]       = useState(false);
   // When a file is dragged in insert-between mode (cursor near row edge),
   // this holds the insertion index; dragOverCueId is null in that case.
   const [fileDragInsertIdx, setFileDragInsertIdx] = useState<number | null>(null);
-  const [contextMenu,   setContextMenu]   = useState<{ x: number; y: number; cueId: string | null } | null>(null);
+  const [contextMenu,   setContextMenu]   = useState<{ x: number; y: number; cueId: string | null; parentGroupId?: string | null } | null>(null);
 
   const cuesRef = useRef(cues);
   useEffect(() => { cuesRef.current = cues; }, [cues]);
+
+  const flatItemsRef = useRef(flatItems);
+  useEffect(() => { flatItemsRef.current = flatItems; }, [flatItems]);
 
   useEffect(() => {
     let cancelled = false;
@@ -491,9 +609,14 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       // Tauri drag-drop positions are in physical (DPI-scaled) pixels.
       // Convert to logical CSS pixels before comparing with getBoundingClientRect().
       // Cursor in the top/bottom 8 logical px of a row → insert line.
-      // Cursor in the middle of a row → assign/replace that cue.
+      // Cursor in the middle of a non-group row → assign/replace that cue.
+      // Cursor in the middle of a top-level group row → drop into the group.
       const EDGE_PX = 8;
-      function resolveFileDragMode(_physX: number, physY: number): { insertIdx: number | null; assignId: string | null } {
+      function resolveFileDragMode(_physX: number, physY: number): {
+        insertIdx: number | null;
+        assignId: string | null;
+        groupId: string | null;
+      } {
         const dpr = window.devicePixelRatio || 1;
         const py  = physY / dpr;
         const rowEls = rowsScrollRef.current
@@ -502,20 +625,21 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         for (const el of rowEls) {
           const rect = el.getBoundingClientRect();
           if (py < rect.top) {
-            // Cursor is above this row (gap between previous and this row).
-            return { insertIdx: Number(el.dataset.cueIndex ?? 0), assignId: null };
+            return { insertIdx: Number(el.dataset.cueIndex ?? 0), assignId: null, groupId: null };
           }
           if (py < rect.bottom) {
-            // Cursor is inside this row.
             const idx = Number(el.dataset.cueIndex ?? -1);
             const id  = el.dataset.cueId ?? null;
-            if (py - rect.top  < EDGE_PX) return { insertIdx: idx >= 0 ? idx     : 0,                      assignId: null };
-            if (rect.bottom - py < EDGE_PX) return { insertIdx: idx >= 0 ? idx + 1 : cuesRef.current.length, assignId: null };
-            return { insertIdx: null, assignId: id };
+            if (py - rect.top    < EDGE_PX) return { insertIdx: idx >= 0 ? idx     : 0,                           assignId: null, groupId: null };
+            if (rect.bottom - py < EDGE_PX) return { insertIdx: idx >= 0 ? idx + 1 : flatItemsRef.current.length, assignId: null, groupId: null };
+            // Middle of row — group vs normal cue.
+            if (el.dataset.isGroup === "true" && el.dataset.cueDepth === "0") {
+              return { insertIdx: null, assignId: null, groupId: id };
+            }
+            return { insertIdx: null, assignId: id, groupId: null };
           }
         }
-        // Below all rows → append at end.
-        return { insertIdx: cuesRef.current.length, assignId: null };
+        return { insertIdx: flatItemsRef.current.length, assignId: null, groupId: null };
       }
 
       const fn_ = await getCurrentWindow().onDragDropEvent(async (event) => {
@@ -524,17 +648,20 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           setIsDragging(true);
           const pos = event.payload.position;
           if (pos) {
-            const { insertIdx, assignId } = resolveFileDragMode(pos.x, pos.y);
+            const { insertIdx, assignId, groupId } = resolveFileDragMode(pos.x, pos.y);
             setFileDragInsertIdx(insertIdx);
             setDragOverCueId(assignId);
+            setDragOverGroupId(groupId);
           }
         } else if (type === "leave") {
           setIsDragging(false);
           setDragOverCueId(null);
+          setDragOverGroupId(null);
           setFileDragInsertIdx(null);
         } else if (type === "drop") {
           setIsDragging(false);
           setDragOverCueId(null);
+          setDragOverGroupId(null);
           setFileDragInsertIdx(null);
           const paths: string[] = (event.payload as { paths?: string[] }).paths ?? [];
           const pos = event.payload.position;
@@ -543,11 +670,24 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           );
           if (mediaPaths.length === 0) return;
 
-          const { insertIdx, assignId } = pos
+          const { insertIdx, assignId, groupId } = pos
             ? resolveFileDragMode(pos.x, pos.y)
-            : { insertIdx: null, assignId: null };
+            : { insertIdx: null, assignId: null, groupId: null };
 
-          if (insertIdx !== null) {
+          if (groupId) {
+            // Drop into group: create cue(s) then move into the group.
+            for (const p of mediaPaths) {
+              const cueType = cueTypeForPath(p);
+              const newId = await addCue(cueType, -1).catch(() => null);
+              if (newId) {
+                await setFileForCue(cueType, newId, p).catch(console.error);
+                await updateCue(newId, { name: basenameNoExt(p) }).catch(console.error);
+                await addCueToGroup(newId, groupId, -1).catch(console.error);
+                setSelectedCueId(newId);
+              }
+            }
+            await onRefresh();
+          } else if (insertIdx !== null) {
             // Insert mode: create new cue(s) at the target position.
             let at = insertIdx;
             for (const p of mediaPaths) {
@@ -644,10 +784,38 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
   // ---------- Keyboard navigation ----------
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (!selectedCueId || cues.length === 0) return;
-    const idx = cues.findIndex((c) => c.id === selectedCueId);
-    if (e.key === "ArrowDown" && idx < cues.length - 1) setSelectedCueId(cues[idx + 1].id);
-    else if (e.key === "ArrowUp" && idx > 0)            setSelectedCueId(cues[idx - 1].id);
+    if (cues.length === 0) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+
+    e.preventDefault();
+
+    // The "moving end" for arrow navigation is selectionEndRef when set (for
+    // Shift+Arrow continuation), otherwise fall back to selectedCueId.
+    const endId = selectionEndRef.current ?? selectedCueId;
+    if (!endId) return;
+    const endIdx = cues.findIndex((c) => c.id === endId);
+    if (endIdx < 0) return;
+    const nextIdx = e.key === "ArrowDown" ? endIdx + 1 : endIdx - 1;
+    if (nextIdx < 0 || nextIdx >= cues.length) return;
+    const nextId = cues[nextIdx].id;
+
+    if (e.shiftKey) {
+      // Extend / shrink the range from anchor to the new end.
+      const anchorId = anchorCueIdRef.current ?? endId;
+      const anchorIdx = cues.findIndex((c) => c.id === anchorId);
+      const effAnchor = anchorIdx >= 0 ? anchorIdx : endIdx;
+      const [lo, hi] = effAnchor <= nextIdx
+        ? [effAnchor, nextIdx]
+        : [nextIdx, effAnchor];
+      setSelectedCueIds(cues.slice(lo, hi + 1).map((c) => c.id));
+      selectionEndRef.current = nextId;
+    } else {
+      // Plain arrow: single-select, update both anchor and end.
+      setSelectedCueId(nextId);
+      setSelectedCueIds([nextId]);
+      anchorCueIdRef.current = nextId;
+      selectionEndRef.current = nextId;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -719,7 +887,9 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 opacity: draggingColId === def.id ? 0.4 : 1,
                 cursor: def.fixed ? "default" : "grab",
                 transition: "opacity 0.1s",
-                borderLeft: i > 0 ? "1px solid #1e293b" : undefined,
+                borderRight: i < visibleDefs.length - 1
+                  ? `1px solid ${hoveredResizeId === def.id ? "#475569" : "#1e293b"}`
+                  : undefined,
               }}
               onMouseDown={(e) => startColDrag(e, def)}
             >
@@ -730,15 +900,16 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                   paddingLeft: 5,
-                  paddingRight: def.resizable ? 10 : 5,
+                  paddingRight: 5,
                   pointerEvents: "none",
                 }}
               >
                 {def.label}
               </span>
 
-              {/* Resize handle — 8 px wide, centred on the right column boundary */}
-              {def.resizable && (
+              {/* Resize handle — 8 px wide, centred on the right border.
+                  Invisible zone (cursor-only feedback); border colour shifts on hover. */}
+              {def.resizable && i < visibleDefs.length - 1 && (
                 <div
                   data-resize="true"
                   style={{
@@ -749,21 +920,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                     width: 8,
                     cursor: "col-resize",
                     zIndex: 10,
-                    display: "flex",
-                    alignItems: "stretch",
-                    justifyContent: "center",
                   }}
                   onMouseDown={(e) => startResize(e, def)}
-                >
-                  <div
-                    style={{
-                      width: 1,
-                      background: "#475569",
-                      alignSelf: "stretch",
-                      margin: "4px 0",
-                    }}
-                  />
-                </div>
+                  onMouseEnter={() => setHoveredResizeId(def.id)}
+                  onMouseLeave={() => setHoveredResizeId(null)}
+                />
               )}
             </div>
           ))}
@@ -774,7 +935,17 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       <div
         ref={rowsScrollRef}
         style={{ flex: 1, overflow: "auto" }}
-        onClick={() => { setContextMenu(null); setColMenuPos(null); }}
+        onClick={(e) => {
+          setContextMenu(null);
+          setColMenuPos(null);
+          // Clear selection when clicking on empty space (not on a cue row).
+          if (!(e.target as HTMLElement).closest("[data-cue-id]")) {
+            setSelectedCueId(null);
+            setSelectedCueIds([]);
+            anchorCueIdRef.current = null;
+            selectionEndRef.current = null;
+          }
+        }}
         onScroll={(e) => {
           if (headerScrollRef.current) {
             headerScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
@@ -787,95 +958,88 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           </div>
         )}
 
-        {cues.map((cue, index) => (
+        {flatItems.map(({ cue, depth, parentGroupId }, flatIndex) => (
           <Fragment key={cue.id}>
-            {/* Drop-target indicator line ABOVE this row (file insert) */}
-            {isDragging && fileDragInsertIdx === index && (
-              <div
-                style={{
-                  height: 2,
-                  background: "#3b82f6",
-                  margin: "0 8px",
-                  borderRadius: 1,
-                  pointerEvents: "none",
-                }}
-              />
+            {/* Drop-target indicator ABOVE (file insert, cue reorder, new-cue drag) */}
+            {isDragging && fileDragInsertIdx === flatIndex && (
+              <div style={{ height: 2, background: "#3b82f6", margin: `0 ${8 + depth * 20}px`, borderRadius: 1, pointerEvents: "none" }} />
             )}
-            {/* Drop-target indicator line ABOVE this row (cue reorder) */}
-            {draggingCueId !== null && dropInsertIndex === index && (
-              <div
-                style={{
-                  height: 2,
-                  background: "#3b82f6",
-                  margin: "0 8px",
-                  borderRadius: 1,
-                  pointerEvents: "none",
-                }}
-              />
+            {draggingCueId !== null && dropInsertIndex === flatIndex && depth === 0 && (
+              <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
             )}
-            {/* Drop-target indicator line ABOVE this row (new-cue drag from toolbar) */}
-            {newCueDragType !== null && newCueDragInsertIdx === index && (
-              <div
-                style={{
-                  height: 2,
-                  background: "#ef4444",
-                  margin: "0 8px",
-                  borderRadius: 1,
-                  pointerEvents: "none",
-                }}
-              />
+            {newCueDragType !== null && newCueDragInsertIdx === flatIndex && (
+              <div style={{ height: 2, background: "#ef4444", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
             )}
             <CueRow
               cue={cue}
-              cueIndex={index}
+              cueIndex={flatIndex}
               gridStyle={gridStyle}
               visibleDefs={visibleDefs}
               rowHeight={rowHeight}
-              isSelected={selectedCueId === cue.id}
+              depth={depth}
+              isGroup={cue.cue_type === "group"}
+              isGroupExpanded={expandedGroupIds.has(cue.id)}
+              onToggleExpand={() => toggleGroupExpand(cue.id)}
+              isSelected={selectedCueSet.has(cue.id)}
               isAtPlayhead={playheadCueId === cue.id}
               isDragOver={dragOverCueId === cue.id}
-              isDragSource={draggingCueId === cue.id}
-              onCueDragStart={(e) => startCueDrag(e, cue.id, index)}
-              onClick={() => {
+              isGroupDropTarget={
+                cue.cue_type === "group" &&
+                (dropTargetGroupId === cue.id || dragOverGroupId === cue.id)
+              }
+              isDragSource={
+                depth === 0 &&
+                draggingCueId !== null &&
+                (cueDragRef.current?.ids.includes(cue.id) ?? false)
+              }
+              onCueDragStart={(e) => {
+                if (depth > 0) return; // children not draggable yet
+                startCueDrag(e, cue.id, flatIndex);
+              }}
+              onClick={(e) => {
                 if (justDroppedRef.current) return;
-                setSelectedCueId(cue.id);
-                setPlayheadCueId(cue.id);
-                setPlayhead(cue.id).catch(console.error);
                 setContextMenu(null);
+
+                if (e.shiftKey && anchorCueIdRef.current) {
+                  const anchorIdx = flatItems.findIndex((fi) => fi.cue.id === anchorCueIdRef.current);
+                  const [lo, hi] = anchorIdx <= flatIndex
+                    ? [anchorIdx, flatIndex]
+                    : [flatIndex, anchorIdx];
+                  setSelectedCueIds(flatItems.slice(lo, hi + 1).map((fi) => fi.cue.id));
+                  selectionEndRef.current = cue.id;
+                } else if (e.ctrlKey) {
+                  const next = selectedCueSet.has(cue.id)
+                    ? selectedCueIds.filter((id) => id !== cue.id)
+                    : [...selectedCueIds, cue.id];
+                  setSelectedCueIds(next);
+                  setSelectedCueId(cue.id);
+                  anchorCueIdRef.current = cue.id;
+                  selectionEndRef.current = cue.id;
+                } else {
+                  setSelectedCueId(cue.id);
+                  setSelectedCueIds([cue.id]);
+                  setPlayheadCueId(cue.id);
+                  setPlayhead(cue.id).catch(console.error);
+                  anchorCueIdRef.current = cue.id;
+                  selectionEndRef.current = cue.id;
+                }
               }}
               onDoubleClick={() => onCueDoubleClick(cue)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                setContextMenu({ x: e.clientX, y: e.clientY, cueId: cue.id });
+                setContextMenu({ x: e.clientX, y: e.clientY, cueId: cue.id, parentGroupId });
               }}
             />
           </Fragment>
         ))}
 
-        {/* Drop-target indicator line AFTER the last row (file insert) */}
-        {isDragging && fileDragInsertIdx === cues.length && (
-          <div
-            style={{
-              height: 2,
-              background: "#3b82f6",
-              margin: "0 8px",
-              borderRadius: 1,
-              pointerEvents: "none",
-            }}
-          />
+        {/* Drop-target indicators AFTER the last row */}
+        {isDragging && fileDragInsertIdx === flatItems.length && (
+          <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
         )}
-        {/* Drop-target indicator line AFTER the last row (cue reorder) */}
         {draggingCueId !== null && dropInsertIndex === cues.length && (
-          <div
-            style={{
-              height: 2,
-              background: "#3b82f6",
-              margin: "0 8px",
-              borderRadius: 1,
-              pointerEvents: "none",
-            }}
-          />
+          <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
         )}
         {/* Drop-target indicator line AFTER the last row (new-cue drag from toolbar) */}
         {newCueDragType !== null && newCueDragInsertIdx === cues.length && (
@@ -945,13 +1109,85 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           >
             {contextMenu.cueId ? (
               <>
-                <CtxItem label="Add Audio Cue Above" onClick={ctxAddAbove} />
-                <CtxItem label="Add Audio Cue Below" onClick={ctxAddBelow} />
-                <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                {!contextMenu.parentGroupId && (
+                  <>
+                    <CtxItem label="Add Audio Cue Above" onClick={ctxAddAbove} />
+                    <CtxItem label="Add Audio Cue Below" onClick={ctxAddBelow} />
+                    <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                  </>
+                )}
                 <CtxItem label="Duplicate" onClick={ctxDuplicate} />
                 <CtxItem label="Delete" danger onClick={ctxDelete} />
-                <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
-                <CtxItem label="Assign Audio File…" onClick={ctxAssignFile} />
+                {/* Group / ungroup */}
+                {!contextMenu.parentGroupId && (() => {
+                  const ids = selectedCueIds.length > 1 && contextMenu.cueId && selectedCueIds.includes(contextMenu.cueId)
+                    ? selectedCueIds
+                    : contextMenu.cueId ? [contextMenu.cueId] : [];
+                  const label = ids.length > 1 ? `Group ${ids.length} Cues` : "Group Cue";
+                  return ids.length > 0 ? (
+                    <>
+                      <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                      <CtxItem
+                        label={label}
+                        onClick={async () => {
+                          closeCtx();
+                          const newGroupId = await import("../../lib/commands")
+                            .then(m => m.groupCues(ids))
+                            .catch(() => null);
+                          if (newGroupId) {
+                            setSelectedCueId(newGroupId);
+                            setSelectedCueIds([newGroupId]);
+                            await onRefresh();
+                          }
+                        }}
+                      />
+                    </>
+                  ) : null;
+                })()}
+                {/* Group-specific actions */}
+                {(() => {
+                  const cueItem = flatItems.find(fi => fi.cue.id === contextMenu.cueId);
+                  const isGroup = cueItem?.cue.cue_type === "group";
+                  const inGroup = !!contextMenu.parentGroupId;
+                  return (
+                    <>
+                      {isGroup && (
+                        <>
+                          <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                          <CtxItem
+                            label="Ungroup"
+                            onClick={async () => {
+                              closeCtx();
+                              if (!contextMenu.cueId) return;
+                              await ungroup(contextMenu.cueId).catch(console.error);
+                              await onRefresh();
+                            }}
+                          />
+                        </>
+                      )}
+                      {inGroup && (
+                        <>
+                          <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                          <CtxItem
+                            label="Remove from Group"
+                            onClick={async () => {
+                              closeCtx();
+                              if (!contextMenu.cueId || !contextMenu.parentGroupId) return;
+                              await removeCueFromGroup(contextMenu.parentGroupId, contextMenu.cueId).catch(console.error);
+                              await onRefresh();
+                            }}
+                          />
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
+                {!contextMenu.parentGroupId && (
+                  <>
+                    <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                    <CtxItem label="Assign Audio File…" onClick={ctxAssignFile} />
+                  </>
+                )}
               </>
             ) : (
               <CtxItem label="Add Audio Cue" onClick={ctxAddAudio} />

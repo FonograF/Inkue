@@ -12,6 +12,7 @@ import type {
   DeviceInfo,
   DisplayPreferences,
   GeneralPreferences,
+  GroupMode,
   OutputPatch,
   ScreenInfo,
   VideoCueData,
@@ -29,6 +30,8 @@ export const stopAll = () => invoke<void>("stop_all");
 export const hardStopAll = () => invoke<void>("hard_stop_all");
 export const stopCue = (cueId: CueId) => invoke<void>("stop_cue", { cueId });
 export const pauseCue = (cueId: CueId) => invoke<void>("pause_cue", { cueId });
+export const seekCue = (cueId: CueId, positionMs: number) =>
+  invoke<void>("seek_cue", { cueId, positionMs });
 export const resumeCue = (cueId: CueId) =>
   invoke<void>("resume_cue", { cueId });
 
@@ -43,10 +46,26 @@ export const addCue = (cueType: CueType, position = -1) =>
   invoke<CueId>("add_cue", { cueType, position });
 export const removeCue = (cueId: CueId) =>
   invoke<void>("remove_cue", { cueId });
+export const removeCues = (ids: CueId[]) =>
+  invoke<void>("remove_cues", { ids });
 export const moveCue = (cueId: CueId, newPosition: number) =>
   invoke<void>("move_cue", { cueId, newPosition });
+export const moveCues = (ids: CueId[], beforeId: CueId | null) =>
+  invoke<void>("move_cues", { ids, beforeId });
+export const groupCues = (ids: CueId[]) =>
+  invoke<CueId>("group_cues", { ids });
+export const ungroup = (groupId: CueId) =>
+  invoke<void>("ungroup", { groupId });
+export const setGroupMode = (groupId: CueId, mode: GroupMode) =>
+  invoke<void>("set_group_mode", { groupId, mode });
+export const addCueToGroup = (cueId: CueId, groupId: CueId, position = -1) =>
+  invoke<void>("add_cue_to_group", { cueId, groupId, position });
+export const removeCueFromGroup = (groupId: CueId, cueId: CueId) =>
+  invoke<void>("remove_cue_from_group", { groupId, cueId });
 export const duplicateCue = (cueId: CueId) =>
   invoke<CueId>("duplicate_cue", { cueId });
+export const duplicateCues = (ids: CueId[]) =>
+  invoke<CueId[]>("duplicate_cues", { ids });
 
 // ---------------------------------------------------------------------------
 // Undo / Redo / Copy / Paste

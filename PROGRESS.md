@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-05-30
 
-## Current version: 0.4.2
+## Current version: 0.5.1
 
 ## cargo build result
 
@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**27 tests pass, 0 failures.**
+**31 tests pass, 0 failures.**
 
 ---
 
@@ -16,11 +16,11 @@
 
 | Cue type | Status | Details |
 |---|---|---|
-| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter |
+| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek |
 | Stop  | ✅ **Functional** | Targeted Stop and Stop All, default 0.5 s fade |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
-| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, loop |
-| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
+| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), hard-cut stop, scrub/seek |
+| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, hard-cut stop, stop-on-next-cue |
 
 ---
 
@@ -81,6 +81,25 @@
 | `components/Preferences/PreferencesModal.tsx` | ✅ Complete |
 | `components/WaveformModal.tsx` | ✅ Complete |
 | `main.tsx` | ✅ Simplified — no output-surface branch, renders `<App />` only |
+
+---
+
+---
+
+## Change history additions (0.5.1)
+
+### Group Cue polish
+
+- **Drag cue into group**: top-level cues can now be dragged and dropped onto the middle of a Group row in the cue list — the cue becomes a child of that group. Works both for cue-to-cue drag (the existing reorder drag) and OS file drag-drop (dropping a media file on a Group creates the new cue as a child).
+- **Color indicator indent**: child cues inside a group have their left color strip shifted right by `depth × 4 px` (one indicator width per nesting level), visually distinguishing them from top-level cues without affecting content alignment.
+- **Sequential Group GO absorption**: when a Sequential Group is running and the current child has finished with `DoNotContinue` (sequence paused mid-way), pressing Space/GO fires the next sequential child instead of advancing the outer Playhead. When all children are exhausted, Space/GO resumes normal outer-playhead behavior.
+
+**Files changed:**
+- `cue/traits.rs` — `absorbs_go()` default trait method
+- `cue/group_cue.rs` — `has_next_sequential_child()` helper; `absorbs_go()` impl; `go()` modified to handle mid-sequence absorption
+- `show/transport.rs` — checks `absorbs_go()` before advancing the outer Playhead
+- `components/CueList/CueRow.tsx` — color strip replaced `borderLeft` with abs-positioned `<div>` at `depth * 4 px`; `isGroupDropTarget` prop (cyan outline); `data-is-group` / `data-cue-depth` data attrs
+- `components/CueList/CueListView.tsx` — `calcDropTarget()` replaces `calcInsertIdxFromY()` for cue drag; `flatItemsRef`; `dropTargetGroupId` state; cue-drag `onUp` calls `addCueToGroup`; `resolveFileDragMode` returns `groupId`; file-drop handler creates child cues in group; `dragOverGroupId` state for visual feedback
 
 ---
 
@@ -281,28 +300,20 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 | 10. Keyboard shortcuts | ✅ |
 | 11. Fades, waveform, level meters | ✅ |
 | 12. Drag-drop, undo/redo, color tags | ✅ |
-| 13. Video Cue | ✅ Freeze fixed, unified OutputEngine, dip-to-black fades |
-| 14. Image Cue | ✅ Unified OutputEngine, dip-to-black fades, stop-on-next-cue |
+| 13. Video Cue | ✅ Freeze fixed, unified OutputEngine, hard-cut stop, scrub/seek |
+| 14. Image Cue | ✅ Unified OutputEngine, hard-cut stop, stop-on-next-cue |
 | 15. Stop Cue | ✅ Functional |
+| 16. Multi-select | ✅ Ctrl/Shift/Ctrl+A; multi-delete, multi-duplicate, multi-drag, multi-color |
+| 17. Scrub/seek | ✅ Audio + video; ScrubBar in Inspector Time tab |
 
 ---
 
 ## Next priorities
 
-1. **Output window drops out of fullscreen on GO** — when the output is manually
-   fullscreened (double-click) and no `output_screen` preference is set, every GO
-   calls `OutputEngine::position_window(None)`, whose `else if state.is_fullscreen`
-   branch restores the windowed `saved_rect` and clears `is_fullscreen`. Fix: a GO
-   must not revert a user-initiated fullscreen — only (re)apply the configured
-   output screen, and otherwise leave the window geometry untouched. See
-   `position_window` in `engine/output_engine/mod.rs`.
-2. **Scrub / seek within a playing cue** — while a video or audio cue is playing,
-   let the operator navigate the playhead inside the media (transport scrubber /
-   keyboard / jog — means TBD). Backend hooks already exist: audio seeks by writing
-   `Voice.frame_pos`; video seeks via mpv `seek` / `time-pos`. Needs a new
-   `seek_cue` command + UI, and for video the paired audio voice must be re-seeked
-   in step.
-3. **Optional: active A/V resync** — nudge the video audio voice's rate to track
+1. **Future cue types** — architecture is ready; add via `CueRegistry` without touching transport.
+   Priority order: **Wait** (time delay, trivial) → **Fade** (fade a running audio cue) → **Group** → MIDI → OSC.
+2. **Optional: active A/V resync** — nudge the video audio voice's rate to track
    mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
-4. **Future cue types** — Wait, Fade, Group, MIDI, OSC (architecture is ready; add
-   via `CueRegistry` without touching transport)
+3. **Video/image dip-to-black fades** — removed for now (bugs with overlay alpha state);
+   re-implement once architecture is cleaner. Per-cue `FadeSpec` fields are still
+   serialized for forward compatibility.
