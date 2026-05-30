@@ -289,5 +289,20 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 
 ## Next priorities
 
-1. **Optional: active A/V resync** — nudge the video audio voice's rate to track mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
-2. **Future cue types** — Wait, Fade, Group, MIDI, OSC (architecture is ready; add via `CueRegistry` without touching transport)
+1. **Output window drops out of fullscreen on GO** — when the output is manually
+   fullscreened (double-click) and no `output_screen` preference is set, every GO
+   calls `OutputEngine::position_window(None)`, whose `else if state.is_fullscreen`
+   branch restores the windowed `saved_rect` and clears `is_fullscreen`. Fix: a GO
+   must not revert a user-initiated fullscreen — only (re)apply the configured
+   output screen, and otherwise leave the window geometry untouched. See
+   `position_window` in `engine/output_engine/mod.rs`.
+2. **Scrub / seek within a playing cue** — while a video or audio cue is playing,
+   let the operator navigate the playhead inside the media (transport scrubber /
+   keyboard / jog — means TBD). Backend hooks already exist: audio seeks by writing
+   `Voice.frame_pos`; video seeks via mpv `seek` / `time-pos`. Needs a new
+   `seek_cue` command + UI, and for video the paired audio voice must be re-seeked
+   in step.
+3. **Optional: active A/V resync** — nudge the video audio voice's rate to track
+   mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
+4. **Future cue types** — Wait, Fade, Group, MIDI, OSC (architecture is ready; add
+   via `CueRegistry` without touching transport)
