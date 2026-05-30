@@ -39,6 +39,12 @@
     ],
     "resources": [
       "vendor/mpv/libmpv-2.dll"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": false
+      }
+    }
   }
 }
