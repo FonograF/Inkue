@@ -343,6 +343,23 @@ impl Cue for AudioCue {
         Ok(())
     }
 
+    fn seek(&mut self, position_ms: u64, ctx: &CueContext) {
+        if self.action_started_at.is_none() {
+            return; // Not yet playing (still in pre-wait or standby).
+        }
+        if let Some(vid) = self.active_voice_id {
+            // frame_pos accounts for the cue's start-time offset so that
+            // position_ms = 0 always corresponds to start_time in the file.
+            let start_ms = self.start_time.unwrap_or(Duration::ZERO).as_millis() as u64;
+            let target_ms = start_ms + position_ms;
+            let frame_pos = target_ms * self.decoded_sample_rate as u64 / 1000;
+            let _ = ctx.audio_engine.seek_voice(vid, frame_pos);
+        }
+        // Re-anchor elapsed time so the event loop reports the correct position.
+        self.action_started_at =
+            Some(Instant::now() - Duration::from_millis(position_ms));
+    }
+
     fn hard_stop(&mut self, context: &CueContext) -> Result<()> {
         self.in_pre_wait = false;
         if let Some(vid) = self.active_voice_id.take() {

@@ -29,11 +29,11 @@ export const DEFAULT_COLUMNS: ColumnDef[] = [
   { id: "number",    label: "#",       defaultWidth: 60,  minWidth: 36, fixed: false, resizable: true  },
   { id: "name",      label: "Name",    defaultWidth: 200, minWidth: 80, fixed: true,  resizable: true  },
   { id: "target",    label: "Target",  defaultWidth: 180, minWidth: 80, fixed: false, resizable: true  },
-  { id: "type",      label: "T",       defaultWidth: 32,  minWidth: 28, fixed: false, resizable: false },
+  { id: "type",      label: "T",       defaultWidth: 32,  minWidth: 28, fixed: false, resizable: true  },
   { id: "pre_wait",  label: "Pre-W",   defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },
   { id: "duration",  label: "Dur",     defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },
   { id: "post_wait", label: "Post-W",  defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },
-  { id: "continue",  label: "C",       defaultWidth: 36,  minWidth: 28, fixed: false, resizable: false },
+  { id: "continue",  label: "C",       defaultWidth: 36,  minWidth: 28, fixed: false, resizable: true  },
 ];
 
 const DEFAULT_ORDER: ColumnId[] = DEFAULT_COLUMNS.map((d) => d.id);

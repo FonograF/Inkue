@@ -200,7 +200,10 @@ fn tick(
             .map(|d| cue.action_elapsed() >= d)
             .unwrap_or(false);
 
-        if voice_done || time_done {
+        // Group cues signal completion via is_complete() rather than voice/time.
+        let group_done = cue.is_complete();
+
+        if voice_done || time_done || group_done {
             let id = cue.id();
             let cm = cue.continue_mode();
             let pw = cue.post_wait();

@@ -116,6 +116,19 @@ impl FadeCurve {
     }
 }
 
+/// How a Group Cue triggers its children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupMode {
+    /// All children fire at the same time. The Group completes when every child has finished.
+    #[default]
+    Simultaneous,
+    /// Children fire one after another. Each child's Continue Mode is respected:
+    /// Auto-Continue chains after Post-Wait, Auto-Follow chains at action start,
+    /// Do Not Continue stops the sequence.
+    Sequential,
+}
+
 /// Specification for a single fade (in or out).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FadeSpec {

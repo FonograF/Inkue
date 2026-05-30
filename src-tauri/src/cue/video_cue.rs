@@ -202,8 +202,8 @@ impl VideoCue {
     fn start_video_action(&mut self, context: &CueContext) -> Result<()> {
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
-        let fade_in_ms = self.fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
-        let fade_out_ms = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+        let fade_in_ms: u32 = 0;
+        let fade_out_ms: u32 = 0;
 
         // Submit the audio voice (paused) first so it is ready to resume the
         // instant the video's first frame is presented.
@@ -318,8 +318,8 @@ impl Cue for VideoCue {
             let fade_ms = self
                 .fade_out
                 .as_ref()
-                .map(|f| f.duration_ms as u32)
-                .unwrap_or(500); // Default 500 ms fade-out, matching QLab.
+                .map(|_| 0_u32)  // Fades removed for video — always hard-cut on stop.
+                .unwrap_or(0);
             let _ = context.output_engine.stop_voice(vid, fade_ms);
         }
 
@@ -348,6 +348,15 @@ impl Cue for VideoCue {
         }
         self.state = CueState::Running;
         Ok(())
+    }
+
+    fn seek(&mut self, position_ms: u64, ctx: &CueContext) {
+        if self.action_started_at.is_none() {
+            return;
+        }
+        ctx.output_engine.seek(position_ms);
+        self.action_started_at =
+            Some(Instant::now() - Duration::from_millis(position_ms));
     }
 
     fn hard_stop(&mut self, context: &CueContext) -> Result<()> {

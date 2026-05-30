@@ -11,7 +11,10 @@ import {
   resumeCue,
   addCue,
   removeCue,
+  removeCues,
   duplicateCue,
+  duplicateCues,
+  groupCues,
   undo,
   redo,
   copyCue,
@@ -119,14 +122,6 @@ export function useKeyboardShortcuts(
           }
           break;
         }
-        case "g":
-        case "G": {
-          if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
-            e.preventDefault();
-            onGoto?.();
-          }
-          break;
-        }
         case "ArrowUp": {
           if (e.ctrlKey) {
             e.preventDefault();
@@ -153,6 +148,35 @@ export function useKeyboardShortcuts(
           }
           break;
         }
+        case "a":
+        case "A": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            const { cues, setSelectedCueIds } = useWorkspaceStore.getState();
+            setSelectedCueIds(cues.map((c) => c.id));
+          }
+          break;
+        }
+        case "g":
+        case "G": {
+          if (e.ctrlKey) {
+            e.preventDefault();
+            const { selectedCueIds, setSelectedCueId, setSelectedCueIds } =
+              useWorkspaceStore.getState();
+            if (selectedCueIds.length > 0) {
+              const newGroupId = await groupCues(selectedCueIds).catch(() => null);
+              if (newGroupId) {
+                setSelectedCueId(newGroupId);
+                setSelectedCueIds([newGroupId]);
+                onRefresh();
+              }
+            }
+          } else if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+            e.preventDefault();
+            onGoto?.();
+          }
+          break;
+        }
         case "n":
         case "N": {
           if (e.ctrlKey) {
@@ -166,7 +190,12 @@ export function useKeyboardShortcuts(
         case "D": {
           if (e.ctrlKey && selectedCueId) {
             e.preventDefault();
-            await duplicateCue(selectedCueId).catch(console.error);
+            const { selectedCueIds } = useWorkspaceStore.getState();
+            if (selectedCueIds.length > 1) {
+              await duplicateCues(selectedCueIds).catch(console.error);
+            } else {
+              await duplicateCue(selectedCueId).catch(console.error);
+            }
             onRefresh();
           }
           break;
@@ -215,11 +244,28 @@ export function useKeyboardShortcuts(
         case "Delete":
         case "Backspace": {
           if (selectedCueId && e.ctrlKey === false) {
-            if (generalPrefs.confirm_before_delete) {
-              const ok = await confirm("Delete this cue?", { title: "Confirm Delete", kind: "warning" });
-              if (!ok) break;
+            const { selectedCueIds, setSelectedCueId, setSelectedCueIds } =
+              useWorkspaceStore.getState();
+            if (selectedCueIds.length > 1) {
+              if (generalPrefs.confirm_before_delete) {
+                const ok = await confirm(
+                  `Delete ${selectedCueIds.length} cues?`,
+                  { title: "Confirm Delete", kind: "warning" },
+                );
+                if (!ok) break;
+              }
+              await removeCues(selectedCueIds).catch(console.error);
+              setSelectedCueId(null);
+              setSelectedCueIds([]);
+            } else {
+              if (generalPrefs.confirm_before_delete) {
+                const ok = await confirm("Delete this cue?", { title: "Confirm Delete", kind: "warning" });
+                if (!ok) break;
+              }
+              await removeCue(selectedCueId).catch(console.error);
+              setSelectedCueId(null);
+              setSelectedCueIds([]);
             }
-            await removeCue(selectedCueId).catch(console.error);
             onRefresh();
           }
           break;

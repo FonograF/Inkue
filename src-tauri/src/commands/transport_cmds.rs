@@ -282,3 +282,25 @@ pub fn resume_cue(
     );
     Ok(())
 }
+
+/// Seek a running or paused cue to `position_ms` from its action start.
+///
+/// No-op for non-seekable cue types (Memo, Stop, …).  Does not change the
+/// cue's [`CueState`] — the cue keeps running or stays paused at the new
+/// position.
+#[tauri::command]
+pub fn seek_cue(
+    cue_id: String,
+    position_ms: u64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id: uuid::Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state, stop_fade_ms);
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    if let Some(cue) = cue_list.get_mut(&id) {
+        cue.seek(position_ms, &context);
+    }
+    Ok(())
+}

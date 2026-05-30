@@ -95,8 +95,8 @@ impl ImageCue {
             anyhow!("ImageCue '{}': no file assigned — set a file in the inspector", self.name)
         })?;
 
-        let fade_in_ms = self.fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
-        let fade_out_ms = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+        let fade_in_ms: u32 = 0;
+        let fade_out_ms: u32 = 0;
 
         let voice_id = context.output_engine.show_content(
             path,

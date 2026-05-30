@@ -179,6 +179,30 @@ impl AudioEngine {
         self.send_command(AudioCommand::SetGain { voice_id, gain })
     }
 
+    /// Seek a voice to the given decoded-audio frame position.
+    pub fn seek_voice(&self, voice_id: VoiceId, frame_pos: u64) -> Result<()> {
+        self.send_command(AudioCommand::Seek { voice_id, frame_pos })
+    }
+
+    /// Seek a voice to the given position in milliseconds.
+    ///
+    /// Looks up the voice's decoded sample rate to convert `position_ms` into a
+    /// frame position, then sends a [`AudioCommand::Seek`] to the RT callback.
+    /// Used by [`OutputEngine::seek`] which only knows wall-clock position.
+    pub fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64) -> Result<()> {
+        let frame_pos = {
+            let voices = self.voices.lock().map_err(|_| anyhow!("voices mutex poisoned"))?;
+            voices
+                .iter()
+                .find(|v| v.id == voice_id)
+                .map(|v| position_ms * v.sample_rate as u64 / 1000)
+        };
+        if let Some(fp) = frame_pos {
+            self.send_command(AudioCommand::Seek { voice_id, frame_pos: fp })?;
+        }
+        Ok(())
+    }
+
     /// Drain the status ring buffer and return all pending status messages.
     pub fn drain_status(&self) -> Vec<AudioStatus> {
         let mut cons = match self.status_cons.lock() {
@@ -559,6 +583,11 @@ fn apply_command(
             }
         }
         AudioCommand::SetMasterGain { .. } => {}
+        AudioCommand::Seek { voice_id, frame_pos } => {
+            if let Some(v) = voices.iter().find(|v| v.id == voice_id) {
+                v.frame_pos.store(frame_pos, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 }
 

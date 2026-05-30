@@ -1,27 +1,32 @@
 import type { AudioCueData } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
 import { ColorPicker } from "./ColorPicker";
+import { setGroupMode } from "../../lib/commands";
 
 export function BasicsTab({
   cue,
   isAudio,
   isVideo,
   isImage,
+  isGroup,
   onSave,
   onBrowse,
   onBrowseVideo,
   onBrowseImage,
+  onRefresh,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cue: any;
   isAudio: boolean;
   isVideo?: boolean;
   isImage?: boolean;
+  isGroup?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onSave: (p: Partial<any>) => void;
   onBrowse: () => void;
   onBrowseVideo?: () => void;
   onBrowseImage?: () => void;
+  onRefresh?: () => void;
 }) {
   return (
     <>
@@ -88,6 +93,22 @@ export function BasicsTab({
           <option value="auto_follow">Auto-Follow</option>
         </select>
       </Field>
+      {isGroup && (
+        <Field label="Mode">
+          <select
+            style={inputStyle}
+            value={cue.group_mode ?? "simultaneous"}
+            onChange={async (e) => {
+              await setGroupMode(cue.id, e.target.value as "simultaneous" | "sequential")
+                .catch(console.error);
+              onRefresh?.();
+            }}
+          >
+            <option value="simultaneous">Simultaneous</option>
+            <option value="sequential">Sequential</option>
+          </select>
+        </Field>
+      )}
       <Field label="Color">
         <ColorPicker
           value={cue.color}

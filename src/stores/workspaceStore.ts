@@ -8,6 +8,8 @@ import { getAllCues, getPlayhead, getPreferences, getWorkspaceInfo } from "../li
 interface WorkspaceState {
   cues: CueSummary[];
   selectedCueId: CueId | null;
+  /** All cues currently highlighted (multi-selection). Always includes selectedCueId when non-null. */
+  selectedCueIds: CueId[];
   playheadCueId: CueId | null;
   workspaceInfo: WorkspaceInfo | null;
   generalPrefs: GeneralPreferences;
@@ -17,6 +19,7 @@ interface WorkspaceState {
   refreshCues: () => Promise<void>;
   refreshWorkspaceInfo: () => Promise<void>;
   setSelectedCueId: (id: CueId | null) => void;
+  setSelectedCueIds: (ids: CueId[]) => void;
   setPlayheadCueId: (id: CueId | null) => void;
   updateCueState: (cueId: CueId, state: CueSummary["state"]) => void;
   loadGeneralPrefs: () => Promise<void>;
@@ -28,6 +31,7 @@ interface WorkspaceState {
 export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   cues: [],
   selectedCueId: null,
+  selectedCueIds: [],
   playheadCueId: null,
   workspaceInfo: null,
   generalPrefs: DEFAULT_GENERAL_PREFS,
@@ -53,6 +57,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   },
 
   setSelectedCueId: (id) => set({ selectedCueId: id }),
+
+  setSelectedCueIds: (ids) => set({ selectedCueIds: ids }),
 
   setPlayheadCueId: (id) => set({ playheadCueId: id }),
 

@@ -377,7 +377,7 @@ function ViewMenu({
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, cues } =
+  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(true);
@@ -541,7 +541,14 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image", e: React.MouseEvent) => {
+  const handleAddGroup = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("group", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("wincue:cue-drag-start", {
@@ -656,6 +663,14 @@ export default function App() {
           >
             + Image
           </button>
+          <button
+            style={{ ...toolbarBtn, color: "#fde047", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddGroup}
+            onMouseDown={(e) => dispatchCueDrag("group", e)}
+            title="Add Group Cue after selection · Drag to insert at position"
+          >
+            + Group
+          </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector
           </button>
@@ -680,7 +695,7 @@ export default function App() {
               overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
             }}
           >
-            <InspectorPanel selectedCue={selectedCue} onRefresh={handleRefresh} />
+            <InspectorPanel selectedCue={selectedCue} selectedCueIds={selectedCueIds} onRefresh={handleRefresh} />
           </div>
         )}
       </div>

@@ -62,6 +62,8 @@ pub enum AudioCommand {
     SetPan { voice_id: VoiceId, pan: f32 },
     /// Set the master output gain (linear).
     SetMasterGain { gain: f32 },
+    /// Instantly seek a voice to the given frame position.
+    Seek { voice_id: VoiceId, frame_pos: u64 },
 }
 
 /// Status updates sent *from* the audio thread to the application layer.

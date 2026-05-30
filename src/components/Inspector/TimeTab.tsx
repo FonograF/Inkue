@@ -1,9 +1,11 @@
-import type { AudioCueData } from "../../lib/types";
+import type { AudioCueData, CueSummary } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
 import { WaveformViewer } from "./WaveformViewer";
+import { ScrubBar } from "./ScrubBar";
 
 export function TimeTab({
   cue,
+  selectedCue,
   isAudio,
   isVideo,
   onSave,
@@ -11,13 +13,29 @@ export function TimeTab({
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cue: any;
+  selectedCue: CueSummary | null;
   isAudio: boolean;
   isVideo?: boolean;
   onSave: (p: Partial<AudioCueData>) => void;
   onOpenWaveform: () => void;
 }) {
+  const liveState = selectedCue?.state ?? "standby";
+  const liveDurationMs = selectedCue?.duration_ms ?? cue.duration_ms ?? null;
+  const showScrubber =
+    (isAudio || isVideo) &&
+    liveDurationMs != null &&
+    liveDurationMs > 0 &&
+    (liveState === "running" || liveState === "paused");
+
   return (
     <>
+      {showScrubber && (
+        <ScrubBar
+          cueId={cue.id}
+          durationMs={liveDurationMs!}
+          cueState={liveState}
+        />
+      )}
       <Field label="Pre-Wait (s)">
         <input
           style={inputStyle}

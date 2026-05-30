@@ -452,6 +452,13 @@ impl OutputEngine {
                 }
             }
             if is_image {
+                if fade_in_ms > 0 {
+                    // Black out the overlay BEFORE loading the image so it stays
+                    // hidden until the fade animation reveals it.  Without this the
+                    // overlay is at alpha=0 (transparent from the previous operation)
+                    // and the image would flash visible before the fade starts.
+                    fade::set_overlay_alpha(255);
+                }
                 fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
                 if fade_in_ms > 0 {
                     // Images do not go through the gated PLAYBACK_RESTART reveal,
@@ -639,6 +646,28 @@ impl OutputEngine {
         Ok(())
     }
 
+    /// Seek the current video to `position_ms` and re-anchor the paired audio voice.
+    pub fn seek(&self, position_ms: u64) {
+        let pos_str = format!("{:.3}", position_ms as f64 / 1000.0);
+        let cmd_cstr = cs("seek");
+        let pos_cstr = cs(&pos_str);
+        let mode_cstr = cs("absolute");
+        unsafe {
+            let args = [
+                cmd_cstr.as_ptr(),
+                pos_cstr.as_ptr(),
+                mode_cstr.as_ptr(),
+                std::ptr::null(),
+            ];
+            (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+        }
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            if let Some(aid) = *av.lock().unwrap() {
+                let _ = self.audio_engine.seek_voice_ms(aid, position_ms);
+            }
+        }
+    }
+
     // ── Window visibility ─────────────────────────────────────────────────────
 
     /// Toggle the output window visibility (F9 / View menu).
@@ -739,22 +768,11 @@ impl OutputEngine {
                         SWP_NOACTIVATE | SWP_FRAMECHANGED,
                     );
                 }
-            } else if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
-                if let Ok(mut state) = state_mutex.lock() {
-                    if state.is_fullscreen {
-                        let (l, t, r, b) = state.saved_rect;
-                        win32_window::set_resizable(self.hwnd);
-                        SetWindowPos(
-                            self.hwnd, HWND_TOPMOST,
-                            l, t, r - l, b - t,
-                            SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                        );
-                        state.is_fullscreen = false;
-                    }
-                }
             }
 
             // Always show and raise to TOPMOST when content is displayed.
+            // If no output_screen is configured, leave the window geometry untouched —
+            // the operator may have manually fullscreened or repositioned it.
             // Mirrors the original VideoEngine apply_window_layout behaviour.
             self.visible.store(true, Ordering::Relaxed);
             ShowWindow(self.hwnd, SW_SHOWNA);

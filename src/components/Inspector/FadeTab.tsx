@@ -32,6 +32,7 @@ export function FadeTab({
         </div>
         <Field label="Duration (s)">
           <input
+            key={`${cue.id}-fi`}
             style={inputStyle}
             type="number"
             step="0.1"
@@ -72,6 +73,7 @@ export function FadeTab({
         </div>
         <Field label="Duration (s)">
           <input
+            key={`${cue.id}-fo`}
             style={inputStyle}
             type="number"
             step="0.1"

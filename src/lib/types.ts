@@ -22,6 +22,8 @@ export type CueColor =
 
 export type FadeCurve = "linear" | "s_curve" | "exponential";
 
+export type GroupMode = "simultaneous" | "sequential";
+
 export interface FadeSpec {
   duration_ms: number;
   curve: FadeCurve;
@@ -42,6 +44,10 @@ export interface CueSummary {
   file_path: string | null;
   /** True while the audio file is being decoded in a background thread. */
   is_loading: boolean;
+  /** For Group cues: direct child cue summaries (recursive). */
+  children?: CueSummary[];
+  /** For Group cues: playback mode. */
+  group_mode?: GroupMode;
 }
 
 /** Full cue data returned by get_cue. */

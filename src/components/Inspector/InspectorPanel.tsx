@@ -13,12 +13,13 @@ import { FadeTab } from "./FadeTab";
 
 interface Props {
   selectedCue: CueSummary | null;
+  selectedCueIds: string[];
   onRefresh: () => void;
 }
 
 type Tab = "basics" | "time" | "levels" | "fade";
 
-export function InspectorPanel({ selectedCue, onRefresh }: Props) {
+export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props) {
   const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
@@ -55,10 +56,25 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
   const isAudio = selectedCue.cue_type === "audio";
   const isVideo = selectedCue.cue_type === "video";
   const isImage = selectedCue.cue_type === "image";
+  const isGroup = selectedCue.cue_type === "group";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
-    await updateCue(cueData.id, partial).catch(console.error);
+    // Color changes fan out to every selected cue; everything else applies to
+    // the primary (inspector) cue only.
+    if ("color" in partial && selectedCueIds.length > 1) {
+      await Promise.all(
+        selectedCueIds.map((id) => updateCue(id, { color: partial.color }).catch(console.error)),
+      );
+      // Apply any remaining non-color fields to the primary cue.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { color: _c, ...rest } = partial;
+      if (Object.keys(rest).length > 0) {
+        await updateCue(cueData.id, rest).catch(console.error);
+      }
+    } else {
+      await updateCue(cueData.id, partial).catch(console.error);
+    }
     setCueData((prev) => (prev ? { ...prev, ...partial } : prev));
     onRefresh();
   };
@@ -137,7 +153,7 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
           background: "#020617",
         }}
       >
-        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
@@ -153,7 +169,7 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
             Levels
           </button>
         )}
-        {(isAudio || isVideo || isImage) && (
+        {isAudio && (
           <button style={tabStyle("fade")} onClick={() => setActiveTab("fade")}>
             Fade
           </button>
@@ -168,7 +184,9 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
             isAudio={isAudio}
             isVideo={isVideo}
             isImage={isImage}
+            isGroup={isGroup}
             onSave={save}
+            onRefresh={onRefresh}
             onBrowse={handleBrowse}
             onBrowseVideo={handleBrowseVideo}
             onBrowseImage={handleBrowseImage}
@@ -177,6 +195,7 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
         {activeTab === "time" && (
           <TimeTab
             cue={cueData}
+            selectedCue={selectedCue}
             isAudio={isAudio}
             isVideo={isVideo}
             onSave={save}
@@ -186,7 +205,7 @@ export function InspectorPanel({ selectedCue, onRefresh }: Props) {
         {activeTab === "levels" && (isAudio || isVideo) && (
           <LevelsTab cue={cueData as AudioCueData | VideoCueData} isAudio={isAudio} onSave={save} />
         )}
-        {activeTab === "fade" && (isAudio || isVideo || isImage) && (
+        {activeTab === "fade" && isAudio && (
           <FadeTab cue={cueData} onSave={save} />
         )}
       </div>

@@ -44,6 +44,9 @@ impl CueRegistry {
 
     /// Deserialise a cue from its persisted JSON representation.
     /// The JSON must contain a `"type"` field that matches a registered [`CueType`].
+    ///
+    /// [`CueType::Group`] is handled specially: children are deserialised
+    /// recursively using this same registry, bypassing the normal factory path.
     pub fn from_json(&self, value: Value) -> Result<Box<dyn Cue>> {
         let cue_type: CueType = serde_json::from_value(
             value
@@ -51,6 +54,11 @@ impl CueRegistry {
                 .cloned()
                 .ok_or_else(|| anyhow!("Cue JSON missing 'type' field"))?,
         )?;
+
+        if cue_type == CueType::Group {
+            return super::group_cue::GroupCue::from_json_with_registry(&value, self);
+        }
+
         self.factories
             .get(&cue_type)
             .ok_or_else(|| anyhow!("No factory registered for cue type: {:?}", cue_type))?

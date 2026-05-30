@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     cue::{
         audio_cue::AudioCueFactory,
+        group_cue::GroupCueFactory,
         image_cue::ImageCueFactory,
         memo_cue::MemoCueFactory,
         registry::CueRegistry,
@@ -48,6 +49,7 @@ impl AppState {
 
         let mut registry = CueRegistry::new();
         registry.register(CueType::Audio, Box::new(AudioCueFactory));
+        registry.register(CueType::Group, Box::new(GroupCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
         registry.register(CueType::Stop, Box::new(StopCueFactory));
         registry.register(CueType::Video, Box::new(VideoCueFactory));
