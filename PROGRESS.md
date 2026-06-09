@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-09
 
-## Current version: 0.6.0
+## Current version: 0.6.1
 
 ## cargo build result
 
@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**31 tests pass, 0 failures.**
+**42 tests pass, 0 failures.**
 
 ---
 
@@ -16,14 +16,14 @@
 
 | Cue type | Status | Details |
 |---|---|---|
-| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek |
+| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking |
 | Stop  | ✅ **Functional** | Targeted Stop and Stop All, default 0.5 s fade |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
-| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, scrub/seek |
+| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, scrub/seek; pause/resume with correct elapsed tracking |
 | Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
 | Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
-| OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab; workspace-level patches; receive server with IP allowlist |
+| OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next|previous |
 
 ---
 
@@ -37,8 +37,8 @@
 | Cue trait | `cue/traits.rs` | ✅ Complete — includes `stop_on_next_go()` |
 | CueRegistry | `cue/registry.rs` | ✅ Complete |
 | CueContext | `cue/context.rs` | ✅ Complete — `audio_engine`, `output_engine`, `stop_fade_ms`, `output_patches`, `output_screen` |
-| AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch |
-| VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()` |
+| AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch; pause freezes elapsed (elapsed_before_pause accumulators); seek works while paused |
+| VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; pause freezes elapsed; seek works while paused |
 | ImageCue | `cue/image_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_content()`. No DisplayDuration mode (StopOnNextCue only). |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete |
 | StopCue | `cue/stop_cue.rs` | ✅ Complete |
@@ -48,18 +48,18 @@
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer` |
 | OutputEngine | `engine/output_engine/` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); OSD timer overlay; `toggle_visibility()` |
 | OscPatch | `engine/osc_patch.rs` | ✅ Complete — named UDP send target (id, name, ip, port) |
-| OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, dispatch to frontend via `osc-command` event, activity via `osc-activity` |
+| OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, 50ms hash dedup cache, dispatch to frontend via `osc-command` event, activity via `osc-activity`, debug via `osc-debug` |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
 | Workspace | `show/workspace.rs` | ✅ Complete |
 | Transport | `show/transport.rs` | ✅ Complete — `stop_on_next_go()` called before each GO |
 | Event loop | `show/event_loop.rs` | ✅ Complete — 30fps main tick (drains `OutputStatus`, emits Tauri events) + dedicated 60fps `wincue-timer-refresh` thread for OSD timer |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
-| AppState | `state/app_state.rs` | ✅ Complete — `output_engine: Arc<OutputEngine>` |
-| Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences` with output_screen, timer (font/size/position/margin/show_ms/count_down), colour theme; `TimerPosition` enum |
-| Transport commands | `commands/transport_cmds.rs` | ✅ Complete |
+| AppState | `state/app_state.rs` | ✅ Complete — `osc_server: Arc<OscServer>`, `last_go_at: AtomicU64` for double-GO protection |
+| Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences` + `OscReceiveConfig` (machine-level) |
+| Transport commands | `commands/transport_cmds.rs` | ✅ Complete — double-GO protection (500 ms default) |
 | Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `toggle_output_window`, `get_output_window_visible` |
-| OSC commands | `commands/osc_cmds.rs` | ✅ Complete — `list/add/update/remove_osc_patch`, `get/set_osc_config` |
+| OSC commands | `commands/osc_cmds.rs` | ✅ Complete — `list/add/update/remove_osc_patch`, `get/set_osc_config`, `send_osc_test` |
 | Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete |
 | Device commands | `commands/device_cmds.rs` | ✅ Complete |
 | Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete — `get/set_output_screen`, `update_display_preferences` (applies timer style to mpv), `list_system_fonts` (GDI enum), `preview_output_timer` |
@@ -69,28 +69,50 @@
 
 | File | Status |
 |---|---|
-| `lib/types.ts` | ✅ Complete — `ImageCueData` simplified, `DisplayPreferences` with full timer fields, `TimerPosition` type |
-| `lib/commands.ts` | ✅ Complete — `toggleOutputWindow`, `getOutputWindowVisible`, `getOutputScreen`, `setOutputScreen`, `listSystemFonts`, `previewOutputTimer` |
+| `lib/types.ts` | ✅ Complete — all cue types incl. OSC; `OscPatch`, `OscArg`, `OscMessage`, `OscReceiveConfig` |
+| `lib/commands.ts` | ✅ Complete — all transport, cue, workspace, device, prefs, OSC commands |
 | `stores/workspaceStore.ts` | ✅ Complete |
-| `stores/transportStore.ts` | ✅ Complete |
+| `stores/transportStore.ts` | ✅ Complete — `oscActivityAt`, `oscLog`, `markOscActivity`, `addOscLog` |
 | `stores/timingStore.ts` | ✅ Complete |
-| `hooks/useTauriEvents.ts` | ✅ Complete |
+| `hooks/useTauriEvents.ts` | ✅ Complete — handles all events incl. `osc-command`, `osc-activity`, `osc-debug` |
 | `hooks/useKeyboardShortcuts.ts` | ✅ Complete — F9 toggles output window |
-| `App.tsx` | ✅ Complete — `handleToggleSurface` wired to F9 + View menu |
+| `App.tsx` | ✅ Complete — `+ OSC` toolbar button |
 | `components/CueList/` | ✅ Complete |
-| `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image, OSC |
-| `components/Inspector/OscTab.tsx` | ✅ Complete — messages list, patch selector, arg editor |
+| `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image, OSC (Messages tab) |
+| `components/Inspector/OscTab.tsx` | ✅ Complete — messages list, patch selector, arg editor, Test send button |
 | `components/OscPatches/OscPatchesPanel.tsx` | ✅ Complete — add/edit/remove OSC patches |
-| `components/Inspector/BasicsTab.tsx` | ✅ Complete — no per-cue screen selector |
-| `components/Inspector/TimeTab.tsx` | ✅ Complete — no ImageStopMode UI (StopOnNextCue only, no `isImage` prop) |
+| `components/Inspector/BasicsTab.tsx` | ✅ Complete |
+| `components/Inspector/TimeTab.tsx` | ✅ Complete |
 | `components/Inspector/LevelsTab.tsx` | ✅ Complete |
-| `components/Inspector/FadeTab.tsx` | ✅ Complete — fade-in/out for audio, video, image |
-| `components/Transport/TransportBar.tsx` | ✅ Complete |
-| `components/Preferences/PreferencesModal.tsx` | ✅ Complete |
+| `components/Inspector/FadeTab.tsx` | ✅ Complete |
+| `components/Transport/TransportBar.tsx` | ✅ Complete — OSC activity dot + monitor toggle |
+| `components/Osc/OscMonitor.tsx` | ✅ Complete — real-time packet log, matched/unknown indicator |
+| `components/Preferences/PreferencesModal.tsx` | ✅ Complete — Network tab with OSC receive config + patches |
 | `components/WaveformModal.tsx` | ✅ Complete |
-| `main.tsx` | ✅ Simplified — no output-surface branch, renders `<App />` only |
+| `main.tsx` | ✅ Complete |
 
 ---
+
+---
+
+## Change history additions (0.6.1)
+
+### Pause / Resume fixes
+
+- **Elapsed time now freezes on pause** — `AudioCue` and `VideoCue` gained `elapsed_before_pause` / `action_elapsed_before_pause` accumulators. `pause()` snapshots the current elapsed (using `=` not `+=`), `resume()` re-anchors the `Instant` so only actual play-time counts. `elapsed()` / `action_elapsed()` return the frozen values when paused.
+- **Progress bar freezes orange** — event loop now emits `cue-time-update` for Paused cues; frontend no longer calls `clearTiming` on pause (only on standby/completed).
+- **Seek while paused** — `seek()` now accepts `state == Paused`; updates `action_elapsed_before_pause` directly so the inspector and progress bar update immediately on the next 30 fps tick.
+
+### OSC improvements (0.6.0 → 0.6.1)
+
+- `/wincue/pause_toggle` — single button pauses all running cues or resumes all paused cues.
+- `/wincue/select/next` and `/wincue/select/previous` — move playhead without firing GO.
+- **Dedup cache** (50 ms hash window) — eliminates Windows UDP loopback duplicates and OSC controllers that send each packet twice.
+- **OSC Monitor** — real-time packet log, click the activity dot in the transport bar; matched addresses shown in green, unknown in orange.
+- **Test send button** — each message row in the OSC inspector has a `▶ Test send` button that sends the message immediately and shows the result inline.
+- **Double-GO protection** — enforced in `go()` using `double_go_protection_ms` (default 500 ms, configurable in Preferences → General).
+
+**Files changed:** `cue/audio_cue.rs`, `cue/video_cue.rs`, `engine/osc_server.rs`, `show/event_loop.rs`, `commands/osc_cmds.rs`, `commands/transport_cmds.rs`, `state/app_state.rs`, `hooks/useTauriEvents.ts`, `stores/transportStore.ts`, `components/Transport/TransportBar.tsx`, `components/Osc/OscMonitor.tsx`, `components/Inspector/OscTab.tsx`
 
 ---
 

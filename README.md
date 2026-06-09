@@ -27,7 +27,8 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 - **Pre-Wait / Post-Wait** — delays before/after the cue action
 - **Continue modes** — Do Not Continue, Auto-Continue (overlap), Auto-Follow (chain on finish)
 - **Pause / Resume** — individual cues or all running cues
-- **Scrub / Seek** — drag the playhead in the Time tab; audio and video both seekable
+- **Scrub / Seek** — drag the playhead in the Time tab; audio and video both seekable while running or paused
+- **Pause / Resume** — progress bar and inspector counter freeze at the exact pause position; seek while paused repositions the cue
 - **Double-GO protection** — configurable debounce window (default 500 ms) silently drops duplicate triggers from OSC controllers or accidental rapid presses
 
 ### Output
@@ -48,13 +49,14 @@ WinCue listens on UDP port 53001 (configurable). Supported receive addresses:
 | `/wincue/hardstop` | Hard stop all |
 | `/wincue/pause` | Pause all running cues |
 | `/wincue/resume` | Resume all paused cues |
+| `/wincue/pause_toggle` | Pause if anything is running, resume if anything is paused |
 | `/wincue/select/next` | Move playhead to next cue (no fire) |
 | `/wincue/select/previous` | Move playhead to previous cue (no fire) |
 | `/wincue/cue/{number}/go` | Jump to cue number and fire |
 | `/wincue/cue/{number}/select` | Move playhead to cue number (no fire) |
 | `/wincue/cue/{number}/stop` | Stop specific cue |
 
-Configure in **Preferences → Network**. An activity dot in the transport bar flashes on every received packet. The **OSC Monitor** (click the dot) shows all incoming packets in real time with address, arguments, and match status.
+Configure in **Preferences → Network**. An activity dot in the transport bar flashes on every received packet. The **OSC Monitor** (click the dot) shows all incoming packets in real time with address, arguments, and match status. A built-in dedup cache (50 ms window) eliminates duplicate UDP packets from Windows loopback and OSC controllers that transmit each packet twice.
 
 ### Editor
 
@@ -165,7 +167,7 @@ Generates an `.msi` installer and a standalone `.exe` in `src-tauri/target/relea
 ### Tests
 
 ```bash
-cd src-tauri && cargo test   # 42 unit tests
+cd src-tauri && cargo test   # 42 unit tests (OSC types, server, dedup, cue registry)
 ```
 
 ---
