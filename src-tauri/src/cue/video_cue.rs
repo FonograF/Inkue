@@ -367,12 +367,17 @@ impl Cue for VideoCue {
     }
 
     fn seek(&mut self, position_ms: u64, ctx: &CueContext) {
-        if self.action_started_at.is_none() {
+        if self.action_started_at.is_none() && self.state != CueState::Paused {
             return;
         }
         ctx.output_engine.seek(position_ms);
-        self.action_started_at =
-            Some(Instant::now() - Duration::from_millis(position_ms));
+        if self.state == CueState::Paused {
+            self.action_elapsed_before_pause = Duration::from_millis(position_ms);
+            self.elapsed_before_pause = self.pre_wait + Duration::from_millis(position_ms);
+        } else {
+            self.action_started_at =
+                Some(Instant::now() - Duration::from_millis(position_ms));
+        }
     }
 
     fn hard_stop(&mut self, context: &CueContext) -> Result<()> {
