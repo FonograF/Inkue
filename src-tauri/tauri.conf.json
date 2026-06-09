@@ -37,9 +37,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "vendor/mpv/libmpv-2.dll"
-    ],
+    "resources": {
+      "vendor/mpv/libmpv-2.dll": "libmpv-2.dll"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper",

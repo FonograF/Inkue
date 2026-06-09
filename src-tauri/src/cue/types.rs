@@ -21,6 +21,8 @@ pub enum CueType {
     Video,
     /// Displays a static or animated image on an output surface window.
     Image,
+    /// Sends one or more OSC messages over UDP when triggered.
+    Osc,
 }
 
 impl std::fmt::Display for CueType {
@@ -34,6 +36,7 @@ impl std::fmt::Display for CueType {
             CueType::Stop => write!(f, "stop"),
             CueType::Video => write!(f, "video"),
             CueType::Image => write!(f, "image"),
+            CueType::Osc   => write!(f, "osc"),
         }
     }
 }

@@ -11,11 +11,72 @@ use uuid::Uuid;
 
 use crate::{
     cue::registry::CueRegistry,
-    engine::device_manager::OutputPatch,
+    engine::{device_manager::OutputPatch, osc_patch::OscPatch},
     preferences::AppPreferences,
 };
 
 use super::cue_list::CueList;
+
+// ---------------------------------------------------------------------------
+// Path helpers — keep file paths relative in the .wincue JSON so workspaces
+// are portable across machines and drive letters.
+// ---------------------------------------------------------------------------
+
+/// Recursively walk a cues JSON array and convert absolute `file_path` values
+/// to paths relative to `base` (the directory containing the .wincue file).
+fn relativize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
+    match value {
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                relativize_paths(item, base);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(p)) = obj.get("file_path") {
+                let path = std::path::Path::new(p.as_str());
+                if path.is_absolute() {
+                    if let Ok(rel) = path.strip_prefix(base) {
+                        // Use forward slashes so the file is readable on any OS.
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        obj.insert("file_path".into(), serde_json::Value::String(rel_str));
+                    }
+                    // If strip_prefix fails (file is on a different drive), keep absolute.
+                }
+            }
+            // Recurse into group children.
+            if let Some(children) = obj.get_mut("children") {
+                relativize_paths(children, base);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursively walk a cues JSON array and resolve relative `file_path` values
+/// to absolute paths using `base` (the directory containing the .wincue file).
+fn absolutize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
+    match value {
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                absolutize_paths(item, base);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(p)) = obj.get("file_path") {
+                let path = std::path::Path::new(p.as_str());
+                if path.is_relative() && !p.is_empty() {
+                    let abs = base.join(path);
+                    obj.insert("file_path".into(),
+                        serde_json::Value::String(abs.to_string_lossy().into_owned()));
+                }
+            }
+            if let Some(children) = obj.get_mut("children") {
+                absolutize_paths(children, base);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Serialisable workspace metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +106,8 @@ pub struct Workspace {
     pub output_patches: Vec<OutputPatch>,
     /// ID of the default output patch.
     pub default_output_patch_id: Option<Uuid>,
+    /// OSC send patch table.
+    pub osc_patches: Vec<OscPatch>,
     /// Application-wide preferences (audio engine, defaults, …).
     pub preferences: AppPreferences,
     /// Path to the .wincue file on disk, if it has been saved.
@@ -61,6 +124,7 @@ impl Workspace {
             cue_lists: vec![CueList::new("Cue List 1")],
             output_patches: Vec::new(),
             default_output_patch_id: None,
+            osc_patches: Vec::new(),
             preferences: AppPreferences::default(),
             file_path: None,
             is_modified: false,
@@ -87,19 +151,31 @@ impl Workspace {
     // Persistence
     // -----------------------------------------------------------------------
 
-    /// Serialise the workspace to a JSON string for writing to a `.wincue` file.
-    pub fn to_json(&self) -> Result<String> {
-        let cue_lists_json: Vec<serde_json::Value> = self
+    /// Serialise the workspace to a JSON string, with file paths made relative
+    /// to `save_path` so the `.wincue` file is portable.
+    fn to_json(&self, save_path: &PathBuf) -> Result<String> {
+        let base = save_path.parent();
+
+        let mut cue_lists_json: Vec<serde_json::Value> = self
             .cue_lists
             .iter()
             .map(|cl| cl.to_json())
             .collect();
+
+        if let Some(base_dir) = base {
+            for cl in &mut cue_lists_json {
+                if let Some(cues) = cl.get_mut("cues") {
+                    relativize_paths(cues, base_dir);
+                }
+            }
+        }
 
         let doc = serde_json::json!({
             "version": "1.0.0",
             "workspace": self.metadata,
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
+            "osc_patches": self.osc_patches,
             "preferences": self.preferences,
             "cue_lists": cue_lists_json,
         });
@@ -112,7 +188,7 @@ impl Workspace {
         let target = path.or_else(|| self.file_path.clone())
             .ok_or_else(|| anyhow::anyhow!("No file path set for workspace"))?;
 
-        let json = self.to_json()?;
+        let json = self.to_json(&target)?;
         std::fs::write(&target, json)
             .with_context(|| format!("Failed to write workspace to {}", target.display()))?;
 
@@ -144,6 +220,11 @@ impl Workspace {
         let output_patches: Vec<OutputPatch> =
             serde_json::from_value(patches_val).unwrap_or_default();
 
+        let osc_patches: Vec<OscPatch> = doc
+            .get("osc_patches")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
         let default_patch: Option<Uuid> = doc
             .get("default_output_patch")
             .and_then(|v| v.as_str())
@@ -160,8 +241,14 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
 
+        let base_dir = path.parent().map(|p| p.to_path_buf());
         let mut cue_lists = Vec::new();
-        for cl_val in cue_lists_val {
+        for mut cl_val in cue_lists_val {
+            if let Some(ref base) = base_dir {
+                if let Some(cues) = cl_val.get_mut("cues") {
+                    absolutize_paths(cues, base);
+                }
+            }
             cue_lists.push(CueList::from_json(cl_val, registry)?);
         }
 
@@ -180,6 +267,7 @@ impl Workspace {
             cue_lists,
             output_patches,
             default_output_patch_id: default_patch,
+            osc_patches,
             preferences,
             file_path: Some(path),
             is_modified: false,

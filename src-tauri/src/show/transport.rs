@@ -88,12 +88,21 @@ impl Transport {
 
         // Read continue-mode metadata after go() (state may have changed for
         // instant cues that complete synchronously).
-        let (continue_mode, post_wait, is_still_running) = cue_list
+        let (continue_mode, post_wait, is_still_running, holds_playhead) = cue_list
             .cues
             .iter()
             .find(|c| c.id() == cue_id)
-            .map(|c| (c.continue_mode(), c.post_wait(), c.state() == CueState::Running))
+            .map(|c| (c.continue_mode(), c.post_wait(), c.state() == CueState::Running, c.holds_playhead()))
             .ok_or_else(|| anyhow!("Cue not found after go: {:?}", cue_id))?;
+
+        // Sequential groups retain the outer Playhead while running so that
+        // subsequent GOs are routed into the group's internal sequence via
+        // absorbs_go().  The advance_playhead() already moved the Playhead
+        // forward; we move it back here.  The event loop will advance it again
+        // once the group completes.
+        if is_still_running && holds_playhead {
+            cue_list.playhead_cue_id = Some(cue_id);
+        }
 
         // Determine whether to chain immediately:
         //

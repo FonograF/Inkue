@@ -81,6 +81,46 @@ function basenameNoExt(p: string) {
 // Cue context-menu item
 // ---------------------------------------------------------------------------
 
+/** Compute the set of child cue IDs that should show the inner playhead indicator.
+ *
+ * Rules per group mode:
+ * - Sequential (at outer playhead, Standby): show first child (previews what fires on GO).
+ * - Sequential (running): show `active_child_id` (the next child that fires on GO).
+ * - Simultaneous (at outer playhead OR running): show all direct children.
+ *
+ * `outerPlayheadId` is the ID of the cue currently at the outer playhead. */
+function computeInnerPlayheadIds(cues: CueSummary[], outerPlayheadId: string | null): Set<string> {
+  const result = new Set<string>();
+  for (const cue of cues) {
+    if (cue.cue_type === "group") {
+      const isAtPlayhead = cue.id === outerPlayheadId;
+      const isRunning = cue.state === "running";
+
+      if (cue.group_mode === "sequential") {
+        if (isRunning && cue.active_child_id) {
+          // Running: active_child_id = the next child to fire on GO.
+          result.add(cue.active_child_id);
+        } else if (isAtPlayhead && !isRunning) {
+          // At outer playhead but not yet fired: preview the first child.
+          const first = cue.children?.[0];
+          if (first) result.add(first.id);
+        }
+      } else if (cue.group_mode === "simultaneous") {
+        if (isAtPlayhead || isRunning) {
+          // All children will fire (or are firing) — show playhead on all.
+          for (const child of cue.children ?? []) {
+            result.add(child.id);
+          }
+        }
+      }
+    }
+    if (cue.children?.length) {
+      computeInnerPlayheadIds(cue.children, outerPlayheadId).forEach((id) => result.add(id));
+    }
+  }
+  return result;
+}
+
 function CtxItem({ label, danger, onClick }: { label: string; danger?: boolean; onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
@@ -223,6 +263,14 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     return flatten(cues, 0, null);
   }, [cues, expandedGroupIds]);
 
+  // Inner playhead IDs — children shown with the playhead indicator because
+  // their parent group is running and they are the active child (sequential)
+  // or all children (simultaneous).
+  const innerPlayheadIds = useMemo(
+    () => computeInnerPlayheadIds(cues, playheadCueId ?? null),
+    [cues, playheadCueId],
+  );
+
   // ---------- Multi-selection anchors ----------
   // anchorCueIdRef: the fixed end of a range selection (set by plain click / plain arrow).
   // selectionEndRef: the moving end (updated by shift+click / shift+arrow).
@@ -273,6 +321,8 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     active: boolean;
     dropIdx: number | null;
     dropGroupId: string | null;
+    /** true = drop at end of group; false = insert at specific position within group */
+    dropGroupAtEnd: boolean;
   } | null>(null);
 
   // Set to true for one event loop tick after a drag completes so the row's
@@ -334,39 +384,51 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       return null; // append at end
     }
 
-    // Like calcInsertIdxFromY but also detects when the cursor is over the
-    // middle portion of a Group row (drop-into-group zone).
-    // Returns { insertIdx, groupId } — groupId is non-null only for group drops.
+    // Determine where to drop a dragged cue.
     //
-    // Uses the same midpoint-first traversal as calcInsertIdxFromY so it
-    // correctly returns insertIdx=0 when the cursor is above the first row.
-    function calcDropTarget(clientY: number): { insertIdx: number; groupId: string | null } {
+    // Two-pass approach:
+    //   Pass 1 — check if cursor is in the MIDDLE zone of a group header row
+    //             (the only case where we drop at end without a positional insert line).
+    //   Pass 2 — standard midpoint logic gives a stable insertIdx, then derive
+    //             the target group purely from flatItems data.
+    //             This is flicker-free: groupId only changes when insertIdx crosses
+    //             a real group boundary, not on pixel-level gaps between rows.
+    function calcDropTarget(clientY: number): { insertIdx: number; groupId: string | null; atEnd: boolean } {
       const rowEls = rowsScrollRef.current
         ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
         : [];
 
+      // Pass 1: group-header middle zone → drop at end of that group.
+      for (const el of rowEls) {
+        if (el.dataset.isGroup !== "true") continue;
+        const rect = el.getBoundingClientRect();
+        if (clientY < rect.top || clientY > rect.bottom) continue;
+        const relY = clientY - rect.top;
+        const DEAD = rect.height * 0.28;
+        if (relY >= DEAD && relY <= rect.height - DEAD) {
+          const idx = Number(el.dataset.cueIndex ?? 0);
+          return { insertIdx: idx, groupId: el.dataset.cueId ?? null, atEnd: true };
+        }
+      }
+
+      // Pass 2: midpoint insert position.
+      let insertIdx = flatItemsRef.current.length;
       for (const el of rowEls) {
         const rect = el.getBoundingClientRect();
-        const idx = Number(el.dataset.cueIndex ?? 0);
-
-        // Check group middle zone first (only when cursor is inside the row).
-        if (el.dataset.isGroup === "true" && clientY >= rect.top && clientY <= rect.bottom) {
-          const DEAD = rect.height * 0.28;
-          const relY = clientY - rect.top;
-          if (relY >= DEAD && relY <= rect.height - DEAD) {
-            return { insertIdx: idx, groupId: el.dataset.cueId ?? null };
-          }
-          // In the dead zone: fall through to midpoint logic below.
-        }
-
-        // Standard midpoint logic (identical to calcInsertIdxFromY).
-        // Cursor above this row's midpoint → insert before this row.
         if (clientY < rect.top + rect.height / 2) {
-          return { insertIdx: idx, groupId: null };
+          insertIdx = Number(el.dataset.cueIndex ?? 0);
+          break;
         }
-        // Cursor at/below midpoint → check next row.
       }
-      return { insertIdx: flatItemsRef.current.length, groupId: null };
+
+      // Derive group from flat-items data: if the item we're inserting BEFORE
+      // is a child, we're within its parent group. This is stable — groupId only
+      // changes when insertIdx crosses into a different parentGroupId territory.
+      const items = flatItemsRef.current;
+      const itemAt = insertIdx < items.length ? items[insertIdx] : null;
+      const groupId = itemAt?.parentGroupId ?? null;
+
+      return { insertIdx, groupId, atEnd: false };
     }
 
     const onMove = (e: MouseEvent) => {
@@ -435,14 +497,21 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           document.body.style.cursor = "grabbing";
           setDraggingCueId(drag.id);
         }
-        const { insertIdx, groupId } = calcDropTarget(e.clientY);
+        const { insertIdx, groupId, atEnd } = calcDropTarget(e.clientY);
         // Don't allow dropping a cue onto itself as a group target.
         const resolvedGroupId = drag.ids.includes(groupId ?? "") ? null : groupId;
         drag.dropIdx = insertIdx;
         drag.dropGroupId = resolvedGroupId;
-        if (resolvedGroupId) {
+        drag.dropGroupAtEnd = atEnd;
+        if (resolvedGroupId && atEnd) {
+          // Drop onto group header at end → highlight group, no insert line.
           setDropTargetGroupId(resolvedGroupId);
           setDropInsertIndex(null);
+        } else if (resolvedGroupId && !atEnd) {
+          // Insert between group children → highlight group + show insert line.
+          // No flickering: calcDropTarget always returns the same groupId for child rows.
+          setDropTargetGroupId(resolvedGroupId);
+          setDropInsertIndex(insertIdx);
         } else {
           setDropTargetGroupId(null);
           setDropInsertIndex(insertIdx);
@@ -489,27 +558,36 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         const drag = cueDragRef.current;
         if (drag.active) {
           if (drag.dropGroupId) {
-            // Drop onto a group — add the dragged cue(s) as children.
-            // addCueToGroup now handles sources from anywhere in the hierarchy.
+            // Drop onto / insert into a group.
+            const pos = drag.dropGroupAtEnd
+              ? -1  // append at end
+              : resolveChildPositionInGroup(drag.dropGroupId, drag.dropIdx ?? 0);
             const promises = drag.ids.map((id) =>
-              addCueToGroup(id, drag.dropGroupId!, -1).catch(console.error)
+              addCueToGroup(id, drag.dropGroupId!, pos).catch(console.error)
             );
             Promise.all(promises).then(onRefresh).catch(console.error);
           } else if (drag.dropIdx !== null) {
             if (drag.parentGroupId) {
-              // Check if the drop lands within the same group (rearrange)
-              // or outside of it (extract to top level).
-              const dropItem  = flatItemsRef.current[drag.dropIdx];
-              const prevItem  = drag.dropIdx > 0 ? flatItemsRef.current[drag.dropIdx - 1] : null;
+              // Cue(s) sourced from inside a group.
+              const dropItem = flatItemsRef.current[drag.dropIdx];
+              const prevItem = drag.dropIdx > 0 ? flatItemsRef.current[drag.dropIdx - 1] : null;
               const sameGroup =
                 dropItem?.parentGroupId === drag.parentGroupId ||
                 prevItem?.parentGroupId === drag.parentGroupId;
               if (sameGroup) {
+                // Reorder within the same group.
                 const childPos = resolveChildPositionInGroup(drag.parentGroupId, drag.dropIdx);
-                addCueToGroup(drag.id, drag.parentGroupId, childPos).then(onRefresh).catch(console.error);
+                const promises = drag.ids.map((id) =>
+                  addCueToGroup(id, drag.parentGroupId!, childPos).catch(console.error)
+                );
+                Promise.all(promises).then(onRefresh).catch(console.error);
               } else {
+                // Extract to top level.
                 const beforeId = resolveTopLevelBeforeId(drag.dropIdx);
-                moveToTopLevel(drag.id, beforeId).then(onRefresh).catch(console.error);
+                const promises = drag.ids.map((id) =>
+                  moveToTopLevel(id, beforeId).catch(console.error)
+                );
+                Promise.all(promises).then(onRefresh).catch(console.error);
               }
             } else if (drag.ids.length > 1) {
               const beforeId = flatItemsRef.current[drag.dropIdx]?.cue.id ?? null;
@@ -615,9 +693,8 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     const flatItem = flatItemsRef.current[index];
     const parentGroupId = flatItem?.parentGroupId ?? null;
 
-    // Multi-select drag only when all dragged cues are at the same level
-    // (children can't be multi-dragged across groups).
-    const dragIds = parentGroupId === null && selectedCueSet.has(cueId) && selectedCueIds.length > 1
+    // Allow multi-drag for top-level cues and for children within the same group.
+    const dragIds = selectedCueSet.has(cueId) && selectedCueIds.length > 1
       ? [...selectedCueIds]
       : [cueId];
 
@@ -631,6 +708,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       active: false,
       dropIdx: null,
       dropGroupId: null,
+      dropGroupAtEnd: true,
     };
   }
 
@@ -1013,8 +1091,6 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               <div style={{ height: 2, background: "#3b82f6", margin: `0 ${8 + depth * 20}px`, borderRadius: 1, pointerEvents: "none" }} />
             )}
             {draggingCueId !== null && dropInsertIndex === flatIndex && (
-              depth === 0 || cueDragRef.current?.parentGroupId != null
-            ) && (
               <div style={{
                 height: 2, background: "#3b82f6",
                 margin: `0 ${8 + depth * 20}px`,
@@ -1035,12 +1111,13 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               isGroupExpanded={expandedGroupIds.has(cue.id)}
               onToggleExpand={() => toggleGroupExpand(cue.id)}
               isSelected={selectedCueSet.has(cue.id)}
-              isAtPlayhead={playheadCueId === cue.id}
+              isAtPlayhead={playheadCueId === cue.id || innerPlayheadIds.has(cue.id)}
               isDragOver={dragOverCueId === cue.id}
               isGroupDropTarget={
                 cue.cue_type === "group" &&
                 (dropTargetGroupId === cue.id || dragOverGroupId === cue.id)
               }
+              parentGroupId={parentGroupId}
               isDragSource={
                 draggingCueId !== null &&
                 (cueDragRef.current?.ids.includes(cue.id) ?? false)
@@ -1070,8 +1147,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 } else {
                   setSelectedCueId(cue.id);
                   setSelectedCueIds([cue.id]);
-                  setPlayheadCueId(cue.id);
-                  setPlayhead(cue.id).catch(console.error);
+                  // For child cues, move the outer playhead to their parent group
+                  // so that Space fires the group (which fires the child).
+                  // For top-level cues, move the playhead directly to the cue.
+                  const playheadTarget = parentGroupId ?? cue.id;
+                  setPlayheadCueId(playheadTarget);
+                  setPlayhead(playheadTarget).catch(console.error);
                   anchorCueIdRef.current = cue.id;
                   selectionEndRef.current = cue.id;
                 }
@@ -1090,7 +1171,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         {isDragging && fileDragInsertIdx === flatItems.length && (
           <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
         )}
-        {draggingCueId !== null && dropInsertIndex === cues.length && (
+        {draggingCueId !== null && dropInsertIndex === flatItems.length && (
           <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
         )}
         {/* Drop-target indicator line AFTER the last row (new-cue drag from toolbar) */}
@@ -1223,7 +1304,19 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                             onClick={async () => {
                               closeCtx();
                               if (!contextMenu.cueId || !contextMenu.parentGroupId) return;
-                              await removeCueFromGroup(contextMenu.parentGroupId, contextMenu.cueId).catch(console.error);
+                              // Remove all selected cues that share this parent group,
+                              // or just the right-clicked cue if it's not in the selection.
+                              const groupId = contextMenu.parentGroupId;
+                              const targets =
+                                selectedCueIds.includes(contextMenu.cueId)
+                                  ? selectedCueIds.filter((id) => {
+                                      const fi = flatItems.find((f) => f.cue.id === id);
+                                      return fi?.parentGroupId === groupId;
+                                    })
+                                  : [contextMenu.cueId];
+                              await Promise.all(
+                                targets.map((id) => removeCueFromGroup(groupId, id).catch(console.error))
+                              );
                               await onRefresh();
                             }}
                           />

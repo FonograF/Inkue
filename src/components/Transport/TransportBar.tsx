@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { go, stopAll, setMasterVolume, getPreferences } from "../../lib/commands";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTransportStore } from "../../stores/transportStore";
+import { OscMonitor } from "../Osc/OscMonitor";
 
 interface Props {
   onRefresh: () => void;
@@ -193,11 +194,15 @@ function VolumeRow({
 // TransportBar
 // ---------------------------------------------------------------------------
 
+const OSC_ACTIVITY_MS = 300;
+
 export function TransportBar({ onRefresh }: Props) {
   const { cues } = useWorkspaceStore();
-  const { masterPeakL, masterPeakR } = useTransportStore();
+  const { masterPeakL, masterPeakR, oscActivityAt } = useTransportStore();
 
   const [volumeDb, setVolumeDb] = useState(0);
+  const [oscActive, setOscActive] = useState(false);
+  const [oscMonitorOpen, setOscMonitorOpen] = useState(false);
 
   // ---- VU meter animation state (rendered via rAF) ----
   const [meterL, setMeterL] = useState({ fill: 0, hold: 0 });
@@ -260,6 +265,14 @@ export function TransportBar({ onRefresh }: Props) {
     rafId.current = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(rafId.current);
   }, []); // runs once on mount
+
+  // ---- OSC activity flash ----
+  useEffect(() => {
+    if (oscActivityAt == null) return;
+    setOscActive(true);
+    const timer = setTimeout(() => setOscActive(false), OSC_ACTIVITY_MS);
+    return () => clearTimeout(timer);
+  }, [oscActivityAt]);
 
   // ---- Volume preference ----
   useEffect(() => {
@@ -368,6 +381,24 @@ export function TransportBar({ onRefresh }: Props) {
           ))
         )}
       </div>
+
+      {/* OSC activity indicator — click to open/close monitor */}
+      <button
+        title="OSC activity — click to open monitor"
+        onClick={() => setOscMonitorOpen((v) => !v)}
+        style={{
+          width: 14,
+          height: 14,
+          borderRadius: "50%",
+          background: oscMonitorOpen ? "#3b82f6" : oscActive ? "#4ade80" : "#1e293b",
+          border: `1px solid ${oscMonitorOpen ? "#3b82f6" : "#334155"}`,
+          flexShrink: 0,
+          transition: "background 0.1s",
+          cursor: "pointer",
+          padding: 0,
+        }}
+      />
+      {oscMonitorOpen && <OscMonitor onClose={() => setOscMonitorOpen(false)} />}
 
       {/* Meter + slider block */}
       <div

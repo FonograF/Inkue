@@ -2,6 +2,7 @@
 
 pub mod cue_cmds;
 pub mod device_cmds;
+pub mod osc_cmds;
 pub mod preferences_cmds;
 pub mod transport_cmds;
 pub mod undo_cmds;

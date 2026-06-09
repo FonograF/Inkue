@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 
-use crate::engine::{device_manager::OutputPatch, output_engine::OutputEngine, AudioEngine};
+use crate::engine::{device_manager::OutputPatch, osc_patch::OscPatch, output_engine::OutputEngine, AudioEngine};
 
 /// Events emitted by cues to the Show Engine during execution.
 #[derive(Debug, Clone)]
@@ -48,10 +48,13 @@ pub struct CueContext {
     /// Monitor index for the unified output surface.
     /// `None` = floating window; `Some(n)` = fullscreen on monitor n.
     pub output_screen: Option<u32>,
+    /// Snapshot of the workspace's OSC Patch table.
+    pub osc_patches: Arc<Vec<OscPatch>>,
 }
 
 impl CueContext {
     /// Create a new context.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         audio_engine: Arc<AudioEngine>,
         output_engine: Arc<OutputEngine>,
@@ -60,6 +63,7 @@ impl CueContext {
         output_patches: Vec<OutputPatch>,
         default_patch_id: Option<uuid::Uuid>,
         output_screen: Option<u32>,
+        osc_patches: Vec<OscPatch>,
     ) -> Self {
         Self {
             audio_engine,
@@ -69,6 +73,7 @@ impl CueContext {
             output_patches: Arc::new(output_patches),
             default_patch_id,
             output_screen,
+            osc_patches: Arc::new(osc_patches),
         }
     }
 
@@ -77,6 +82,12 @@ impl CueContext {
     pub fn resolve_patch(&self, patch_id: Option<uuid::Uuid>) -> Option<&OutputPatch> {
         let id = patch_id.or(self.default_patch_id)?;
         self.output_patches.iter().find(|p| p.id == id)
+    }
+
+    /// Resolve an OSC Patch by ID.  Returns `None` if the patch is not in the
+    /// workspace's OSC patch table.
+    pub fn resolve_osc_patch(&self, patch_id: uuid::Uuid) -> Option<&OscPatch> {
+        self.osc_patches.iter().find(|p| p.id == patch_id)
     }
 
     /// Convenience: emit an event through the context without unwrapping.

@@ -39,6 +39,9 @@ crossbeam-channel = "0.5"
 # Image encoding (base64 data URLs for image surface windows)
 base64 = "0.22"
 
+# OSC
+rosc = "0.10"
+
 # Logging
 log = "0.4"
 env_logger = "0.11"

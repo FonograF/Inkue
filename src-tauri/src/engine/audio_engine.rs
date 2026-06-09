@@ -12,6 +12,8 @@ use cpal::{Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::HeapRb;
 
+use crate::preferences::MachineAudioConfig;
+
 use super::{
     device_manager::DeviceManager,
     ring_command::{AudioCommand, AudioStatus, FadeCurve, VoiceId},
@@ -41,74 +43,22 @@ unsafe impl Send for AudioEngine {}
 unsafe impl Sync for AudioEngine {}
 
 impl AudioEngine {
-    /// Open the default output device and start the audio callback.
-    pub fn new() -> Result<Arc<Self>> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| anyhow!("No default audio output device found"))?;
-
-        let config = device.default_output_config()?;
-        let sample_rate = config.sample_rate().0;
-        let channels = config.channels();
-
-        let (cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
-        let (mut status_prod, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
-
-        let shared_voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
-        let cb_voices = Arc::clone(&shared_voices);
-
+    /// Open an output device according to `config` and start the audio callback.
+    pub fn new(config: &MachineAudioConfig) -> Result<Arc<Self>> {
         let master_gain = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0_f32)));
-        let cb_master_gain = Arc::clone(&master_gain);
-        let engine_master_gain = Arc::clone(&master_gain);
+        let shared_voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_output_stream(
-                &StreamConfig {
-                    channels,
-                    sample_rate: cpal::SampleRate(sample_rate),
-                    buffer_size: cpal::BufferSize::Default,
-                },
-                move |data: &mut [f32], _| {
-                    fill_buffer(data, channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain);
-                },
-                |err| log::error!("cpal stream error: {err}"),
-                None,
-            )?,
-            cpal::SampleFormat::I32 => {
-                // Pre-allocate scratch buffer once — no allocation inside the RT callback.
-                let mut scratch = vec![0.0f32; 4096 * channels as usize].into_boxed_slice();
-                device.build_output_stream(
-                    &StreamConfig {
-                        channels,
-                        sample_rate: cpal::SampleRate(sample_rate),
-                        buffer_size: cpal::BufferSize::Default,
-                    },
-                    move |data: &mut [i32], _| {
-                        let n = data.len().min(scratch.len());
-                        fill_buffer(&mut scratch[..n], channels as usize, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_master_gain);
-                        for (out, &s) in data.iter_mut().zip(scratch[..n].iter()) {
-                            *out = (s.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
-                        }
-                    },
-                    |err| log::error!("cpal stream error: {err}"),
-                    None,
-                )?
-            }
-            fmt => return Err(anyhow!("Unsupported sample format: {fmt:?}")),
-        };
-
-        stream.play()?;
+        let sr = open_stream_inner(config, Arc::clone(&shared_voices), Arc::clone(&master_gain))?;
 
         Ok(Arc::new(Self {
             device_manager: Mutex::new(DeviceManager::new()),
-            cmd_prod: Mutex::new(cmd_prod),
-            status_cons: Mutex::new(status_cons),
+            cmd_prod: Mutex::new(sr.cmd_prod),
+            status_cons: Mutex::new(sr.status_cons),
             voices: shared_voices,
-            _stream: Mutex::new(Some(stream)),
-            sample_rate: std::sync::atomic::AtomicU32::new(sample_rate),
-            output_channels: std::sync::atomic::AtomicU32::new(channels as u32),
-            master_gain: engine_master_gain,
+            _stream: Mutex::new(Some(sr.stream)),
+            sample_rate: std::sync::atomic::AtomicU32::new(sr.sample_rate),
+            output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
+            master_gain,
         }))
     }
 
@@ -225,151 +175,30 @@ impl AudioEngine {
         }
     }
 
-    /// Stop the current stream and re-open on the specified device/backend.
+    /// Stop the current stream and re-open according to `config`.
     /// All active voices are killed; cues should be reset by the caller.
-    pub fn restart(
-        &self,
-        device_name: Option<&str>,
-        backend: &crate::preferences::AudioBackend,
-        buffer_size: u32,
-        asio_out_pair: u32,
-    ) -> Result<()> {
-        use crate::preferences::AudioBackend;
-
+    pub fn restart(&self, config: &MachineAudioConfig) -> Result<()> {
         // Kill all active voices.
         if let Ok(mut voices) = self.voices.lock() {
             for v in voices.iter() { v.set_stopped(); }
             voices.clear();
         }
 
-        // Drop the old stream.
+        // Drop the old stream before opening the new one (exclusive backends
+        // require the device to be released first).
         {
             let mut sg = self._stream.lock().map_err(|_| anyhow!("stream mutex poisoned"))?;
             *sg = None;
         }
 
-        // Select host.
-        let host = match backend {
-            AudioBackend::WasapiShared | AudioBackend::WasapiExclusive => cpal::default_host(),
-            AudioBackend::Asio => open_asio_host()?,
-        };
+        let sr = open_stream_inner(config, Arc::clone(&self.voices), Arc::clone(&self.master_gain))?;
 
-        // Select device.
-        let device = if matches!(backend, AudioBackend::Asio) {
-            // Try to find the ASIO driver by name; fall back to the first available.
-            let found = device_name
-                .filter(|s| !s.is_empty())
-                .and_then(|name| {
-                    host.output_devices().ok()
-                        .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(name)))
-                });
-            found
-                .or_else(|| host.default_output_device())
-                .ok_or_else(|| anyhow!(
-                    "No ASIO device found. Make sure the driver is not \
-                     already in use by another application."
-                ))?
-        } else if let Some(name) = device_name.filter(|s| !s.is_empty()) {
-            host.output_devices()
-                .map_err(|e| anyhow!("Failed to enumerate devices: {e}"))?
-                .find(|d| d.name().ok().as_deref() == Some(name))
-                .ok_or_else(|| anyhow!("Audio device '{}' not found", name))?
-        } else {
-            host.default_output_device()
-                .ok_or_else(|| anyhow!("No default audio output device found"))?
-        };
+        *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = sr.cmd_prod;
+        *self.status_cons.lock().map_err(|_| anyhow!("status_cons poisoned"))? = sr.status_cons;
+        *self._stream.lock().map_err(|_| anyhow!("stream poisoned"))? = Some(sr.stream);
+        self.sample_rate.store(sr.sample_rate, std::sync::atomic::Ordering::Relaxed);
+        self.output_channels.store(sr.channels, std::sync::atomic::Ordering::Relaxed);
 
-        let default_config = device.default_output_config()
-            .map_err(|e| anyhow!("Device config error: {e}"))?;
-        let new_sample_rate = default_config.sample_rate().0;
-        let channels = default_config.channels();
-
-        let buf_size = match backend {
-            // ASIO drivers have a preferred buffer size set in their own control panel.
-            // Forcing a Fixed size often causes the stream to fail or underrun.
-            AudioBackend::WasapiExclusive => cpal::BufferSize::Fixed(buffer_size),
-            AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
-        };
-
-        // New ring buffers.
-        let (new_cmd_prod, mut new_cmd_cons) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
-        let (mut new_status_prod, new_status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
-
-        // Build new stream — reuse same voices and master_gain.
-        let cb_voices = Arc::clone(&self.voices);
-        let cb_mg = Arc::clone(&self.master_gain);
-
-        // For ASIO: route the internal stereo mix to the selected output pair.
-        // pair_offset = first channel index of the selected pair (e.g. pair 1 → offset 2).
-        let total_ch = channels as usize;
-        let pair_offset = (asio_out_pair as usize * 2).min(total_ch.saturating_sub(2));
-
-        let stream_cfg = cpal::StreamConfig {
-            channels,
-            sample_rate: cpal::SampleRate(new_sample_rate),
-            buffer_size: buf_size,
-        };
-
-        let new_stream = match default_config.sample_format() {
-            cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
-                &stream_cfg,
-                move |data: &mut [f32], _| {
-                    fill_buffer(data, total_ch, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg);
-                },
-                |err| log::error!("cpal stream error: {err}"),
-                None,
-            )?,
-            cpal::SampleFormat::F32 => {
-                // Route stereo mix to the selected pair; zero the rest.
-                let mut scratch = vec![0.0f32; 4096 * 2].into_boxed_slice();
-                device.build_output_stream(
-                    &stream_cfg,
-                    move |data: &mut [f32], _| {
-                        let frames = data.len() / total_ch;
-                        let n = (frames * 2).min(scratch.len());
-                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg);
-                        data.fill(0.0);
-                        for f in 0..frames {
-                            data[f * total_ch + pair_offset]     = scratch[f * 2];
-                            data[f * total_ch + pair_offset + 1] = scratch[f * 2 + 1];
-                        }
-                    },
-                    |err| log::error!("cpal stream error: {err}"),
-                    None,
-                )?
-            }
-            cpal::SampleFormat::I32 => {
-                // Pre-allocate stereo scratch — no alloc inside the RT callback.
-                let scratch_len = (buffer_size as usize * 2).max(4096 * 2);
-                let mut scratch = vec![0.0f32; scratch_len].into_boxed_slice();
-                device.build_output_stream(
-                    &stream_cfg,
-                    move |data: &mut [i32], _| {
-                        let frames = data.len() / total_ch;
-                        let n = (frames * 2).min(scratch.len());
-                        fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut new_cmd_cons, &mut new_status_prod, &cb_mg);
-                        data.fill(0);
-                        for f in 0..frames {
-                            data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
-                            data[f * total_ch + pair_offset + 1] = (scratch[f * 2 + 1].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
-                        }
-                    },
-                    |err| log::error!("cpal stream error: {err}"),
-                    None,
-                )?
-            }
-            fmt => return Err(anyhow!("Unsupported sample format: {fmt:?}")),
-        };
-        new_stream.play()?;
-
-        // Swap ring buffers and stream.
-        *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = new_cmd_prod;
-        *self.status_cons.lock().map_err(|_| anyhow!("status_cons poisoned"))? = new_status_cons;
-        *self._stream.lock().map_err(|_| anyhow!("stream poisoned"))? = Some(new_stream);
-        self.sample_rate.store(new_sample_rate, std::sync::atomic::Ordering::Relaxed);
-        self.output_channels.store(channels as u32, std::sync::atomic::Ordering::Relaxed);
-
-        // Refresh device manager.
         if let Ok(mut mgr) = self.device_manager.lock() { let _ = mgr.refresh_devices(); }
 
         Ok(())
@@ -382,6 +211,149 @@ impl AudioEngine {
             .try_push(cmd)
             .map_err(|_| anyhow!("Audio command ring buffer full"))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stream builder — shared between new() and restart()
+// ---------------------------------------------------------------------------
+
+struct StreamResult {
+    stream: Stream,
+    sample_rate: u32,
+    channels: u32,
+    cmd_prod: ringbuf::HeapProd<AudioCommand>,
+    status_cons: ringbuf::HeapCons<AudioStatus>,
+}
+
+/// Select device, configure buffer, build and start the cpal stream.
+///
+/// Creates fresh ring buffers and returns them alongside the running stream so
+/// the caller can wire them into the engine (either for initial construction or
+/// after a restart).
+fn open_stream_inner(
+    config: &MachineAudioConfig,
+    cb_voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    cb_mg: Arc<std::sync::atomic::AtomicU32>,
+) -> Result<StreamResult> {
+    use crate::preferences::AudioBackend;
+
+    let host = match config.backend {
+        AudioBackend::WasapiShared | AudioBackend::WasapiExclusive => cpal::default_host(),
+        AudioBackend::Asio => open_asio_host()?,
+    };
+
+    let device_name = config.device_id.as_deref();
+
+    let device = if matches!(config.backend, AudioBackend::Asio) {
+        let found = device_name
+            .filter(|s| !s.is_empty())
+            .and_then(|name| {
+                host.output_devices().ok()
+                    .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(name)))
+            });
+        found
+            .or_else(|| host.default_output_device())
+            .ok_or_else(|| anyhow!(
+                "No ASIO device found. Make sure the driver is not already in use by another application."
+            ))?
+    } else if let Some(name) = device_name.filter(|s| !s.is_empty()) {
+        host.output_devices()
+            .map_err(|e| anyhow!("Failed to enumerate devices: {e}"))?
+            .find(|d| d.name().ok().as_deref() == Some(name))
+            .ok_or_else(|| anyhow!("Audio device '{}' not found", name))?
+    } else {
+        host.default_output_device()
+            .ok_or_else(|| anyhow!("No default audio output device found"))?
+    };
+
+    let default_config = device.default_output_config()
+        .map_err(|e| anyhow!("Device config error: {e}"))?;
+    let sample_rate = default_config.sample_rate().0;
+    let channels = default_config.channels();
+    let total_ch = channels as usize;
+
+    // Buffer size: only meaningful for WASAPI Exclusive.
+    // ASIO drivers expose a buffer-size selector in their own control panel.
+    // WASAPI Shared uses the Windows audio engine period (~10 ms); Fixed is ignored.
+    let buf_size = match config.backend {
+        AudioBackend::WasapiExclusive => cpal::BufferSize::Fixed(config.buffer_size),
+        AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
+    };
+
+    let stream_cfg = StreamConfig {
+        channels,
+        sample_rate: cpal::SampleRate(sample_rate),
+        buffer_size: buf_size,
+    };
+
+    // ASIO: route the stereo mix to the selected output pair.
+    let pair_offset = (config.asio_out_pair as usize * 2).min(total_ch.saturating_sub(2));
+
+    let (cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
+    let (mut status_prod, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
+
+    let stream = match default_config.sample_format() {
+        cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
+            &stream_cfg,
+            move |data: &mut [f32], _| {
+                fill_buffer(data, total_ch, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+            },
+            |err| log::error!("cpal stream error: {err}"),
+            None,
+        )?,
+        cpal::SampleFormat::F32 => {
+            // Route stereo mix to the selected ASIO pair; zero the rest.
+            let mut scratch = vec![0.0f32; 4096 * 2].into_boxed_slice();
+            device.build_output_stream(
+                &stream_cfg,
+                move |data: &mut [f32], _| {
+                    let frames = data.len() / total_ch;
+                    let n = (frames * 2).min(scratch.len());
+                    fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    data.fill(0.0);
+                    for f in 0..frames {
+                        data[f * total_ch + pair_offset]     = scratch[f * 2];
+                        data[f * total_ch + pair_offset + 1] = scratch[f * 2 + 1];
+                    }
+                },
+                |err| log::error!("cpal stream error: {err}"),
+                None,
+            )?
+        }
+        cpal::SampleFormat::I32 => {
+            // Pre-allocate stereo scratch — no alloc inside the RT callback.
+            let scratch_len = (config.buffer_size as usize * 2).max(4096 * 2);
+            let mut scratch = vec![0.0f32; scratch_len].into_boxed_slice();
+            device.build_output_stream(
+                &stream_cfg,
+                move |data: &mut [i32], _| {
+                    let frames = data.len() / total_ch;
+                    let n = (frames * 2).min(scratch.len());
+                    fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    data.fill(0);
+                    for f in 0..frames {
+                        data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
+                        data[f * total_ch + pair_offset + 1] = (scratch[f * 2 + 1].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
+                    }
+                },
+                |err| log::error!("cpal stream error: {err}"),
+                None,
+            )?
+        }
+        fmt => return Err(anyhow!("Unsupported sample format: {fmt:?}")),
+    };
+
+    stream.play()?;
+    log::info!(
+        "Audio stream opened — backend={:?} device={:?} rate={}Hz channels={} buf={:?}",
+        config.backend,
+        config.device_id,
+        sample_rate,
+        channels,
+        buf_size,
+    );
+
+    Ok(StreamResult { stream, sample_rate, channels: channels as u32, cmd_prod, status_cons })
 }
 
 // ---------------------------------------------------------------------------

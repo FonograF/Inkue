@@ -14,6 +14,8 @@ import type {
   DisplayPreferences,
   GeneralPreferences,
   GroupMode,
+  OscPatch,
+  OscReceiveConfig,
   OutputPatch,
   ScreenInfo,
   VideoCueData,
@@ -175,3 +177,23 @@ export const setOutputPatch = (
   channels: number[]
 ) => invoke<string>("set_output_patch", { patchId, name, deviceId, channels });
 export const refreshDevices = () => invoke<void>("refresh_devices");
+
+// ---------------------------------------------------------------------------
+// OSC Patches
+// ---------------------------------------------------------------------------
+
+export const listOscPatches = () => invoke<OscPatch[]>("list_osc_patches");
+export const addOscPatch = (name: string, ip: string, port: number) =>
+  invoke<OscPatch>("add_osc_patch", { name, ip, port });
+export const updateOscPatch = (patch: OscPatch) =>
+  invoke<void>("update_osc_patch", { patch });
+export const removeOscPatch = (patchId: string) =>
+  invoke<void>("remove_osc_patch", { patchId });
+
+// ---------------------------------------------------------------------------
+// OSC Receive Config
+// ---------------------------------------------------------------------------
+
+export const getOscConfig = () => invoke<OscReceiveConfig>("get_osc_config");
+export const setOscConfig = (config: OscReceiveConfig) =>
+  invoke<void>("set_osc_config", { config });

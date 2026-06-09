@@ -21,6 +21,10 @@ use commands::{
         set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
+    osc_cmds::{
+        add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
+        set_osc_config, update_osc_patch,
+    },
     preferences_cmds::{
         get_asio_output_pairs, get_available_backends, get_machine_audio_config,
         get_output_screen, get_preferences, list_audio_devices, list_system_fonts,
@@ -34,7 +38,7 @@ use commands::{
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
-use engine::{AudioEngine, OutputEngine};
+use engine::{AudioEngine, OscServer, OutputEngine};
 use state::AppState;
 use tauri::Manager;
 
@@ -68,7 +72,11 @@ pub fn run() {
                     })?,
             );
 
-            let app_state = AppState::new(audio_engine, Arc::clone(&output_engine));
+            let osc_config = crate::machine_config::load_osc();
+            let app_handle_osc = app.handle().clone();
+            let osc_server = Arc::new(OscServer::start(osc_config, app_handle_osc));
+
+            let app_state = AppState::new(audio_engine, Arc::clone(&output_engine), Arc::clone(&osc_server));
             app.manage(app_state);
 
             // ----------------------------------------------------------------
@@ -158,6 +166,13 @@ pub fn run() {
             get_asio_output_pairs,
             get_output_screen,
             set_output_screen,
+            // OSC
+            list_osc_patches,
+            add_osc_patch,
+            update_osc_patch,
+            remove_osc_patch,
+            get_osc_config,
+            set_osc_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinCue");

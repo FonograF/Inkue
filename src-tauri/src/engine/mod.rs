@@ -11,9 +11,13 @@
 pub mod audio_engine;
 pub mod device_manager;
 pub mod mpv_sys;
+pub mod osc_patch;
+pub mod osc_server;
 pub mod output_engine;
 pub mod ring_command;
 pub mod voice;
 
 pub use audio_engine::AudioEngine;
+pub use osc_patch::OscPatch;
+pub use osc_server::OscServer;
 pub use output_engine::OutputEngine;

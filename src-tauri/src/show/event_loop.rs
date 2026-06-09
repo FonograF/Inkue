@@ -82,6 +82,7 @@ fn make_context(
     output_patches: Vec<crate::engine::device_manager::OutputPatch>,
     default_patch_id: Option<uuid::Uuid>,
     output_screen: Option<u32>,
+    osc_patches: Vec<crate::engine::osc_patch::OscPatch>,
 ) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     CueContext::new(
@@ -92,6 +93,7 @@ fn make_context(
         output_patches,
         default_patch_id,
         output_screen,
+        osc_patches,
     )
 }
 
@@ -191,6 +193,7 @@ fn tick(
     let ws_patches        = ws.output_patches.clone();
     let ws_default_patch  = ws.default_output_patch_id;
     let ws_output_screen  = ws.preferences.display.output_screen;
+    let ws_osc_patches    = ws.osc_patches.clone();
     let cue_list = match ws.active_cue_list_mut() {
         Some(cl) => cl,
         None => return,
@@ -211,7 +214,7 @@ fn tick(
     // ------------------------------------------------------------------
     // 5. Tick all Running cues so they can handle pre-wait transitions.
     // ------------------------------------------------------------------
-    let tick_ctx = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen);
+    let tick_ctx = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone());
     for cue in cue_list.cues.iter_mut() {
         if cue.state() == CueState::Running {
             let _ = cue.tick(&tick_ctx);
@@ -330,7 +333,7 @@ fn tick(
     let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
-        let context = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen);
+        let context = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone());
         let mut transport = Transport::new(context);
         if let Ok(ids) = transport.go(cue_list) {
             go_triggered = ids;

@@ -376,6 +376,18 @@ function ViewMenu({
 // Root component
 // ---------------------------------------------------------------------------
 
+function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | undefined {
+  if (!id) return undefined;
+  for (const cue of cues) {
+    if (cue.id === id) return cue;
+    if (cue.children) {
+      const found = findCueRecursive(cue.children, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 export default function App() {
   const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
     useWorkspaceStore();
@@ -385,6 +397,7 @@ export default function App() {
   const [prefsOpen, setPrefsOpen]                 = useState(false);
   const [gotoOpen, setGotoOpen]                   = useState(false);
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
+  const [loadError, setLoadError]                 = useState<string | null>(null);
 
   // Apply theme CSS variables whenever display prefs change
   useEffect(() => {
@@ -490,7 +503,11 @@ export default function App() {
   // Misc
   // -------------------------------------------------------------------------
 
-  useTauriEvents();
+  const handleLoadError = useCallback((_cueId: string, error: string) => {
+    setLoadError(error);
+  }, []);
+
+  useTauriEvents({ onLoadError: handleLoadError });
 
   const handleRefresh = useCallback(async () => {
     await refreshCues();
@@ -506,7 +523,7 @@ export default function App() {
     () => void handleToggleSurface(),
   );
 
-  const selectedCue = cues.find((c) => c.id === selectedCueId) ?? null;
+  const selectedCue = findCueRecursive(cues, selectedCueId) ?? null;
 
   const handleToggleSurface = async () => {
     await toggleOutputWindow().catch(console.error);
@@ -541,6 +558,13 @@ export default function App() {
     await refreshCues();
   };
 
+  const handleAddWait = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("wait", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
   const handleAddGroup = async () => {
     const { selectedCueId, cues } = useWorkspaceStore.getState();
     const idx = cues.findIndex((c) => c.id === selectedCueId);
@@ -548,7 +572,7 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group", e: React.MouseEvent) => {
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("wincue:cue-drag-start", {
@@ -571,6 +595,34 @@ export default function App() {
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Audio file load error toast */}
+      {loadError && (
+        <div
+          style={{
+            position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
+            zIndex: 99999, background: "#7f1d1d", border: "1px solid #ef4444",
+            borderRadius: 8, padding: "10px 16px", maxWidth: 520,
+            display: "flex", alignItems: "flex-start", gap: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.8)",
+          }}
+        >
+          <span style={{ color: "#fca5a5", fontSize: 13, flex: 1 }}>
+            <strong style={{ color: "#fecaca" }}>Failed to load audio file.</strong>
+            <br />
+            <span style={{ opacity: 0.85, fontFamily: "monospace", fontSize: 11 }}>{loadError}</span>
+          </span>
+          <button
+            onClick={() => setLoadError(null)}
+            style={{
+              background: "transparent", border: "none", color: "#fca5a5",
+              cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1, flexShrink: 0,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Preferences modal */}
       {prefsOpen && <PreferencesModal onClose={() => setPrefsOpen(false)} />}
 
@@ -662,6 +714,14 @@ export default function App() {
             title="Add Image Cue after selection · Drag to insert at position"
           >
             + Image
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#fb923c", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddWait}
+            onMouseDown={(e) => dispatchCueDrag("wait", e)}
+            title="Add Wait Cue after selection · Drag to insert at position"
+          >
+            + Wait
           </button>
           <button
             style={{ ...toolbarBtn, color: "#fde047", cursor: "grab", userSelect: "none" }}

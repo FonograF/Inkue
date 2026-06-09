@@ -11,11 +11,14 @@ pub mod group_cue;
 pub mod image_cue;
 pub mod media_decode;
 pub mod memo_cue;
+pub mod osc_cue;
+pub mod osc_types;
 pub mod registry;
 pub mod stop_cue;
 pub mod traits;
 pub mod types;
 pub mod video_cue;
+pub mod wait_cue;
 
 pub use registry::CueRegistry;
 pub use traits::Cue;

@@ -1,5 +1,7 @@
 //! Tauri commands for transport control (GO, STOP, PAUSE, RESUME).
 
+use std::sync::atomic::Ordering;
+
 use tauri::{Emitter, State};
 
 use crate::{
@@ -23,11 +25,16 @@ use crate::{
 /// is used by [`AudioCue::stop`] when no per-cue fade-out spec is set.
 fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    let (patches, default_patch_id, output_screen) = state
+    let (patches, default_patch_id, output_screen, osc_patches) = state
         .workspace
         .try_lock()
-        .map(|ws| (ws.output_patches.clone(), ws.default_output_patch_id, ws.preferences.display.output_screen))
-        .unwrap_or_else(|_| (Vec::new(), None, None));
+        .map(|ws| (
+            ws.output_patches.clone(),
+            ws.default_output_patch_id,
+            ws.preferences.display.output_screen,
+            ws.osc_patches.clone(),
+        ))
+        .unwrap_or_else(|_| (Vec::new(), None, None, Vec::new()));
     CueContext::new(
         state.audio_engine.clone(),
         state.output_engine.clone(),
@@ -36,6 +43,7 @@ fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
         patches,
         default_patch_id,
         output_screen,
+        osc_patches,
     )
 }
 
@@ -52,7 +60,25 @@ fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
 /// Video Cues stream directly from disk and are never skipped.
 #[tauri::command]
 pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
+    // Double-GO protection: silently ignore a second GO that arrives within
+    // `double_go_protection_ms` of the previous one (default 500 ms).
+    // This catches duplicate UDP packets from OSC controllers and accidental
+    // rapid double-presses without affecting intentional fast GOs.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let protection_ms = ws.preferences.general.double_go_protection_ms as u64;
+    if protection_ms > 0 {
+        let last = state.last_go_at.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < protection_ms {
+            return Ok(());
+        }
+    }
+    state.last_go_at.store(now_ms, Ordering::Relaxed);
+
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
 
     let (tx, rx) = crossbeam_channel::unbounded::<CueEvent>();
@@ -64,6 +90,7 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         ws.output_patches.clone(),
         ws.default_output_patch_id,
         ws.preferences.display.output_screen,
+        ws.osc_patches.clone(),
     );
     let mut transport = Transport::new(context);
 
@@ -125,9 +152,12 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         );
     }
 
-    if let Some(phid) = cue_list.playhead_cue_id {
-        let _ = app_handle.emit("playhead-moved", serde_json::json!({ "cue_id": phid }));
-    }
+    // Always emit — even when playhead_cue_id is None (cue was last in list).
+    let _ = app_handle.emit("playhead-moved", serde_json::json!({
+        "cue_id": cue_list.playhead_cue_id.map(|u| u.to_string())
+    }));
+    // Refresh the cue list so the frontend sees updated group inner-playhead state.
+    let _ = app_handle.emit("cue-list-refresh", serde_json::json!({}));
     Ok(())
 }
 

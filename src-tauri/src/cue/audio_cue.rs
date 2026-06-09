@@ -303,7 +303,14 @@ impl Cue for AudioCue {
         }
 
         // No pre-wait: start the audio action immediately.
-        self.start_audio_action(context)
+        // On failure, roll back to Standby so callers (e.g. GroupCue) don't
+        // see a permanently-Running cue that will never complete.
+        if let Err(e) = self.start_audio_action(context) {
+            self.state = CueState::Standby;
+            self.started_at = None;
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {

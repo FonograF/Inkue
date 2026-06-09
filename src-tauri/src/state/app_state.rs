@@ -4,6 +4,7 @@
 //! accessed from multiple Tauri command handler threads.
 
 use std::collections::HashSet;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
@@ -14,12 +15,14 @@ use crate::{
         group_cue::GroupCueFactory,
         image_cue::ImageCueFactory,
         memo_cue::MemoCueFactory,
+        osc_cue::OscCueFactory,
         registry::CueRegistry,
         stop_cue::StopCueFactory,
         types::CueType,
         video_cue::VideoCueFactory,
+        wait_cue::WaitCueFactory,
     },
-    engine::{AudioEngine, OutputEngine},
+    engine::{AudioEngine, OscServer, OutputEngine},
     show::{undo_stack::UndoStack, Workspace},
 };
 
@@ -31,6 +34,8 @@ pub struct AppState {
     pub audio_engine: Arc<AudioEngine>,
     /// The unified output engine (video + image via libmpv Win32 window).
     pub output_engine: Arc<OutputEngine>,
+    /// OSC receive server (background UDP listener thread).
+    pub osc_server: Arc<OscServer>,
     /// The cue type registry used for workspace de/serialisation.
     pub registry: Arc<Mutex<CueRegistry>>,
     /// Set of cue IDs whose audio files are currently being decoded in the
@@ -40,29 +45,41 @@ pub struct AppState {
     pub undo_stack: Arc<Mutex<UndoStack>>,
     /// In-app clipboard: the last cue copied via Ctrl+C (serialised JSON).
     pub clipboard: Arc<Mutex<Option<serde_json::Value>>>,
+    /// Timestamp of the last GO trigger in ms since Unix epoch.
+    /// Used to enforce `double_go_protection_ms` — any GO within that window
+    /// is silently dropped.  Lock-free so it adds zero latency to the hot path.
+    pub last_go_at: Arc<AtomicU64>,
 }
 
 impl AppState {
     /// Build the initial application state from already-constructed engines.
-    pub fn new(audio_engine: Arc<AudioEngine>, output_engine: Arc<OutputEngine>) -> Self {
+    pub fn new(
+        audio_engine: Arc<AudioEngine>,
+        output_engine: Arc<OutputEngine>,
+        osc_server: Arc<OscServer>,
+    ) -> Self {
         let workspace = Workspace::new("Untitled");
 
         let mut registry = CueRegistry::new();
         registry.register(CueType::Audio, Box::new(AudioCueFactory));
         registry.register(CueType::Group, Box::new(GroupCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
+        registry.register(CueType::Osc,   Box::new(OscCueFactory));
         registry.register(CueType::Stop, Box::new(StopCueFactory));
         registry.register(CueType::Video, Box::new(VideoCueFactory));
         registry.register(CueType::Image, Box::new(ImageCueFactory));
+        registry.register(CueType::Wait, Box::new(WaitCueFactory));
 
         Self {
             workspace: Arc::new(Mutex::new(workspace)),
             audio_engine,
             output_engine,
+            osc_server,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
             undo_stack: Arc::new(Mutex::new(UndoStack::new())),
             clipboard: Arc::new(Mutex::new(None)),
+            last_go_at: Arc::new(AtomicU64::new(0)),
         }
     }
 }

@@ -157,6 +157,35 @@ impl Default for GeneralPreferences {
     }
 }
 
+/// OSC receive server configuration — stored machine-level in
+/// `%APPDATA%\WinCue\osc.json`, not in the workspace file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OscReceiveConfig {
+    /// When `false` the server is not started (or is stopped if already running).
+    #[serde(default)]
+    pub enabled: bool,
+    /// UDP port to listen on.  Default: 53001.
+    #[serde(default = "OscReceiveConfig::default_port")]
+    pub port: u16,
+    /// IP addresses allowed to send OSC commands.  Empty list = accept all.
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+}
+
+impl OscReceiveConfig {
+    fn default_port() -> u16 { 53001 }
+}
+
+impl Default for OscReceiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: Self::default_port(),
+            allowed_ips: Vec::new(),
+        }
+    }
+}
+
 /// Network preferences (OSC, MIDI, Art-Net, …).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkPreferences {}

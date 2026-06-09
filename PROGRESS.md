@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-09
 
-## Current version: 0.5.1
+## Current version: 0.6.0
 
 ## cargo build result
 
@@ -23,6 +23,7 @@
 | Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
 | Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
+| OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab; workspace-level patches; receive server with IP allowlist |
 
 ---
 
@@ -46,6 +47,8 @@
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer` |
 | OutputEngine | `engine/output_engine/` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); OSD timer overlay; `toggle_visibility()` |
+| OscPatch | `engine/osc_patch.rs` | ✅ Complete — named UDP send target (id, name, ip, port) |
+| OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, dispatch to frontend via `osc-command` event, activity via `osc-activity` |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
 | Workspace | `show/workspace.rs` | ✅ Complete |
@@ -56,6 +59,7 @@
 | Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences` with output_screen, timer (font/size/position/margin/show_ms/count_down), colour theme; `TimerPosition` enum |
 | Transport commands | `commands/transport_cmds.rs` | ✅ Complete |
 | Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `toggle_output_window`, `get_output_window_visible` |
+| OSC commands | `commands/osc_cmds.rs` | ✅ Complete — `list/add/update/remove_osc_patch`, `get/set_osc_config` |
 | Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete |
 | Device commands | `commands/device_cmds.rs` | ✅ Complete |
 | Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete — `get/set_output_screen`, `update_display_preferences` (applies timer style to mpv), `list_system_fonts` (GDI enum), `preview_output_timer` |
@@ -74,7 +78,9 @@
 | `hooks/useKeyboardShortcuts.ts` | ✅ Complete — F9 toggles output window |
 | `App.tsx` | ✅ Complete — `handleToggleSurface` wired to F9 + View menu |
 | `components/CueList/` | ✅ Complete |
-| `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image |
+| `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image, OSC |
+| `components/Inspector/OscTab.tsx` | ✅ Complete — messages list, patch selector, arg editor |
+| `components/OscPatches/OscPatchesPanel.tsx` | ✅ Complete — add/edit/remove OSC patches |
 | `components/Inspector/BasicsTab.tsx` | ✅ Complete — no per-cue screen selector |
 | `components/Inspector/TimeTab.tsx` | ✅ Complete — no ImageStopMode UI (StopOnNextCue only, no `isImage` prop) |
 | `components/Inspector/LevelsTab.tsx` | ✅ Complete |
@@ -310,13 +316,14 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 | 18. Group Cue | ✅ Sequential + parallel modes; GO absorption; drag-into-group |
 | 19. Wait Cue | ✅ Fixed duration delay; registered in CueRegistry |
 | 20. Output timer | ✅ OSD via mpv; 60fps thread; font/size/position/margin/ms; live preview |
+| 21. OSC Cue | ✅ Send multiple OSC messages on GO; workspace patches; inspector Messages tab; receive server with allowlist; Preferences OSC tab; activity dot in transport bar |
 
 ---
 
 ## Next priorities
 
 1. **Future cue types** — architecture is ready; add via `CueRegistry` without touching transport.
-   Priority order: **Fade** (fade a running audio cue) → MIDI → OSC.
+   Priority order: **Fade** (fade a running audio cue) → MIDI.
 2. **Optional: active A/V resync** — nudge the video audio voice's rate to track
    mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
 3. **ASIO→WASAPI Output Patch validation** — routing wired, needs hardware test.

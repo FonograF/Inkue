@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, ScreenInfo, TimerPosition } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -11,12 +11,14 @@ import {
   getAsioOutputPairs,
   getAvailableBackends,
   getMachineAudioConfig,
+  getOscConfig,
   getOutputScreen,
   getPreferences,
   listAudioDevices,
   listSystemFonts,
   listVideoScreens,
   previewOutputTimer,
+  setOscConfig,
   setOutputScreen,
   testAudioDevice,
   updateAudioPreferences,
@@ -24,6 +26,7 @@ import {
   updateGeneralPreferences,
   updateMachineAudioConfig,
 } from "../../lib/commands";
+import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 
 // ---------------------------------------------------------------------------
 // Sidebar categories
@@ -640,6 +643,75 @@ function DisplayContent({
 }
 
 // ---------------------------------------------------------------------------
+// OSC / Network content
+// ---------------------------------------------------------------------------
+
+function OscContent({
+  config,
+  onChange,
+}: {
+  config: OscReceiveConfig;
+  onChange: (c: OscReceiveConfig) => void;
+}) {
+  return (
+    <>
+      <Section title="OSC Receive">
+        <Row label="Enable">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={config.enabled}
+              onChange={(e) => onChange({ ...config, enabled: e.target.checked })}
+              style={{ width: 14, height: 14, cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+              Listen for OSC commands
+            </span>
+          </label>
+        </Row>
+        <Row label="Port">
+          <input
+            type="number"
+            min={1024}
+            max={65535}
+            value={config.port}
+            onChange={(e) => onChange({ ...config, port: Number(e.target.value) })}
+            style={{ ...inputStyle, width: 100 }}
+          />
+          <span style={{ fontSize: 11, color: "#475569" }}>default 53001</span>
+        </Row>
+        <Row label="IP Allowlist">
+          <div style={{ flex: 1 }}>
+            <textarea
+              rows={3}
+              placeholder={"Leave empty to accept all.\nOne IP per line."}
+              value={config.allowed_ips.join("\n")}
+              onChange={(e) => {
+                const ips = e.target.value.split("\n").map(s => s.trim()).filter(Boolean);
+                onChange({ ...config, allowed_ips: ips });
+              }}
+              style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "monospace" }}
+            />
+            <span style={{ fontSize: 11, color: "#475569", display: "block", marginTop: 2 }}>
+              Empty = accept all. One IP per line.
+            </span>
+          </div>
+        </Row>
+        <Row label="Address reference">
+          <div style={{ flex: 1, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
+            <code style={{ fontFamily: "monospace" }}>/wincue/go</code> · <code>/wincue/stop</code> · <code>/wincue/hardstop</code><br />
+            <code>/wincue/pause</code> · <code>/wincue/resume</code><br />
+            <code>/wincue/cue/&#123;n&#125;/go</code> · <code>/wincue/cue/&#123;n&#125;/select</code> · <code>/wincue/cue/&#123;n&#125;/stop</code>
+          </div>
+        </Row>
+      </Section>
+
+      <OscPatchesPanel />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Draggable floating modal
 // ---------------------------------------------------------------------------
 
@@ -678,6 +750,7 @@ export function PreferencesModal({ onClose }: Props) {
   const [theme, setTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [draftTheme, setDraftTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [availableBackends, setAvailableBackends] = useState<string[]>(["wasapi_shared", "wasapi_exclusive"]);
+  const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [] });
   const [applyError, setApplyError] = useState<string | null>(null);
 
   // Drag state
@@ -717,6 +790,7 @@ export function PreferencesModal({ onClose }: Props) {
     getMachineAudioConfig().then((c) => { setMachineConfig(c); setDraftMachineConfig(c); }).catch(console.error);
     getAvailableBackends().then(setAvailableBackends).catch(console.error);
     getOutputScreen().then((s) => { setOutputScreen_(s); setDraftOutputScreen(s); }).catch(console.error);
+    getOscConfig().then(setOscConfig_).catch(console.error);
   }, []);
 
   // Escape closes without applying
@@ -954,10 +1028,14 @@ export function PreferencesModal({ onClose }: Props) {
                 onThemeChange={setDraftTheme}
               />
             )}
-            {category !== "audio" && category !== "general" && category !== "display" && (
-              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#475569", fontSize: 13 }}>
-                Coming soon
-              </div>
+            {category === "network" && (
+              <OscContent
+                config={oscConfig}
+                onChange={async (c) => {
+                  setOscConfig_(c);
+                  try { await setOscConfig(c); } catch (e) { console.error(e); }
+                }}
+              />
             )}
           </div>
         </div>

@@ -363,6 +363,26 @@ pub trait Cue: Send {
         false
     }
 
+    /// Returns `true` if this cue retains the outer Playhead on itself while
+    /// it is running, so that subsequent GO presses are routed into its own
+    /// internal sequence rather than advancing the outer Playhead.
+    ///
+    /// Only Sequential [`GroupCue`] overrides this.  The event loop is
+    /// responsible for advancing the outer Playhead once the cue completes.
+    fn holds_playhead(&self) -> bool {
+        false
+    }
+
+    /// For a running Sequential [`GroupCue`]: the ID of the child that is
+    /// currently active — either running right now, or the next one to fire on
+    /// GO (when the sequence is paused at a `DoNotContinue` child).
+    ///
+    /// Returns `None` for non-Group cues and for Simultaneous groups (the
+    /// frontend derives activity from each child's own `state()` instead).
+    fn active_child_id(&self) -> Option<CueId> {
+        None
+    }
+
     // -----------------------------------------------------------------------
     // Serialisation
     // -----------------------------------------------------------------------

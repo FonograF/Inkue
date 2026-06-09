@@ -125,10 +125,43 @@ impl MpvLib {
     /// Load `libmpv-2.dll` from the executable's directory and resolve all symbols.
     ///
     /// Returns an error if the DLL is missing or any symbol cannot be found.
+    /// Try to open `libmpv-2.dll` from several candidate paths:
+    /// 1. Next to the exe (dev: build.rs copies it there; install: tauri bundle places it there)
+    /// 2. `vendor/mpv/` subdirectory relative to the exe (fallback for older installs)
+    /// 3. Bare filename — Windows DLL search order (PATH, System32, …)
+    fn open_dll() -> Result<Library> {
+        let candidates: Vec<std::path::PathBuf> = {
+            let mut v = Vec::new();
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    v.push(dir.join("libmpv-2.dll"));
+                    v.push(dir.join("vendor").join("mpv").join("libmpv-2.dll"));
+                }
+            }
+            v.push(std::path::PathBuf::from("libmpv-2.dll"));
+            v
+        };
+
+        for path in &candidates {
+            // SAFETY: loading an external DLL is inherently unsafe.
+            if let Ok(lib) = unsafe { Library::new(path) } {
+                log::info!("libmpv-2.dll loaded from {}", path.display());
+                return Ok(lib);
+            }
+        }
+
+        Err(anyhow!(
+            "Failed to load libmpv-2.dll — searched in: {}",
+            candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+
     pub fn load() -> Result<Self> {
-        // SAFETY: loading an external DLL is inherently unsafe.
-        let lib = unsafe { Library::new("libmpv-2.dll") }
-            .map_err(|e| anyhow!("Failed to load libmpv-2.dll — ensure it is placed next to the executable: {e}"))?;
+        let lib = Self::open_dll()?;
 
         // Extract a raw fn pointer from the library.  The Symbol borrows `lib`
         // but the inner fn pointer is Copy and does not carry a lifetime.

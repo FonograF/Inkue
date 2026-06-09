@@ -2,7 +2,7 @@
 // Shows cue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useState } from "react";
-import type { AudioCueData, CueSummary, ImageCueData, VideoCueData } from "../../lib/types";
+import type { AudioCueData, CueSummary, ImageCueData, OscCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
 import { WaveformModal } from "../WaveformModal";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -10,6 +10,7 @@ import { BasicsTab } from "./BasicsTab";
 import { TimeTab } from "./TimeTab";
 import { LevelsTab } from "./LevelsTab";
 import { FadeTab } from "./FadeTab";
+import { OscTab } from "./OscTab";
 
 interface Props {
   selectedCue: CueSummary | null;
@@ -17,10 +18,10 @@ interface Props {
   onRefresh: () => void;
 }
 
-type Tab = "basics" | "time" | "levels" | "fade";
+type Tab = "basics" | "time" | "levels" | "fade" | "messages";
 
 export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props) {
-  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | null>(null);
+  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | OscCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
 
@@ -29,6 +30,15 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
       setCueData(null);
       return;
     }
+    // Clear stale data immediately so isAudio/isVideo flags never mismatch cueData.
+    setCueData(null);
+    const hasLevels = selectedCue.cue_type === "audio" || selectedCue.cue_type === "video";
+    const hasFade = selectedCue.cue_type === "audio";
+    const hasMessages = selectedCue.cue_type === "osc";
+    setActiveTab((prev) => {
+      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages)) return "basics";
+      return prev;
+    });
     getCue(selectedCue.id)
       .then((data) => {
         // Merge cue_type from the summary in case the serialised form uses
@@ -57,6 +67,8 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
   const isVideo = selectedCue.cue_type === "video";
   const isImage = selectedCue.cue_type === "image";
   const isGroup = selectedCue.cue_type === "group";
+  const isWait  = selectedCue.cue_type === "wait";
+  const isOsc   = selectedCue.cue_type === "osc";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
@@ -153,7 +165,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
           background: "#020617",
         }}
       >
-        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isOsc ? "📡" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
@@ -172,6 +184,11 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         {isAudio && (
           <button style={tabStyle("fade")} onClick={() => setActiveTab("fade")}>
             Fade
+          </button>
+        )}
+        {isOsc && (
+          <button style={tabStyle("messages")} onClick={() => setActiveTab("messages")}>
+            Messages
           </button>
         )}
       </div>
@@ -198,6 +215,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
             selectedCue={selectedCue}
             isAudio={isAudio}
             isVideo={isVideo}
+            isWait={isWait}
             onSave={save}
             onOpenWaveform={() => setWaveformModalOpen(true)}
           />
@@ -206,7 +224,10 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
           <LevelsTab cue={cueData as AudioCueData | VideoCueData} isAudio={isAudio} onSave={save} />
         )}
         {activeTab === "fade" && isAudio && (
-          <FadeTab cue={cueData} onSave={save} />
+          <FadeTab cue={cueData as AudioCueData} onSave={save} />
+        )}
+        {activeTab === "messages" && isOsc && (
+          <OscTab cue={cueData as OscCueData} onSave={save} />
         )}
       </div>
 

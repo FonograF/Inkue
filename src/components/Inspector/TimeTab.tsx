@@ -8,6 +8,7 @@ export function TimeTab({
   selectedCue,
   isAudio,
   isVideo,
+  isWait,
   onSave,
   onOpenWaveform,
 }: {
@@ -16,6 +17,7 @@ export function TimeTab({
   selectedCue: CueSummary | null;
   isAudio: boolean;
   isVideo?: boolean;
+  isWait?: boolean;
   onSave: (p: Partial<AudioCueData>) => void;
   onOpenWaveform: () => void;
 }) {
@@ -35,6 +37,23 @@ export function TimeTab({
           durationMs={liveDurationMs!}
           cueState={liveState}
         />
+      )}
+      {isWait && (
+        <Field label="Duration (s)">
+          <input
+            style={inputStyle}
+            type="number"
+            step="0.1"
+            min="0"
+            key={`wait-${cue.wait_duration_ms}`}
+            defaultValue={((cue.wait_duration_ms ?? 5000) / 1000).toFixed(1)}
+            onBlur={(e) =>
+              onSave({
+                wait_duration_ms: Math.round(parseFloat(e.target.value) * 1000),
+              } as never)
+            }
+          />
+        </Field>
       )}
       <Field label="Pre-Wait (s)">
         <input

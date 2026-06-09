@@ -18,6 +18,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   stop: "⬛",
   video: "🎬",
   image: "🖼",
+  osc: "📡",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {
@@ -66,6 +67,8 @@ interface Props {
   onToggleExpand?: () => void;
   /** True when a cue is being dragged over the middle of this group row (drop-into-group). */
   isGroupDropTarget?: boolean;
+  /** ID of the parent group, if this cue is a child. Used for within-group insert detection. */
+  parentGroupId?: string | null;
   /** Called on mousedown to start a cue drag operation. */
   onCueDragStart: (e: React.MouseEvent) => void;
   onClick: (e: React.MouseEvent) => void;
@@ -92,6 +95,7 @@ export function CueRow({
   isGroupExpanded = false,
   onToggleExpand,
   isGroupDropTarget = false,
+  parentGroupId = null,
   onCueDragStart,
   onClick,
   onDoubleClick,
@@ -103,7 +107,7 @@ export function CueRow({
   const isPaused  = cue.state === "paused";
 
   const progressPct =
-    timing && cue.duration_ms && cue.duration_ms > 0
+    isRunning && timing && cue.duration_ms && cue.duration_ms > 0
       ? Math.min(100, (timing.action_elapsed_ms / cue.duration_ms) * 100)
       : null;
 
@@ -148,20 +152,28 @@ export function CueRow({
       case "playhead":
         if (isGroup) {
           return (
-            <button
-              style={{
-                background: "none", border: "none", cursor: "pointer",
-                color: "#64748b", fontSize: 10, padding: "0 4px",
-                lineHeight: 1, display: "flex", alignItems: "center",
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onToggleExpand?.(); }}
-            >
-              {isGroupExpanded ? "▼" : "▶"}
-            </button>
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", width: "100%", gap: 4 }}>
+              <PlayheadIndicator visible={isAtPlayhead} />
+              <button
+                style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "#64748b", fontSize: 10, padding: "0 4px",
+                  lineHeight: 1, display: "flex", alignItems: "center",
+                  flexShrink: 0,
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onToggleExpand?.(); }}
+              >
+                {isGroupExpanded ? "▼" : "▶"}
+              </button>
+            </div>
           );
         }
-        return <PlayheadIndicator visible={isAtPlayhead} />;
+        return (
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", width: "100%" }}>
+            <PlayheadIndicator visible={isAtPlayhead} />
+          </div>
+        );
 
       case "number":
         return (
@@ -270,12 +282,14 @@ export function CueRow({
       data-cue-index={cueIndex}
       data-is-group={isGroup ? "true" : undefined}
       data-cue-depth={depth}
+      data-parent-group-id={parentGroupId ?? undefined}
       onMouseDown={onCueDragStart}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
     >
-      {/* Color indicator strip — shifts right with nesting depth (4 px per level) */}
+      {/* Color indicator strip — shifts right with nesting depth (4 px per level).
+          z-index 0 keeps it below column content (playhead indicator, etc.). */}
       <div
         style={{
           position: "absolute",
@@ -285,10 +299,11 @@ export function CueRow({
           width: 4,
           background: colorAccent,
           pointerEvents: "none",
+          zIndex: 0,
         }}
       />
       {visibleDefs.map((col) => (
-        <div key={col.id} style={{ minWidth: 0, overflow: "hidden" }}>
+        <div key={col.id} style={{ minWidth: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
           {renderCell(col.id)}
         </div>
       ))}

@@ -153,12 +153,17 @@ impl GroupCue {
         match self.mode {
             GroupMode::Simultaneous => {
                 for child in &mut self.children {
-                    child.go(ctx)?;
+                    if let Err(e) = child.go(ctx) {
+                        log::warn!("Group simultaneous: child '{}' failed to start: {e}", child.name());
+                    }
                 }
             }
             GroupMode::Sequential => {
                 self.seq_current_id = None;
-                self.fire_next_sequential(ctx, None)?;
+                if let Err(e) = self.fire_next_sequential(ctx, None) {
+                    log::warn!("Group sequential: first child failed to start: {e}");
+                    self.seq_done = true;
+                }
             }
         }
         Ok(())
@@ -184,7 +189,12 @@ impl GroupCue {
 
         let child_id = self.children[next_idx].id();
         self.seq_current_id = Some(child_id);
-        self.children[next_idx].go(ctx)?;
+        if let Err(e) = self.children[next_idx].go(ctx) {
+            log::warn!("Group sequential: child '{}' failed to start: {e}", self.children[next_idx].name());
+            // Child rolled back to Standby — treat it as done and advance.
+            self.seq_done = true;
+            return Ok(());
+        }
 
         // Auto-Follow: fire the child after this one immediately when this one starts.
         if self.children[next_idx].is_action_started()
@@ -281,17 +291,25 @@ impl Cue for GroupCue {
     }
 
     fn go(&mut self, ctx: &CueContext) -> Result<()> {
-        // Sequential group paused mid-sequence (DoNotContinue child finished):
-        // absorb this GO and fire the next sequential child instead of restarting.
-        if self.state == CueState::Running
-            && self.mode == GroupMode::Sequential
-            && self.seq_done
-            && !self.in_pre_wait
-            && self.has_next_sequential_child()
-        {
-            self.seq_done = false;
-            let prev_id = self.seq_current_id;
-            return self.fire_next_sequential(ctx, prev_id);
+        if self.state == CueState::Running && self.mode == GroupMode::Sequential && !self.in_pre_wait {
+            // Sequence paused (DoNotContinue child finished) → fire next child.
+            if self.seq_done && self.has_next_sequential_child() {
+                self.seq_done = false;
+                let prev_id = self.seq_current_id;
+                return self.fire_next_sequential(ctx, prev_id);
+            }
+            // Current child still running → stop it and advance to the next child.
+            // (GO while a sequential child plays acts as "skip to next", matching QLab.)
+            if let Some(current_id) = self.seq_current_id {
+                if let Some(idx) = self.children.iter().position(|c| c.id() == current_id) {
+                    if self.children[idx].is_running() || self.children[idx].is_paused() {
+                        let _ = self.children[idx].stop(ctx);
+                        let _ = self.children[idx].reset();
+                    }
+                }
+                self.seq_done = false;
+                return self.fire_next_sequential(ctx, Some(current_id));
+            }
         }
 
         self.auto_continue_fired = false;
@@ -491,7 +509,12 @@ impl Cue for GroupCue {
                 self.children.iter().all(|c| !c.is_running())
             }
             GroupMode::Sequential => {
-                self.seq_done && self.children.iter().all(|c| !c.is_running())
+                // seq_done means either "paused at DoNotContinue child" OR
+                // "all children exhausted".  The group is only truly complete
+                // when there are NO more children left to fire.
+                self.seq_done
+                    && !self.has_next_sequential_child()
+                    && self.children.iter().all(|c| !c.is_running())
             }
         }
     }
@@ -535,11 +558,52 @@ impl Cue for GroupCue {
     }
 
     fn absorbs_go(&self) -> bool {
-        self.state == CueState::Running
-            && self.mode == GroupMode::Sequential
-            && self.seq_done
-            && !self.in_pre_wait
-            && self.has_next_sequential_child()
+        if self.state != CueState::Running
+            || self.mode != GroupMode::Sequential
+            || self.in_pre_wait
+        {
+            return false;
+        }
+        // Sequence paused after a DoNotContinue child → fire next child.
+        if self.seq_done && self.has_next_sequential_child() {
+            return true;
+        }
+        // Current child still running → absorb the GO as a no-op to prevent
+        // the group from being restarted from scratch.
+        if self.seq_current_id.is_some() {
+            return true;
+        }
+        false
+    }
+
+    fn holds_playhead(&self) -> bool {
+        self.mode == GroupMode::Sequential
+    }
+
+    fn active_child_id(&self) -> Option<CueId> {
+        if self.mode != GroupMode::Sequential {
+            return None;
+        }
+        match self.state {
+            CueState::Running if !self.in_pre_wait => {
+                // A child is currently running — return the NEXT child (what fires on the
+                // following GO), not the current one (visible via its Running state / green row).
+                if let Some(running_idx) = self.children.iter().position(|c| c.state() == CueState::Running) {
+                    return self.children.get(running_idx + 1).map(|c| c.id());
+                }
+                // Sequence paused at a DoNotContinue boundary — show the next child to fire.
+                if self.seq_done {
+                    let next_idx = self.seq_current_id
+                        .and_then(|id| self.children.iter().position(|c| c.id() == id))
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    return self.children.get(next_idx).map(|c| c.id());
+                }
+                None
+            }
+            // Not yet fired (Standby) or in pre-wait: first child fires on GO.
+            _ => self.children.first().map(|c| c.id()),
+        }
     }
 
     // ── Serialisation ─────────────────────────────────────────────────────

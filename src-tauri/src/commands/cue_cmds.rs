@@ -42,6 +42,11 @@ pub struct CueSummary {
     /// For Group cues: the playback mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_mode: Option<GroupMode>,
+    /// For running Sequential Group cues: ID of the currently active child
+    /// (running right now or next to fire on GO after a DoNotContinue pause).
+    /// `None` for Simultaneous groups and non-Group cues.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_child_id: Option<String>,
 }
 
 fn summarise(cue: &dyn Cue) -> CueSummary {
@@ -60,6 +65,7 @@ fn summarise(cue: &dyn Cue) -> CueSummary {
         is_loading: false, // populated below
         children: cue.child_cues().map(|ch| ch.iter().map(|c| summarise_recursive(c.as_ref())).collect()),
         group_mode: cue.group_mode(),
+        active_child_id: cue.active_child_id().map(|id| id.to_string()),
     }
 }
 
@@ -353,47 +359,36 @@ pub fn update_cue(
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
-    let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
+    // Serialise → merge → rebuild, working recursively so child cues inside
+    // groups can also be updated from the inspector.
+    let (mut json, preserved_audio, runtime) = {
+        let cue = cue_list
+            .get_mut_recursive(&id)
+            .ok_or("Cue not found")?;
+        let mut json = cue.serialize();
+        let old_file_path = json.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-    // Serialise the current cue, merge the incoming properties, then rebuild.
-    let mut json = cue_list.cues[idx].serialize();
-
-    // Capture decoded audio BEFORE the rebuild so we can reuse it when the
-    // file path has not changed (e.g. changing Start Time, volume, name).
-    let old_file_path = json
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    if let (Some(target), Some(src)) = (json.as_object_mut(), properties.as_object()) {
-        for (k, v) in src {
-            target.insert(k.clone(), v.clone());
+        if let (Some(target), Some(src)) = (json.as_object_mut(), properties.as_object()) {
+            for (k, v) in src {
+                target.insert(k.clone(), v.clone());
+            }
         }
-    }
 
-    let new_file_path = json
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // If the file hasn't changed, preserve already-decoded samples to avoid
-    // a re-decode (and the resulting silence at the start of the next GO).
-    let preserved_audio = if old_file_path == new_file_path {
-        cue_list.cues[idx].extract_decoded_audio()
-    } else {
-        None
+        let new_file_path = json.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let preserved_audio = if old_file_path == new_file_path { cue.extract_decoded_audio() } else { None };
+        let runtime = cue.runtime_state();
+        (json, preserved_audio, runtime)
     };
 
-    // Capture runtime state (playing/paused, voice ID, timing) BEFORE the rebuild
-    // so a cue that is currently running continues to be stoppable afterward.
-    let runtime = cue_list.cues[idx].runtime_state();
+    // Suppress unused-variable warning when merge produced no change.
+    let _ = &mut json;
 
     let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     if let Some((samples, channels, sample_rate, duration)) = preserved_audio {
         new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
     }
     new_cue.restore_runtime_state(runtime);
-    cue_list.cues[idx] = new_cue;
+    cue_list.replace_cue_recursive(&id, new_cue);
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
@@ -514,18 +509,20 @@ pub fn set_audio_file(
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
-    let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
-    if cue_list.cues[idx].cue_type() != CueType::Audio {
-        return Err("set_audio_file only applies to Audio Cues".to_string());
-    }
-
-    let mut json = cue_list.cues[idx].serialize();
-    if let Some(obj) = json.as_object_mut() {
-        obj.insert("file_path".to_string(), serde_json::json!(file_path));
-    }
+    let json = {
+        let cue = cue_list.get_mut_recursive(&id).ok_or("Cue not found")?;
+        if cue.cue_type() != CueType::Audio {
+            return Err("set_audio_file only applies to Audio Cues".to_string());
+        }
+        let mut json = cue.serialize();
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert("file_path".to_string(), serde_json::json!(file_path));
+        }
+        json
+    };
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     drop(registry);
-    cue_list.cues[idx] = new_cue;
+    cue_list.replace_cue_recursive(&id, new_cue);
     // Mark as loading before dropping the workspace lock.
     {
         let mut loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
@@ -592,6 +589,10 @@ pub fn set_audio_file(
                     }
                     log::warn!("Background preload failed for {:?}: {e}", file_path_buf);
                     let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
+                    let _ = app_handle2.emit("cue-load-error", serde_json::json!({
+                        "cue_id": id.to_string(),
+                        "error": e.to_string(),
+                    }));
                 }
             }
         })

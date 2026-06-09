@@ -12,6 +12,24 @@ use crate::{
     state::AppState,
 };
 
+/// Recursively collect (id, path) pairs for every Audio and Video cue,
+/// including those nested inside groups at any depth.
+fn collect_media_cues(cues: &[Box<dyn crate::cue::traits::Cue>], out: &mut Vec<(uuid::Uuid, PathBuf)>) {
+    for cue in cues {
+        if matches!(cue.cue_type(), CueType::Audio | CueType::Video) {
+            let json = cue.serialize();
+            if let Some(p) = json.get("file_path").and_then(|v| v.as_str()) {
+                if !p.is_empty() {
+                    out.push((cue.id(), PathBuf::from(p)));
+                }
+            }
+        }
+        if let Some(children) = cue.child_cues() {
+            collect_media_cues(children, out);
+        }
+    }
+}
+
 /// Create a new empty workspace, discarding the current one.
 #[tauri::command]
 pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -42,21 +60,13 @@ pub fn load_workspace(
 
     // Collect audio + video cue IDs + file paths before storing the workspace.
     // Both decode an audio track (a video's audio plays as an AudioEngine voice).
+    // The scan is recursive so cues inside groups are also preloaded.
     let cues_to_preload: Vec<(uuid::Uuid, PathBuf)> = loaded
         .active_cue_list()
         .map(|cl| {
-            cl.cues
-                .iter()
-                .filter(|c| matches!(c.cue_type(), CueType::Audio | CueType::Video))
-                .filter_map(|c| {
-                    let json = c.serialize();
-                    let p = json.get("file_path")?.as_str()?;
-                    if p.is_empty() {
-                        return None;
-                    }
-                    Some((c.id(), PathBuf::from(p)))
-                })
-                .collect()
+            let mut result = Vec::new();
+            collect_media_cues(&cl.cues, &mut result);
+            result
         })
         .unwrap_or_default();
 
@@ -95,7 +105,7 @@ pub fn load_workspace(
                         let samples = Arc::new(samples);
                         if let Ok(mut ws) = workspace.lock() {
                             if let Some(cl) = ws.active_cue_list_mut() {
-                                if let Some(cue) = cl.get_mut(&cue_id) {
+                                if let Some(cue) = cl.get_mut_recursive(&cue_id) {
                                     cue.accept_preloaded_audio(
                                         samples, channels, sample_rate, duration,
                                     );

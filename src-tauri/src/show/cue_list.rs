@@ -11,6 +11,25 @@ use crate::cue::{registry::CueRegistry, traits::Cue, types::CueId};
 // Recursive helpers (free functions to avoid borrow-checker conflicts)
 // ---------------------------------------------------------------------------
 
+/// Recursively assign cue numbers.
+///
+/// `prefix` is the parent's number (e.g. `"3"` for top-level cue 3).
+/// Children of that cue get `"3.1"`, `"3.2"`, etc.
+/// An empty prefix means we are at the top level: numbers are `"1"`, `"2"`, …
+fn renumber_recursive(cues: &mut Vec<Box<dyn Cue>>, prefix: &str) {
+    for (i, cue) in cues.iter_mut().enumerate() {
+        let number = if prefix.is_empty() {
+            (i + 1).to_string()
+        } else {
+            format!("{}.{}", prefix, i + 1)
+        };
+        cue.set_number(Some(number.clone()));
+        if let Some(children) = cue.child_cues_mut() {
+            renumber_recursive(children, &number);
+        }
+    }
+}
+
 /// Extract a cue from anywhere in the hierarchy (top-level or inside any group).
 fn extract_cue_anywhere(cues: &mut Vec<Box<dyn Cue>>, id: &CueId) -> Option<Box<dyn Cue>> {
     if let Some(idx) = cues.iter().position(|c| c.id() == *id) {
@@ -87,12 +106,64 @@ impl CueList {
         self.cues.iter().find(|c| c.id() == *id).map(|c| c.as_ref())
     }
 
-    /// Find a cue by ID (mutable).
+    /// Find a cue by ID (mutable), searching only top-level cues.
     pub fn get_mut(&mut self, id: &CueId) -> Option<&mut dyn Cue> {
         self.cues
             .iter_mut()
             .find(|c| c.id() == *id)
             .map(|c| c.as_mut() as &mut dyn Cue)
+    }
+
+    /// Find a cue by ID (mutable), searching recursively through group children.
+    ///
+    /// Used when applying preloaded audio to cues that may live inside groups.
+    pub fn get_mut_recursive(&mut self, id: &CueId) -> Option<&mut dyn Cue> {
+        fn search(cues: &mut Vec<Box<dyn crate::cue::traits::Cue>>, id: &CueId) -> Option<*mut dyn crate::cue::traits::Cue> {
+            for cue in cues.iter_mut() {
+                if cue.id() == *id {
+                    return Some(cue.as_mut() as *mut dyn crate::cue::traits::Cue);
+                }
+                if let Some(children) = cue.child_cues_mut() {
+                    if let Some(ptr) = search(children, id) {
+                        return Some(ptr);
+                    }
+                }
+            }
+            None
+        }
+        // SAFETY: the pointer is valid as long as `self` is borrowed mutably,
+        // which is guaranteed by the lifetime of the returned reference.
+        search(&mut self.cues, id).map(|ptr| unsafe { &mut *ptr })
+    }
+
+    /// Replace a cue by ID in-place, searching recursively through group children.
+    ///
+    /// Returns `true` if the cue was found and replaced.
+    pub fn replace_cue_recursive(&mut self, id: &CueId, new_cue: Box<dyn crate::cue::traits::Cue>) -> bool {
+        fn replace(
+            cues: &mut Vec<Box<dyn crate::cue::traits::Cue>>,
+            id: &CueId,
+            slot: &mut Option<Box<dyn crate::cue::traits::Cue>>,
+        ) -> bool {
+            for i in 0..cues.len() {
+                if cues[i].id() == *id {
+                    if let Some(c) = slot.take() {
+                        cues[i] = c;
+                    }
+                    return true;
+                }
+            }
+            for cue in cues.iter_mut() {
+                if let Some(children) = cue.child_cues_mut() {
+                    if replace(children, id, slot) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        let mut slot = Some(new_cue);
+        replace(&mut self.cues, id, &mut slot)
     }
 
     /// Index of a cue within the list, if found.
@@ -104,16 +175,15 @@ impl CueList {
     // Mutation
     // -----------------------------------------------------------------------
 
-    /// Assign sequential cue numbers ("1", "2", "3", …) to every cue in order.
+    /// Assign sequential cue numbers to every cue in the list, recursively.
+    ///
+    /// Top-level cues get "1", "2", "3", …
+    /// Children of a group numbered "3" get "3.1", "3.2", "3.3", …
+    /// Deeply nested groups continue the pattern: "3.2.1", "3.2.2", …
     ///
     /// Called automatically after any structural mutation (add, remove, move).
-    /// Cues whose number was manually cleared are still renumbered; this keeps
-    /// the list consistent and matches the user expectation that numbers always
-    /// reflect position.
     pub fn renumber_all(&mut self) {
-        for (i, cue) in self.cues.iter_mut().enumerate() {
-            cue.set_number(Some((i + 1).to_string()));
-        }
+        renumber_recursive(&mut self.cues, "");
     }
 
     /// Append a cue to the end of the list.

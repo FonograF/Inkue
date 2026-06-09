@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -131,6 +131,43 @@ export interface WorkspaceInfo {
 export interface WaveformData {
   peaks: number[];
   file_duration_s: number;
+}
+
+// ---------------------------------------------------------------------------
+// OSC types
+// ---------------------------------------------------------------------------
+
+export type OscArgType = "int" | "float" | "str" | "bool";
+
+export type OscArg =
+  | { type: "int";   value: number }
+  | { type: "float"; value: number }
+  | { type: "str";   value: string }
+  | { type: "bool";  value: boolean };
+
+export interface OscMessage {
+  patch_id: string;
+  address: string;
+  args: OscArg[];
+}
+
+export interface OscPatch {
+  id: string;
+  name: string;
+  ip: string;
+  port: number;
+}
+
+/** Full cue data returned by get_cue for an OSC Cue. */
+export interface OscCueData extends CueSummary {
+  notes: string;
+  messages: OscMessage[];
+}
+
+export interface OscReceiveConfig {
+  enabled: boolean;
+  port: number;
+  allowed_ips: string[];
 }
 
 // ---------------------------------------------------------------------------
