@@ -102,7 +102,7 @@ fn make_context(
 fn collect_time_snapshots(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(CueId, u64, u64, Option<u64>)> {
     let mut result = Vec::new();
     for cue in cues {
-        if cue.state() == CueState::Running {
+        if cue.state() == CueState::Running || cue.state() == CueState::Paused {
             result.push((
                 cue.id(),
                 cue.elapsed().as_millis() as u64,

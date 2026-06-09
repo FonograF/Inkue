@@ -31,7 +31,9 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
       unlisteners.push(
         await listen<CueStateChangedEvent>("cue-state-changed", (e) => {
           updateCueState(e.payload.cue_id, e.payload.new_state);
-          if (e.payload.new_state !== "running") {
+          // Only clear timing when the cue fully stops — not on pause, so the
+          // progress bar and inspector counter freeze at the paused position.
+          if (e.payload.new_state === "standby" || e.payload.new_state === "completed") {
             clearTiming(e.payload.cue_id);
           }
         })

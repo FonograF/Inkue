@@ -89,6 +89,10 @@ pub struct AudioCue {
     /// Set to `true` by [`Transport::go`] immediately after firing the
     /// Auto-Continue chain, so the event loop never double-fires it.
     auto_continue_fired: bool,
+    /// Elapsed time accumulated before the most recent pause (mirrors WaitCue pattern).
+    elapsed_before_pause: Duration,
+    /// Action-elapsed time accumulated before the most recent pause.
+    action_elapsed_before_pause: Duration,
 }
 
 impl AudioCue {
@@ -124,6 +128,8 @@ impl AudioCue {
             in_pre_wait: false,
             play_generation: 0,
             auto_continue_fired: false,
+            elapsed_before_pause: Duration::ZERO,
+            action_elapsed_before_pause: Duration::ZERO,
         }
     }
 
@@ -325,6 +331,8 @@ impl Cue for AudioCue {
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
@@ -332,11 +340,17 @@ impl Cue for AudioCue {
 
     fn pause(&mut self, context: &CueContext) -> Result<()> {
         if self.in_pre_wait {
-            // Cannot pause during pre-wait (action hasn't started).
             return Ok(());
         }
         if let Some(vid) = self.active_voice_id {
             context.audio_engine.pause_voice(vid)?;
+        }
+        // Snapshot elapsed times so they freeze while paused.
+        if let Some(t) = self.started_at.take() {
+            self.elapsed_before_pause += t.elapsed();
+        }
+        if let Some(t) = self.action_started_at.take() {
+            self.action_elapsed_before_pause += t.elapsed();
         }
         self.state = CueState::Paused;
         Ok(())
@@ -346,6 +360,9 @@ impl Cue for AudioCue {
         if let Some(vid) = self.active_voice_id {
             context.audio_engine.resume_voice(vid)?;
         }
+        // Re-anchor Instants so elapsed() resumes from the frozen position.
+        self.started_at = Some(Instant::now() - self.elapsed_before_pause);
+        self.action_started_at = Some(Instant::now() - self.action_elapsed_before_pause);
         self.state = CueState::Running;
         Ok(())
     }
@@ -375,6 +392,8 @@ impl Cue for AudioCue {
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
@@ -386,6 +405,8 @@ impl Cue for AudioCue {
         self.active_voice_id = None;
         self.started_at = None;
         self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
         Ok(())
@@ -445,10 +466,16 @@ impl Cue for AudioCue {
     }
 
     fn elapsed(&self) -> Duration {
+        if self.state == CueState::Paused {
+            return self.elapsed_before_pause;
+        }
         self.started_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO)
     }
 
     fn action_elapsed(&self) -> Duration {
+        if self.state == CueState::Paused {
+            return self.action_elapsed_before_pause;
+        }
         self.action_started_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO)
     }
 
