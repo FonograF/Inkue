@@ -7,13 +7,56 @@
 //! - On every acted-upon message: emits `osc-activity` (empty) + `osc-command`.
 //! - The frontend listens for `osc-command` and calls the matching `invoke()`.
 
+use std::collections::VecDeque;
 use std::net::UdpSocket;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use tauri::Emitter;
 
 use crate::preferences::OscReceiveConfig;
+
+// ---------------------------------------------------------------------------
+// Dedup cache — prevents duplicate UDP packets (Windows loopback quirk, some
+// OSC controllers that send each message twice) from being acted upon twice.
+// ---------------------------------------------------------------------------
+
+/// Holds a short rolling window of recently-seen packets.
+struct DedupCache {
+    /// (received_at, fingerprint)
+    entries: VecDeque<(Instant, u64)>,
+    /// How long to keep an entry before considering it stale.
+    window: Duration,
+}
+
+impl DedupCache {
+    fn new(window: Duration) -> Self {
+        Self { entries: VecDeque::with_capacity(32), window }
+    }
+
+    /// Returns `true` if this fingerprint was already seen within the window
+    /// (i.e. this is a duplicate).  Otherwise records it and returns `false`.
+    fn is_duplicate(&mut self, fp: u64) -> bool {
+        let now = Instant::now();
+        // Purge stale entries.
+        while self.entries.front().is_some_and(|(t, _)| now.duration_since(*t) > self.window) {
+            self.entries.pop_front();
+        }
+        if self.entries.iter().any(|(_, f)| *f == fp) {
+            return true;
+        }
+        self.entries.push_back((now, fp));
+        false
+    }
+}
+
+/// Cheap fingerprint for a received OSC message.
+fn packet_fingerprint(buf: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    buf.hash(&mut h);
+    h.finish()
+}
 
 /// Handle returned by [`OscServer::start`].  Drop or call [`OscServer::stop`]
 /// to shut down the listener thread.
@@ -81,6 +124,9 @@ fn server_loop(
 
         log::info!("OSC server listening on {addr}");
         let mut buf = [0u8; 4096];
+        // 50 ms window catches Windows loopback duplicates and OSC controllers
+        // that send each message twice at the same millisecond.
+        let mut dedup = DedupCache::new(Duration::from_millis(50));
 
         loop {
             // Check for config changes before blocking.
@@ -94,6 +140,11 @@ fn server_loop(
                 Ok((n, src)) => {
                     if !is_allowed(&config.allowed_ips, &src.ip().to_string()) {
                         log::debug!("OSC: ignoring packet from non-allowlisted {src}");
+                        continue;
+                    }
+                    let fp = packet_fingerprint(&buf[..n]);
+                    if dedup.is_duplicate(fp) {
+                        log::debug!("OSC: dropped duplicate packet from {src}");
                         continue;
                     }
                     match rosc::decoder::decode_udp(&buf[..n]) {
@@ -144,11 +195,13 @@ fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
     log::info!("OSC in: {} {:?}", msg.addr, args_display);
 
     let payload = match msg.addr.as_str() {
-        "/wincue/go"        => serde_json::json!({ "command": "go" }),
-        "/wincue/stop"      => serde_json::json!({ "command": "stop_all" }),
-        "/wincue/hardstop"  => serde_json::json!({ "command": "hard_stop_all" }),
-        "/wincue/pause"     => serde_json::json!({ "command": "pause_all" }),
-        "/wincue/resume"    => serde_json::json!({ "command": "resume_all" }),
+        "/wincue/go"              => serde_json::json!({ "command": "go" }),
+        "/wincue/stop"            => serde_json::json!({ "command": "stop_all" }),
+        "/wincue/hardstop"        => serde_json::json!({ "command": "hard_stop_all" }),
+        "/wincue/pause"           => serde_json::json!({ "command": "pause_all" }),
+        "/wincue/resume"          => serde_json::json!({ "command": "resume_all" }),
+        "/wincue/select/next"     => serde_json::json!({ "command": "select_next" }),
+        "/wincue/select/previous" => serde_json::json!({ "command": "select_previous" }),
         addr if addr.starts_with("/wincue/cue/") => parse_cue_address(addr),
         _ => return,
     };

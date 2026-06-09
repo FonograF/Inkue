@@ -6,6 +6,7 @@ import { useTransportStore } from "../../stores/transportStore";
 const KNOWN_ADDRS = new Set([
   "/wincue/go", "/wincue/stop", "/wincue/hardstop",
   "/wincue/pause", "/wincue/resume",
+  "/wincue/select/next", "/wincue/select/previous",
 ]);
 
 function isKnown(addr: string): boolean {

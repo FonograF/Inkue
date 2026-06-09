@@ -4,6 +4,7 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::{
+    cue::osc_types::{OscArg, OscMessage},
     engine::osc_patch::OscPatch,
     preferences::OscReceiveConfig,
     state::AppState,
@@ -82,6 +83,63 @@ pub fn remove_osc_patch(
 #[tauri::command]
 pub fn get_osc_config() -> OscReceiveConfig {
     crate::machine_config::load_osc()
+}
+
+/// Send a single OSC message immediately and return a human-readable result string.
+///
+/// Used by the inspector "Test" button so the operator can verify connectivity
+/// without firing a GO.  Returns `"OK: sent N bytes to ip:port"` on success or
+/// an error description on failure.
+#[tauri::command]
+pub fn send_osc_test(
+    patch_id: String,
+    message: OscMessage,
+    state: State<'_, AppState>,
+) -> String {
+    use std::net::UdpSocket;
+
+    let id: Uuid = match patch_id.parse() {
+        Ok(u) => u,
+        Err(e) => return format!("Error: invalid patch_id — {e}"),
+    };
+
+    let ws = match state.workspace.lock() {
+        Ok(w) => w,
+        Err(e) => return format!("Error: workspace lock — {e}"),
+    };
+
+    let patch = match ws.osc_patches.iter().find(|p| p.id == id) {
+        Some(p) => p.clone(),
+        None => return format!("Error: patch '{patch_id}' not found in workspace"),
+    };
+    drop(ws);
+
+    let target = format!("{}:{}", patch.ip, patch.port);
+
+    let osc_args: Vec<rosc::OscType> = message.args.iter().map(|a| match a {
+        OscArg::Int(i)   => rosc::OscType::Int(*i),
+        OscArg::Float(f) => rosc::OscType::Float(*f),
+        OscArg::Str(s)   => rosc::OscType::String(s.clone()),
+        OscArg::Bool(b)  => rosc::OscType::Bool(*b),
+    }).collect();
+
+    let packet = rosc::OscPacket::Message(rosc::OscMessage {
+        addr: message.address.clone(),
+        args: osc_args,
+    });
+
+    let bytes = match rosc::encoder::encode(&packet) {
+        Ok(b) => b,
+        Err(e) => return format!("Error: OSC encode failed — {e}"),
+    };
+
+    match UdpSocket::bind("0.0.0.0:0") {
+        Ok(socket) => match socket.send_to(&bytes, &target) {
+            Ok(n) => format!("OK: sent {n} bytes → {target}  ({} args)", message.args.len()),
+            Err(e) => format!("Error: send_to {target} failed — {e}"),
+        },
+        Err(e) => format!("Error: socket bind failed — {e}"),
+    }
 }
 
 /// Save a new OSC receive configuration and hot-apply it to the running server.

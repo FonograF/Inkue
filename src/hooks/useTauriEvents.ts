@@ -149,6 +149,25 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
                 }
                 break;
               }
+              case "select_next": {
+                const { cues, playheadCueId } = useWorkspaceStore.getState();
+                const idx = cues.findIndex(c => c.id === playheadCueId);
+                const next = idx >= 0 ? cues[idx + 1] : cues[0];
+                if (next) await setPlayhead(next.id);
+                break;
+              }
+              case "select_previous": {
+                const { cues, playheadCueId } = useWorkspaceStore.getState();
+                const idx = cues.findIndex(c => c.id === playheadCueId);
+                if (idx === -1) {
+                  // Playhead past end — go to last cue
+                  const last = cues[cues.length - 1];
+                  if (last) await setPlayhead(last.id);
+                } else if (idx > 0) {
+                  await setPlayhead(cues[idx - 1].id);
+                }
+                break;
+              }
             }
           } catch (err) {
             console.error("OSC command error:", err);

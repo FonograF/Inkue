@@ -1,8 +1,8 @@
 // Inspector tab for OSC cues — manages the list of messages to send on GO.
 
 import { useEffect, useState } from "react";
-import type { OscArg, OscCueData, OscPatch } from "../../lib/types";
-import { listOscPatches } from "../../lib/commands";
+import type { OscArg, OscCueData, OscMessage, OscPatch } from "../../lib/types";
+import { listOscPatches, sendOscTest } from "../../lib/commands";
 
 interface Props {
   cue: OscCueData;
@@ -92,11 +92,23 @@ function MessageRow({
   onChange,
   onRemove,
 }: {
-  msg: { patch_id: string; address: string; args: OscArg[] };
+  msg: OscMessage;
   patches: OscPatch[];
-  onChange: (msg: { patch_id: string; address: string; args: OscArg[] }) => void;
+  onChange: (msg: OscMessage) => void;
   onRemove: () => void;
 }) {
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const handleTest = async () => {
+    setTestResult("Sending…");
+    try {
+      const result = await sendOscTest(msg.patch_id, msg);
+      setTestResult(result);
+    } catch (e) {
+      setTestResult(`Error: ${e}`);
+    }
+  };
+
   return (
     <div
       style={{
@@ -107,9 +119,10 @@ function MessageRow({
         marginBottom: 8,
       }}
     >
-      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+      {/* Row 1: patch + address */}
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
         <select
-          style={{ ...selectStyle, flex: "0 0 130px" }}
+          style={{ ...selectStyle, flex: "0 0 110px" }}
           value={msg.patch_id}
           onChange={(e) => onChange({ ...msg, patch_id: e.target.value })}
         >
@@ -118,16 +131,40 @@ function MessageRow({
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
-
         <input
-          style={{ ...inputStyle, flex: 1 }}
+          style={{ ...inputStyle, flex: 1, minWidth: 0 }}
           placeholder="/address"
           value={msg.address}
           onChange={(e) => onChange({ ...msg, address: e.target.value })}
         />
+      </div>
 
+      {/* Row 2: actions + test result */}
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+        <button
+          style={{ ...btnStyle, color: "#67e8f9", flex: 1 }}
+          onClick={handleTest}
+          title="Send this message immediately to test connectivity"
+        >
+          ▶ Test send
+        </button>
         <button style={{ ...btnStyle, color: "#ef4444" }} onClick={onRemove}>Remove</button>
       </div>
+
+      {testResult && (
+        <div style={{
+          fontSize: 11,
+          fontFamily: "monospace",
+          marginBottom: 4,
+          padding: "3px 6px",
+          borderRadius: 4,
+          background: testResult.startsWith("OK") ? "#052e16" : "#450a0a",
+          color: testResult.startsWith("OK") ? "#4ade80" : "#f87171",
+          wordBreak: "break-all",
+        }}>
+          {testResult}
+        </div>
+      )}
 
       {msg.args.map((arg, i) => (
         <ArgRow

@@ -23,7 +23,7 @@ use commands::{
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     osc_cmds::{
         add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
-        set_osc_config, update_osc_patch,
+        send_osc_test, set_osc_config, update_osc_patch,
     },
     preferences_cmds::{
         get_asio_output_pairs, get_available_backends, get_machine_audio_config,
@@ -173,6 +173,7 @@ pub fn run() {
             remove_osc_patch,
             get_osc_config,
             set_osc_config,
+            send_osc_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinCue");

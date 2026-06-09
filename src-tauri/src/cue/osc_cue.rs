@@ -216,9 +216,12 @@ impl CueFactory for OscCueFactory {
                 cue.color = color;
             }
         }
-        if let Some(msgs) = value.get("messages") {
-            if let Ok(messages) = serde_json::from_value::<Vec<OscMessage>>(msgs.clone()) {
-                cue.messages = messages;
+        if let Some(serde_json::Value::Array(arr)) = value.get("messages") {
+            for item in arr {
+                match serde_json::from_value::<OscMessage>(item.clone()) {
+                    Ok(msg) => cue.messages.push(msg),
+                    Err(e) => log::warn!("OscCue: skipping invalid message in JSON: {e}"),
+                }
             }
         }
 

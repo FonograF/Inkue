@@ -197,3 +197,5 @@ export const removeOscPatch = (patchId: string) =>
 export const getOscConfig = () => invoke<OscReceiveConfig>("get_osc_config");
 export const setOscConfig = (config: OscReceiveConfig) =>
   invoke<void>("set_osc_config", { config });
+export const sendOscTest = (patchId: string, message: import("./types").OscMessage) =>
+  invoke<string>("send_osc_test", { patchId, message });
