@@ -28,7 +28,7 @@ use commands::{
     preferences_cmds::{
         get_asio_output_pairs, get_available_backends, get_machine_audio_config,
         get_output_screen, get_preferences, list_audio_devices, list_system_fonts,
-        preview_output_timer, set_output_screen, test_audio_device,
+        open_preferences_window, preview_output_timer, set_output_screen, test_audio_device,
         update_audio_preferences, update_display_preferences,
         update_general_preferences, update_machine_audio_config,
     },
@@ -155,6 +155,7 @@ pub fn run() {
             get_preferences,
             get_machine_audio_config,
             update_machine_audio_config,
+            open_preferences_window,
             update_audio_preferences,
             update_general_preferences,
             update_display_preferences,

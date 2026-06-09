@@ -3,6 +3,8 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emit } from "@tauri-apps/api/event";
 import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
@@ -717,12 +719,13 @@ function OscContent({
 
 interface Props {
   onClose: () => void;
+  standalone?: boolean;
 }
 
 const MODAL_W = 740;
 const MODAL_H = 520;
 
-export function PreferencesModal({ onClose }: Props) {
+export function PreferencesModal({ onClose, standalone = false }: Props) {
   const { setGeneralPrefs, setDisplayPrefs } = useWorkspaceStore();
   const [category, setCategory] = useState<Category>("audio");
   const [prefs, setPrefs] = useState<AppPreferences | null>(null);
@@ -822,9 +825,12 @@ export function PreferencesModal({ onClose }: Props) {
   }, []);
 
   const startDrag = (e: React.MouseEvent) => {
-    // Don't start drag if clicking on a button
     if ((e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
+    if (standalone) {
+      void getCurrentWindow().startDragging();
+      return;
+    }
     dragRef.current = {
       startMouseX: e.clientX, startMouseY: e.clientY,
       startPosX: posRef.current.x, startPosY: posRef.current.y,
@@ -835,34 +841,41 @@ export function PreferencesModal({ onClose }: Props) {
   const handleApply = async () => {
     if (!draft) return;
     setApplyError(null);
+    const displayPayload: DisplayPreferences = {
+      ...draftTheme,
+      output_screen: draftOutputScreen ?? undefined,
+      show_output_timer: draftShowOutputTimer,
+      timer_count_down: draftTimerCountDown,
+      timer_font: draftTimerFont,
+      timer_font_size: draftTimerFontSize,
+      timer_position: draftTimerPosition,
+      timer_show_ms: draftTimerShowMs,
+      timer_margin: draftTimerMargin,
+    } as DisplayPreferences;
     try {
-      await updateMachineAudioConfig(draftMachineConfig);
-      await updateAudioPreferences(draft.audio);
-      await updateGeneralPreferences(draft.general);
-      await setOutputScreen(draftOutputScreen);
-      await updateDisplayPreferences({
-        ...draftTheme,
-        output_screen: draftOutputScreen ?? undefined,
-        show_output_timer: draftShowOutputTimer,
-        timer_count_down: draftTimerCountDown,
-        timer_font: draftTimerFont,
-        timer_font_size: draftTimerFontSize,
-        timer_position: draftTimerPosition,
-        timer_show_ms: draftTimerShowMs,
-        timer_margin: draftTimerMargin,
-      } as DisplayPreferences);
-      setGeneralPrefs(draft.general);
-      setDisplayPrefs({
-        ...draftTheme,
-        output_screen: draftOutputScreen,
-        show_output_timer: draftShowOutputTimer,
-        timer_count_down: draftTimerCountDown,
-        timer_font: draftTimerFont,
-        timer_font_size: draftTimerFontSize,
-        timer_position: draftTimerPosition,
-        timer_show_ms: draftTimerShowMs,
-        timer_margin: draftTimerMargin,
-      });
+      await Promise.all([
+        updateMachineAudioConfig(draftMachineConfig),
+        updateAudioPreferences(draft.audio),
+        updateGeneralPreferences(draft.general),
+        setOutputScreen(draftOutputScreen),
+        updateDisplayPreferences(displayPayload),
+      ]);
+      if (standalone) {
+        await emit("preferences-applied");
+      } else {
+        setGeneralPrefs(draft.general);
+        setDisplayPrefs({
+          ...draftTheme,
+          output_screen: draftOutputScreen,
+          show_output_timer: draftShowOutputTimer,
+          timer_count_down: draftTimerCountDown,
+          timer_font: draftTimerFont,
+          timer_font_size: draftTimerFontSize,
+          timer_position: draftTimerPosition,
+          timer_show_ms: draftTimerShowMs,
+          timer_margin: draftTimerMargin,
+        });
+      }
       setPrefs(draft);
       setMachineConfig(draftMachineConfig);
       setOutputScreen_(draftOutputScreen);
@@ -911,32 +924,34 @@ export function PreferencesModal({ onClose }: Props) {
     onClose();
   };
 
-  if (!draft) return null;
+  const modalStyle: React.CSSProperties = standalone
+    ? { position: "fixed", inset: 0, background: "#0f172a", display: "flex", flexDirection: "column", overflow: "hidden" }
+    : {
+        position: "fixed",
+        left: pos.x, top: pos.y,
+        width: MODAL_W, height: MODAL_H,
+        zIndex: 50000,
+        background: "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: 8,
+        boxShadow: "0 24px 64px rgba(0,0,0,0.8)",
+        display: "flex", flexDirection: "column",
+        overflow: "hidden",
+      };
 
-  return createPortal(
+  const inner = (
     <>
-      {/* Dim backdrop — click outside closes */}
-      <div
-        style={{ position: "fixed", inset: 0, zIndex: 49999, background: "rgba(0,0,0,0.45)" }}
-        onClick={handleCancel}
-      />
+      {!standalone && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 49999, background: "rgba(0,0,0,0.45)" }}
+          onClick={handleCancel}
+        />
+      )}
 
       {/* Floating window */}
       <div
-        style={{
-          position: "fixed",
-          left: pos.x, top: pos.y,
-          width: MODAL_W, height: MODAL_H,
-          zIndex: 50000,
-          background: "#0f172a",
-          border: "1px solid #334155",
-          borderRadius: 8,
-          boxShadow: "0 24px 64px rgba(0,0,0,0.8)",
-          display: "flex", flexDirection: "column",
-          overflow: "hidden",
-        }}
-        // Prevent backdrop click from firing when clicking inside
-        onClick={(e) => e.stopPropagation()}
+        style={modalStyle}
+        onClick={standalone ? undefined : (e) => e.stopPropagation()}
       >
         {/* Draggable title bar */}
         <div
@@ -987,55 +1002,63 @@ export function PreferencesModal({ onClose }: Props) {
 
           {/* Content */}
           <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
-            {category === "audio" && (
-              <AudioContent
-                machineConfig={draftMachineConfig}
-                audioPrefs={draft.audio}
-                onMachineConfigChange={setDraftMachineConfig}
-                onAudioPrefsChange={(audio) => setDraft({ ...draft, audio })}
-                availableBackends={availableBackends}
-                onImmediateApplyMachine={handleImmediateApplyMachine}
-              />
-            )}
-            {category === "general" && (
-              <GeneralContent
-                prefs={draft.general}
-                onChange={(general) => setDraft({ ...draft, general })}
-              />
-            )}
-            {category === "display" && (
-              <DisplayContent
-                outputScreen={draftOutputScreen}
-                onScreenChange={setDraftOutputScreen}
-                showOutputTimer={draftShowOutputTimer}
-                onTimerChange={setDraftShowOutputTimer}
-                timerCountDown={draftTimerCountDown}
-                onTimerModeChange={setDraftTimerCountDown}
-                timerFont={draftTimerFont}
-                onTimerFontChange={setDraftTimerFont}
-                timerFontSize={draftTimerFontSize}
-                onTimerFontSizeChange={setDraftTimerFontSize}
-                timerPosition={draftTimerPosition}
-                onTimerPositionChange={setDraftTimerPosition}
-                timerShowMs={draftTimerShowMs}
-                onTimerShowMsChange={setDraftTimerShowMs}
-                timerMargin={draftTimerMargin}
-                onTimerMarginChange={setDraftTimerMargin}
-                timerPreview={timerPreview}
-                onTimerPreviewChange={setTimerPreview}
-                committedTimerStyle={{ font: timerFont, fontSize: timerFontSize, position: timerPosition, margin: timerMargin }}
-                theme={draftTheme}
-                onThemeChange={setDraftTheme}
-              />
-            )}
-            {category === "network" && (
-              <OscContent
-                config={oscConfig}
-                onChange={async (c) => {
-                  setOscConfig_(c);
-                  try { await setOscConfig(c); } catch (e) { console.error(e); }
-                }}
-              />
+            {draft === null ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#64748b", fontSize: 13 }}>
+                Loading…
+              </div>
+            ) : (
+              <>
+                {category === "audio" && (
+                  <AudioContent
+                    machineConfig={draftMachineConfig}
+                    audioPrefs={draft.audio}
+                    onMachineConfigChange={setDraftMachineConfig}
+                    onAudioPrefsChange={(audio) => setDraft({ ...draft, audio })}
+                    availableBackends={availableBackends}
+                    onImmediateApplyMachine={handleImmediateApplyMachine}
+                  />
+                )}
+                {category === "general" && (
+                  <GeneralContent
+                    prefs={draft.general}
+                    onChange={(general) => setDraft({ ...draft, general })}
+                  />
+                )}
+                {category === "display" && (
+                  <DisplayContent
+                    outputScreen={draftOutputScreen}
+                    onScreenChange={setDraftOutputScreen}
+                    showOutputTimer={draftShowOutputTimer}
+                    onTimerChange={setDraftShowOutputTimer}
+                    timerCountDown={draftTimerCountDown}
+                    onTimerModeChange={setDraftTimerCountDown}
+                    timerFont={draftTimerFont}
+                    onTimerFontChange={setDraftTimerFont}
+                    timerFontSize={draftTimerFontSize}
+                    onTimerFontSizeChange={setDraftTimerFontSize}
+                    timerPosition={draftTimerPosition}
+                    onTimerPositionChange={setDraftTimerPosition}
+                    timerShowMs={draftTimerShowMs}
+                    onTimerShowMsChange={setDraftTimerShowMs}
+                    timerMargin={draftTimerMargin}
+                    onTimerMarginChange={setDraftTimerMargin}
+                    timerPreview={timerPreview}
+                    onTimerPreviewChange={setTimerPreview}
+                    committedTimerStyle={{ font: timerFont, fontSize: timerFontSize, position: timerPosition, margin: timerMargin }}
+                    theme={draftTheme}
+                    onThemeChange={setDraftTheme}
+                  />
+                )}
+                {category === "network" && (
+                  <OscContent
+                    config={oscConfig}
+                    onChange={async (c) => {
+                      setOscConfig_(c);
+                      try { await setOscConfig(c); } catch (e) { console.error(e); }
+                    }}
+                  />
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1053,19 +1076,21 @@ export function PreferencesModal({ onClose }: Props) {
             </div>
           )}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "8px 16px" }}>
-          <button onClick={handleCancel} style={{ ...btnStyle, padding: "5px 16px", fontSize: 12 }}>
-            Cancel
-          </button>
-          <button
-            onClick={() => void handleApply()}
-            style={{ ...btnStyle, padding: "5px 16px", fontSize: 12, background: "#1d4ed8", border: "1px solid #2563eb", color: "#fff" }}
-          >
-            Apply
-          </button>
+            <button onClick={handleCancel} style={{ ...btnStyle, padding: "5px 16px", fontSize: 12 }}>
+              Cancel
+            </button>
+            <button
+              onClick={() => void handleApply()}
+              disabled={draft === null}
+              style={{ ...btnStyle, padding: "5px 16px", fontSize: 12, background: "#1d4ed8", border: "1px solid #2563eb", color: "#fff", opacity: draft === null ? 0.5 : 1 }}
+            >
+              Apply
+            </button>
           </div>
         </div>
       </div>
-    </>,
-    document.body,
+    </>
   );
+
+  return standalone ? inner : createPortal(inner, document.body);
 }

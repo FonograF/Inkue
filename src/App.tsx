@@ -9,8 +9,7 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible } from "./lib/commands";
-import { PreferencesModal } from "./components/Preferences/PreferencesModal";
+import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow } from "./lib/commands";
 import type { CueSummary } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -394,7 +393,6 @@ export default function App() {
 
   const [inspectorOpen, setInspectorOpen]         = useState(true);
   const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
-  const [prefsOpen, setPrefsOpen]                 = useState(false);
   const [gotoOpen, setGotoOpen]                   = useState(false);
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
   const [loadError, setLoadError]                 = useState<string | null>(null);
@@ -515,7 +513,7 @@ export default function App() {
 
   useKeyboardShortcuts(
     handleRefresh,
-    () => setPrefsOpen(true),
+    () => void openPreferencesWindow(),
     () => void handleSave(),
     () => void handleOpen(),
     () => setInspectorOpen((v) => !v),
@@ -630,9 +628,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Preferences modal */}
-      {prefsOpen && <PreferencesModal onClose={() => setPrefsOpen(false)} />}
-
       {/* Goto cue dialog */}
       {gotoOpen && (
         <GotoDialog onClose={() => setGotoOpen(false)} onRefresh={handleRefresh} />
@@ -662,7 +657,7 @@ export default function App() {
           onSaveAs={() => void handleSaveAs()}
           onOpen={() => void handleOpen()}
           onNew={() => void handleNew()}
-          onPreferences={() => setPrefsOpen(true)}
+          onPreferences={() => void openPreferencesWindow()}
         />
         <ViewMenu
           surfaceVisible={outputSurfaceVisible}

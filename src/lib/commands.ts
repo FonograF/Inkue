@@ -162,6 +162,7 @@ export const setOutputScreen = (screen: number | null) =>
   invoke<void>("set_output_screen", { screen });
 export const toggleOutputWindow = () => invoke<void>("toggle_output_window");
 export const getOutputWindowVisible = () => invoke<boolean>("get_output_window_visible");
+export const openPreferencesWindow = () => invoke<void>("open_preferences_window");
 
 // ---------------------------------------------------------------------------
 // Devices

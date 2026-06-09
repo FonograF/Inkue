@@ -1,0 +1,14 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
+  "identifier": "preferences",
+  "description": "Capability for WinCue preferences window",
+  "windows": ["preferences"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-start-dragging",
+    "core:window:allow-hide",
+    "core:window:allow-show"
+  ]
+}

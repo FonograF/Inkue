@@ -19,7 +19,7 @@ interface TauriEventsOptions {
 }
 
 export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
-  const { refreshCues, refreshWorkspaceInfo, setPlayheadCueId, updateCueState } =
+  const { refreshCues, refreshWorkspaceInfo, loadDisplayPrefs, loadGeneralPrefs, setPlayheadCueId, updateCueState } =
     useWorkspaceStore();
   const { updateMasterLevels, markOscActivity, addOscLog } = useTransportStore();
   const { setTiming, clearTiming } = useTimingStore();
@@ -83,6 +83,13 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
       unlisteners.push(
         await listen<{ cue_id: string; error: string }>("cue-load-error", (e) => {
           onLoadError?.(e.payload.cue_id, e.payload.error);
+        })
+      );
+
+      unlisteners.push(
+        await listen("preferences-applied", async () => {
+          await loadDisplayPrefs();
+          await loadGeneralPrefs();
         })
       );
 

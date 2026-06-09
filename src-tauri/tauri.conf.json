@@ -13,6 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "WinCue",
         "width": 1280,
         "height": 800,
@@ -21,6 +22,16 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": false
+      },
+      {
+        "label": "preferences",
+        "title": "Preferences",
+        "width": 740,
+        "height": 520,
+        "resizable": false,
+        "decorations": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

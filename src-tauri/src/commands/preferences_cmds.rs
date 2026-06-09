@@ -2,7 +2,7 @@
 
 use std::f32::consts::PI;
 
-use tauri::{Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
     engine::device_manager::DeviceInfo,
@@ -456,4 +456,17 @@ fn build_beep(sample_rate: u32, channels: usize) -> Vec<f32> {
         for _ in 0..channels { buf.push(amp); }
     }
     buf
+}
+
+/// Show the Preferences window (pre-created at startup, hidden by default).
+///
+/// Calling this a second time just brings the window to front.
+#[tauri::command]
+pub fn open_preferences_window(app_handle: AppHandle) -> Result<(), String> {
+    let w = app_handle
+        .get_webview_window("preferences")
+        .ok_or("preferences window not found")?;
+    w.show().map_err(|e| e.to_string())?;
+    w.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
 }
