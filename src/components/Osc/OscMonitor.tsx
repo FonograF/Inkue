@@ -7,6 +7,7 @@ const KNOWN_ADDRS = new Set([
   "/wincue/go", "/wincue/stop", "/wincue/hardstop",
   "/wincue/pause", "/wincue/resume",
   "/wincue/select/next", "/wincue/select/previous",
+  "/wincue/pause_toggle",
 ]);
 
 function isKnown(addr: string): boolean {

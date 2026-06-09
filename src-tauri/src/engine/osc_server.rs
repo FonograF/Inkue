@@ -202,6 +202,7 @@ fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
         "/wincue/resume"          => serde_json::json!({ "command": "resume_all" }),
         "/wincue/select/next"     => serde_json::json!({ "command": "select_next" }),
         "/wincue/select/previous" => serde_json::json!({ "command": "select_previous" }),
+        "/wincue/pause_toggle"    => serde_json::json!({ "command": "pause_toggle" }),
         addr if addr.starts_with("/wincue/cue/") => parse_cue_address(addr),
         _ => return,
     };

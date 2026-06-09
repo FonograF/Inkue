@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 import { useTransportStore } from "../stores/transportStore";
 import { useTimingStore } from "../stores/timingStore";
-import { go, stopAll, hardStopAll, setPlayhead } from "../lib/commands";
+import { go, stopAll, hardStopAll, setPlayhead, pauseCue, resumeCue } from "../lib/commands";
 import type {
   CueStateChangedEvent,
   CueTimeUpdateEvent,
@@ -148,6 +148,17 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
                 if (target) {
                   const { stopCue } = await import("../lib/commands");
                   await stopCue(target.id);
+                }
+                break;
+              }
+              case "pause_toggle": {
+                const cues = useWorkspaceStore.getState().cues;
+                const running = cues.filter(c => c.state === "running");
+                const paused  = cues.filter(c => c.state === "paused");
+                if (running.length > 0) {
+                  for (const c of running) await pauseCue(c.id);
+                } else if (paused.length > 0) {
+                  for (const c of paused) await resumeCue(c.id);
                 }
                 break;
               }
