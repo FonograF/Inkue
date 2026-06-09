@@ -346,11 +346,14 @@ impl Cue for AudioCue {
             context.audio_engine.pause_voice(vid)?;
         }
         // Snapshot elapsed times so they freeze while paused.
+        // Use = (replace) not += (accumulate): after resume(), started_at is
+        // already re-anchored to encode the full play-time, so .elapsed()
+        // returns the correct total — no accumulation needed.
         if let Some(t) = self.started_at.take() {
-            self.elapsed_before_pause += t.elapsed();
+            self.elapsed_before_pause = t.elapsed();
         }
         if let Some(t) = self.action_started_at.take() {
-            self.action_elapsed_before_pause += t.elapsed();
+            self.action_elapsed_before_pause = t.elapsed();
         }
         self.state = CueState::Paused;
         Ok(())
