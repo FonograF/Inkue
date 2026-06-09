@@ -48,6 +48,8 @@ export interface CueSummary {
   children?: CueSummary[];
   /** For Group cues: playback mode. */
   group_mode?: GroupMode;
+  /** For running Sequential Group cues: ID of the currently active child. */
+  active_child_id?: string;
 }
 
 /** Full cue data returned by get_cue. */
@@ -87,6 +89,13 @@ export interface ImageCueData extends CueSummary {
   fade_in_curve: FadeCurve | null;
   fade_out_ms: number | null;
   fade_out_curve: FadeCurve | null;
+}
+
+/** Full cue data returned by get_cue for a Wait Cue. */
+export interface WaitCueData extends CueSummary {
+  notes: string;
+  /** The configured wait duration in milliseconds. */
+  wait_duration_ms: number;
 }
 
 /** Information about a connected monitor. */
@@ -130,15 +139,28 @@ export interface WaveformData {
 
 export type AudioBackend = "wasapi_shared" | "wasapi_exclusive" | "asio";
 
-export interface AudioPreferences {
-  buffer_size: number;
+/** Hardware-specific settings — stored in %APPDATA%\WinCue\audio.json, not in the workspace. */
+export interface MachineAudioConfig {
   backend: AudioBackend;
   device_id: string | null;
+  /** Samples. Only applied for WASAPI Exclusive. */
+  buffer_size: number;
+  /** ASIO output pair index (0 = Out 1-2, 1 = Out 3-4, …). */
+  asio_out_pair: number;
+}
+
+export const DEFAULT_MACHINE_AUDIO_CONFIG: MachineAudioConfig = {
+  backend: "wasapi_shared",
+  device_id: null,
+  buffer_size: 256,
+  asio_out_pair: 0,
+};
+
+/** Show-specific audio defaults — travel with the .wincue workspace file. */
+export interface AudioPreferences {
   default_volume_db: number;
   default_fade_out_ms: number;
   default_fade_curve: FadeCurve;
-  /** ASIO output pair index (0 = Out 1-2, 1 = Out 3-4, …). */
-  asio_out_pair: number;
 }
 
 export type CueRowHeight = "compact" | "normal" | "tall";
@@ -157,9 +179,25 @@ export const DEFAULT_GENERAL_PREFS: GeneralPreferences = {
   cue_row_height: "normal",
 };
 
+export type TimerPosition = "center" | "top_left" | "top_right" | "bottom_left" | "bottom_right";
+
 export interface DisplayPreferences {
   /** Monitor index for the unified output surface. null = floating window. */
   output_screen: number | null;
+  /** When true, a countdown timer is shown on the output window. */
+  show_output_timer: boolean;
+  /** When true the timer counts down (remaining); when false it counts up (elapsed). */
+  timer_count_down: boolean;
+  /** Font family for the OSD timer (e.g. "Arial"). */
+  timer_font: string;
+  /** Font size in mpv OSD points for the timer (default 120). */
+  timer_font_size: number;
+  /** Position of the timer on the output window. */
+  timer_position: TimerPosition;
+  /** When true, milliseconds are shown (e.g. 00:00.000). */
+  timer_show_ms: boolean;
+  /** Margin in pixels from the edge for corner positions. */
+  timer_margin: number;
   bg_app: string;
   bg_surface: string;
   bg_panel: string;

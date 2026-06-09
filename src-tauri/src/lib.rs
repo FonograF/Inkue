@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod cue;
 pub mod engine;
+pub mod machine_config;
 pub mod preferences;
 pub mod show;
 pub mod state;
@@ -21,9 +22,11 @@ use commands::{
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     preferences_cmds::{
-        get_asio_output_pairs, get_available_backends, get_output_screen, get_preferences,
-        list_audio_devices, set_output_screen, test_audio_device, update_audio_preferences,
-        update_display_preferences, update_general_preferences,
+        get_asio_output_pairs, get_available_backends, get_machine_audio_config,
+        get_output_screen, get_preferences, list_audio_devices, list_system_fonts,
+        preview_output_timer, set_output_screen, test_audio_device,
+        update_audio_preferences, update_display_preferences,
+        update_general_preferences, update_machine_audio_config,
     },
     transport_cmds::{
         go, hard_stop_all, pause_cue, resume_cue, seek_cue, set_master_volume, stop_all, stop_cue,
@@ -52,12 +55,17 @@ pub fn run() {
             // OutputEngine creates the persistent Win32 window + libmpv context
             // at startup (window is shown immediately — no first-GO freeze).
             // ----------------------------------------------------------------
-            let audio_engine = AudioEngine::new()?;
+            let machine_config = crate::machine_config::load();
+            let audio_engine = AudioEngine::new(&machine_config).map_err(|e| {
+                show_fatal_error(&format!("Audio engine failed to start:\n\n{e}"));
+                Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
+            })?;
             let output_engine = Arc::new(
                 OutputEngine::new(Arc::clone(&audio_engine))
-                    .map_err(|e| Box::new(std::io::Error::other(
-                        e.to_string(),
-                    )) as Box<dyn std::error::Error>)?,
+                    .map_err(|e| {
+                        show_fatal_error(&format!("Output engine failed to start:\n\n{e}"));
+                        Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
+                    })?,
             );
 
             let app_state = AppState::new(audio_engine, Arc::clone(&output_engine));
@@ -137,10 +145,14 @@ pub fn run() {
             refresh_devices,
             // Preferences
             get_preferences,
+            get_machine_audio_config,
+            update_machine_audio_config,
             update_audio_preferences,
             update_general_preferences,
             update_display_preferences,
             list_audio_devices,
+            list_system_fonts,
+            preview_output_timer,
             test_audio_device,
             get_available_backends,
             get_asio_output_pairs,
@@ -149,4 +161,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinCue");
+}
+
+/// Show a blocking error dialog — used when a fatal startup error occurs in
+/// a release build where there is no console to read stderr from.
+#[cfg(target_os = "windows")]
+fn show_fatal_error(message: &str) {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let title: Vec<u16> = OsStr::new("WinCue — Startup Error")
+        .encode_wide()
+        .chain(once(0))
+        .collect();
+    let body: Vec<u16> = OsStr::new(message).encode_wide().chain(once(0)).collect();
+    unsafe {
+        MessageBoxW(0, body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_fatal_error(message: &str) {
+    eprintln!("FATAL: {message}");
 }

@@ -6,7 +6,7 @@ use tauri::{Emitter, State};
 
 use crate::{
     engine::device_manager::DeviceInfo,
-    preferences::{AppPreferences, AudioPreferences, DisplayPreferences, GeneralPreferences},
+    preferences::{AppPreferences, AudioPreferences, DisplayPreferences, GeneralPreferences, MachineAudioConfig},
     state::AppState,
 };
 
@@ -84,28 +84,24 @@ pub fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, Str
     Ok(ws.preferences.clone())
 }
 
-/// Overwrite the audio section of preferences, restart the engine, and mark
-/// the workspace modified.
+/// Return the machine audio config (device, backend, buffer) from `%APPDATA%\WinCue\audio.json`.
 #[tauri::command]
-pub fn update_audio_preferences(
-    prefs: AudioPreferences,
+pub fn get_machine_audio_config() -> MachineAudioConfig {
+    crate::machine_config::load()
+}
+
+/// Persist machine audio config to `%APPDATA%\WinCue\audio.json`, restart the
+/// audio engine, and reset any running cues (their voice IDs become stale).
+#[tauri::command]
+pub fn update_machine_audio_config(
+    config: MachineAudioConfig,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Persist preferences.
-    {
-        let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-        ws.preferences.audio = prefs.clone();
-        ws.mark_modified();
-    }
+    crate::machine_config::save(&config).map_err(|e| e.to_string())?;
 
-    // Restart the audio engine with the new settings.
-    state
-        .audio_engine
-        .restart(prefs.device_id.as_deref(), &prefs.backend, prefs.buffer_size, prefs.asio_out_pair)
-        .map_err(|e| e.to_string())?;
+    state.audio_engine.restart(&config).map_err(|e| e.to_string())?;
 
-    // Reset all running/paused cues (their voice IDs are now invalid).
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         if let Some(cl) = ws.active_cue_list_mut() {
@@ -117,6 +113,21 @@ pub fn update_audio_preferences(
         }
     }
 
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Overwrite the show-specific audio defaults (volume, fade) in the workspace.
+/// Does not restart the engine — use `update_machine_audio_config` for hardware changes.
+#[tauri::command]
+pub fn update_audio_preferences(
+    prefs: AudioPreferences,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.preferences.audio = prefs;
+    ws.mark_modified();
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
@@ -162,25 +173,117 @@ pub fn set_output_screen(
     Ok(())
 }
 
-/// Overwrite the colour-theme fields in display preferences and mark the workspace modified.
+/// Overwrite the colour-theme and timer fields in display preferences and mark the workspace modified.
 ///
-/// The frontend applies these values as CSS variables — no engine restart needed.
+/// The frontend applies colour values as CSS variables; timer style is applied
+/// immediately to the mpv OSD — no engine restart needed.
 #[tauri::command]
 pub fn update_display_preferences(
     prefs: DisplayPreferences,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-    // Preserve output_screen (managed by set_output_screen), only update colour fields.
-    ws.preferences.display.bg_app        = prefs.bg_app;
-    ws.preferences.display.bg_surface    = prefs.bg_surface;
-    ws.preferences.display.bg_panel      = prefs.bg_panel;
-    ws.preferences.display.accent        = prefs.accent;
-    ws.preferences.display.text_primary  = prefs.text_primary;
-    ws.mark_modified();
+    let (font, font_size, position, margin) = {
+        let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        // Preserve output_screen (managed by set_output_screen).
+        ws.preferences.display.bg_app            = prefs.bg_app;
+        ws.preferences.display.bg_surface        = prefs.bg_surface;
+        ws.preferences.display.bg_panel          = prefs.bg_panel;
+        ws.preferences.display.accent            = prefs.accent;
+        ws.preferences.display.text_primary      = prefs.text_primary;
+        ws.preferences.display.show_output_timer = prefs.show_output_timer;
+        ws.preferences.display.timer_count_down  = prefs.timer_count_down;
+        ws.preferences.display.timer_show_ms     = prefs.timer_show_ms;
+        ws.preferences.display.timer_font        = prefs.timer_font;
+        ws.preferences.display.timer_font_size   = prefs.timer_font_size;
+        ws.preferences.display.timer_position    = prefs.timer_position;
+        ws.preferences.display.timer_margin      = prefs.timer_margin;
+        ws.mark_modified();
+        (
+            ws.preferences.display.timer_font.clone(),
+            ws.preferences.display.timer_font_size,
+            ws.preferences.display.timer_position,
+            ws.preferences.display.timer_margin,
+        )
+    };
+
+    state.output_engine.set_timer_style(&font, font_size, position, margin);
+    // Clear any active preview — live cue timer takes over from here.
+    state.output_engine.set_timer_preview(None);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
+}
+
+/// Apply timer style settings immediately (without persisting) and show or hide
+/// a preview placeholder on the output window.
+///
+/// Used by the preferences panel while the user adjusts timer settings.
+/// `text = Some("00:00.000")` → show placeholder; `text = None` → clear preview.
+/// Restoring the persisted style after cancel is the caller's responsibility.
+#[tauri::command]
+pub fn preview_output_timer(
+    font: String,
+    font_size: u32,
+    position: crate::preferences::TimerPosition,
+    margin: u32,
+    text: Option<String>,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    state.output_engine.set_timer_style(&font, font_size, position, margin);
+    state.output_engine.set_timer_preview(text);
+    Ok(())
+}
+
+/// Enumerate all font family names installed on this Windows machine.
+///
+/// Uses GDI `EnumFontFamiliesExW` so the names match exactly what mpv's
+/// `osd-font` property accepts.  Results are sorted case-insensitively;
+/// vertical-text (`@`-prefixed) families are excluded.
+#[tauri::command]
+pub fn list_system_fonts() -> Vec<String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, EnumFontFamiliesExW,
+        LOGFONTW, TEXTMETRICW,
+    };
+
+    // windows-sys 0.52 exposes the callback as (*const LOGFONTW, …).
+    // The actual struct passed by Windows is ENUMLOGFONTEXW, whose first field
+    // is LOGFONTW, so lfFaceName is at the same offset — safe to read directly.
+    unsafe extern "system" fn enum_cb(
+        lpelfe: *const LOGFONTW,
+        _: *const TEXTMETRICW,
+        _: u32,
+        lparam: isize,
+    ) -> i32 {
+        let list = &mut *(lparam as *mut Vec<String>);
+        let face = (*lpelfe).lfFaceName;
+        let len = face.iter().position(|&c| c == 0).unwrap_or(32);
+        let name = String::from_utf16_lossy(&face[..len]);
+        if !name.starts_with('@') {
+            list.push(name);
+        }
+        1 // continue enumeration
+    }
+
+    let mut fonts: Vec<String> = Vec::new();
+    unsafe {
+        let hdc = CreateCompatibleDC(0);
+        if hdc != 0 {
+            let mut lf: LOGFONTW = std::mem::zeroed();
+            lf.lfCharSet = 1; // DEFAULT_CHARSET — all charsets
+            EnumFontFamiliesExW(
+                hdc,
+                &lf,
+                Some(enum_cb),
+                &mut fonts as *mut Vec<String> as isize,
+                0,
+            );
+            DeleteDC(hdc);
+        }
+    }
+    fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    fonts.dedup();
+    fonts
 }
 
 /// Return all available audio output devices for the given backend.

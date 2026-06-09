@@ -26,21 +26,56 @@ pub enum AudioBackend {
 // Audio preferences
 // ---------------------------------------------------------------------------
 
-/// Audio engine settings and per-workspace audio defaults.
+/// Hardware-specific audio settings — device, backend, buffer size.
+///
+/// Stored in `%APPDATA%\WinCue\audio.json`, **not** in the workspace file,
+/// because they describe the physical machine rather than the show.
+/// Moving a `.wincue` file to another machine keeps its show defaults intact
+/// while this config adapts to the local hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AudioPreferences {
-    /// Audio output buffer size in samples.
-    #[serde(default = "AudioPreferences::default_buffer_size")]
-    pub buffer_size: u32,
-
+pub struct MachineAudioConfig {
     /// WASAPI/ASIO backend to use.
     #[serde(default)]
     pub backend: AudioBackend,
 
-    /// Identifier of the selected output device.  `None` = use system default.
+    /// Identifier of the selected output device.  `None` = system default.
     #[serde(default)]
     pub device_id: Option<String>,
 
+    /// Output buffer size in samples.
+    /// Only applied for WASAPI Exclusive; ignored in Shared mode (Windows
+    /// controls the period) and ASIO mode (driver controls its own buffer).
+    #[serde(default = "MachineAudioConfig::default_buffer_size")]
+    pub buffer_size: u32,
+
+    /// ASIO output pair index (0 = Out 1-2, 1 = Out 3-4, …).
+    /// Ignored when backend is not ASIO.
+    #[serde(default)]
+    pub asio_out_pair: u32,
+}
+
+impl MachineAudioConfig {
+    fn default_buffer_size() -> u32 { 256 }
+}
+
+impl Default for MachineAudioConfig {
+    fn default() -> Self {
+        Self {
+            backend: AudioBackend::default(),
+            device_id: None,
+            buffer_size: Self::default_buffer_size(),
+            asio_out_pair: 0,
+        }
+    }
+}
+
+/// Show-specific audio defaults — stored in the workspace file.
+///
+/// These travel with the `.wincue` file because they describe the show's
+/// intent (how loud new cues are, what fade curve to use) rather than the
+/// hardware it runs on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioPreferences {
     /// Default volume (dB) applied to newly created cues.
     #[serde(default)]
     pub default_volume_db: f32,
@@ -52,15 +87,9 @@ pub struct AudioPreferences {
     /// Default fade curve for newly created cues.
     #[serde(default = "AudioPreferences::default_fade_curve")]
     pub default_fade_curve: FadeCurve,
-
-    /// ASIO output pair index (0 = channels 1-2, 1 = channels 3-4, …).
-    /// Ignored when backend is not ASIO.
-    #[serde(default)]
-    pub asio_out_pair: u32,
 }
 
 impl AudioPreferences {
-    fn default_buffer_size() -> u32 { 256 }
     fn default_fade_out_ms() -> u32 { 500 }
     fn default_fade_curve() -> FadeCurve { FadeCurve::Linear }
 }
@@ -68,13 +97,9 @@ impl AudioPreferences {
 impl Default for AudioPreferences {
     fn default() -> Self {
         Self {
-            buffer_size: Self::default_buffer_size(),
-            backend: AudioBackend::default(),
-            device_id: None,
             default_volume_db: 0.0,
             default_fade_out_ms: Self::default_fade_out_ms(),
             default_fade_curve: Self::default_fade_curve(),
-            asio_out_pair: 0,
         }
     }
 }
@@ -136,6 +161,19 @@ impl Default for GeneralPreferences {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkPreferences {}
 
+/// Where on the output window the cue timer is anchored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerPosition {
+    /// Centered horizontally and vertically — large display.
+    #[default]
+    Center,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 /// Display preferences (output surface, colour theme, …).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayPreferences {
@@ -144,6 +182,38 @@ pub struct DisplayPreferences {
     /// `Some(n)` = fullscreen on monitor n (0 = primary).
     #[serde(default)]
     pub output_screen: Option<u32>,
+
+    /// When `true`, a countdown timer is drawn on the output window showing
+    /// the timing of the currently running audio cue.
+    #[serde(default)]
+    pub show_output_timer: bool,
+
+    /// When `true` the timer counts down (time remaining).
+    /// When `false` (default) it counts up (elapsed position in the file).
+    #[serde(default)]
+    pub timer_count_down: bool,
+
+    /// Font family name for the output timer (e.g. `"Arial"`, `"Courier New"`).
+    #[serde(default = "DisplayPreferences::default_timer_font")]
+    pub timer_font: String,
+
+    /// Font size for the output timer, in mpv OSD points.
+    /// Default 120 is suitable for center; use 60–80 for corner positions.
+    #[serde(default = "DisplayPreferences::default_timer_font_size")]
+    pub timer_font_size: u32,
+
+    /// Where on the output window the timer is drawn.
+    #[serde(default)]
+    pub timer_position: TimerPosition,
+
+    /// When `true`, milliseconds are shown after the seconds (e.g. `00:00.000`).
+    #[serde(default)]
+    pub timer_show_ms: bool,
+
+    /// Margin in pixels from the screen edge for corner positions.
+    /// Ignored when `timer_position` is `Center`.
+    #[serde(default = "DisplayPreferences::default_timer_margin")]
+    pub timer_margin: u32,
 
     /// Main window background colour (CSS hex, e.g. `"#020617"`).
     #[serde(default = "DisplayPreferences::default_bg_app")]
@@ -167,22 +237,32 @@ pub struct DisplayPreferences {
 }
 
 impl DisplayPreferences {
-    fn default_bg_app()       -> String { "#020617".into() }
-    fn default_bg_surface()   -> String { "#0f172a".into() }
-    fn default_bg_panel()     -> String { "#1e293b".into() }
-    fn default_accent()       -> String { "#3b82f6".into() }
-    fn default_text_primary() -> String { "#e2e8f0".into() }
+    fn default_bg_app()         -> String { "#020617".into() }
+    fn default_bg_surface()     -> String { "#0f172a".into() }
+    fn default_bg_panel()       -> String { "#1e293b".into() }
+    fn default_accent()         -> String { "#3b82f6".into() }
+    fn default_text_primary()   -> String { "#e2e8f0".into() }
+    fn default_timer_font()      -> String { "Arial".into() }
+    fn default_timer_font_size() -> u32   { 120 }
+    fn default_timer_margin()    -> u32   { 50 }
 }
 
 impl Default for DisplayPreferences {
     fn default() -> Self {
         Self {
-            output_screen: None,
-            bg_app:        Self::default_bg_app(),
-            bg_surface:    Self::default_bg_surface(),
-            bg_panel:      Self::default_bg_panel(),
-            accent:        Self::default_accent(),
-            text_primary:  Self::default_text_primary(),
+            output_screen:      None,
+            show_output_timer:  false,
+            timer_count_down:   false,
+            timer_font:         Self::default_timer_font(),
+            timer_font_size:    Self::default_timer_font_size(),
+            timer_position:     TimerPosition::default(),
+            timer_show_ms:      false,
+            timer_margin:       Self::default_timer_margin(),
+            bg_app:             Self::default_bg_app(),
+            bg_surface:         Self::default_bg_surface(),
+            bg_panel:           Self::default_bg_panel(),
+            accent:             Self::default_accent(),
+            text_primary:       Self::default_text_primary(),
         }
     }
 }

@@ -65,6 +65,13 @@ pub(super) static OUTPUT_PENDING_VIDEO_START: OnceLock<Mutex<Option<PendingVideo
 /// Resumed at the first PLAYBACK_RESTART (start in lockstep with frame 0),
 /// paused/resumed/stopped together with the video.
 pub(super) static OUTPUT_CURRENT_AUDIO_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
+/// Text currently shown on the timer overlay ("" = nothing displayed).
+pub(super) static TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
+/// HWND of the timer text overlay child window.
+pub(super) static TIMER_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
+/// When `Some`, the timer refresh loop shows this text instead of live cue time.
+/// Used for the preferences preview mode.
+pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -131,7 +138,9 @@ impl OutputEngine {
             opt_str(&lib, ctx, "hwdec", "auto");
 
             opt_str(&lib, ctx, "osc", "no");
-            opt_str(&lib, ctx, "osd-level", "0");
+            // osd-level 1: shows explicit osd-msg1/2/3 messages but no automatic
+            // position/seek feedback.  Required for the output-window timer overlay.
+            opt_str(&lib, ctx, "osd-level", "1");
             opt_str(&lib, ctx, "input-default-bindings", "no");
             opt_str(&lib, ctx, "input-vo-keyboard", "no");
             opt_str(&lib, ctx, "input-cursor", "no");
@@ -156,6 +165,17 @@ impl OutputEngine {
                 (lib.mpv_terminate_destroy)(ctx);
                 return Err(anyhow!("mpv_initialize() failed with code {ret}"));
             }
+
+            // OSD style for the cue timer overlay (set after init, as properties).
+            // Large bold centered text with a dark border for contrast on any content.
+            prop_str(&lib, ctx, "osd-font-size",     "120");
+            prop_str(&lib, ctx, "osd-color",         "#FFFFFF");
+            prop_str(&lib, ctx, "osd-border-color",  "#000000");
+            prop_str(&lib, ctx, "osd-border-size",   "3");
+            prop_str(&lib, ctx, "osd-align-x",       "center");
+            prop_str(&lib, ctx, "osd-align-y",       "center");
+            prop_str(&lib, ctx, "osd-margin-x",      "0");
+            prop_str(&lib, ctx, "osd-margin-y",      "0");
         }
 
         let (status_tx, status_rx) = crossbeam_channel::unbounded();
@@ -171,6 +191,7 @@ impl OutputEngine {
         OUTPUT_PENDING_VIDEO_START.get_or_init(|| Mutex::new(None));
         OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
         FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
+        TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
 
         {
             let lib2  = Arc::clone(&lib);
@@ -710,6 +731,70 @@ impl OutputEngine {
         self.visible.load(Ordering::Relaxed)
     }
 
+    /// Update the countdown text shown on the output window timer overlay.
+    ///
+    /// Pass `None` (or an empty string) to hide the timer.
+    /// The text is drawn via mpv's OSD so it always appears above D3D11 content.
+    pub fn set_output_timer(&self, text: Option<&str>) {
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                prop_str(lib, ctx.0, "osd-msg1", text.unwrap_or(""));
+            }
+        }
+    }
+
+    /// Apply font, size, position and margin settings for the OSD timer overlay.
+    ///
+    /// Call this whenever the user changes timer display preferences; mpv
+    /// picks up property changes immediately, even while the OSD is visible.
+    pub fn set_timer_style(
+        &self,
+        font: &str,
+        font_size: u32,
+        position: crate::preferences::TimerPosition,
+        margin: u32,
+    ) {
+        use crate::preferences::TimerPosition;
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                prop_str(lib, ctx.0, "osd-font",      font);
+                prop_str(lib, ctx.0, "osd-font-size", &font_size.to_string());
+                let (align_x, align_y) = match position {
+                    TimerPosition::Center      => ("center", "center"),
+                    TimerPosition::TopLeft     => ("left",   "top"),
+                    TimerPosition::TopRight    => ("right",  "top"),
+                    TimerPosition::BottomLeft  => ("left",   "bottom"),
+                    TimerPosition::BottomRight => ("right",  "bottom"),
+                };
+                let margin_str = match position {
+                    TimerPosition::Center => "0".to_string(),
+                    _                    => margin.to_string(),
+                };
+                prop_str(lib, ctx.0, "osd-align-x",  align_x);
+                prop_str(lib, ctx.0, "osd-align-y",  align_y);
+                prop_str(lib, ctx.0, "osd-margin-x", &margin_str);
+                prop_str(lib, ctx.0, "osd-margin-y", &margin_str);
+            }
+        }
+    }
+
+    /// Set or clear the preview text shown on the OSD timer (overrides live cue time).
+    ///
+    /// Used by the preferences panel to show a placeholder like `"00:00.000"`
+    /// while the user adjusts timer settings.  Pass `None` to return to live mode.
+    pub fn set_timer_preview(&self, text: Option<String>) {
+        if let Some(m) = TIMER_PREVIEW.get() {
+            if let Ok(mut g) = m.lock() {
+                *g = text;
+            }
+        }
+    }
+
+    /// Return the current preview text, if any.  Used by the timer refresh loop.
+    pub fn get_timer_preview(&self) -> Option<String> {
+        TIMER_PREVIEW.get()?.lock().ok()?.clone()
+    }
+
     // ── Fullscreen ────────────────────────────────────────────────────────────
 
     /// Toggle the output window between windowed and true fullscreen.
@@ -808,4 +893,11 @@ pub(super) unsafe fn opt_str(lib: &MpvLib, ctx: *mut c_void, name: &str, value: 
     let n = cs(name);
     let v = cs(value);
     (lib.mpv_set_option_string)(ctx, n.as_ptr(), v.as_ptr());
+}
+
+/// Set an mpv *property* (after `mpv_initialize`).
+pub(super) unsafe fn prop_str(lib: &MpvLib, ctx: *mut c_void, name: &str, value: &str) {
+    let n = cs(name);
+    let v = cs(value);
+    (lib.mpv_set_property_string)(ctx, n.as_ptr(), v.as_ptr());
 }

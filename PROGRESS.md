@@ -1,4 +1,4 @@
-# WinCue — Project state as of 2026-05-30
+# WinCue — Project state as of 2026-06-09
 
 ## Current version: 0.5.1
 
@@ -19,8 +19,10 @@
 | Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek |
 | Stop  | ✅ **Functional** | Targeted Stop and Stop All, default 0.5 s fade |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
-| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), hard-cut stop, scrub/seek |
-| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, hard-cut stop, stop-on-next-cue |
+| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, scrub/seek |
+| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
+| Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
+| Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
 
 ---
 
@@ -43,28 +45,28 @@
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer` |
-| OutputEngine | `engine/output_engine.rs` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); `toggle_visibility()` |
+| OutputEngine | `engine/output_engine/` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); OSD timer overlay; `toggle_visibility()` |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
 | Workspace | `show/workspace.rs` | ✅ Complete |
 | Transport | `show/transport.rs` | ✅ Complete — `stop_on_next_go()` called before each GO |
-| 30fps event loop | `show/event_loop.rs` | ✅ Complete — drains `OutputStatus` |
+| Event loop | `show/event_loop.rs` | ✅ Complete — 30fps main tick (drains `OutputStatus`, emits Tauri events) + dedicated 60fps `wincue-timer-refresh` thread for OSD timer |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
 | AppState | `state/app_state.rs` | ✅ Complete — `output_engine: Arc<OutputEngine>` |
-| Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences::output_screen: Option<u32>` |
+| Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences` with output_screen, timer (font/size/position/margin/show_ms/count_down), colour theme; `TimerPosition` enum |
 | Transport commands | `commands/transport_cmds.rs` | ✅ Complete |
 | Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `toggle_output_window`, `get_output_window_visible` |
 | Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete |
 | Device commands | `commands/device_cmds.rs` | ✅ Complete |
-| Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete — `get_output_screen`, `set_output_screen` |
+| Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete — `get/set_output_screen`, `update_display_preferences` (applies timer style to mpv), `list_system_fonts` (GDI enum), `preview_output_timer` |
 | Undo commands | `commands/undo_cmds.rs` | ✅ Complete |
 
 ### React / TypeScript frontend
 
 | File | Status |
 |---|---|
-| `lib/types.ts` | ✅ Complete — `ImageCueData` simplified (no `stop_mode`/`display_duration_ms`), `DisplayPreferences` typed |
-| `lib/commands.ts` | ✅ Complete — `toggleOutputWindow`, `getOutputWindowVisible`, `getOutputScreen`, `setOutputScreen` |
+| `lib/types.ts` | ✅ Complete — `ImageCueData` simplified, `DisplayPreferences` with full timer fields, `TimerPosition` type |
+| `lib/commands.ts` | ✅ Complete — `toggleOutputWindow`, `getOutputWindowVisible`, `getOutputScreen`, `setOutputScreen`, `listSystemFonts`, `previewOutputTimer` |
 | `stores/workspaceStore.ts` | ✅ Complete |
 | `stores/transportStore.ts` | ✅ Complete |
 | `stores/timingStore.ts` | ✅ Complete |
@@ -305,15 +307,16 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 | 15. Stop Cue | ✅ Functional |
 | 16. Multi-select | ✅ Ctrl/Shift/Ctrl+A; multi-delete, multi-duplicate, multi-drag, multi-color |
 | 17. Scrub/seek | ✅ Audio + video; ScrubBar in Inspector Time tab |
+| 18. Group Cue | ✅ Sequential + parallel modes; GO absorption; drag-into-group |
+| 19. Wait Cue | ✅ Fixed duration delay; registered in CueRegistry |
+| 20. Output timer | ✅ OSD via mpv; 60fps thread; font/size/position/margin/ms; live preview |
 
 ---
 
 ## Next priorities
 
 1. **Future cue types** — architecture is ready; add via `CueRegistry` without touching transport.
-   Priority order: **Wait** (time delay, trivial) → **Fade** (fade a running audio cue) → **Group** → MIDI → OSC.
+   Priority order: **Fade** (fade a running audio cue) → MIDI → OSC.
 2. **Optional: active A/V resync** — nudge the video audio voice's rate to track
    mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
-3. **Video/image dip-to-black fades** — removed for now (bugs with overlay alpha state);
-   re-implement once architecture is cleaner. Per-cue `FadeSpec` fields are still
-   serialized for forward compatibility.
+3. **ASIO→WASAPI Output Patch validation** — routing wired, needs hardware test.

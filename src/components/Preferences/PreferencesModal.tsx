@@ -3,22 +3,26 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, ScreenInfo } from "../../lib/types";
-import { DEFAULT_DISPLAY_PREFS } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, ScreenInfo, TimerPosition } from "../../lib/types";
+import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   getAsioOutputPairs,
   getAvailableBackends,
+  getMachineAudioConfig,
   getOutputScreen,
   getPreferences,
   listAudioDevices,
+  listSystemFonts,
   listVideoScreens,
+  previewOutputTimer,
   setOutputScreen,
   testAudioDevice,
   updateAudioPreferences,
   updateDisplayPreferences,
   updateGeneralPreferences,
+  updateMachineAudioConfig,
 } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
@@ -81,20 +85,30 @@ const btnStyle: React.CSSProperties = {
 // Audio content
 // ---------------------------------------------------------------------------
 
-function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: {
-  prefs: AudioPreferences;
-  onChange: (p: AudioPreferences) => void;
+function AudioContent({
+  machineConfig,
+  audioPrefs,
+  onMachineConfigChange,
+  onAudioPrefsChange,
+  availableBackends,
+  onImmediateApplyMachine,
+}: {
+  machineConfig: MachineAudioConfig;
+  audioPrefs: AudioPreferences;
+  onMachineConfigChange: (c: MachineAudioConfig) => void;
+  onAudioPrefsChange: (p: AudioPreferences) => void;
   availableBackends: string[];
-  onImmediateApply?: (p: AudioPreferences) => Promise<void>;
+  onImmediateApplyMachine?: (c: MachineAudioConfig) => Promise<void>;
 }) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [asioPairs, setAsioPairs] = useState<number>(1);
   const asioAvailable = availableBackends.includes("asio");
-  const isAsio = prefs.backend === "asio";
+  const isAsio = machineConfig.backend === "asio";
+  const isShared = machineConfig.backend === "wasapi_shared";
 
-  const loadDevices = useCallback(async (backend: AudioPreferences["backend"]) => {
+  const loadDevices = useCallback(async (backend: MachineAudioConfig["backend"]) => {
     setDevicesLoading(true);
     setDevicesError(null);
     try {
@@ -109,15 +123,15 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
   }, []);
 
   useEffect(() => {
-    void loadDevices(prefs.backend);
-    if (prefs.backend === "asio") {
+    void loadDevices(machineConfig.backend);
+    if (machineConfig.backend === "asio") {
       getAsioOutputPairs().then(setAsioPairs).catch(() => setAsioPairs(1));
     }
-  }, [prefs.backend, loadDevices]);
+  }, [machineConfig.backend, loadDevices]);
 
-  const currentDevice = devices.find((d) => d.id === prefs.device_id) ?? devices[0] ?? null;
-  const latencyMs = currentDevice && prefs.buffer_size
-    ? ((prefs.buffer_size / currentDevice.sample_rate) * 1000).toFixed(1)
+  const currentDevice = devices.find((d) => d.id === machineConfig.device_id) ?? devices[0] ?? null;
+  const latencyMs = !isShared && currentDevice && machineConfig.buffer_size
+    ? ((machineConfig.buffer_size / currentDevice.sample_rate) * 1000).toFixed(1)
     : "—";
 
   return (
@@ -126,11 +140,11 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
         <Row label="Backend">
           <select
             style={selectStyle}
-            value={prefs.backend}
+            value={machineConfig.backend}
             onChange={(e) =>
-              onChange({
-                ...prefs,
-                backend: e.target.value as AudioPreferences["backend"],
+              onMachineConfigChange({
+                ...machineConfig,
+                backend: e.target.value as MachineAudioConfig["backend"],
                 device_id: null,
               })
             }
@@ -152,9 +166,9 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
             <>
               <select
                 style={selectStyle}
-                value={prefs.device_id ?? ""}
+                value={machineConfig.device_id ?? ""}
                 onChange={(e) =>
-                  onChange({ ...prefs, device_id: e.target.value || null })
+                  onMachineConfigChange({ ...machineConfig, device_id: e.target.value || null })
                 }
               >
                 <option value="">— System Default —</option>
@@ -163,10 +177,10 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
                 ))}
               </select>
               <button
-                  style={btnStyle}
-                  onClick={() => void testAudioDevice(prefs.device_id ?? "", prefs.backend)}
-                  title="Play 440 Hz test tone on selected device"
-                >
+                style={btnStyle}
+                onClick={() => void testAudioDevice(machineConfig.device_id ?? "", machineConfig.backend)}
+                title="Play 440 Hz test tone on selected device"
+              >
                 Test
               </button>
             </>
@@ -177,12 +191,12 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
           <Row label="Output Pair">
             <select
               style={selectStyle}
-              value={prefs.asio_out_pair}
+              value={machineConfig.asio_out_pair}
               onChange={async (e) => {
-                const next = { ...prefs, asio_out_pair: Number(e.target.value) };
-                onChange(next);
-                if (onImmediateApply) {
-                  await onImmediateApply(next);
+                const next = { ...machineConfig, asio_out_pair: Number(e.target.value) };
+                onMachineConfigChange(next);
+                if (onImmediateApplyMachine) {
+                  await onImmediateApplyMachine(next);
                   getAsioOutputPairs().then(setAsioPairs).catch(() => setAsioPairs(1));
                 }
               }}
@@ -201,16 +215,20 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
 
         <Row label="Buffer Size">
           <select
-            style={selectStyle}
-            value={prefs.buffer_size}
-            onChange={(e) => onChange({ ...prefs, buffer_size: Number(e.target.value) })}
+            style={{ ...selectStyle, opacity: isShared ? 0.4 : 1 }}
+            value={machineConfig.buffer_size}
+            disabled={isShared}
+            onChange={(e) => onMachineConfigChange({ ...machineConfig, buffer_size: Number(e.target.value) })}
           >
             {[64, 128, 256, 512, 1024, 2048].map((s) => (
               <option key={s} value={s}>{s} samples</option>
             ))}
           </select>
-          {prefs.backend === "wasapi_shared" && (
-            <span style={{ fontSize: 11, color: "#475569" }}>ignored in shared mode</span>
+          {isShared && (
+            <span style={{ fontSize: 11, color: "#475569" }}>managed by Windows in Shared mode</span>
+          )}
+          {isAsio && (
+            <span style={{ fontSize: 11, color: "#475569" }}>set in ASIO driver control panel</span>
           )}
         </Row>
 
@@ -221,36 +239,38 @@ function AudioContent({ prefs, onChange, availableBackends, onImmediateApply }: 
           </span>
         </Row>
 
-        <Row label="Estimated Latency">
-          <span style={{ fontSize: 12, color: "#22c55e", fontFamily: "monospace" }}>
-            {latencyMs} ms
-          </span>
-        </Row>
+        {!isShared && (
+          <Row label="Estimated Latency">
+            <span style={{ fontSize: 12, color: "#22c55e", fontFamily: "monospace" }}>
+              {latencyMs} ms
+            </span>
+          </Row>
+        )}
       </Section>
 
       <Section title="Defaults">
         <Row label="Default Volume">
           <input
             type="range" min={-60} max={0} step={0.5}
-            value={prefs.default_volume_db} style={{ flex: 1 }}
-            onChange={(e) => onChange({ ...prefs, default_volume_db: Number(e.target.value) })}
+            value={audioPrefs.default_volume_db} style={{ flex: 1 }}
+            onChange={(e) => onAudioPrefsChange({ ...audioPrefs, default_volume_db: Number(e.target.value) })}
           />
           <span style={{ width: 52, textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "#94a3b8" }}>
-            {prefs.default_volume_db.toFixed(1)} dB
+            {audioPrefs.default_volume_db.toFixed(1)} dB
           </span>
         </Row>
         <Row label="Fade Out on Stop (ms)">
           <input
             type="number" min={0} max={5000} step={50}
             style={{ ...inputStyle, width: 90 }}
-            value={prefs.default_fade_out_ms}
-            onChange={(e) => onChange({ ...prefs, default_fade_out_ms: Number(e.target.value) })}
+            value={audioPrefs.default_fade_out_ms}
+            onChange={(e) => onAudioPrefsChange({ ...audioPrefs, default_fade_out_ms: Number(e.target.value) })}
           />
         </Row>
         <Row label="Default Fade Curve">
           <CurveSelect
-            value={prefs.default_fade_curve}
-            onChange={(v) => onChange({ ...prefs, default_fade_curve: v })}
+            value={audioPrefs.default_fade_curve}
+            onChange={(v) => onAudioPrefsChange({ ...audioPrefs, default_fade_curve: v })}
             baseStyle={selectStyle}
           />
         </Row>
@@ -325,17 +345,124 @@ const THEME_COLORS: { key: keyof typeof DEFAULT_DISPLAY_PREFS; label: string; hi
   { key: "text_primary", label: "Primary Text",   hint: "Main text colour" },
 ];
 
-function DisplayContent({ outputScreen, onScreenChange, theme, onThemeChange }: {
+// ---------------------------------------------------------------------------
+// Timer position picker — 3×3 grid with only the 5 valid positions active
+// ---------------------------------------------------------------------------
+
+const TIMER_POSITIONS: { pos: TimerPosition; gridArea: string; label: string }[] = [
+  { pos: "top_left",     gridArea: "1 / 1", label: "↖" },
+  { pos: "top_right",    gridArea: "1 / 3", label: "↗" },
+  { pos: "center",       gridArea: "2 / 2", label: "⊙" },
+  { pos: "bottom_left",  gridArea: "3 / 1", label: "↙" },
+  { pos: "bottom_right", gridArea: "3 / 3", label: "↘" },
+];
+
+function TimerPositionPicker({ value, onChange }: { value: TimerPosition; onChange: (v: TimerPosition) => void }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(3, 32px)",
+        gridTemplateRows: "repeat(3, 32px)",
+        gap: 3,
+        background: "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: 5,
+        padding: 4,
+      }}
+    >
+      {TIMER_POSITIONS.map(({ pos, gridArea, label }) => (
+        <button
+          key={pos}
+          title={pos.replace(/_/g, " ")}
+          onClick={() => onChange(pos)}
+          style={{
+            gridArea,
+            width: 32, height: 32,
+            border: value === pos ? "2px solid #3b82f6" : "1px solid #334155",
+            borderRadius: 4,
+            background: value === pos ? "#1d4ed8" : "#1e293b",
+            color: value === pos ? "#fff" : "#94a3b8",
+            fontSize: 16,
+            cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            lineHeight: 1,
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
+function DisplayContent({
+  outputScreen, onScreenChange,
+  showOutputTimer, onTimerChange,
+  timerCountDown, onTimerModeChange,
+  timerFont, onTimerFontChange,
+  timerFontSize, onTimerFontSizeChange,
+  timerPosition, onTimerPositionChange,
+  timerShowMs, onTimerShowMsChange,
+  timerMargin, onTimerMarginChange,
+  timerPreview, onTimerPreviewChange,
+  committedTimerStyle,
+  theme, onThemeChange,
+}: {
   outputScreen: number | null;
   onScreenChange: (screen: number | null) => void;
+  showOutputTimer: boolean;
+  onTimerChange: (v: boolean) => void;
+  timerCountDown: boolean;
+  onTimerModeChange: (v: boolean) => void;
+  timerFont: string;
+  onTimerFontChange: (v: string) => void;
+  timerFontSize: number;
+  onTimerFontSizeChange: (v: number) => void;
+  timerPosition: TimerPosition;
+  onTimerPositionChange: (v: TimerPosition) => void;
+  timerShowMs: boolean;
+  onTimerShowMsChange: (v: boolean) => void;
+  timerMargin: number;
+  onTimerMarginChange: (v: number) => void;
+  timerPreview: boolean;
+  onTimerPreviewChange: (v: boolean) => void;
+  /** Committed (applied) style, used to restore mpv state on cancel. */
+  committedTimerStyle: { font: string; fontSize: number; position: TimerPosition; margin: number };
   theme: typeof DEFAULT_DISPLAY_PREFS;
   onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
 }) {
   const [screens, setScreens] = useState<ScreenInfo[]>([]);
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
 
   useEffect(() => {
     listVideoScreens().then(setScreens).catch(console.error);
+    listSystemFonts().then(setSystemFonts).catch(console.error);
   }, []);
+
+  // Derive preview text from current draft show_ms setting.
+  const previewText = timerShowMs ? "00:00.000" : "00:00";
+
+  // Whenever draft style settings change while preview is on, push them live.
+  useEffect(() => {
+    if (!timerPreview) return;
+    void previewOutputTimer(timerFont, timerFontSize, timerPosition, timerMargin, previewText);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timerPreview, timerFont, timerFontSize, timerPosition, timerMargin, previewText]);
+
+  const handlePreviewToggle = (on: boolean) => {
+    onTimerPreviewChange(on);
+    if (on) {
+      void previewOutputTimer(timerFont, timerFontSize, timerPosition, timerMargin, previewText);
+    } else {
+      void previewOutputTimer(
+        committedTimerStyle.font, committedTimerStyle.fontSize,
+        committedTimerStyle.position, committedTimerStyle.margin,
+        null,
+      );
+    }
+  };
 
   return (
     <>
@@ -364,6 +491,113 @@ function DisplayContent({ outputScreen, onScreenChange, theme, onThemeChange }: 
             Applies to all Video and Image cues. Takes effect on the next GO.
           </span>
         </Row>
+        <Row label="Output Timer">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={showOutputTimer}
+              onChange={(e) => onTimerChange(e.target.checked)}
+              style={{ width: 14, height: 14, cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+              Show cue timer on output window
+            </span>
+          </label>
+        </Row>
+        {showOutputTimer && (
+          <>
+            <Row label="Timer mode">
+              <div style={{ display: "flex", gap: 16 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    checked={!timerCountDown}
+                    onChange={() => onTimerModeChange(false)}
+                    style={{ cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 13, color: "#cbd5e1" }}>Elapsed (count up)</span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    checked={timerCountDown}
+                    onChange={() => onTimerModeChange(true)}
+                    style={{ cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 13, color: "#cbd5e1" }}>Remaining (countdown)</span>
+                </label>
+              </div>
+            </Row>
+            <Row label="Milliseconds">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={timerShowMs}
+                  onChange={(e) => onTimerShowMsChange(e.target.checked)}
+                  style={{ width: 14, height: 14, cursor: "pointer" }}
+                />
+                <span style={{ fontSize: 13, color: "#cbd5e1" }}>Show milliseconds (1:23.456)</span>
+              </label>
+            </Row>
+            <Row label="Position">
+              <TimerPositionPicker value={timerPosition} onChange={onTimerPositionChange} />
+            </Row>
+            {timerPosition !== "center" && (
+              <Row label="Corner margin">
+                <input
+                  type="range" min={0} max={300} step={5}
+                  value={timerMargin} style={{ flex: 1 }}
+                  onChange={(e) => onTimerMarginChange(Number(e.target.value))}
+                />
+                <span style={{ width: 40, textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "#94a3b8" }}>
+                  {timerMargin}px
+                </span>
+              </Row>
+            )}
+            <Row label="Preview">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={timerPreview}
+                  onChange={(e) => handlePreviewToggle(e.target.checked)}
+                  style={{ width: 14, height: 14, cursor: "pointer" }}
+                />
+                <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+                  Show on output window while configuring
+                </span>
+              </label>
+            </Row>
+            <Row label="Font">
+              <>
+                <input
+                  type="text"
+                  list="timer-font-list"
+                  value={timerFont}
+                  onChange={(e) => onTimerFontChange(e.target.value)}
+                  placeholder="Font family name…"
+                  style={{ ...inputStyle, flex: 1, fontFamily: timerFont }}
+                />
+                <datalist id="timer-font-list">
+                  {systemFonts.map((f) => <option key={f} value={f} />)}
+                </datalist>
+              </>
+            </Row>
+            <Row label="Font size">
+              <input
+                type="number"
+                min={20}
+                max={400}
+                step={4}
+                value={timerFontSize}
+                onChange={(e) => onTimerFontSizeChange(Number(e.target.value))}
+                style={{ ...inputStyle, width: 80 }}
+              />
+              <span style={{ fontSize: 11, color: "#475569" }}>
+                pt — 120 center, 60–80 corner
+              </span>
+            </Row>
+          </>
+        )}
       </Section>
 
       <Section title="Colour Theme">
@@ -421,8 +655,26 @@ export function PreferencesModal({ onClose }: Props) {
   const [category, setCategory] = useState<Category>("audio");
   const [prefs, setPrefs] = useState<AppPreferences | null>(null);
   const [draft, setDraft] = useState<AppPreferences | null>(null);
+  // Machine audio config is stored separately from the workspace prefs.
+  const [machineConfig, setMachineConfig] = useState<MachineAudioConfig>(DEFAULT_MACHINE_AUDIO_CONFIG);
+  const [draftMachineConfig, setDraftMachineConfig] = useState<MachineAudioConfig>(DEFAULT_MACHINE_AUDIO_CONFIG);
   const [outputScreen, setOutputScreen_] = useState<number | null>(null);
   const [draftOutputScreen, setDraftOutputScreen] = useState<number | null>(null);
+  const [showOutputTimer, setShowOutputTimer] = useState(false);
+  const [draftShowOutputTimer, setDraftShowOutputTimer] = useState(false);
+  const [timerCountDown, setTimerCountDown] = useState(false);
+  const [draftTimerCountDown, setDraftTimerCountDown] = useState(false);
+  const [timerFont, setTimerFont] = useState("Arial");
+  const [draftTimerFont, setDraftTimerFont] = useState("Arial");
+  const [timerFontSize, setTimerFontSize] = useState(120);
+  const [draftTimerFontSize, setDraftTimerFontSize] = useState(120);
+  const [timerPosition, setTimerPosition] = useState<TimerPosition>("center");
+  const [draftTimerPosition, setDraftTimerPosition] = useState<TimerPosition>("center");
+  const [timerShowMs, setTimerShowMs] = useState(false);
+  const [draftTimerShowMs, setDraftTimerShowMs] = useState(false);
+  const [timerMargin, setTimerMargin] = useState(50);
+  const [draftTimerMargin, setDraftTimerMargin] = useState(50);
+  const [timerPreview, setTimerPreview] = useState(false);
   const [theme, setTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [draftTheme, setDraftTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [availableBackends, setAvailableBackends] = useState<string[]>(["wasapi_shared", "wasapi_exclusive"]);
@@ -440,7 +692,29 @@ export function PreferencesModal({ onClose }: Props) {
       const t = { ...DEFAULT_DISPLAY_PREFS, ...p.display };
       setTheme(t);
       setDraftTheme(t);
+      const timer = p.display.show_output_timer ?? false;
+      setShowOutputTimer(timer);
+      setDraftShowOutputTimer(timer);
+      const countDown = p.display.timer_count_down ?? false;
+      setTimerCountDown(countDown);
+      setDraftTimerCountDown(countDown);
+      const font = p.display.timer_font ?? "Arial";
+      setTimerFont(font);
+      setDraftTimerFont(font);
+      const fontSize = p.display.timer_font_size ?? 120;
+      setTimerFontSize(fontSize);
+      setDraftTimerFontSize(fontSize);
+      const pos = p.display.timer_position ?? "center";
+      setTimerPosition(pos);
+      setDraftTimerPosition(pos);
+      const showMs = p.display.timer_show_ms ?? false;
+      setTimerShowMs(showMs);
+      setDraftTimerShowMs(showMs);
+      const margin = p.display.timer_margin ?? 50;
+      setTimerMargin(margin);
+      setDraftTimerMargin(margin);
     }).catch(console.error);
+    getMachineAudioConfig().then((c) => { setMachineConfig(c); setDraftMachineConfig(c); }).catch(console.error);
     getAvailableBackends().then(setAvailableBackends).catch(console.error);
     getOutputScreen().then((s) => { setOutputScreen_(s); setDraftOutputScreen(s); }).catch(console.error);
   }, []);
@@ -488,14 +762,43 @@ export function PreferencesModal({ onClose }: Props) {
     if (!draft) return;
     setApplyError(null);
     try {
+      await updateMachineAudioConfig(draftMachineConfig);
       await updateAudioPreferences(draft.audio);
       await updateGeneralPreferences(draft.general);
       await setOutputScreen(draftOutputScreen);
-      await updateDisplayPreferences({ ...draftTheme, output_screen: draftOutputScreen ?? undefined } as DisplayPreferences);
+      await updateDisplayPreferences({
+        ...draftTheme,
+        output_screen: draftOutputScreen ?? undefined,
+        show_output_timer: draftShowOutputTimer,
+        timer_count_down: draftTimerCountDown,
+        timer_font: draftTimerFont,
+        timer_font_size: draftTimerFontSize,
+        timer_position: draftTimerPosition,
+        timer_show_ms: draftTimerShowMs,
+        timer_margin: draftTimerMargin,
+      } as DisplayPreferences);
       setGeneralPrefs(draft.general);
-      setDisplayPrefs({ ...draftTheme, output_screen: draftOutputScreen });
+      setDisplayPrefs({
+        ...draftTheme,
+        output_screen: draftOutputScreen,
+        show_output_timer: draftShowOutputTimer,
+        timer_count_down: draftTimerCountDown,
+        timer_font: draftTimerFont,
+        timer_font_size: draftTimerFontSize,
+        timer_position: draftTimerPosition,
+        timer_show_ms: draftTimerShowMs,
+        timer_margin: draftTimerMargin,
+      });
       setPrefs(draft);
+      setMachineConfig(draftMachineConfig);
       setOutputScreen_(draftOutputScreen);
+      setShowOutputTimer(draftShowOutputTimer);
+      setTimerCountDown(draftTimerCountDown);
+      setTimerFont(draftTimerFont);
+      setTimerFontSize(draftTimerFontSize);
+      setTimerPosition(draftTimerPosition);
+      setTimerShowMs(draftTimerShowMs);
+      setTimerMargin(draftTimerMargin);
       setTheme(draftTheme);
       onClose();
     } catch (e) {
@@ -503,22 +806,36 @@ export function PreferencesModal({ onClose }: Props) {
     }
   };
 
-  // Apply audio prefs immediately (without closing the modal).
-  // Used by controls that should take effect in real-time, e.g. ASIO output pair.
-  const handleImmediateApply = useCallback(async (audio: AudioPreferences) => {
-    if (!draft) return;
-    const newDraft = { ...draft, audio };
+  // Apply machine config immediately (without closing the modal).
+  // Used for ASIO output pair which must restart the engine to take effect.
+  const handleImmediateApplyMachine = useCallback(async (config: MachineAudioConfig) => {
     setApplyError(null);
     try {
-      await updateAudioPreferences(audio);
-      setPrefs(newDraft);
-      setDraft(newDraft);
+      await updateMachineAudioConfig(config);
+      setMachineConfig(config);
+      setDraftMachineConfig(config);
     } catch (e) {
       setApplyError(String(e));
     }
-  }, [draft]);
+  }, []);
 
-  const handleCancel = () => { setDraft(prefs); setDraftOutputScreen(outputScreen); setDraftTheme(theme); onClose(); };
+  const handleCancel = () => {
+    // Restore committed style and clear preview.
+    void previewOutputTimer(timerFont, timerFontSize, timerPosition, timerMargin, null);
+    setTimerPreview(false);
+    setDraft(prefs);
+    setDraftMachineConfig(machineConfig);
+    setDraftOutputScreen(outputScreen);
+    setDraftShowOutputTimer(showOutputTimer);
+    setDraftTimerCountDown(timerCountDown);
+    setDraftTimerFont(timerFont);
+    setDraftTimerFontSize(timerFontSize);
+    setDraftTimerPosition(timerPosition);
+    setDraftTimerShowMs(timerShowMs);
+    setDraftTimerMargin(timerMargin);
+    setDraftTheme(theme);
+    onClose();
+  };
 
   if (!draft) return null;
 
@@ -598,10 +915,12 @@ export function PreferencesModal({ onClose }: Props) {
           <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
             {category === "audio" && (
               <AudioContent
-                prefs={draft.audio}
-                onChange={(audio) => setDraft({ ...draft, audio })}
+                machineConfig={draftMachineConfig}
+                audioPrefs={draft.audio}
+                onMachineConfigChange={setDraftMachineConfig}
+                onAudioPrefsChange={(audio) => setDraft({ ...draft, audio })}
                 availableBackends={availableBackends}
-                onImmediateApply={handleImmediateApply}
+                onImmediateApplyMachine={handleImmediateApplyMachine}
               />
             )}
             {category === "general" && (
@@ -614,6 +933,23 @@ export function PreferencesModal({ onClose }: Props) {
               <DisplayContent
                 outputScreen={draftOutputScreen}
                 onScreenChange={setDraftOutputScreen}
+                showOutputTimer={draftShowOutputTimer}
+                onTimerChange={setDraftShowOutputTimer}
+                timerCountDown={draftTimerCountDown}
+                onTimerModeChange={setDraftTimerCountDown}
+                timerFont={draftTimerFont}
+                onTimerFontChange={setDraftTimerFont}
+                timerFontSize={draftTimerFontSize}
+                onTimerFontSizeChange={setDraftTimerFontSize}
+                timerPosition={draftTimerPosition}
+                onTimerPositionChange={setDraftTimerPosition}
+                timerShowMs={draftTimerShowMs}
+                onTimerShowMsChange={setDraftTimerShowMs}
+                timerMargin={draftTimerMargin}
+                onTimerMarginChange={setDraftTimerMargin}
+                timerPreview={timerPreview}
+                onTimerPreviewChange={setTimerPreview}
+                committedTimerStyle={{ font: timerFont, fontSize: timerFontSize, position: timerPosition, margin: timerMargin }}
                 theme={draftTheme}
                 onThemeChange={setDraftTheme}
               />

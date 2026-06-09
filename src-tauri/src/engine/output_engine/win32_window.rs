@@ -2,6 +2,7 @@
 //!
 //! The parent popup window owns mpv's D3D11 render child.
 //! The fade overlay child window sits above it for dip-to-black transitions.
+//! The timer overlay child window sits above everything and shows the cue countdown.
 
 use anyhow::{anyhow, Result};
 
@@ -9,8 +10,12 @@ use super::fade::{execute_fade_pending, set_overlay_alpha};
 use super::types::OutputWndState;
 use super::{
     wide, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID, OUTPUT_PARENT_HWND,
-    OUTPUT_WND_STATE, WM_DO_FADE, WM_SETUP_MPV_CHILD,
+    OUTPUT_WND_STATE, TIMER_OVERLAY_HWND, TIMER_TEXT, WM_DO_FADE, WM_SETUP_MPV_CHILD,
 };
+
+/// Posted to the parent window to show/hide the timer overlay from any thread.
+/// wparam = 1 → show, wparam = 0 → hide.
+pub(super) const WM_TIMER_VISIBILITY: u32 = 0x8003;
 
 // ---------------------------------------------------------------------------
 // Window creation
@@ -31,12 +36,13 @@ pub(super) fn create_output_window() -> Result<isize> {
                     CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassExW,
                     ShowWindow, TranslateMessage,
                     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-                    MSG, SW_SHOWNA, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_POPUP, WS_SIZEBOX,
+                    MSG, SW_HIDE, SW_SHOWNA, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_POPUP, WS_SIZEBOX,
                     WNDCLASSEXW,
                 };
 
                 let hinstance = GetModuleHandleW(std::ptr::null());
 
+                // --- Parent window class ---
                 let parent_class = wide("WinCueOutputWnd\0");
                 let wc_parent = WNDCLASSEXW {
                     cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -54,6 +60,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 };
                 RegisterClassExW(&wc_parent);
 
+                // --- Fade overlay class ---
                 let overlay_class = wide("WinCueFadeOverlay\0");
                 let wc_overlay = WNDCLASSEXW {
                     cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -71,6 +78,25 @@ pub(super) fn create_output_window() -> Result<isize> {
                 };
                 RegisterClassExW(&wc_overlay);
 
+                // --- Timer overlay class (plain child, dark background, no layering) ---
+                let timer_class = wide("WinCueTimerOverlay\0");
+                let wc_timer = WNDCLASSEXW {
+                    cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    style: CS_HREDRAW | CS_VREDRAW,
+                    lpfnWndProc: Some(timer_wnd_proc),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: hinstance,
+                    hIcon: 0,
+                    hCursor: 0,
+                    hbrBackground: 0, // painted in WM_PAINT
+                    lpszMenuName: std::ptr::null(),
+                    lpszClassName: timer_class.as_ptr(),
+                    hIconSm: 0,
+                };
+                RegisterClassExW(&wc_timer);
+
+                // --- Create parent window ---
                 let window_name = wide("WinCue Output\0");
                 let parent_hwnd = CreateWindowExW(
                     WS_EX_NOACTIVATE,
@@ -100,6 +126,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 const WS_CHILD: u32          = 0x4000_0000;
                 const WS_VISIBLE: u32        = 0x1000_0000;
 
+                // --- Fade overlay (layered, full-size, dip-to-black) ---
                 let overlay_name = wide("WinCueFadeOverlay\0");
                 let overlay_hwnd = CreateWindowExW(
                     WS_EX_LAYERED | WS_EX_TRANSPARENT,
@@ -116,9 +143,31 @@ pub(super) fn create_output_window() -> Result<isize> {
                     SetLayeredWindowAttributes(overlay_hwnd, 0, 0, LWA_ALPHA);
                     FADE_OVERLAY_HWND.get_or_init(|| overlay_hwnd);
                 } else {
-                    log::warn!(
-                        "[output] CreateWindowExW (overlay) failed — fades disabled"
-                    );
+                    log::warn!("[output] CreateWindowExW (fade overlay) failed — fades disabled");
+                }
+
+                // --- Timer overlay (plain child, initially hidden, centered) ---
+                // WS_EX_TRANSPARENT: mouse events pass through to the parent so
+                // dragging the output window still works.
+                // Width = 70% of parent (896px), height = 40% (288px).
+                let (tw, th) = (896i32, 288i32);
+                let (tx_pos, ty_pos) = ((1280 - tw) / 2, (720 - th) / 2);
+                let timer_name = wide("WinCueTimerOverlay\0");
+                let timer_hwnd = CreateWindowExW(
+                    WS_EX_TRANSPARENT, // pass-through for mouse; does NOT affect WM_PAINT
+                    timer_class.as_ptr(),
+                    timer_name.as_ptr(),
+                    WS_CHILD, // starts hidden (no WS_VISIBLE)
+                    tx_pos, ty_pos, tw, th,
+                    parent_hwnd, 0, hinstance, std::ptr::null(),
+                );
+
+                if timer_hwnd != 0 {
+                    TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
+                    TIMER_OVERLAY_HWND.get_or_init(|| timer_hwnd);
+                    ShowWindow(timer_hwnd, SW_HIDE); // explicit hide
+                } else {
+                    log::warn!("[output] CreateWindowExW (timer overlay) failed");
                 }
 
                 ShowWindow(parent_hwnd, SW_SHOWNA);
@@ -160,12 +209,12 @@ unsafe extern "system" fn output_wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DefWindowProcW, KillTimer, PostQuitMessage, SetTimer, ShowWindow,
-        SW_HIDE, WM_CLOSE, WM_DESTROY, WM_NCCALCSIZE, WM_SIZE,
+        SW_HIDE, SW_SHOWNA, WM_CLOSE, WM_DESTROY, WM_NCCALCSIZE, WM_SIZE,
         WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCHITTEST,
         WM_SETCURSOR, HTCLIENT, HTCAPTION,
     };
 
-    const WM_TIMER: u32    = 0x0113;
+    const WM_TIMER: u32      = 0x0113;
     const MA_NOACTIVATE: isize = 3;
 
     match msg {
@@ -212,6 +261,7 @@ unsafe extern "system" fn output_wnd_proc(
         WM_SETUP_MPV_CHILD => {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 GetWindow, GetWindowLongPtrW, SetWindowLongPtrW, GW_CHILD,
+                SetWindowPos, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
             };
             const GWL_EXSTYLE: i32 = -20;
             const WS_EX_TRANSPARENT: isize = 0x20;
@@ -220,32 +270,49 @@ unsafe extern "system" fn output_wnd_proc(
                 let ex = GetWindowLongPtrW(child, GWL_EXSTYLE);
                 SetWindowLongPtrW(child, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT);
             }
+            // Fade overlay on top of mpv child, timer overlay on top of fade.
             if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    SetWindowPos, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
-                };
-                SetWindowPos(
-                    overlay, HWND_TOP,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
+                SetWindowPos(overlay, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            if let Some(&timer) = TIMER_OVERLAY_HWND.get() {
+                SetWindowPos(timer, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
             0
         }
 
         WM_SIZE => {
+            let w = (lparam & 0xFFFF) as i32;
+            let h = ((lparam >> 16) & 0xFFFF) as i32;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOMOVE,
+            };
+            // Resize fade overlay to fill the parent.
             if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                let w = (lparam & 0xFFFF) as i32;
-                let h = ((lparam >> 16) & 0xFFFF) as i32;
-                use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    SetWindowPos, SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOMOVE,
-                };
-                SetWindowPos(
-                    overlay, 0, 0, 0, w, h,
-                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
-                );
+                SetWindowPos(overlay, 0, 0, 0, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+            }
+            // Keep timer overlay centered and proportional (70% × 40%).
+            if let Some(&timer) = TIMER_OVERLAY_HWND.get() {
+                let tw = (w * 70 / 100).max(400);
+                let th = (h * 40 / 100).max(160);
+                let tx_pos = (w - tw) / 2;
+                let ty_pos = (h - th) / 2;
+                SetWindowPos(timer, 0, tx_pos, ty_pos, tw, th, SWP_NOACTIVATE | SWP_NOZORDER);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        // Thread-safe show/hide for the timer overlay (posted from any thread).
+        WM_TIMER_VISIBILITY => {
+            if let Some(&timer) = TIMER_OVERLAY_HWND.get() {
+                use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
+                if wparam != 0 {
+                    ShowWindow(timer, SW_SHOWNA);
+                    InvalidateRect(timer, std::ptr::null(), 1);
+                } else {
+                    ShowWindow(timer, SW_HIDE);
+                }
+            }
+            0
         }
 
         WM_DO_FADE => {
@@ -336,6 +403,100 @@ unsafe extern "system" fn overlay_wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW;
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+// ---------------------------------------------------------------------------
+// Timer overlay window procedure
+// ---------------------------------------------------------------------------
+
+unsafe extern "system" fn timer_wnd_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    const WM_PAINT:      u32 = 0x000F;
+    const WM_ERASEBKGND: u32 = 0x0014;
+
+    match msg {
+        // Suppress default background erase — WM_PAINT fills everything.
+        WM_ERASEBKGND => 1,
+
+        WM_PAINT => {
+            use windows_sys::Win32::Foundation::RECT;
+            use windows_sys::Win32::Graphics::Gdi::{
+                BeginPaint, EndPaint, PAINTSTRUCT,
+                GetStockObject, BLACK_BRUSH,
+                FillRect, SetBkMode, SetTextColor, SelectObject,
+                CreateFontW, DeleteObject, DrawTextW,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+            // get_or_init guarantees we always have a Mutex, even before the
+            // Win32 init thread has had a chance to call get_or_init itself.
+            let text_owned: String = TIMER_TEXT
+                .get_or_init(|| std::sync::Mutex::new(String::new()))
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+
+            let mut ps: PAINTSTRUCT = std::mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+
+            let mut rc: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut rc);
+
+            // Solid dark background.
+            FillRect(hdc, &rc, GetStockObject(BLACK_BRUSH) as isize);
+
+            if !text_owned.is_empty() {
+                const TRANSPARENT_BK: i32  = 1;
+                const FW_BOLD: i32         = 700;
+                const ANSI_CHARSET: u32    = 0;
+                const DEFAULT_QUALITY: u32 = 0;
+                const DT_CENTER:     u32   = 0x0000_0001;
+                const DT_VCENTER:    u32   = 0x0000_0004;
+                const DT_SINGLELINE: u32   = 0x0000_0020;
+                const DT_NOCLIP:     u32   = 0x0000_0100;
+
+                SetBkMode(hdc, TRANSPARENT_BK);
+
+                // Font: 60% of window height — massive, readable from a distance.
+                let font_h = -((rc.bottom - rc.top) * 60 / 100).max(40);
+                let face = wide("Arial\0");
+                let font = CreateFontW(
+                    font_h, 0, 0, 0, FW_BOLD, 0, 0, 0,
+                    ANSI_CHARSET, 0, 0, DEFAULT_QUALITY, 0,
+                    face.as_ptr(),
+                );
+                let old_font = SelectObject(hdc, font as isize);
+
+                let wtext: Vec<u16> = text_owned.encode_utf16().chain(std::iter::once(0)).collect();
+
+                // Drop shadow: draw black text slightly offset, then white on top.
+                // IMPORTANT: rc must be *mut RECT — DrawTextW with DT_VCENTER
+                // writes the computed bounding box back into the RECT.
+                let mut shadow_rc = RECT { left: rc.left + 3, top: rc.top + 3, right: rc.right, bottom: rc.bottom };
+                SetTextColor(hdc, 0x0000_0000);
+                DrawTextW(hdc, wtext.as_ptr(), -1, &mut shadow_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+
+                let mut draw_rc = rc; // mutable copy for DrawTextW
+                SetTextColor(hdc, 0x00FF_FFFF);
+                DrawTextW(hdc, wtext.as_ptr(), -1, &mut draw_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+
+                SelectObject(hdc, old_font);
+                DeleteObject(font as isize);
+
+            }
+
+            EndPaint(hwnd, &mut ps);
+            0
+        }
+
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
 }
 
 // ---------------------------------------------------------------------------

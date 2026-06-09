@@ -6,6 +6,7 @@ import type {
   AppPreferences,
   AudioCueData,
   AudioPreferences,
+  MachineAudioConfig,
   CueId,
   CueSummary,
   CueType,
@@ -89,6 +90,10 @@ export const setVideoFile = (cueId: CueId, filePath: string) =>
 export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
+export const listSystemFonts  = () => invoke<string[]>("list_system_fonts");
+export const previewOutputTimer = (
+  font: string, fontSize: number, position: string, margin: number, text: string | null,
+) => invoke<void>("preview_output_timer", { font, fontSize: fontSize, position, margin, text });
 export const setImageFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_image_file", { cueId, filePath });
 
@@ -134,6 +139,10 @@ export const getAvailableBackends = () =>
   invoke<string[]>("get_available_backends");
 export const getAsioOutputPairs = () =>
   invoke<number>("get_asio_output_pairs");
+export const getMachineAudioConfig = () =>
+  invoke<MachineAudioConfig>("get_machine_audio_config");
+export const updateMachineAudioConfig = (config: MachineAudioConfig) =>
+  invoke<void>("update_machine_audio_config", { config });
 export const updateAudioPreferences = (prefs: AudioPreferences) =>
   invoke<void>("update_audio_preferences", { prefs });
 export const updateGeneralPreferences = (prefs: GeneralPreferences) =>

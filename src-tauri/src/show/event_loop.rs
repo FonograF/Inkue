@@ -29,8 +29,10 @@ use crate::{
     show::{transport::Transport, workspace::Workspace},
 };
 
-/// Target tick interval (~30 fps).
+/// Target tick interval for the main event loop (~30 fps).
 const TICK_MS: u64 = 33;
+/// Timer overlay refresh interval — fast enough for smooth millisecond display.
+const TIMER_TICK_MS: u64 = 16;
 
 /// Entry point for the event loop thread.  Loops indefinitely.
 pub fn run(
@@ -39,7 +41,22 @@ pub fn run(
     output_engine: Arc<OutputEngine>,
     workspace: Arc<Mutex<Workspace>>,
 ) {
+    // Spawn a dedicated thread that refreshes the OSD timer overlay at ~60 fps.
+    // This is independent of the main 30 fps tick so the millisecond display
+    // stays smooth even when the workspace lock is briefly held by a command.
+    {
+        let ws2 = Arc::clone(&workspace);
+        let oe2 = Arc::clone(&output_engine);
+        std::thread::Builder::new()
+            .name("wincue-timer-refresh".into())
+            .spawn(move || timer_refresh_loop(ws2, oe2))
+            .expect("Failed to spawn timer refresh thread");
+    }
+
     let mut auto_follow_pending: HashMap<CueId, Instant> = HashMap::new();
+    // Per-group snapshot: (active_child_id, any_child_running).
+    // Used to detect inner-sequence progress and emit cue-list-refresh.
+    let mut prev_group_state: HashMap<CueId, (Option<CueId>, bool)> = HashMap::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(TICK_MS));
@@ -49,6 +66,7 @@ pub fn run(
             &output_engine,
             &workspace,
             &mut auto_follow_pending,
+            &mut prev_group_state,
         );
     }
 }
@@ -77,12 +95,33 @@ fn make_context(
     )
 }
 
+/// Collect `cue-time-update` snapshots recursively, including children of
+/// running Group cues.
+fn collect_time_snapshots(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(CueId, u64, u64, Option<u64>)> {
+    let mut result = Vec::new();
+    for cue in cues {
+        if cue.state() == CueState::Running {
+            result.push((
+                cue.id(),
+                cue.elapsed().as_millis() as u64,
+                cue.action_elapsed().as_millis() as u64,
+                cue.duration().map(|d| d.as_millis().saturating_sub(cue.action_elapsed().as_millis()) as u64),
+            ));
+        }
+        if let Some(children) = cue.child_cues() {
+            result.extend(collect_time_snapshots(children));
+        }
+    }
+    result
+}
+
 fn tick(
     handle: &tauri::AppHandle,
     audio_engine: &Arc<AudioEngine>,
     output_engine: &Arc<OutputEngine>,
     workspace: &Arc<Mutex<Workspace>>,
     auto_follow_pending: &mut HashMap<CueId, Instant>,
+    prev_group_state: &mut HashMap<CueId, (Option<CueId>, bool)>,
 ) {
     // ------------------------------------------------------------------
     // 1. Drain the audio status ring buffer.
@@ -148,11 +187,10 @@ fn tick(
         Err(_) => return,
     };
 
-    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
-    let ws_patches = ws.output_patches.clone();
-    let ws_default_patch = ws.default_output_patch_id;
-    let ws_output_screen = ws.preferences.display.output_screen;
-
+    let stop_fade_ms      = ws.preferences.audio.default_fade_out_ms;
+    let ws_patches        = ws.output_patches.clone();
+    let ws_default_patch  = ws.default_output_patch_id;
+    let ws_output_screen  = ws.preferences.display.output_screen;
     let cue_list = match ws.active_cue_list_mut() {
         Some(cl) => cl,
         None => return,
@@ -184,6 +222,11 @@ fn tick(
     // 6. Detect cue completions.
     // ------------------------------------------------------------------
     let mut newly_completed: Vec<(CueId, ContinueMode, Duration)> = Vec::new();
+    // Sequential groups that held the playhead and just completed need the
+    // playhead advanced here (the transport skipped advance_playhead() earlier).
+    let mut advance_playhead_ids: Vec<CueId> = Vec::new();
+
+    let current_playhead = cue_list.playhead_cue_id;
 
     for cue in cue_list.cues.iter_mut() {
         if cue.state() != CueState::Running {
@@ -207,36 +250,30 @@ fn tick(
             let id = cue.id();
             let cm = cue.continue_mode();
             let pw = cue.post_wait();
+            // If this cue held the playhead, schedule a playhead advance.
+            if cue.holds_playhead() && current_playhead == Some(id) {
+                advance_playhead_ids.push(id);
+            }
             let _ = cue.reset();
             newly_completed.push((id, cm, pw));
         }
     }
 
-    // ------------------------------------------------------------------
-    // 7. Collect cue-time-update data for still-running cues.
-    // ------------------------------------------------------------------
-    #[derive(Clone)]
-    struct TimeSnapshot {
-        cue_id: CueId,
-        elapsed_ms: u64,
-        action_elapsed_ms: u64,
-        remaining_ms: Option<u64>,
+    // Advance the playhead for sequential groups that held it and just finished.
+    let mut playhead_advanced = false;
+    for id in &advance_playhead_ids {
+        if cue_list.playhead_cue_id == Some(*id) {
+            cue_list.advance_playhead();
+            playhead_advanced = true;
+        }
     }
 
-    let time_snapshots: Vec<TimeSnapshot> = cue_list
-        .cues
-        .iter()
-        .filter(|c| c.state() == CueState::Running)
-        .map(|cue| TimeSnapshot {
-            cue_id: cue.id(),
-            elapsed_ms: cue.elapsed().as_millis() as u64,
-            action_elapsed_ms: cue.action_elapsed().as_millis() as u64,
-            remaining_ms: cue.duration().map(|d| {
-                d.as_millis()
-                    .saturating_sub(cue.action_elapsed().as_millis()) as u64
-            }),
-        })
-        .collect();
+    // ------------------------------------------------------------------
+    // 7. Collect cue-time-update data — recursive so running children of
+    //    Group cues also get progress updates.
+    // ------------------------------------------------------------------
+    // (cue_id, elapsed_ms, action_elapsed_ms, remaining_ms)
+    let time_snapshots = collect_time_snapshots(&cue_list.cues);
 
     // ------------------------------------------------------------------
     // 8. Auto-Continue / Auto-Follow detection.
@@ -301,6 +338,47 @@ fn tick(
         }
     }
 
+    // Capture the new playhead position for sequential-group completion advances
+    // before releasing the workspace lock.
+    let seq_group_new_playhead: Option<Option<CueId>> = if playhead_advanced {
+        Some(cue_list.playhead_cue_id)
+    } else {
+        None
+    };
+
+    // Detect inner-sequence changes in group cues so the frontend can update
+    // the inner-playhead display without waiting for a user GO press.
+    // We track (active_child_id, any_child_running) per group.
+    let mut group_child_changed = false;
+    {
+        // Only track groups that are currently Running — the frontend derives the
+        // pre-fire (Standby) state from outerPlayheadId + children list directly.
+        let current: Vec<(CueId, Option<CueId>, bool)> = cue_list
+            .cues
+            .iter()
+            .filter(|c| c.child_cues().is_some() && c.state() == CueState::Running)
+            .map(|c| {
+                let active = c.active_child_id();
+                let any_running = c.child_cues()
+                    .map(|ch| ch.iter().any(|child| child.state() == CueState::Running))
+                    .unwrap_or(false);
+                (c.id(), active, any_running)
+            })
+            .collect();
+        for (id, active, any_running) in &current {
+            let (prev_active, prev_running) = prev_group_state
+                .get(id)
+                .copied()
+                .unwrap_or((None, false));
+            if *active != prev_active || *any_running != prev_running {
+                group_child_changed = true;
+            }
+        }
+        for (id, active, any_running) in current {
+            prev_group_state.insert(id, (active, any_running));
+        }
+    }
+
     drop(ws);
 
     // ------------------------------------------------------------------
@@ -318,16 +396,28 @@ fn tick(
         );
     }
 
-    for snap in &time_snapshots {
+    // Emit playhead-moved when the event loop advanced the playhead for a
+    // completed sequential group.
+    if let Some(new_ph) = seq_group_new_playhead {
+        let _ = handle.emit("playhead-moved", serde_json::json!({ "cue_id": new_ph }));
+    }
+
+    for (cue_id, elapsed_ms, action_elapsed_ms, remaining_ms) in &time_snapshots {
         let _ = handle.emit(
             "cue-time-update",
             serde_json::json!({
-                "cue_id": snap.cue_id,
-                "elapsed_ms": snap.elapsed_ms,
-                "action_elapsed_ms": snap.action_elapsed_ms,
-                "remaining_ms": snap.remaining_ms,
+                "cue_id": cue_id,
+                "elapsed_ms": elapsed_ms,
+                "action_elapsed_ms": action_elapsed_ms,
+                "remaining_ms": remaining_ms,
             }),
         );
+    }
+
+    // Emit cue-list-refresh when a sequential group's active child changed
+    // (e.g., a timed child completed and the inner playhead advanced).
+    if group_child_changed {
+        let _ = handle.emit("cue-list-refresh", serde_json::json!({}));
     }
 
     if !go_triggered.is_empty() {
@@ -354,4 +444,81 @@ fn tick(
     // 11. Garbage-collect finished audio voices.
     // ------------------------------------------------------------------
     audio_engine.gc_voices();
+}
+
+// ---------------------------------------------------------------------------
+// Fast timer refresh (runs on its own thread at ~60 fps)
+// ---------------------------------------------------------------------------
+
+/// Runs on a dedicated thread.  Reads the current running-cue position at
+/// `TIMER_TICK_MS` intervals and updates the mpv OSD timer overlay.
+///
+/// Using a separate thread (rather than doing it inside the 30 fps main tick)
+/// lets the millisecond display update smoothly without coupling the refresh
+/// rate to all the other, heavier work the main tick performs.
+fn timer_refresh_loop(workspace: Arc<Mutex<Workspace>>, output_engine: Arc<OutputEngine>) {
+    loop {
+        std::thread::sleep(Duration::from_millis(TIMER_TICK_MS));
+
+        // Non-blocking lock — skip this frame if a command handler holds the lock.
+        let Ok(ws) = workspace.try_lock() else { continue; };
+
+        let show     = ws.preferences.display.show_output_timer;
+        let countdn  = ws.preferences.display.timer_count_down;
+        let show_ms  = ws.preferences.display.timer_show_ms;
+
+        // Preview mode overrides live cue time — show placeholder regardless of
+        // whether a cue is playing or the show_output_timer setting.
+        let preview = output_engine.get_timer_preview();
+        let text = if preview.is_some() {
+            preview
+        } else if show {
+            ws.active_cue_list()
+                .and_then(|cl| first_running_timer_text(&cl.cues, countdn, show_ms))
+        } else {
+            None
+        };
+        drop(ws); // release workspace lock before calling into mpv
+
+        output_engine.set_output_timer(text.as_deref());
+    }
+}
+
+/// Find the first running cue with time data (recursive — checks group children)
+/// and format its position as a timer string.
+fn first_running_timer_text(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+    count_down: bool,
+    show_ms: bool,
+) -> Option<String> {
+    for cue in cues {
+        if cue.state() == CueState::Running {
+            let ms = if count_down {
+                let remaining = cue.duration()?.as_millis()
+                    .saturating_sub(cue.action_elapsed().as_millis());
+                remaining as u64
+            } else {
+                cue.action_elapsed().as_millis() as u64
+            };
+            return Some(format_timer(ms, show_ms));
+        }
+        if let Some(children) = cue.child_cues() {
+            if let Some(text) = first_running_timer_text(children, count_down, show_ms) {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+fn format_timer(ms: u64, show_ms: bool) -> String {
+    let total_secs = ms / 1000;
+    let mins  = total_secs / 60;
+    let secs  = total_secs % 60;
+    if show_ms {
+        let millis = ms % 1000;
+        format!("{mins:02}:{secs:02}.{millis:03}")
+    } else {
+        format!("{mins:02}:{secs:02}")
+    }
 }
