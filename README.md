@@ -48,8 +48,10 @@ WinCue listens on UDP port 53001 (configurable). Supported receive addresses:
 | `/wincue/hardstop` | Hard stop all |
 | `/wincue/pause` | Pause all running cues |
 | `/wincue/resume` | Resume all paused cues |
+| `/wincue/select/next` | Move playhead to next cue (no fire) |
+| `/wincue/select/previous` | Move playhead to previous cue (no fire) |
 | `/wincue/cue/{number}/go` | Jump to cue number and fire |
-| `/wincue/cue/{number}/select` | Move playhead only |
+| `/wincue/cue/{number}/select` | Move playhead to cue number (no fire) |
 | `/wincue/cue/{number}/stop` | Stop specific cue |
 
 Configure in **Preferences → Network**. An activity dot in the transport bar flashes on every received packet. The **OSC Monitor** (click the dot) shows all incoming packets in real time with address, arguments, and match status.
