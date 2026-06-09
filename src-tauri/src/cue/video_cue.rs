@@ -86,6 +86,10 @@ pub struct VideoCue {
     play_generation: u64,
     /// Prevents double-firing of Auto-Continue.
     auto_continue_fired: bool,
+    /// Elapsed time accumulated before the most recent pause.
+    elapsed_before_pause: Duration,
+    /// Action-elapsed time accumulated before the most recent pause.
+    action_elapsed_before_pause: Duration,
 }
 
 impl VideoCue {
@@ -120,6 +124,8 @@ impl VideoCue {
             in_pre_wait: false,
             play_generation: 0,
             auto_continue_fired: false,
+            elapsed_before_pause: Duration::ZERO,
+            action_elapsed_before_pause: Duration::ZERO,
         }
     }
 
@@ -318,7 +324,7 @@ impl Cue for VideoCue {
             let fade_ms = self
                 .fade_out
                 .as_ref()
-                .map(|_| 0_u32)  // Fades removed for video — always hard-cut on stop.
+                .map(|_| 0_u32)
                 .unwrap_or(0);
             let _ = context.output_engine.stop_voice(vid, fade_ms);
         }
@@ -326,6 +332,8 @@ impl Cue for VideoCue {
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
@@ -333,10 +341,16 @@ impl Cue for VideoCue {
 
     fn pause(&mut self, context: &CueContext) -> Result<()> {
         if self.in_pre_wait {
-            return Ok(()); // Cannot pause during pre-wait.
+            return Ok(());
         }
         if let Some(vid) = self.active_voice_id {
             context.output_engine.pause_voice(vid)?;
+        }
+        if let Some(t) = self.started_at.take() {
+            self.elapsed_before_pause = t.elapsed();
+        }
+        if let Some(t) = self.action_started_at.take() {
+            self.action_elapsed_before_pause = t.elapsed();
         }
         self.state = CueState::Paused;
         Ok(())
@@ -346,6 +360,8 @@ impl Cue for VideoCue {
         if let Some(vid) = self.active_voice_id {
             context.output_engine.resume_voice(vid)?;
         }
+        self.started_at = Some(Instant::now() - self.elapsed_before_pause);
+        self.action_started_at = Some(Instant::now() - self.action_elapsed_before_pause);
         self.state = CueState::Running;
         Ok(())
     }
@@ -363,23 +379,26 @@ impl Cue for VideoCue {
         self.in_pre_wait = false;
 
         if let Some(vid) = self.active_voice_id.take() {
-            let _ = context.output_engine.stop_voice(vid, 0); // Immediate cut.
+            let _ = context.output_engine.stop_voice(vid, 0);
         }
 
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
 
     fn reset(&mut self) -> Result<()> {
-        // Does not stop playback — call stop() first if needed.
         self.state = CueState::Standby;
         self.active_voice_id = None;
         self.started_at = None;
         self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
         Ok(())
@@ -419,10 +438,16 @@ impl Cue for VideoCue {
     }
 
     fn elapsed(&self) -> Duration {
+        if self.state == CueState::Paused {
+            return self.elapsed_before_pause;
+        }
         self.started_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO)
     }
 
     fn action_elapsed(&self) -> Duration {
+        if self.state == CueState::Paused {
+            return self.action_elapsed_before_pause;
+        }
         self.action_started_at
             .map(|t| t.elapsed())
             .unwrap_or(Duration::ZERO)
