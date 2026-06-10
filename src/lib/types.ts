@@ -168,6 +168,9 @@ export interface OscReceiveConfig {
   enabled: boolean;
   port: number;
   allowed_ips: string[];
+  feedback_enabled: boolean;
+  feedback_host: string;
+  feedback_port: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +238,8 @@ export interface DisplayPreferences {
   timer_show_ms: boolean;
   /** Margin in pixels from the edge for corner positions. */
   timer_margin: number;
+  /** When true (and show_output_timer is true), show timer as floating Win32 window instead of OSD overlay. */
+  timer_floating: boolean;
   bg_app: string;
   bg_surface: string;
   bg_panel: string;

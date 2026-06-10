@@ -9,8 +9,10 @@ use anyhow::{anyhow, Result};
 use super::fade::{execute_fade_pending, set_overlay_alpha};
 use super::types::OutputWndState;
 use super::{
-    wide, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID, OUTPUT_PARENT_HWND,
-    OUTPUT_WND_STATE, TIMER_OVERLAY_HWND, TIMER_TEXT, WM_DO_FADE, WM_SETUP_MPV_CHILD,
+    wide, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID,
+    FLOAT_TIMER_FONT, FLOAT_TIMER_HWND, FLOAT_TIMER_TEXT,
+    OUTPUT_PARENT_HWND, OUTPUT_WND_STATE, TIMER_OVERLAY_HWND, TIMER_TEXT,
+    WM_DO_FADE, WM_FLOAT_VISIBILITY, WM_SETUP_MPV_CHILD,
 };
 
 /// Posted to the parent window to show/hide the timer overlay from any thread.
@@ -170,7 +172,52 @@ pub(super) fn create_output_window() -> Result<isize> {
                     log::warn!("[output] CreateWindowExW (timer overlay) failed");
                 }
 
-                ShowWindow(parent_hwnd, SW_SHOWNA);
+                // --- Floating timer window class ---
+                let float_class = wide("WinCueFloatTimer\0");
+                let wc_float = WNDCLASSEXW {
+                    cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    style: CS_HREDRAW | CS_VREDRAW,
+                    lpfnWndProc: Some(floating_timer_wnd_proc),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: hinstance,
+                    hIcon: 0,
+                    hCursor: 0,
+                    hbrBackground: 0,
+                    lpszMenuName: std::ptr::null(),
+                    lpszClassName: float_class.as_ptr(),
+                    hIconSm: 0,
+                };
+                RegisterClassExW(&wc_float);
+
+                // --- Create floating timer window ---
+                // WS_EX_TOPMOST  : always on top of other windows
+                // WS_EX_TOOLWINDOW: no taskbar button
+                // WS_EX_NOACTIVATE: won't steal focus from the main app
+                // WS_POPUP | WS_SIZEBOX: borderless + resizable grip
+                const WS_EX_TOPMOST:     u32 = 0x0000_0008;
+                const WS_EX_TOOLWINDOW:  u32 = 0x0000_0080;
+                let float_name = wide("WinCue Timer\0");
+                let float_hwnd = CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    float_class.as_ptr(),
+                    float_name.as_ptr(),
+                    WS_POPUP | WS_SIZEBOX,
+                    100, 100, 420, 110,
+                    0, 0, hinstance, std::ptr::null(),
+                );
+
+                if float_hwnd != 0 {
+                    use std::sync::Mutex as StdMutex;
+                    FLOAT_TIMER_TEXT.get_or_init(|| StdMutex::new(String::new()));
+                    FLOAT_TIMER_FONT.get_or_init(|| StdMutex::new("Arial".to_owned()));
+                    FLOAT_TIMER_HWND.get_or_init(|| float_hwnd);
+                    ShowWindow(float_hwnd, SW_HIDE);
+                } else {
+                    log::warn!("[output] CreateWindowExW (floating timer) failed");
+                }
+
+                ShowWindow(parent_hwnd, SW_HIDE);
                 let _ = tx.send(Ok(parent_hwnd));
 
                 let mut msg = MSG {
@@ -195,6 +242,47 @@ pub(super) fn create_output_window() -> Result<isize> {
 
     rx.recv()
         .map_err(|_| anyhow!("Win32 window thread exited before sending HWND"))?
+}
+
+// ---------------------------------------------------------------------------
+// Shared resize hit-testing helper
+// ---------------------------------------------------------------------------
+
+/// Returns the appropriate HTXXX resize constant when the cursor is within
+/// `border` pixels of a window edge, or `None` for the interior.
+///
+/// Called from WM_NCHITTEST handlers so borderless windows still resize from
+/// all four edges and all four corners.
+fn resize_hit(hwnd: isize, lparam: isize) -> Option<isize> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect,
+        HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
+        HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT,
+    };
+    const BORDER: i32 = 8;
+    // lparam carries the cursor screen position.
+    let cx = (lparam & 0xFFFF) as i16 as i32;
+    let cy = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+    unsafe {
+        let mut wr: RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut wr);
+        let left   = cx < wr.left   + BORDER;
+        let right  = cx > wr.right  - BORDER;
+        let top    = cy < wr.top    + BORDER;
+        let bottom = cy > wr.bottom - BORDER;
+        match (top, bottom, left, right) {
+            (true,  _,     true,  _)     => Some(HTTOPLEFT     as isize),
+            (true,  _,     _,     true)  => Some(HTTOPRIGHT    as isize),
+            (_,     true,  true,  _)     => Some(HTBOTTOMLEFT  as isize),
+            (_,     true,  _,     true)  => Some(HTBOTTOMRIGHT as isize),
+            (true,  _,     _,     _)     => Some(HTTOP         as isize),
+            (_,     true,  _,     _)     => Some(HTBOTTOM      as isize),
+            (_,     _,     true,  _)     => Some(HTLEFT        as isize),
+            (_,     _,     _,     true)  => Some(HTRIGHT       as isize),
+            _                            => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,12 +311,15 @@ unsafe extern "system" fn output_wnd_proc(
         WM_NCCALCSIZE => 0,
 
         WM_NCHITTEST => {
-            let hit = DefWindowProcW(hwnd, msg, wparam, lparam);
-            if hit == HTCLIENT as isize || hit == HTCAPTION as isize {
-                HTCLIENT as isize
-            } else {
-                hit
+            // Resize borders — checked before falling back to client-area drag.
+            let is_fullscreen = OUTPUT_WND_STATE.get()
+                .and_then(|m| m.lock().ok())
+                .map(|s| s.is_fullscreen)
+                .unwrap_or(false);
+            if !is_fullscreen {
+                if let Some(hit) = resize_hit(hwnd, lparam) { return hit; }
             }
+            HTCLIENT as isize
         }
 
         WM_SETCURSOR => {
@@ -582,4 +673,176 @@ pub(super) unsafe fn set_resizable(hwnd: isize) {
     const WS_SIZEBOX: isize = 0x0004_0000;
     let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_SIZEBOX);
+}
+
+// ---------------------------------------------------------------------------
+// Floating timer window procedure
+// ---------------------------------------------------------------------------
+
+unsafe extern "system" fn floating_timer_wnd_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    const WM_PAINT:        u32 = 0x000F;
+    const WM_ERASEBKGND:   u32 = 0x0014;
+    const WM_CLOSE:        u32 = 0x0010;
+    const WM_NCCALCSIZE:   u32 = 0x0083;
+    const WM_NCHITTEST:    u32 = 0x0084;
+    const WM_GETMINMAXINFO: u32 = 0x0024;
+
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HTCLIENT, HTCAPTION, ShowWindow, SW_HIDE, SW_SHOWNA,
+    };
+
+    match msg {
+        WM_NCCALCSIZE => 0, // full client area — no OS chrome
+
+        WM_NCHITTEST => {
+            // Resize borders take priority; interior = caption for native drag.
+            if let Some(hit) = resize_hit(hwnd, lparam) { return hit; }
+            HTCAPTION as isize
+        }
+
+        WM_GETMINMAXINFO => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
+            let mmi = &mut *(lparam as *mut MINMAXINFO);
+            mmi.ptMinTrackSize.x = 160;
+            mmi.ptMinTrackSize.y = 60;
+            0
+        }
+
+        WM_ERASEBKGND => 1,
+
+        WM_PAINT => {
+            use windows_sys::Win32::Foundation::RECT;
+            use windows_sys::Win32::Graphics::Gdi::{
+                BeginPaint, EndPaint, PAINTSTRUCT,
+                GetStockObject, BLACK_BRUSH,
+                FillRect, SetBkMode, SetTextColor, SelectObject,
+                CreateFontW, DeleteObject, DrawTextW,
+                CreateCompatibleDC, CreateCompatibleBitmap, BitBlt, DeleteDC,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+            let text_owned: String = FLOAT_TIMER_TEXT
+                .get_or_init(|| std::sync::Mutex::new(String::new()))
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+
+            let font_name: String = FLOAT_TIMER_FONT
+                .get_or_init(|| std::sync::Mutex::new("Arial".to_owned()))
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| "Arial".to_owned());
+
+            let mut ps: PAINTSTRUCT = std::mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+
+            let mut rc: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut rc);
+            let w = rc.right - rc.left;
+            let h = rc.bottom - rc.top;
+
+            // Double-buffer: paint into a memory DC, then blit once — no flicker.
+            let hdc_mem = CreateCompatibleDC(hdc);
+            let hbm = CreateCompatibleBitmap(hdc, w, h);
+            let old_hbm = SelectObject(hdc_mem, hbm as isize);
+
+            FillRect(hdc_mem, &rc, GetStockObject(BLACK_BRUSH) as isize);
+
+            const SRCCOPY: u32 = 0x00CC_0020;
+
+            if !text_owned.is_empty() {
+                use windows_sys::Win32::Foundation::SIZE;
+                use windows_sys::Win32::Graphics::Gdi::GetTextExtentPoint32W;
+
+                const TRANSPARENT_BK: i32  = 1;
+                const FW_BOLD: i32         = 700;
+                const ANSI_CHARSET: u32    = 0;
+                const DEFAULT_QUALITY: u32 = 0;
+                const DT_CENTER:     u32   = 0x0000_0001;
+                const DT_VCENTER:    u32   = 0x0000_0004;
+                const DT_SINGLELINE: u32   = 0x0000_0020;
+                const DT_NOCLIP:     u32   = 0x0000_0100;
+
+                SetBkMode(hdc_mem, TRANSPARENT_BK);
+
+                let wtext: Vec<u16> = text_owned.encode_utf16().chain(std::iter::once(0)).collect();
+                let nchars = (wtext.len() - 1) as i32; // exclude null terminator
+                let mut face: Vec<u16> = font_name.encode_utf16().chain(std::iter::once(0)).collect();
+
+                // Auto-fit: start from 80% of window height, then shrink to fit width.
+                let max_h = (h * 80 / 100).max(24);
+                let probe = CreateFontW(
+                    -max_h, 0, 0, 0, FW_BOLD, 0, 0, 0,
+                    ANSI_CHARSET, 0, 0, DEFAULT_QUALITY, 0,
+                    face.as_mut_ptr(),
+                );
+                let old_probe = SelectObject(hdc_mem, probe as isize);
+                let mut sz: SIZE = std::mem::zeroed();
+                GetTextExtentPoint32W(hdc_mem, wtext.as_ptr(), nchars, &mut sz);
+                SelectObject(hdc_mem, old_probe);
+                DeleteObject(probe as isize);
+
+                // If text is wider than 92% of the window, scale font height down.
+                let avail_w = (w * 92 / 100).max(1);
+                let font_h = if sz.cx > avail_w {
+                    -(max_h as i64 * avail_w as i64 / sz.cx as i64).max(10) as i32
+                } else {
+                    -max_h
+                };
+
+                let font = CreateFontW(
+                    font_h, 0, 0, 0, FW_BOLD, 0, 0, 0,
+                    ANSI_CHARSET, 0, 0, DEFAULT_QUALITY, 0,
+                    face.as_mut_ptr(),
+                );
+                let old_font = SelectObject(hdc_mem, font as isize);
+
+                let mut shadow_rc = RECT { left: rc.left + 2, top: rc.top + 2, right: rc.right, bottom: rc.bottom };
+                SetTextColor(hdc_mem, 0x0000_0000);
+                DrawTextW(hdc_mem, wtext.as_ptr(), -1, &mut shadow_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+
+                let mut draw_rc = rc;
+                SetTextColor(hdc_mem, 0x00FF_FFFF);
+                DrawTextW(hdc_mem, wtext.as_ptr(), -1, &mut draw_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+
+                SelectObject(hdc_mem, old_font);
+                DeleteObject(font as isize);
+            }
+
+            BitBlt(hdc, 0, 0, w, h, hdc_mem, 0, 0, SRCCOPY);
+
+            SelectObject(hdc_mem, old_hbm);
+            DeleteObject(hbm as isize);
+            DeleteDC(hdc_mem);
+
+            EndPaint(hwnd, &mut ps);
+            0
+        }
+
+        WM_FLOAT_VISIBILITY => {
+            if wparam != 0 {
+                ShowWindow(hwnd, SW_SHOWNA);
+                use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            } else {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            0
+        }
+
+        // Hide (don't destroy) when the user presses Alt+F4 or right-click-closes.
+        WM_CLOSE => {
+            ShowWindow(hwnd, SW_HIDE);
+            0
+        }
+
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
 }

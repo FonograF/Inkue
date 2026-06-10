@@ -170,18 +170,34 @@ pub struct OscReceiveConfig {
     /// IP addresses allowed to send OSC commands.  Empty list = accept all.
     #[serde(default)]
     pub allowed_ips: Vec<String>,
+
+    /// When `true`, WinCue broadcasts the running cue's name and number to
+    /// `feedback_host:feedback_port` whenever the active cue changes.
+    #[serde(default)]
+    pub feedback_enabled: bool,
+    /// Destination hostname or IP for OSC feedback (e.g. `"127.0.0.1"`).
+    #[serde(default = "OscReceiveConfig::default_feedback_host")]
+    pub feedback_host: String,
+    /// Destination UDP port for OSC feedback.  Default: 53000.
+    #[serde(default = "OscReceiveConfig::default_feedback_port")]
+    pub feedback_port: u16,
 }
 
 impl OscReceiveConfig {
-    fn default_port() -> u16 { 53001 }
+    fn default_port()          -> u16    { 53001 }
+    fn default_feedback_host() -> String { "127.0.0.1".into() }
+    fn default_feedback_port() -> u16    { 53000 }
 }
 
 impl Default for OscReceiveConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            port: Self::default_port(),
-            allowed_ips: Vec::new(),
+            enabled:          false,
+            port:             Self::default_port(),
+            allowed_ips:      Vec::new(),
+            feedback_enabled: false,
+            feedback_host:    Self::default_feedback_host(),
+            feedback_port:    Self::default_feedback_port(),
         }
     }
 }
@@ -244,6 +260,12 @@ pub struct DisplayPreferences {
     #[serde(default = "DisplayPreferences::default_timer_margin")]
     pub timer_margin: u32,
 
+    /// When `true` (and `show_output_timer` is also `true`), the timer is shown
+    /// in a small always-on-top floating Win32 window instead of as an OSD
+    /// overlay on the output surface.
+    #[serde(default)]
+    pub timer_floating: bool,
+
     /// Main window background colour (CSS hex, e.g. `"#020617"`).
     #[serde(default = "DisplayPreferences::default_bg_app")]
     pub bg_app: String,
@@ -287,11 +309,12 @@ impl Default for DisplayPreferences {
             timer_position:     TimerPosition::default(),
             timer_show_ms:      false,
             timer_margin:       Self::default_timer_margin(),
-            bg_app:             Self::default_bg_app(),
-            bg_surface:         Self::default_bg_surface(),
-            bg_panel:           Self::default_bg_panel(),
-            accent:             Self::default_accent(),
-            text_primary:       Self::default_text_primary(),
+            bg_app:               Self::default_bg_app(),
+            bg_surface:           Self::default_bg_surface(),
+            bg_panel:             Self::default_bg_panel(),
+            accent:               Self::default_accent(),
+            text_primary:         Self::default_text_primary(),
+            timer_floating:       false,
         }
     }
 }

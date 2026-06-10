@@ -57,6 +57,11 @@ pub fn run(
     // Per-group snapshot: (active_child_id, any_child_running).
     // Used to detect inner-sequence progress and emit cue-list-refresh.
     let mut prev_group_state: HashMap<CueId, (Option<CueId>, bool)> = HashMap::new();
+    // Cue sets tracked for OSC feedback (compared each tick to detect changes).
+    let mut prev_running_cues: Vec<CueId>  = Vec::new();
+    let mut prev_playhead_cue: Option<CueId> = None;
+    // Fingerprint of the full cue list (number+name). Sending on change.
+    let mut prev_cue_list_hash: u64 = 0;
 
     loop {
         std::thread::sleep(Duration::from_millis(TICK_MS));
@@ -67,6 +72,9 @@ pub fn run(
             &workspace,
             &mut auto_follow_pending,
             &mut prev_group_state,
+            &mut prev_running_cues,
+            &mut prev_playhead_cue,
+            &mut prev_cue_list_hash,
         );
     }
 }
@@ -123,7 +131,10 @@ fn tick(
     output_engine: &Arc<OutputEngine>,
     workspace: &Arc<Mutex<Workspace>>,
     auto_follow_pending: &mut HashMap<CueId, Instant>,
-    prev_group_state: &mut HashMap<CueId, (Option<CueId>, bool)>,
+    prev_group_state:    &mut HashMap<CueId, (Option<CueId>, bool)>,
+    prev_running_cues:   &mut Vec<CueId>,
+    prev_playhead_cue:   &mut Option<CueId>,
+    prev_cue_list_hash:  &mut u64,
 ) {
     // ------------------------------------------------------------------
     // 1. Drain the audio status ring buffer.
@@ -382,10 +393,57 @@ fn tick(
         }
     }
 
+    // ------------------------------------------------------------------
+    // 10. Detect running-cue-set / playhead changes for OSC feedback.
+    // ------------------------------------------------------------------
+    let running_now: Vec<(CueId, String, String)> = all_running_cues_info(&cue_list.cues);
+    let playhead_now = cue_list.playhead_cue_id
+        .and_then(|ph_id| find_cue_info(&cue_list.cues, ph_id));
+
+    let running_ids: Vec<CueId> = running_now.iter().map(|(id, _, _)| *id).collect();
+    let running_payload: Option<Vec<(String, String)>> = if running_ids != *prev_running_cues {
+        *prev_running_cues = running_ids;
+        Some(running_now.into_iter().map(|(_, n, name)| (n, name)).collect())
+    } else {
+        None
+    };
+
+    let playhead_payload: Option<(String, String)> = {
+        let id = playhead_now.as_ref().map(|(id, _, _)| *id);
+        if id != *prev_playhead_cue {
+            *prev_playhead_cue = id;
+            Some(playhead_now.map(|(_, n, name)| (n, name)).unwrap_or_default())
+        } else {
+            None
+        }
+    };
+
+    let all_cues = all_cues_flat(&cue_list.cues);
+    let cue_list_hash = fingerprint_cue_list(&all_cues);
+    let cue_list_payload: Option<Vec<(String, String)>> =
+        if cue_list_hash != *prev_cue_list_hash
+            || crate::engine::osc_feedback::is_cue_list_requested()
+        {
+            *prev_cue_list_hash = cue_list_hash;
+            Some(all_cues)
+        } else {
+            None
+        };
+
     drop(ws);
 
+    if let Some(cues) = running_payload {
+        crate::engine::osc_feedback::send_running(&cues);
+    }
+    if let Some((number, name)) = playhead_payload {
+        crate::engine::osc_feedback::send_playhead(&number, &name);
+    }
+    if let Some(cues) = cue_list_payload {
+        crate::engine::osc_feedback::send_cue_list(&cues);
+    }
+
     // ------------------------------------------------------------------
-    // 10. Emit all events.
+    // 11. Emit all events.
     // ------------------------------------------------------------------
 
     for (cue_id, _, _) in &newly_completed {
@@ -444,7 +502,7 @@ fn tick(
     }
 
     // ------------------------------------------------------------------
-    // 11. Garbage-collect finished audio voices.
+    // 12. Garbage-collect finished audio voices.
     // ------------------------------------------------------------------
     audio_engine.gc_voices();
 }
@@ -467,23 +525,27 @@ fn timer_refresh_loop(workspace: Arc<Mutex<Workspace>>, output_engine: Arc<Outpu
         let Ok(ws) = workspace.try_lock() else { continue; };
 
         let show     = ws.preferences.display.show_output_timer;
+        let floating = ws.preferences.display.timer_floating;
         let countdn  = ws.preferences.display.timer_count_down;
         let show_ms  = ws.preferences.display.timer_show_ms;
 
         // Preview mode overrides live cue time — show placeholder regardless of
         // whether a cue is playing or the show_output_timer setting.
-        let preview = output_engine.get_timer_preview();
-        let text = if preview.is_some() {
-            preview
-        } else if show {
-            ws.active_cue_list()
-                .and_then(|cl| first_running_timer_text(&cl.cues, countdn, show_ms))
-        } else {
-            None
-        };
+        let preview   = output_engine.get_timer_preview();
+        let live_text = ws.active_cue_list()
+            .and_then(|cl| first_running_timer_text(&cl.cues, countdn, show_ms));
+        let text = if preview.is_some() { preview } else if show { live_text.clone() } else { None };
         drop(ws); // release workspace lock before calling into mpv
 
-        output_engine.set_output_timer(text.as_deref());
+        if show && floating {
+            // Floating mode: drive the Win32 window, silence the OSD.
+            output_engine.set_output_timer(None);
+            output_engine.update_floating_timer(text.as_deref());
+        } else {
+            // Normal mode: drive the OSD, clear the floating window.
+            output_engine.set_output_timer(text.as_deref());
+            output_engine.update_floating_timer(None);
+        }
     }
 }
 
@@ -512,6 +574,85 @@ fn first_running_timer_text(
         }
     }
     None
+}
+
+/// Return `(id, number, name)` for the cue with the given ID (recursive lookup).
+fn find_cue_info(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+    target: CueId,
+) -> Option<(CueId, String, String)> {
+    for cue in cues {
+        if cue.id() == target {
+            return Some((
+                cue.id(),
+                cue.number().unwrap_or("").to_owned(),
+                cue.name().to_owned(),
+            ));
+        }
+        if let Some(children) = cue.child_cues() {
+            if let Some(found) = find_cue_info(children, target) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Collect `(id, number, name)` for every running cue (recursive, ordered).
+fn all_running_cues_info(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+) -> Vec<(CueId, String, String)> {
+    let mut out = Vec::new();
+    collect_running(cues, &mut out);
+    out
+}
+
+fn collect_running(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+    out: &mut Vec<(CueId, String, String)>,
+) {
+    for cue in cues {
+        if cue.state() == CueState::Running {
+            out.push((
+                cue.id(),
+                cue.number().unwrap_or("").to_owned(),
+                cue.name().to_owned(),
+            ));
+        }
+        if let Some(children) = cue.child_cues() {
+            collect_running(children, out);
+        }
+    }
+}
+
+/// Collect `(number, name)` for every cue in display order (recursive).
+fn all_cues_flat(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    collect_all_flat(cues, &mut out);
+    out
+}
+
+fn collect_all_flat(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+    out: &mut Vec<(String, String)>,
+) {
+    for cue in cues {
+        out.push((
+            cue.number().unwrap_or("").to_owned(),
+            cue.name().to_owned(),
+        ));
+        if let Some(children) = cue.child_cues() {
+            collect_all_flat(children, out);
+        }
+    }
+}
+
+/// Cheap fingerprint of the full cue list (number + name pairs).
+fn fingerprint_cue_list(cues: &[(String, String)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cues.hash(&mut h);
+    h.finish()
 }
 
 fn format_timer(ms: u64, show_ms: bool) -> String {

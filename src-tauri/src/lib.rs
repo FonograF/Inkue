@@ -73,6 +73,11 @@ pub fn run() {
             );
 
             let osc_config = crate::machine_config::load_osc();
+            crate::engine::osc_feedback::apply(
+                osc_config.feedback_enabled,
+                osc_config.feedback_host.clone(),
+                osc_config.feedback_port,
+            );
             let app_handle_osc = app.handle().clone();
             let osc_server = Arc::new(OscServer::start(osc_config, app_handle_osc));
 

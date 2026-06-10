@@ -148,6 +148,11 @@ pub fn set_osc_config(
     config: OscReceiveConfig,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    crate::engine::osc_feedback::apply(
+        config.feedback_enabled,
+        config.feedback_host.clone(),
+        config.feedback_port,
+    );
     crate::machine_config::save_osc(&config).map_err(|e| e.to_string())?;
     state.osc_server.reconfigure(config);
     Ok(())

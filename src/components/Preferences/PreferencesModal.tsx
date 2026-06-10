@@ -405,6 +405,7 @@ function TimerPositionPicker({ value, onChange }: { value: TimerPosition; onChan
 function DisplayContent({
   outputScreen, onScreenChange,
   showOutputTimer, onTimerChange,
+  timerFloating, onTimerFloatingChange,
   timerCountDown, onTimerModeChange,
   timerFont, onTimerFontChange,
   timerFontSize, onTimerFontSizeChange,
@@ -419,6 +420,8 @@ function DisplayContent({
   onScreenChange: (screen: number | null) => void;
   showOutputTimer: boolean;
   onTimerChange: (v: boolean) => void;
+  timerFloating: boolean;
+  onTimerFloatingChange: (v: boolean) => void;
   timerCountDown: boolean;
   onTimerModeChange: (v: boolean) => void;
   timerFont: string;
@@ -511,6 +514,19 @@ function DisplayContent({
         </Row>
         {showOutputTimer && (
           <>
+            <Row label="Display mode">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={timerFloating}
+                  onChange={(e) => onTimerFloatingChange(e.target.checked)}
+                  style={{ width: 14, height: 14, cursor: "pointer" }}
+                />
+                <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+                  Floating window (replaces output overlay)
+                </span>
+              </label>
+            </Row>
             <Row label="Timer mode">
               <div style={{ display: "flex", gap: 16 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
@@ -545,9 +561,16 @@ function DisplayContent({
               </label>
             </Row>
             <Row label="Position">
-              <TimerPositionPicker value={timerPosition} onChange={onTimerPositionChange} />
+              <div style={{ opacity: timerFloating ? 0.35 : 1, pointerEvents: timerFloating ? "none" : undefined }}>
+                <TimerPositionPicker value={timerPosition} onChange={onTimerPositionChange} />
+              </div>
+              {timerFloating && (
+                <span style={{ fontSize: 11, color: "#475569", marginLeft: 8 }}>
+                  n/a — window is freely positioned
+                </span>
+              )}
             </Row>
-            {timerPosition !== "center" && (
+            {timerPosition !== "center" && !timerFloating && (
               <Row label="Corner margin">
                 <input
                   type="range" min={0} max={300} step={5}
@@ -709,6 +732,52 @@ function OscContent({
       </Section>
 
       <OscPatchesPanel />
+
+      <Section title="OSC Feedback">
+        <Row label="Enable">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={config.feedback_enabled}
+              onChange={(e) => onChange({ ...config, feedback_enabled: e.target.checked })}
+              style={{ width: 14, height: 14, cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+              Broadcast active cue info via OSC
+            </span>
+          </label>
+        </Row>
+        {config.feedback_enabled && (
+          <>
+            <Row label="Destination">
+              <input
+                type="text"
+                value={config.feedback_host}
+                onChange={(e) => onChange({ ...config, feedback_host: e.target.value })}
+                placeholder="127.0.0.1"
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <span style={{ fontSize: 12, color: "#64748b" }}>:</span>
+              <input
+                type="number"
+                min={1024}
+                max={65535}
+                value={config.feedback_port}
+                onChange={(e) => onChange({ ...config, feedback_port: Number(e.target.value) })}
+                style={{ ...inputStyle, width: 80 }}
+              />
+            </Row>
+            <Row label="Messages sent">
+              <div style={{ flex: 1, fontSize: 11, color: "#64748b", lineHeight: 1.7 }}>
+                <code style={{ fontFamily: "monospace" }}>/wincue/cue/number</code> — cue number (string)<br />
+                <code style={{ fontFamily: "monospace" }}>/wincue/cue/name</code> &nbsp;&nbsp;&nbsp;— cue name (string)<br />
+                <code style={{ fontFamily: "monospace" }}>/wincue/cue/active</code> &nbsp;— 1 running / 0 stopped (int)<br />
+                <span style={{ color: "#475569" }}>Sent on every active-cue change (GO, stop, auto-follow).</span>
+              </div>
+            </Row>
+          </>
+        )}
+      </Section>
     </>
   );
 }
@@ -750,10 +819,12 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const [timerMargin, setTimerMargin] = useState(50);
   const [draftTimerMargin, setDraftTimerMargin] = useState(50);
   const [timerPreview, setTimerPreview] = useState(false);
+  const [timerFloating, setTimerFloating] = useState(false);
+  const [draftTimerFloating, setDraftTimerFloating] = useState(false);
   const [theme, setTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [draftTheme, setDraftTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [availableBackends, setAvailableBackends] = useState<string[]>(["wasapi_shared", "wasapi_exclusive"]);
-  const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [] });
+  const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [], feedback_enabled: false, feedback_host: "127.0.0.1", feedback_port: 53000 });
   const [applyError, setApplyError] = useState<string | null>(null);
 
   // Drag state
@@ -789,6 +860,9 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       const margin = p.display.timer_margin ?? 50;
       setTimerMargin(margin);
       setDraftTimerMargin(margin);
+      const floating = p.display.timer_floating ?? false;
+      setTimerFloating(floating);
+      setDraftTimerFloating(floating);
     }).catch(console.error);
     getMachineAudioConfig().then((c) => { setMachineConfig(c); setDraftMachineConfig(c); }).catch(console.error);
     getAvailableBackends().then(setAvailableBackends).catch(console.error);
@@ -845,6 +919,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       ...draftTheme,
       output_screen: draftOutputScreen ?? undefined,
       show_output_timer: draftShowOutputTimer,
+      timer_floating: draftTimerFloating,
       timer_count_down: draftTimerCountDown,
       timer_font: draftTimerFont,
       timer_font_size: draftTimerFontSize,
@@ -868,6 +943,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
           ...draftTheme,
           output_screen: draftOutputScreen,
           show_output_timer: draftShowOutputTimer,
+          timer_floating: draftTimerFloating,
           timer_count_down: draftTimerCountDown,
           timer_font: draftTimerFont,
           timer_font_size: draftTimerFontSize,
@@ -886,6 +962,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       setTimerPosition(draftTimerPosition);
       setTimerShowMs(draftTimerShowMs);
       setTimerMargin(draftTimerMargin);
+      setTimerFloating(draftTimerFloating);
       setTheme(draftTheme);
       onClose();
     } catch (e) {
@@ -920,6 +997,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
     setDraftTimerPosition(timerPosition);
     setDraftTimerShowMs(timerShowMs);
     setDraftTimerMargin(timerMargin);
+    setDraftTimerFloating(timerFloating);
     setDraftTheme(theme);
     onClose();
   };
@@ -1030,6 +1108,8 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                     onScreenChange={setDraftOutputScreen}
                     showOutputTimer={draftShowOutputTimer}
                     onTimerChange={setDraftShowOutputTimer}
+                    timerFloating={draftTimerFloating}
+                    onTimerFloatingChange={setDraftTimerFloating}
                     timerCountDown={draftTimerCountDown}
                     onTimerModeChange={setDraftTimerCountDown}
                     timerFont={draftTimerFont}

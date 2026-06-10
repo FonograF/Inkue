@@ -35,6 +35,8 @@ fn collect_media_cues(cues: &[Box<dyn crate::cue::traits::Cue>], out: &mut Vec<(
 pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     *ws = Workspace::new("Untitled");
+    drop(ws);
+    state.output_engine.set_floating_timer_visible(false);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
@@ -70,11 +72,13 @@ pub fn load_workspace(
         })
         .unwrap_or_default();
 
-    // Store the new workspace and mark all audio cues as loading.
+    // Store the new workspace and apply display preferences.
+    let show_floating = loaded.preferences.display.show_output_timer && loaded.preferences.display.timer_floating;
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         *ws = loaded;
     }
+    state.output_engine.set_floating_timer_visible(show_floating);
     {
         let mut loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
         // Clear any stale entries from a previous workspace.

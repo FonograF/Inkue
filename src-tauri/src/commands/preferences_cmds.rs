@@ -183,31 +183,34 @@ pub fn update_display_preferences(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (font, font_size, position, margin) = {
+    let (font, font_size, position, margin, show_floating) = {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         // Preserve output_screen (managed by set_output_screen).
-        ws.preferences.display.bg_app            = prefs.bg_app;
-        ws.preferences.display.bg_surface        = prefs.bg_surface;
-        ws.preferences.display.bg_panel          = prefs.bg_panel;
-        ws.preferences.display.accent            = prefs.accent;
-        ws.preferences.display.text_primary      = prefs.text_primary;
+        ws.preferences.display.bg_app              = prefs.bg_app;
+        ws.preferences.display.bg_surface          = prefs.bg_surface;
+        ws.preferences.display.bg_panel            = prefs.bg_panel;
+        ws.preferences.display.accent              = prefs.accent;
+        ws.preferences.display.text_primary        = prefs.text_primary;
         ws.preferences.display.show_output_timer = prefs.show_output_timer;
-        ws.preferences.display.timer_count_down  = prefs.timer_count_down;
-        ws.preferences.display.timer_show_ms     = prefs.timer_show_ms;
-        ws.preferences.display.timer_font        = prefs.timer_font;
-        ws.preferences.display.timer_font_size   = prefs.timer_font_size;
-        ws.preferences.display.timer_position    = prefs.timer_position;
-        ws.preferences.display.timer_margin      = prefs.timer_margin;
+        ws.preferences.display.timer_floating    = prefs.timer_floating;
+        ws.preferences.display.timer_count_down    = prefs.timer_count_down;
+        ws.preferences.display.timer_show_ms       = prefs.timer_show_ms;
+        ws.preferences.display.timer_font          = prefs.timer_font;
+        ws.preferences.display.timer_font_size     = prefs.timer_font_size;
+        ws.preferences.display.timer_position      = prefs.timer_position;
+        ws.preferences.display.timer_margin        = prefs.timer_margin;
         ws.mark_modified();
         (
             ws.preferences.display.timer_font.clone(),
             ws.preferences.display.timer_font_size,
             ws.preferences.display.timer_position,
             ws.preferences.display.timer_margin,
+            ws.preferences.display.show_output_timer && ws.preferences.display.timer_floating,
         )
     };
 
     state.output_engine.set_timer_style(&font, font_size, position, margin);
+    state.output_engine.set_floating_timer_visible(show_floating);
     // Clear any active preview — live cue timer takes over from here.
     state.output_engine.set_timer_preview(None);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));

@@ -11,6 +11,7 @@
 pub mod audio_engine;
 pub mod device_manager;
 pub mod mpv_sys;
+pub mod osc_feedback;
 pub mod osc_patch;
 pub mod osc_server;
 pub mod output_engine;

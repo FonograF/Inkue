@@ -72,6 +72,12 @@ pub(super) static TIMER_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
 /// When `Some`, the timer refresh loop shows this text instead of live cue time.
 /// Used for the preferences preview mode.
 pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+/// Text currently shown in the floating timer window.
+pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
+/// HWND of the standalone floating timer window (top-level, always-on-top).
+pub(super) static FLOAT_TIMER_HWND: OnceLock<isize> = OnceLock::new();
+/// Font family name for the floating timer (mirrors the OSD font setting).
+pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -80,7 +86,9 @@ pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new
 /// `WM_APP + 1`: posted by the mpv event thread after `MPV_EVENT_FILE_LOADED`.
 pub(super) const WM_SETUP_MPV_CHILD: u32 = 0x8001;
 /// `WM_APP + 2`: posted by show_content/stop_content to start the fade timer.
-pub(super) const WM_DO_FADE: u32 = 0x8002;
+pub(super) const WM_DO_FADE: u32        = 0x8002;
+/// `WM_APP + 4`: posted to the floating timer window to show/hide it.
+pub(super) const WM_FLOAT_VISIBILITY: u32 = 0x8004;
 pub(super) const FADE_TIMER_ID: usize = 1;
 
 // ---------------------------------------------------------------------------
@@ -755,6 +763,10 @@ impl OutputEngine {
         margin: u32,
     ) {
         use crate::preferences::TimerPosition;
+        // Mirror font name to the floating timer window.
+        if let Some(m) = FLOAT_TIMER_FONT.get() {
+            if let Ok(mut g) = m.lock() { *g = font.to_owned(); }
+        }
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             unsafe {
                 prop_str(lib, ctx.0, "osd-font",      font);
@@ -774,6 +786,40 @@ impl OutputEngine {
                 prop_str(lib, ctx.0, "osd-align-y",  align_y);
                 prop_str(lib, ctx.0, "osd-margin-x", &margin_str);
                 prop_str(lib, ctx.0, "osd-margin-y", &margin_str);
+            }
+        }
+    }
+
+    /// Show or hide the standalone floating timer window.
+    ///
+    /// Safe to call from any thread — posts `WM_FLOAT_VISIBILITY` to the Win32 window.
+    pub fn set_floating_timer_visible(&self, visible: bool) {
+        if let Some(&hwnd) = FLOAT_TIMER_HWND.get() {
+            if hwnd != 0 {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+                    PostMessageW(hwnd, WM_FLOAT_VISIBILITY, if visible { 1 } else { 0 }, 0);
+                }
+            }
+        }
+    }
+
+    /// Write the current timer text to the floating window and request a repaint.
+    ///
+    /// Only invalidates when the text actually changed to avoid unnecessary paints.
+    pub fn update_floating_timer(&self, text: Option<&str>) {
+        let new_text = text.unwrap_or("");
+        let changed = FLOAT_TIMER_TEXT.get().and_then(|m| m.lock().ok()).map(|mut g| {
+            if *g != new_text { *g = new_text.to_owned(); true } else { false }
+        }).unwrap_or(false);
+
+        if changed {
+            if let Some(&hwnd) = FLOAT_TIMER_HWND.get() {
+                if hwnd != 0 {
+                    unsafe {
+                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+                    }
+                }
             }
         }
     }
