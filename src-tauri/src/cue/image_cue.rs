@@ -52,6 +52,9 @@ pub struct ImageCue {
     pub fade_in: Option<FadeSpec>,
     /// Optional fade-out applied when the image is hidden.
     pub fade_out: Option<FadeSpec>,
+    /// How long the image stays on screen before auto-completing.
+    /// `None` = infinite (hold until explicitly stopped).
+    pub display_duration_ms: Option<u64>,
 
     is_disabled: bool,
 
@@ -84,6 +87,7 @@ impl ImageCue {
             file_path: None,
             fade_in: None,
             fade_out: None,
+            display_duration_ms: None,
             is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
@@ -98,8 +102,8 @@ impl ImageCue {
             anyhow!("ImageCue '{}': no file assigned — set a file in the inspector", self.name)
         })?;
 
-        let fade_in_ms: u32 = 0;
-        let fade_out_ms: u32 = 0;
+        let fade_in_ms: u32 = self.fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+        let fade_out_ms: u32 = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
 
         let voice_id = context.output_engine.show_content(
             path,
@@ -111,6 +115,7 @@ impl ImageCue {
             None,
             context.output_screen,
             None,
+            self.display_duration_ms,
         )?;
 
         self.active_voice_id = Some(voice_id);
@@ -256,8 +261,7 @@ impl Cue for ImageCue {
     fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
     fn duration(&self) -> Option<Duration> {
-        // Images have no intrinsic duration — they stay running until stopped.
-        None
+        self.display_duration_ms.map(Duration::from_millis)
     }
 
     fn elapsed(&self) -> Duration {
@@ -337,6 +341,7 @@ impl Cue for ImageCue {
             "fade_in_curve": self.fade_in.as_ref().map(|f| f.curve),
             "fade_out_ms": self.fade_out.as_ref().map(|f| f.duration_ms),
             "fade_out_curve": self.fade_out.as_ref().map(|f| f.curve),
+            "display_duration_ms": self.display_duration_ms,
             "is_disabled": self.is_disabled,
         })
     }
@@ -402,8 +407,10 @@ impl CueFactory for ImageCueFactory {
                 .unwrap_or(FadeCurve::SCurve);
             cue.fade_out = Some(FadeSpec { duration_ms: ms, curve });
         }
-        // "stop_mode", "display_duration_ms", "screen_index" from older workspaces are
-        // silently ignored (fields no longer exist in the new architecture).
+        if let Some(ms) = value.get("display_duration_ms").and_then(|v| v.as_u64()) {
+            cue.display_duration_ms = Some(ms);
+        }
+        // "stop_mode", "screen_index" from older workspaces are silently ignored.
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -450,7 +457,7 @@ mod tests {
         assert_eq!(json["name"], "Test Image");
         assert!(json.get("screen_index").is_none(), "screen_index must not be serialised");
         assert!(json.get("stop_mode").is_none(), "stop_mode must not be serialised");
-        assert!(json.get("display_duration_ms").is_none(), "display_duration_ms must not be serialised");
+        assert_eq!(json["display_duration_ms"], serde_json::Value::Null);
         assert_eq!(json["color"], "green");
     }
 

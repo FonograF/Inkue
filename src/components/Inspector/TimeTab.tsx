@@ -8,6 +8,7 @@ export function TimeTab({
   selectedCue,
   isAudio,
   isVideo,
+  isImage,
   isWait,
   isFade,
   onSave,
@@ -18,6 +19,7 @@ export function TimeTab({
   selectedCue: CueSummary | null;
   isAudio: boolean;
   isVideo?: boolean;
+  isImage?: boolean;
   isWait?: boolean;
   isFade?: boolean;
   onSave: (p: Partial<AudioCueData>) => void;
@@ -72,6 +74,42 @@ export function TimeTab({
               } as never)
             }
           />
+        </Field>
+      )}
+      {isImage && (
+        <Field label="Display Duration">
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              id="img-dur-enabled"
+              checked={cue.display_duration_ms != null}
+              onChange={(e) =>
+                onSave({
+                  display_duration_ms: e.target.checked ? 5000 : null,
+                } as never)
+              }
+            />
+            {cue.display_duration_ms != null ? (
+              <input
+                style={{ ...inputStyle, width: 80 }}
+                type="number"
+                step="0.1"
+                min="0.1"
+                key={`img-dur-${cue.display_duration_ms}`}
+                defaultValue={(cue.display_duration_ms / 1000).toFixed(1)}
+                onBlur={(e) =>
+                  onSave({
+                    display_duration_ms: Math.round(parseFloat(e.target.value) * 1000),
+                  } as never)
+                }
+              />
+            ) : (
+              <span style={{ color: "#64748b", fontSize: 12 }}>∞ hold</span>
+            )}
+            {cue.display_duration_ms != null && (
+              <span style={{ color: "#64748b", fontSize: 12 }}>s</span>
+            )}
+          </div>
         </Field>
       )}
       <Field label="Pre-Wait (s)">

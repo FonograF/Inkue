@@ -108,6 +108,7 @@ export function CueRow({
   const isPaused   = cue.state === "paused";
   const isDisabled = cue.is_disabled ?? false;
   const isBroken   = cue.is_broken ?? false;
+  const isWarning  = cue.is_warning ?? false;
 
   const progressPct =
     isRunning && timing && cue.duration_ms && cue.duration_ms > 0
@@ -214,6 +215,9 @@ export function CueRow({
             >
               {isBroken && (
                 <span title="Media file missing" style={{ color: "#ef4444", flexShrink: 0, fontSize: 11, fontWeight: 700 }}>!</span>
+              )}
+              {isWarning && !isBroken && (
+                <span title={cue.warning_message ?? "Warning"} style={{ color: "#eab308", flexShrink: 0, fontSize: 11, fontWeight: 700 }}>⚠</span>
               )}
               {isDisabled && (
                 <span title="Disabled" style={{ color: "#475569", flexShrink: 0, fontSize: 10 }}>off</span>

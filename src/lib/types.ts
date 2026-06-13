@@ -46,8 +46,12 @@ export interface CueSummary {
   is_loading: boolean;
   /** True when this cue is disabled — skipped by the transport on GO. */
   is_disabled: boolean;
-  /** True when this cue's media file is missing or unassigned. */
+  /** True when this cue's media file was assigned but is now missing from disk. */
   is_broken: boolean;
+  /** True for non-critical problems (no file assigned, zero duration, empty group). */
+  is_warning: boolean;
+  /** Human-readable warning description, present when is_warning is true. */
+  warning_message?: string;
   /** For Group cues: direct child cue summaries (recursive). */
   children?: CueSummary[];
   /** For Group cues: playback mode. */
@@ -93,6 +97,8 @@ export interface ImageCueData extends CueSummary {
   fade_in_curve: FadeCurve | null;
   fade_out_ms: number | null;
   fade_out_curve: FadeCurve | null;
+  /** How long the image stays on screen in ms. null = infinite (hold until stopped). */
+  display_duration_ms: number | null;
 }
 
 // ---------------------------------------------------------------------------

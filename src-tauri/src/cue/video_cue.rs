@@ -232,6 +232,7 @@ impl VideoCue {
             end_ms,
             context.output_screen,
             audio_voice_id,
+            None,
         )?;
 
         self.active_voice_id = Some(voice_id);

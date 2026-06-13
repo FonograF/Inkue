@@ -383,6 +383,7 @@ impl OutputEngine {
         end_ms: Option<u64>,
         screen_index: Option<u32>,
         audio_voice_id: Option<VoiceId>,
+        display_duration_ms: Option<u64>,
     ) -> Result<VoiceId> {
         let voice_id = Uuid::new_v4();
 
@@ -450,6 +451,7 @@ impl OutputEngine {
             loop_count,
             start_ms,
             end_ms,
+            display_duration_ms,
         };
 
         if current_fade_out_ms > 0 {
@@ -620,7 +622,7 @@ impl OutputEngine {
     ) -> Result<VoiceId> {
         self.show_content(
             file_path, false,
-            0, 0, loop_count, start_ms, end_ms, screen_index, None,
+            0, 0, loop_count, start_ms, end_ms, screen_index, None, None,
         )
     }
 

@@ -38,8 +38,13 @@ pub struct CueSummary {
     pub is_loading: bool,
     /// True when this cue is disabled — skipped by the transport on GO.
     pub is_disabled: bool,
-    /// True when this cue's media file is missing or unassigned.
+    /// True when this cue's media file was assigned but is now missing from disk.
     pub is_broken: bool,
+    /// True for non-critical problems (no file assigned, zero duration, empty group).
+    pub is_warning: bool,
+    /// Human-readable description of the warning condition, when `is_warning` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_message: Option<String>,
     /// For Group cues: their direct children summaries (recursive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<CueSummary>>,
@@ -53,13 +58,13 @@ pub struct CueSummary {
     pub active_child_id: Option<String>,
 }
 
-/// Returns `true` when a media cue's file is absent or unassigned.
+/// Returns `true` when a media cue's file was assigned but is missing from disk.
 fn check_broken(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> bool {
     match cue.cue_type() {
         CueType::Audio | CueType::Video | CueType::Image => {
             match cue.media_file_path() {
-                None => true, // no file assigned
-                Some(p) if p.as_os_str().is_empty() => true,
+                None => false,
+                Some(p) if p.as_os_str().is_empty() => false,
                 Some(p) => {
                     if p.is_absolute() {
                         !p.exists()
@@ -73,7 +78,36 @@ fn check_broken(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> bool 
     }
 }
 
+/// Returns a warning message for non-critical problems, or `None` if the cue is healthy.
+fn check_warning(cue: &dyn Cue) -> Option<String> {
+    match cue.cue_type() {
+        CueType::Audio | CueType::Video | CueType::Image => {
+            match cue.media_file_path() {
+                None => Some("No file assigned".to_string()),
+                Some(p) if p.as_os_str().is_empty() => Some("No file assigned".to_string()),
+                _ => None,
+            }
+        }
+        CueType::Wait => {
+            if cue.duration() == Some(std::time::Duration::ZERO) {
+                Some("Duration is zero".to_string())
+            } else {
+                None
+            }
+        }
+        CueType::Group => {
+            if cue.child_cues().map(|c| c.is_empty()).unwrap_or(false) {
+                Some("Group is empty".to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSummary {
+    let warning_message = check_warning(cue);
     CueSummary {
         id: cue.id().to_string(),
         cue_type: cue.cue_type(),
@@ -89,6 +123,8 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSumma
         is_loading: false,
         is_disabled: cue.is_disabled(),
         is_broken: check_broken(cue, workspace_dir),
+        is_warning: warning_message.is_some(),
+        warning_message,
         children: cue.child_cues().map(|ch| {
             ch.iter().map(|c| summarise_recursive(c.as_ref(), workspace_dir)).collect()
         }),

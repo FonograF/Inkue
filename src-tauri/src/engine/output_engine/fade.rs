@@ -116,7 +116,12 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
                 }
             }
 
-            let file_opts = cs("audio=no,image-display-duration=inf");
+            let duration_val = params
+                .display_duration_ms
+                .map(|ms| format!("{:.3}", ms as f64 / 1000.0))
+                .unwrap_or_else(|| "inf".to_string());
+            let opts_str = format!("audio=no,image-display-duration={duration_val}");
+            let file_opts = cs(&opts_str);
             let cmd   = cs("loadfile");
             let flags = cs("replace");
             let idx   = cs("0");

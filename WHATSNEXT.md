@@ -1,6 +1,6 @@
 # WinCue — Roadmap
 
-Mise à jour : 2026-06-13 (v0.7.0)
+Mise à jour : 2026-06-13 (v0.7.1)
 
 ## Ce qui est fait
 
@@ -13,6 +13,8 @@ Mise à jour : 2026-06-13 (v0.7.0)
 | Broken cue detection (fichier manquant) | 0.6.4 |
 | MIDI Cue (Note On/Off, CC, Program Change) | 0.6.5 |
 | Multiple Cue Lists (tabs, add/rename/delete, playhead indépendant par liste) | 0.7.0 |
+| Cue Warnings (badge ⚠ jaune — no file assigned, durée zéro, groupe vide) | 0.7.1 |
+| Image Display Duration (durée d'affichage optionnelle, auto-complete via mpv) | 0.7.1 |
 
 ---
 
@@ -20,15 +22,9 @@ Mise à jour : 2026-06-13 (v0.7.0)
 
 ### ~~Multiple Cue Lists~~ ✅ v0.7.0
 
-### Cue Warnings
-**Pourquoi :** Indicateurs jaunes non-bloquants pour les problèmes non-critiques (cue sans fichier assigné mais dans un groupe, durée zéro, etc.). Différent du rouge "broken" — c'est une alerte, pas une erreur.  
-**Effort :** ~0.5 jour  
-**Architecture :** Ajouter `is_warning: bool` + `warning_message: Option<String>` dans `CueSummary`. La détection se fait dans `check_broken` (étendre en `check_health`). Badge jaune `⚠` dans CueRow.
+### ~~Cue Warnings~~ ✅ v0.7.1
 
-### Image Display Duration
-**Pourquoi :** Retiré en v0.4.0 lors du passage à libmpv. Un opérateur peut vouloir qu'une image disparaisse après X secondes sans avoir à ajouter un Stop Cue manuel.  
-**Effort :** ~0.5 jour  
-**Architecture :** Réactiver le champ `display_duration_ms: Option<u64>` dans `ImageCue`. mpv supporte nativement `image-display-duration=X` dans les options de `loadfile`. Le cue devient non-instantané (durée = display_duration_ms).
+### ~~Image Display Duration~~ ✅ v0.7.1
 
 ---
 

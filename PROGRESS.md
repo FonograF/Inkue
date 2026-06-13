@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-13
 
-## Current version: 0.7.0
+## Current version: 0.7.1
 
 ## cargo build result
 
@@ -41,7 +41,7 @@
 | CueContext | `cue/context.rs` | ✅ Complete — `audio_engine`, `output_engine`, `stop_fade_ms`, `output_patches`, `output_screen` |
 | AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch; pause freezes elapsed (elapsed_before_pause accumulators); seek works while paused |
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; pause freezes elapsed; seek works while paused |
-| ImageCue | `cue/image_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_content()`. No DisplayDuration mode (StopOnNextCue only). |
+| ImageCue | `cue/image_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_content()`. `display_duration_ms: Option<u64>` — None = hold until stopped (StopOnNextCue), Some(ms) = timed auto-complete via `image-display-duration=X`. |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete |
 | StopCue | `cue/stop_cue.rs` | ✅ Complete — `target_cue_number` (None = all), `hard_stop_mode`; `stop_specification()` drives transport inline |
 | VoiceState / FadeState | `engine/voice.rs` | ✅ Complete — `out_l`, `out_r` for channel routing |

@@ -221,6 +221,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
             selectedCue={selectedCue}
             isAudio={isAudio}
             isVideo={isVideo}
+            isImage={isImage}
             isWait={isWait}
             isFade={isFade}
             onSave={save}

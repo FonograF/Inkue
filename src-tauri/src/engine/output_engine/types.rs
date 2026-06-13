@@ -91,6 +91,9 @@ pub(crate) struct FadePendingParams {
     pub loop_count: u32,
     pub start_ms: Option<u64>,
     pub end_ms: Option<u64>,
+    /// For image cues: how long mpv holds the image before auto-completing.
+    /// `None` = infinite (hold until explicitly stopped).
+    pub display_duration_ms: Option<u64>,
 }
 
 pub(crate) enum FadePending {
