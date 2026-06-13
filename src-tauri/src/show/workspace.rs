@@ -102,6 +102,8 @@ pub struct Workspace {
     pub metadata: WorkspaceMetadata,
     /// All cue lists in this workspace.
     pub cue_lists: Vec<CueList>,
+    /// ID of the currently active cue list.
+    pub active_cue_list_id: Uuid,
     /// Output patch table (shared across cue lists).
     pub output_patches: Vec<OutputPatch>,
     /// ID of the default output patch.
@@ -119,9 +121,12 @@ pub struct Workspace {
 impl Workspace {
     /// Create a new, empty workspace with one default cue list.
     pub fn new(name: impl Into<String>) -> Self {
+        let default_list = CueList::new("Cue List 1");
+        let active_id = default_list.id;
         Self {
             metadata: WorkspaceMetadata::new(name),
-            cue_lists: vec![CueList::new("Cue List 1")],
+            cue_lists: vec![default_list],
+            active_cue_list_id: active_id,
             output_patches: Vec::new(),
             default_output_patch_id: None,
             osc_patches: Vec::new(),
@@ -137,14 +142,25 @@ impl Workspace {
         self.metadata.modified_at = Utc::now();
     }
 
-    /// The active (first) cue list, if any.
+    /// The active cue list, identified by `active_cue_list_id`.
     pub fn active_cue_list(&self) -> Option<&CueList> {
-        self.cue_lists.first()
+        self.cue_lists.iter().find(|cl| cl.id == self.active_cue_list_id)
     }
 
     /// Mutable access to the active cue list.
     pub fn active_cue_list_mut(&mut self) -> Option<&mut CueList> {
-        self.cue_lists.first_mut()
+        let id = self.active_cue_list_id;
+        self.cue_lists.iter_mut().find(|cl| cl.id == id)
+    }
+
+    /// Look up any cue list by its ID.
+    pub fn cue_list_by_id(&self, id: Uuid) -> Option<&CueList> {
+        self.cue_lists.iter().find(|cl| cl.id == id)
+    }
+
+    /// Mutable access to any cue list by its ID.
+    pub fn cue_list_by_id_mut(&mut self, id: Uuid) -> Option<&mut CueList> {
+        self.cue_lists.iter_mut().find(|cl| cl.id == id)
     }
 
     // -----------------------------------------------------------------------
@@ -178,6 +194,7 @@ impl Workspace {
             "osc_patches": self.osc_patches,
             "preferences": self.preferences,
             "cue_lists": cue_lists_json,
+            "active_cue_list_id": self.active_cue_list_id,
         });
 
         serde_json::to_string_pretty(&doc).context("Failed to serialize workspace")
@@ -256,6 +273,15 @@ impl Workspace {
             cue_lists.push(CueList::new("Cue List 1"));
         }
 
+        // Resolve the active cue list: try the saved ID, fall back to first list.
+        let saved_active_id: Option<Uuid> = doc
+            .get("active_cue_list_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok());
+        let active_cue_list_id = saved_active_id
+            .filter(|id| cue_lists.iter().any(|cl| cl.id == *id))
+            .unwrap_or_else(|| cue_lists[0].id);
+
         // Derive the name from the filename stem so it always matches the file,
         // even if the JSON still contains an older name (e.g. "Untitled").
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -265,6 +291,7 @@ impl Workspace {
         Ok(Self {
             metadata,
             cue_lists,
+            active_cue_list_id,
             output_patches,
             default_output_patch_id: default_patch,
             osc_patches,

@@ -581,13 +581,18 @@ pub fn set_audio_file(
                         samples.len() as f64 / channels as f64 / sample_rate as f64,
                     );
                     let samples = std::sync::Arc::new(samples);
-                    // Brief lock: just store the decoded data.
+                    // Brief lock: store the decoded data in whichever list contains the cue.
+                    // We search all lists (not just the active one) because the user may
+                    // have switched cue lists while the background decode was running.
                     if let Ok(mut ws) = workspace.lock() {
-                        if let Some(cl) = ws.active_cue_list_mut() {
-                            if let Some(cue) = cl.get_mut(&id) {
-                                cue.accept_preloaded_audio(
-                                    samples, channels, sample_rate, duration,
-                                );
+                        'store: {
+                            for cl in ws.cue_lists.iter_mut() {
+                                if let Some(cue) = cl.get_mut(&id) {
+                                    cue.accept_preloaded_audio(
+                                        samples, channels, sample_rate, duration,
+                                    );
+                                    break 'store;
+                                }
                             }
                         }
                     }
@@ -748,30 +753,34 @@ pub fn set_video_file(
                 let duration = crate::engine::OutputEngine::probe_duration(lib, &path);
                 let audio = crate::cue::media_decode::decode_audio_track(&path);
 
+                // Search all cue lists — the user may have switched lists while loading.
                 if let Ok(mut ws) = workspace2.lock() {
-                    if let Some(cl) = ws.active_cue_list_mut() {
-                        if let Some(idx2) = cl.index_of(&cue_id) {
-                            if let Some(dur) = duration {
-                                cl.cues[idx2].set_runtime_duration(dur);
-                            }
-                            match audio {
-                                Ok(Some((samples, channels, sample_rate))) => {
-                                    let dur = std::time::Duration::from_secs_f64(
-                                        samples.len() as f64
-                                            / channels.max(1) as f64
-                                            / sample_rate.max(1) as f64,
-                                    );
-                                    cl.cues[idx2].accept_preloaded_audio(
-                                        std::sync::Arc::new(samples),
-                                        channels,
-                                        sample_rate,
-                                        dur,
-                                    );
+                    'store: {
+                        for cl in ws.cue_lists.iter_mut() {
+                            if let Some(idx2) = cl.index_of(&cue_id) {
+                                if let Some(dur) = duration {
+                                    cl.cues[idx2].set_runtime_duration(dur);
                                 }
-                                Ok(None) => {} // silent video — no audio track
-                                Err(e) => {
-                                    log::warn!("Video audio decode failed for {path:?}: {e}");
+                                match audio {
+                                    Ok(Some((samples, channels, sample_rate))) => {
+                                        let dur = std::time::Duration::from_secs_f64(
+                                            samples.len() as f64
+                                                / channels.max(1) as f64
+                                                / sample_rate.max(1) as f64,
+                                        );
+                                        cl.cues[idx2].accept_preloaded_audio(
+                                            std::sync::Arc::new(samples),
+                                            channels,
+                                            sample_rate,
+                                            dur,
+                                        );
+                                    }
+                                    Ok(None) => {} // silent video — no audio track
+                                    Err(e) => {
+                                        log::warn!("Video audio decode failed for {path:?}: {e}");
+                                    }
                                 }
+                                break 'store;
                             }
                         }
                     }

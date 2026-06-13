@@ -1,6 +1,6 @@
 # WinCue — Roadmap
 
-Mise à jour : 2026-06-13 (v0.6.5)
+Mise à jour : 2026-06-13 (v0.7.0)
 
 ## Ce qui est fait
 
@@ -12,16 +12,13 @@ Mise à jour : 2026-06-13 (v0.6.5)
 | Cue disable (skip au GO, badge visuel) | 0.6.4 |
 | Broken cue detection (fichier manquant) | 0.6.4 |
 | MIDI Cue (Note On/Off, CC, Program Change) | 0.6.5 |
+| Multiple Cue Lists (tabs, add/rename/delete, playhead indépendant par liste) | 0.7.0 |
 
 ---
 
 ## Priorité 1 — Fiabilité show (bloquant en production)
 
-### Multiple Cue Lists
-**Pourquoi :** Workflow pro standard. Permet acte 1 / acte 2, liste de secours, soundcheck.  
-**Effort :** ~2–3 jours  
-**Architecture :** `Workspace` passe de `active_cue_list: CueList` à `Vec<CueList>` + index actif. Transport garde son interface. Frontend : onglets ou dropdown de liste. Le playhead est par liste, pas global.  
-**Fichiers clés :** `show/workspace.rs`, `show/transport.rs` (lecture de l'index actif), `commands/transport_cmds.rs`, frontend `WorkspaceStore`.
+### ~~Multiple Cue Lists~~ ✅ v0.7.0
 
 ### Cue Warnings
 **Pourquoi :** Indicateurs jaunes non-bloquants pour les problèmes non-critiques (cue sans fichier assigné mais dans un groupe, durée zéro, etc.). Différent du rouge "broken" — c'est une alerte, pas une erreur.  

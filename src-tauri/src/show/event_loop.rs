@@ -53,7 +53,8 @@ pub fn run(
             .expect("Failed to spawn timer refresh thread");
     }
 
-    let mut auto_follow_pending: HashMap<CueId, Instant> = HashMap::new();
+    // Maps a completed cue's ID to the deadline and the ID of its cue list.
+    let mut auto_follow_pending: HashMap<CueId, (Instant, uuid::Uuid)> = HashMap::new();
     // Per-group snapshot: (active_child_id, any_child_running).
     // Used to detect inner-sequence progress and emit cue-list-refresh.
     let mut prev_group_state: HashMap<CueId, (Option<CueId>, bool)> = HashMap::new();
@@ -130,7 +131,7 @@ fn tick(
     audio_engine: &Arc<AudioEngine>,
     output_engine: &Arc<OutputEngine>,
     workspace: &Arc<Mutex<Workspace>>,
-    auto_follow_pending: &mut HashMap<CueId, Instant>,
+    auto_follow_pending: &mut HashMap<CueId, (Instant, uuid::Uuid)>,
     prev_group_state:    &mut HashMap<CueId, (Option<CueId>, bool)>,
     prev_running_cues:   &mut Vec<CueId>,
     prev_playhead_cue:   &mut Option<CueId>,
@@ -205,232 +206,257 @@ fn tick(
     let ws_default_patch  = ws.default_output_patch_id;
     let ws_output_screen  = ws.preferences.display.output_screen;
     let ws_osc_patches    = ws.osc_patches.clone();
-    let cue_list = match ws.active_cue_list_mut() {
-        Some(cl) => cl,
-        None => return,
-    };
+    let active_list_id    = ws.active_cue_list_id;
 
-    // ------------------------------------------------------------------
-    // 4. Apply video duration updates to cues.
-    // ------------------------------------------------------------------
-    for (voice_id, duration) in &video_duration_updates {
-        for cue in cue_list.cues.iter_mut() {
-            if cue.playing_voice_id() == Some(*voice_id) {
-                cue.set_runtime_duration(*duration);
-                break;
-            }
-        }
+    if ws.cue_lists.is_empty() {
+        return;
     }
 
-    // ------------------------------------------------------------------
-    // 5. Tick all Running cues so they can handle pre-wait transitions.
-    // ------------------------------------------------------------------
     let tick_ctx = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone());
-    for cue in cue_list.cues.iter_mut() {
-        if cue.state() == CueState::Running {
-            let _ = cue.tick(&tick_ctx);
-        }
-    }
 
     // ------------------------------------------------------------------
-    // 6. Detect cue completions.
+    // 4. Apply video duration updates — search every cue list.
     // ------------------------------------------------------------------
-    let mut newly_completed: Vec<(CueId, ContinueMode, Duration)> = Vec::new();
-    // Sequential groups that held the playhead and just completed need the
-    // playhead advanced here (the transport skipped advance_playhead() earlier).
-    let mut advance_playhead_ids: Vec<CueId> = Vec::new();
-
-    let current_playhead = cue_list.playhead_cue_id;
-
-    for cue in cue_list.cues.iter_mut() {
-        if cue.state() != CueState::Running {
-            continue;
-        }
-
-        let voice_done = cue
-            .playing_voice_id()
-            .map(|vid| completed_voice_ids.contains(&vid))
-            .unwrap_or(false);
-
-        let time_done = cue
-            .duration()
-            .map(|d| cue.action_elapsed() >= d)
-            .unwrap_or(false);
-
-        // Group cues signal completion via is_complete() rather than voice/time.
-        let group_done = cue.is_complete();
-
-        if voice_done || time_done || group_done {
-            let id = cue.id();
-            let cm = cue.continue_mode();
-            let pw = cue.post_wait();
-            // If this cue held the playhead, schedule a playhead advance.
-            if cue.holds_playhead() && current_playhead == Some(id) {
-                advance_playhead_ids.push(id);
-            }
-            let _ = cue.reset();
-            newly_completed.push((id, cm, pw));
-        }
-    }
-
-    // Advance the playhead for sequential groups that held it and just finished.
-    let mut playhead_advanced = false;
-    for id in &advance_playhead_ids {
-        if cue_list.playhead_cue_id == Some(*id) {
-            cue_list.advance_playhead();
-            playhead_advanced = true;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 7. Collect cue-time-update data — recursive so running children of
-    //    Group cues also get progress updates.
-    // ------------------------------------------------------------------
-    // (cue_id, elapsed_ms, action_elapsed_ms, remaining_ms)
-    let time_snapshots = collect_time_snapshots(&cue_list.cues);
-
-    // ------------------------------------------------------------------
-    // 8. Auto-Continue / Auto-Follow detection.
-    // ------------------------------------------------------------------
-    let mut should_go = false;
-
-    let delayed_ac_ids: Vec<CueId> = cue_list
-        .cues
-        .iter()
-        .filter(|c| {
-            c.state() == CueState::Running
-                && c.continue_mode() == ContinueMode::AutoContinue
-                && !c.is_auto_continue_fired()
-                && c.is_action_started()
-                && c.action_elapsed() >= c.post_wait()
-        })
-        .map(|c| c.id())
-        .collect();
-
-    for id in &delayed_ac_ids {
-        if let Some(cue) = cue_list.cues.iter_mut().find(|c| c.id() == *id) {
-            cue.mark_auto_continue_fired();
-        }
-    }
-
-    if !delayed_ac_ids.is_empty() {
-        should_go = true;
-    }
-
-    for (cue_id, cm, pw) in &newly_completed {
-        if *cm == ContinueMode::AutoFollow {
-            if pw.is_zero() {
-                should_go = true;
-            } else {
-                auto_follow_pending.insert(*cue_id, Instant::now() + *pw);
+    'duration_update: for (voice_id, duration) in &video_duration_updates {
+        for cl in ws.cue_lists.iter_mut() {
+            for cue in cl.cues.iter_mut() {
+                if cue.playing_voice_id() == Some(*voice_id) {
+                    cue.set_runtime_duration(*duration);
+                    continue 'duration_update;
+                }
             }
         }
     }
 
+    // ------------------------------------------------------------------
+    // 5-9. Per-list: tick, completion, auto-continue/follow, GO.
+    //      We collect cue list IDs first to avoid borrow issues.
+    // ------------------------------------------------------------------
+    let cue_list_ids: Vec<uuid::Uuid> = ws.cue_lists.iter().map(|cl| cl.id).collect();
+
+    // Aggregate results across all lists for event emission.
+    let mut all_newly_completed: Vec<(CueId, ContinueMode, Duration)> = Vec::new();
+    let mut all_time_snapshots:  Vec<(CueId, u64, u64, Option<u64>)>  = Vec::new();
+    let mut all_go_triggered:    Vec<CueId>                            = Vec::new();
+    let mut all_go_stopped:      Vec<CueId>                            = Vec::new();
+    let mut all_seq_group_playheads: Vec<Option<CueId>>                = Vec::new();
+    let mut group_child_changed  = false;
+
+    // Lists whose auto-continue chain needs a GO this tick.
+    let mut should_go_lists: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+
+    // Resolve pending auto-follow delays and collect which lists need a GO.
     let now = Instant::now();
-    auto_follow_pending.retain(|_id, due| {
+    auto_follow_pending.retain(|_id, (due, list_id)| {
         if now >= *due {
-            should_go = true;
+            should_go_lists.insert(*list_id);
             false
         } else {
             true
         }
     });
 
-    // ------------------------------------------------------------------
-    // 9. Fire Auto-Continue / Auto-Follow GO.
-    // ------------------------------------------------------------------
-    let mut go_triggered: Vec<CueId> = Vec::new();
-    let mut go_stopped: Vec<CueId> = Vec::new();
-    let mut go_final_playhead: Option<CueId> = None;
-
-    if should_go {
-        let context = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone());
-        let mut transport = Transport::new(context);
-        if let Ok(result) = transport.go(cue_list) {
-            go_triggered = result.triggered;
-            go_stopped = result.stopped;
-            go_final_playhead = cue_list.playhead_cue_id;
-        }
-    }
-
-    // Capture the new playhead position for sequential-group completion advances
-    // before releasing the workspace lock.
-    let seq_group_new_playhead: Option<Option<CueId>> = if playhead_advanced {
-        Some(cue_list.playhead_cue_id)
-    } else {
-        None
-    };
-
-    // Detect inner-sequence changes in group cues so the frontend can update
-    // the inner-playhead display without waiting for a user GO press.
-    // We track (active_child_id, any_child_running) per group.
-    let mut group_child_changed = false;
-    {
-        // Only track groups that are currently Running — the frontend derives the
-        // pre-fire (Standby) state from outerPlayheadId + children list directly.
-        let current: Vec<(CueId, Option<CueId>, bool)> = cue_list
-            .cues
-            .iter()
-            .filter(|c| c.child_cues().is_some() && c.state() == CueState::Running)
-            .map(|c| {
-                let active = c.active_child_id();
-                let any_running = c.child_cues()
-                    .map(|ch| ch.iter().any(|child| child.state() == CueState::Running))
-                    .unwrap_or(false);
-                (c.id(), active, any_running)
-            })
-            .collect();
-        for (id, active, any_running) in &current {
-            let (prev_active, prev_running) = prev_group_state
-                .get(id)
-                .copied()
-                .unwrap_or((None, false));
-            if *active != prev_active || *any_running != prev_running {
-                group_child_changed = true;
+    for &list_id in &cue_list_ids {
+        // 5. Tick all Running cues.
+        if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+            for cue in cl.cues.iter_mut() {
+                if cue.state() == CueState::Running {
+                    let _ = cue.tick(&tick_ctx);
+                }
             }
         }
-        for (id, active, any_running) in current {
-            prev_group_state.insert(id, (active, any_running));
+
+        // 6. Detect completions.
+        let mut newly_completed: Vec<(CueId, ContinueMode, Duration)> = Vec::new();
+        let mut advance_playhead_ids: Vec<CueId> = Vec::new();
+
+        if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+            let current_playhead = cl.playhead_cue_id;
+            for cue in cl.cues.iter_mut() {
+                if cue.state() != CueState::Running {
+                    continue;
+                }
+                let voice_done = cue
+                    .playing_voice_id()
+                    .map(|vid| completed_voice_ids.contains(&vid))
+                    .unwrap_or(false);
+                let time_done = cue.duration().map(|d| cue.action_elapsed() >= d).unwrap_or(false);
+                let group_done = cue.is_complete();
+                if voice_done || time_done || group_done {
+                    let id = cue.id();
+                    let cm = cue.continue_mode();
+                    let pw = cue.post_wait();
+                    if cue.holds_playhead() && current_playhead == Some(id) {
+                        advance_playhead_ids.push(id);
+                    }
+                    let _ = cue.reset();
+                    newly_completed.push((id, cm, pw));
+                }
+            }
+        }
+
+        // Advance playhead for sequential groups that held it.
+        let mut playhead_advanced = false;
+        if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+            for id in &advance_playhead_ids {
+                if cl.playhead_cue_id == Some(*id) {
+                    cl.advance_playhead();
+                    playhead_advanced = true;
+                }
+            }
+        }
+        if playhead_advanced {
+            let ph = ws.cue_list_by_id(list_id).and_then(|cl| cl.playhead_cue_id);
+            all_seq_group_playheads.push(ph);
+        }
+
+        // 7. Time snapshots.
+        if let Some(cl) = ws.cue_list_by_id(list_id) {
+            all_time_snapshots.extend(collect_time_snapshots(&cl.cues));
+        }
+
+        // 8. Auto-Continue / Auto-Follow detection.
+        let delayed_ac_ids: Vec<CueId> = ws
+            .cue_list_by_id(list_id)
+            .map(|cl| {
+                cl.cues
+                    .iter()
+                    .filter(|c| {
+                        c.state() == CueState::Running
+                            && c.continue_mode() == ContinueMode::AutoContinue
+                            && !c.is_auto_continue_fired()
+                            && c.is_action_started()
+                            && c.action_elapsed() >= c.post_wait()
+                    })
+                    .map(|c| c.id())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+            for id in &delayed_ac_ids {
+                if let Some(cue) = cl.cues.iter_mut().find(|c| c.id() == *id) {
+                    cue.mark_auto_continue_fired();
+                }
+            }
+        }
+        if !delayed_ac_ids.is_empty() {
+            should_go_lists.insert(list_id);
+        }
+
+        for (cue_id, cm, pw) in &newly_completed {
+            if *cm == ContinueMode::AutoFollow {
+                if pw.is_zero() {
+                    should_go_lists.insert(list_id);
+                } else {
+                    auto_follow_pending.insert(*cue_id, (Instant::now() + *pw, list_id));
+                }
+            }
+        }
+
+        all_newly_completed.extend(newly_completed);
+
+        // Group-child change detection (for cue-list-refresh event).
+        if let Some(cl) = ws.cue_list_by_id(list_id) {
+            let current: Vec<(CueId, Option<CueId>, bool)> = cl
+                .cues
+                .iter()
+                .filter(|c| c.child_cues().is_some() && c.state() == CueState::Running)
+                .map(|c| {
+                    let active = c.active_child_id();
+                    let any_running = c
+                        .child_cues()
+                        .map(|ch| ch.iter().any(|child| child.state() == CueState::Running))
+                        .unwrap_or(false);
+                    (c.id(), active, any_running)
+                })
+                .collect();
+            for (id, active, any_running) in &current {
+                let (prev_active, prev_running) =
+                    prev_group_state.get(id).copied().unwrap_or((None, false));
+                if *active != prev_active || *any_running != prev_running {
+                    group_child_changed = true;
+                }
+            }
+            for (id, active, any_running) in current {
+                prev_group_state.insert(id, (active, any_running));
+            }
         }
     }
 
-    // ------------------------------------------------------------------
-    // 10. Detect running-cue-set / playhead changes for OSC feedback.
-    // ------------------------------------------------------------------
-    let running_now: Vec<(CueId, String, String)> = all_running_cues_info(&cue_list.cues);
-    let playhead_now = cue_list.playhead_cue_id
-        .and_then(|ph_id| find_cue_info(&cue_list.cues, ph_id));
+    // 9. Fire Auto-Continue / Auto-Follow GO for each list that needs it.
+    for &list_id in &should_go_lists {
+        if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+            let context = make_context(
+                audio_engine, output_engine, stop_fade_ms,
+                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(),
+            );
+            let mut transport = Transport::new(context);
+            if let Ok(result) = transport.go(cl) {
+                all_go_triggered.extend(result.triggered);
+                all_go_stopped.extend(result.stopped);
+            }
+        }
+    }
 
-    let running_ids: Vec<CueId> = running_now.iter().map(|(id, _, _)| *id).collect();
-    let running_payload: Option<Vec<(String, String)>> = if running_ids != *prev_running_cues {
-        *prev_running_cues = running_ids;
-        Some(running_now.into_iter().map(|(_, n, name)| (n, name)).collect())
+    // Capture final playhead for the GO event (active list only, matching QLab).
+    let go_final_playhead: Option<CueId> = if !all_go_triggered.is_empty() {
+        ws.active_cue_list().and_then(|cl| cl.playhead_cue_id)
     } else {
         None
     };
 
-    let playhead_payload: Option<(String, String)> = {
-        let id = playhead_now.as_ref().map(|(id, _, _)| *id);
-        if id != *prev_playhead_cue || crate::engine::osc_feedback::is_playhead_requested() {
-            *prev_playhead_cue = id;
-            Some(playhead_now.map(|(_, n, name)| (n, name)).unwrap_or_default())
-        } else {
-            None
-        }
-    };
+    // ------------------------------------------------------------------
+    // 10. Detect running-cue-set / playhead changes for OSC feedback
+    //     (active cue list only — matches QLab OSC behavior).
+    // ------------------------------------------------------------------
+    let (running_payload, playhead_payload, cue_list_payload) =
+        if let Some(active_cl) = ws.cue_list_by_id(active_list_id) {
+            let running_now: Vec<(CueId, String, String)> = all_running_cues_info(&active_cl.cues);
+            let playhead_now = active_cl
+                .playhead_cue_id
+                .and_then(|ph_id| find_cue_info(&active_cl.cues, ph_id));
 
-    let all_cues = all_cues_flat(&cue_list.cues);
-    let cue_list_hash = fingerprint_cue_list(&all_cues);
-    let cue_list_payload: Option<Vec<(String, String)>> =
-        if cue_list_hash != *prev_cue_list_hash
-            || crate::engine::osc_feedback::is_cue_list_requested()
-        {
-            *prev_cue_list_hash = cue_list_hash;
-            Some(all_cues)
+            let running_ids: Vec<CueId> = running_now.iter().map(|(id, _, _)| *id).collect();
+            let running_p: Option<Vec<(String, String)>> = if running_ids != *prev_running_cues {
+                *prev_running_cues = running_ids;
+                Some(running_now.into_iter().map(|(_, n, name)| (n, name)).collect())
+            } else {
+                None
+            };
+
+            let playhead_p: Option<(String, String)> = {
+                let id = playhead_now.as_ref().map(|(id, _, _)| *id);
+                if id != *prev_playhead_cue || crate::engine::osc_feedback::is_playhead_requested() {
+                    *prev_playhead_cue = id;
+                    Some(playhead_now.map(|(_, n, name)| (n, name)).unwrap_or_default())
+                } else {
+                    None
+                }
+            };
+
+            let all_cues = all_cues_flat(&active_cl.cues);
+            let cue_list_hash = fingerprint_cue_list(&all_cues);
+            let cue_list_p: Option<Vec<(String, String)>> =
+                if cue_list_hash != *prev_cue_list_hash
+                    || crate::engine::osc_feedback::is_cue_list_requested()
+                {
+                    *prev_cue_list_hash = cue_list_hash;
+                    Some(all_cues)
+                } else {
+                    None
+                };
+
+            (running_p, playhead_p, cue_list_p)
         } else {
-            None
+            (None, None, None)
         };
+
+    // Rename for clarity in the rest of the function.
+    let newly_completed   = all_newly_completed;
+    let time_snapshots    = all_time_snapshots;
+    let go_triggered      = all_go_triggered;
+    let go_stopped        = all_go_stopped;
 
     drop(ws);
 
@@ -459,9 +485,8 @@ fn tick(
         );
     }
 
-    // Emit playhead-moved when the event loop advanced the playhead for a
-    // completed sequential group.
-    if let Some(new_ph) = seq_group_new_playhead {
+    // Emit playhead-moved for each sequential-group completion advance.
+    for new_ph in &all_seq_group_playheads {
         let _ = handle.emit("playhead-moved", serde_json::json!({ "cue_id": new_ph }));
     }
 
@@ -477,8 +502,7 @@ fn tick(
         );
     }
 
-    // Emit cue-list-refresh when a sequential group's active child changed
-    // (e.g., a timed child completed and the inner playhead advanced).
+    // Emit cue-list-refresh when a sequential group's active child changed.
     if group_child_changed {
         let _ = handle.emit("cue-list-refresh", serde_json::json!({}));
     }

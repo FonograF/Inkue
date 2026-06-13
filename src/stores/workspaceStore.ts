@@ -1,12 +1,14 @@
 // Zustand store: workspace data, cue list, selection, and playhead.
 
 import { create } from "zustand";
-import type { CueId, CueSummary, DisplayPreferences, GeneralPreferences, WorkspaceInfo } from "../lib/types";
+import type { CueId, CueListSummary, CueSummary, DisplayPreferences, GeneralPreferences, WorkspaceInfo } from "../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_GENERAL_PREFS } from "../lib/types";
-import { getAllCues, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
+import { getAllCues, getCueLists, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
 
 interface WorkspaceState {
   cues: CueSummary[];
+  cueLists: CueListSummary[];
+  activeCueListId: string | null;
   selectedCueId: CueId | null;
   /** All cues currently highlighted (multi-selection). Always includes selectedCueId when non-null. */
   selectedCueIds: CueId[];
@@ -17,6 +19,8 @@ interface WorkspaceState {
 
   // Actions
   refreshCues: () => Promise<void>;
+  refreshCueLists: () => Promise<void>;
+  setCueLists: (lists: CueListSummary[], activeId: string) => void;
   refreshWorkspaceInfo: () => Promise<void>;
   setSelectedCueId: (id: CueId | null) => void;
   setSelectedCueIds: (ids: CueId[]) => void;
@@ -30,6 +34,8 @@ interface WorkspaceState {
 
 export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   cues: [],
+  cueLists: [],
+  activeCueListId: null,
   selectedCueId: null,
   selectedCueIds: [],
   playheadCueId: null,
@@ -46,6 +52,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
       console.error("Failed to refresh cues:", e);
     }
   },
+
+  refreshCueLists: async () => {
+    try {
+      const cueLists = await getCueLists();
+      set((prev) => ({
+        cueLists,
+        activeCueListId: prev.activeCueListId ?? cueLists[0]?.id ?? null,
+      }));
+    } catch (e) {
+      console.error("Failed to refresh cue lists:", e);
+    }
+  },
+
+  setCueLists: (lists, activeId) => set({ cueLists: lists, activeCueListId: activeId }),
 
   refreshWorkspaceInfo: async () => {
     try {

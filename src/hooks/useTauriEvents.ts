@@ -8,6 +8,7 @@ import { useTransportStore } from "../stores/transportStore";
 import { useTimingStore } from "../stores/timingStore";
 import { go, stopAll, hardStopAll, setPlayhead, pauseCue, resumeCue } from "../lib/commands";
 import type {
+  CueListsChangedEvent,
   CueStateChangedEvent,
   CueTimeUpdateEvent,
   DeviceChangedEvent,
@@ -19,7 +20,7 @@ interface TauriEventsOptions {
 }
 
 export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
-  const { refreshCues, refreshWorkspaceInfo, loadDisplayPrefs, loadGeneralPrefs, setPlayheadCueId, updateCueState } =
+  const { refreshCues, refreshWorkspaceInfo, loadDisplayPrefs, loadGeneralPrefs, setPlayheadCueId, updateCueState, setCueLists } =
     useWorkspaceStore();
   const { updateMasterLevels, markOscActivity, addOscLog } = useTransportStore();
   const { setTiming, clearTiming } = useTimingStore();
@@ -52,6 +53,13 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
       unlisteners.push(
         await listen<PlayheadMovedEvent>("playhead-moved", (e) => {
           setPlayheadCueId(e.payload.cue_id);
+        })
+      );
+
+      unlisteners.push(
+        await listen<CueListsChangedEvent>("cue-lists-changed", async (e) => {
+          setCueLists(e.payload.cue_lists, e.payload.active_cue_list_id);
+          await refreshCues();
         })
       );
 

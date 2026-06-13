@@ -61,16 +61,14 @@ pub fn load_workspace(
     drop(registry);
 
     // Collect audio + video cue IDs + file paths before storing the workspace.
-    // Both decode an audio track (a video's audio plays as an AudioEngine voice).
-    // The scan is recursive so cues inside groups are also preloaded.
-    let cues_to_preload: Vec<(uuid::Uuid, PathBuf)> = loaded
-        .active_cue_list()
-        .map(|cl| {
-            let mut result = Vec::new();
+    // Scan ALL cue lists so non-active lists are also preloaded on open.
+    let cues_to_preload: Vec<(uuid::Uuid, PathBuf)> = {
+        let mut result = Vec::new();
+        for cl in &loaded.cue_lists {
             collect_media_cues(&cl.cues, &mut result);
-            result
-        })
-        .unwrap_or_default();
+        }
+        result
+    };
 
     // Store the new workspace and apply display preferences.
     let show_floating = loaded.preferences.display.show_output_timer && loaded.preferences.display.timer_floating;
@@ -107,12 +105,16 @@ pub fn load_workspace(
                                 / sample_rate.max(1) as f64,
                         );
                         let samples = Arc::new(samples);
+                        // Search all cue lists — the cue may not be in the active one.
                         if let Ok(mut ws) = workspace.lock() {
-                            if let Some(cl) = ws.active_cue_list_mut() {
-                                if let Some(cue) = cl.get_mut_recursive(&cue_id) {
-                                    cue.accept_preloaded_audio(
-                                        samples, channels, sample_rate, duration,
-                                    );
+                            'store: {
+                                for cl in ws.cue_lists.iter_mut() {
+                                    if let Some(cue) = cl.get_mut_recursive(&cue_id) {
+                                        cue.accept_preloaded_audio(
+                                            samples, channels, sample_rate, duration,
+                                        );
+                                        break 'store;
+                                    }
                                 }
                             }
                         }

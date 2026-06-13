@@ -4,12 +4,14 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
+import { CueListTabs } from "./components/CueList/CueListTabs";
 import { InspectorPanel } from "./components/Inspector/InspectorPanel";
 import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow } from "./lib/commands";
+import { getCueLists } from "./lib/commands";
 import type { CueSummary } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -388,7 +390,7 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
 }
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
+  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, setCueLists } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(true);
@@ -414,6 +416,9 @@ export default function App() {
     loadGeneralPrefs();
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);
+    void getCueLists().then((lists) => {
+      if (lists.length > 0) setCueLists(lists, lists[0].id);
+    });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // -------------------------------------------------------------------------
@@ -451,14 +456,19 @@ export default function App() {
     });
     if (typeof path === "string") {
       await loadWorkspace(path).catch(console.error);
+      const lists = await getCueLists().catch(() => []);
+      if (lists.length > 0) setCueLists(lists, lists[0].id);
       await refreshCues();
       await refreshWorkspaceInfo();
     }
-  }, [refreshCues, refreshWorkspaceInfo]);
+  }, [refreshCues, refreshWorkspaceInfo, setCueLists]);
 
   const handleNew = useCallback(async () => {
     await newWorkspace().catch(console.error);
-  }, []);
+    const lists = await getCueLists().catch(() => []);
+    if (lists.length > 0) setCueLists(lists, lists[0].id);
+    await refreshCues();
+  }, [setCueLists, refreshCues]);
 
   // -------------------------------------------------------------------------
   // Close-request interception
@@ -780,6 +790,7 @@ export default function App() {
       {/* Main area */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <CueListTabs onRefresh={handleRefresh} />
           <CueListView
             onCueDoubleClick={(cue: CueSummary) => {
               useWorkspaceStore.getState().setSelectedCueId(cue.id);

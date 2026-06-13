@@ -8,6 +8,7 @@ import type {
   AudioPreferences,
   MachineAudioConfig,
   CueId,
+  CueListSummary,
   CueSummary,
   CueType,
   DeviceInfo,
@@ -127,6 +128,20 @@ export const saveWorkspace = (path: string) =>
 export const loadWorkspace = (path: string) =>
   invoke<void>("load_workspace", { path });
 export const getWorkspaceInfo = () => invoke<WorkspaceInfo>("get_workspace_info");
+
+// ---------------------------------------------------------------------------
+// Cue Lists
+// ---------------------------------------------------------------------------
+
+export const getCueLists = () => invoke<CueListSummary[]>("get_cue_lists");
+export const addCueList = (name: string) =>
+  invoke<string>("add_cue_list", { name });
+export const removeCueList = (id: string) =>
+  invoke<void>("remove_cue_list", { id });
+export const renameCueList = (id: string, name: string) =>
+  invoke<void>("rename_cue_list", { id, name });
+export const setActiveCueList = (id: string) =>
+  invoke<void>("set_active_cue_list", { id });
 
 // ---------------------------------------------------------------------------
 // Devices

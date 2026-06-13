@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-13
 
-## Current version: 0.6.5
+## Current version: 0.7.0
 
 ## cargo build result
 
@@ -53,14 +53,15 @@
 | OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, 50ms hash dedup cache, dispatch to frontend via `osc-command` event, activity via `osc-activity`, debug via `osc-debug` |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
-| Workspace | `show/workspace.rs` | ✅ Complete |
+| Workspace | `show/workspace.rs` | ✅ Complete — `active_cue_list_id: Uuid`; `cue_list_by_id()` / `cue_list_by_id_mut()` |
 | Transport | `show/transport.rs` | ✅ Complete — returns `GoResult { triggered, stopped }`; `stop_on_next_go()` visual-only guard; `stop_specification()` executed before Auto-Follow chain |
-| Event loop | `show/event_loop.rs` | ✅ Complete — 30fps main tick (drains `OutputStatus`, emits Tauri events, emits `cue-state-changed` for stop-cue-stopped IDs) + dedicated 60fps `wincue-timer-refresh` thread for OSD timer |
+| Event loop | `show/event_loop.rs` | ✅ Complete — processes ALL cue lists each tick (completion, tick, auto-continue/follow); per-list `should_go_lists`; OSC feedback from active list only |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
 | AppState | `state/app_state.rs` | ✅ Complete — `osc_server: Arc<OscServer>`, `last_go_at: AtomicU64` for double-GO protection |
 | Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences` + `OscReceiveConfig` (machine-level) |
 | Transport commands | `commands/transport_cmds.rs` | ✅ Complete — double-GO protection (500 ms default) |
 | Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `toggle_output_window`, `get_output_window_visible` |
+| Cue List commands | `commands/cue_list_cmds.rs` | ✅ Complete — `get_cue_lists`, `add_cue_list`, `remove_cue_list`, `rename_cue_list`, `set_active_cue_list`; emits `cue-lists-changed` |
 | OSC commands | `commands/osc_cmds.rs` | ✅ Complete — `list/add/update/remove_osc_patch`, `get/set_osc_config`, `send_osc_test` |
 | Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete |
 | Device commands | `commands/device_cmds.rs` | ✅ Complete |
@@ -71,12 +72,13 @@
 
 | File | Status |
 |---|---|
-| `lib/types.ts` | ✅ Complete — all cue types incl. OSC and Stop; `OscPatch`, `OscArg`, `OscMessage`, `OscReceiveConfig`, `StopCueData` |
-| `lib/commands.ts` | ✅ Complete — all transport, cue, workspace, device, prefs, OSC commands |
-| `stores/workspaceStore.ts` | ✅ Complete |
+| `lib/types.ts` | ✅ Complete — `CueListSummary`, `CueListsChangedEvent` added |
+| `lib/commands.ts` | ✅ Complete — `getCueLists`, `addCueList`, `removeCueList`, `renameCueList`, `setActiveCueList` added |
+| `stores/workspaceStore.ts` | ✅ Complete — `cueLists`, `activeCueListId`, `refreshCueLists`, `setCueLists` added |
 | `stores/transportStore.ts` | ✅ Complete — `oscActivityAt`, `oscLog`, `markOscActivity`, `addOscLog` |
 | `stores/timingStore.ts` | ✅ Complete |
-| `hooks/useTauriEvents.ts` | ✅ Complete — handles all events incl. `osc-command`, `osc-activity`, `osc-debug` |
+| `hooks/useTauriEvents.ts` | ✅ Complete — handles `cue-lists-changed` → `setCueLists` + `refreshCues` |
+| `components/CueList/CueListTabs.tsx` | ✅ Complete — tab bar, add/rename/delete lists, active tab highlight, double-click rename, right-click context menu |
 | `hooks/useKeyboardShortcuts.ts` | ✅ Complete — F9 toggles output window |
 | `App.tsx` | ✅ Complete — `+ OSC` toolbar button |
 | `components/CueList/` | ✅ Complete |

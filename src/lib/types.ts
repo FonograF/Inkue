@@ -173,6 +173,11 @@ export interface OutputPatch {
   channels: number[];
 }
 
+export interface CueListSummary {
+  id: string;
+  name: string;
+}
+
 export interface WorkspaceInfo {
   name: string;
   is_modified: boolean;
@@ -315,6 +320,11 @@ export interface AppPreferences {
 
 // ---------------------------------------------------------------------------
 // Events emitted by the backend
+export interface CueListsChangedEvent {
+  cue_lists: CueListSummary[];
+  active_cue_list_id: string;
+}
+
 export interface CueStateChangedEvent {
   cue_id: CueId;
   old_state: CueState;

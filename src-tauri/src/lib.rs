@@ -20,6 +20,9 @@ use commands::{
         set_audio_file, set_group_mode, set_image_file, set_playhead,
         set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
     },
+    cue_list_cmds::{
+        add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list, set_active_cue_list,
+    },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     midi_cmds::{list_midi_output_ports, send_midi_test},
     osc_cmds::{
@@ -152,6 +155,12 @@ pub fn run() {
             save_workspace,
             load_workspace,
             get_workspace_info,
+            // Cue Lists
+            get_cue_lists,
+            add_cue_list,
+            remove_cue_list,
+            rename_cue_list,
+            set_active_cue_list,
             // Devices
             list_output_devices,
             get_output_patches,
