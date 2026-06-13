@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**57 tests pass, 0 failures.**
+**62 tests pass, 0 failures.**
 
 ---
 
@@ -16,7 +16,7 @@
 
 | Cue type | Status | Details |
 |---|---|---|
-| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking |
+| Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking; SR conversion in `fill_buffer` (44.1k/48k/96k all correct) |
 | Stop  | ✅ **Functional** | QLab-style: target All Cues or a specific cue number; Soft (fade) or Hard (cut); Auto-Follow bug fixed |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
 | Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, scrub/seek; pause/resume with correct elapsed tracking |
@@ -39,7 +39,7 @@
 | Cue trait | `cue/traits.rs` | ✅ Complete — `stop_on_next_go()`, `stop_specification()` |
 | CueRegistry | `cue/registry.rs` | ✅ Complete |
 | CueContext | `cue/context.rs` | ✅ Complete — `audio_engine`, `output_engine`, `stop_fade_ms`, `output_patches`, `output_screen` |
-| AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch; pause freezes elapsed (elapsed_before_pause accumulators); seek works while paused |
+| AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch; pause freezes elapsed (elapsed_before_pause accumulators); seek works while paused; `voice.inner.rate_bits` = pure user rate (SR correction is in `fill_buffer`, not here) |
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; pause freezes elapsed; seek works while paused |
 | ImageCue | `cue/image_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_content()`. `display_duration_ms: Option<u64>` — None = hold until stopped (StopOnNextCue), Some(ms) = timed auto-complete via `image-display-duration=X`. |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete |
@@ -47,7 +47,7 @@
 | VoiceState / FadeState | `engine/voice.rs` | ✅ Complete — `out_l`, `out_r` for channel routing |
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
-| AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer` |
+| AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO, mixes audio + video PCM in `fill_buffer`; SR conversion: `step = user_rate × (voice.sample_rate / output_sr)` per voice in callback; 5 unit tests cover 44.1k↔48k↔96k cases |
 | OutputEngine | `engine/output_engine/` | ✅ Complete — unified libmpv engine for video+image; single persistent Win32 window; dip-to-black fade overlay (`WS_EX_LAYERED`); OSD timer overlay; `toggle_visibility()` |
 | OscPatch | `engine/osc_patch.rs` | ✅ Complete — named UDP send target (id, name, ip, port) |
 | OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, 50ms hash dedup cache, dispatch to frontend via `osc-command` event, activity via `osc-activity`, debug via `osc-debug` |
@@ -96,6 +96,57 @@
 | `main.tsx` | ✅ Complete |
 
 ---
+
+---
+
+## Change history additions (0.7.1)
+
+### Cue Warnings — badge ⚠ jaune non-bloquant (2026-06-13)
+
+`is_broken` (rouge `!`) et `is_warning` (jaune `⚠`) sont maintenant deux signaux distincts dans `CueSummary` :
+
+| Condition | Avant | Après |
+|---|---|---|
+| Fichier non assigné (Audio/Video/Image) | rouge `!` | jaune `⚠` |
+| Fichier assigné mais introuvable sur disque | rouge `!` | rouge `!` |
+| Wait Cue avec durée = 0 | rien | jaune `⚠` |
+| Group Cue vide (0 enfants) | rien | jaune `⚠` |
+
+`check_broken` ne flagge plus les fichiers non-assignés. `check_warning` couvre les cas non-critiques. `warning_message` est sérialisé dans le JSON du CueSummary pour affichage en tooltip.
+
+**Files changed:** `commands/cue_cmds.rs`, `src/lib/types.ts`, `src/components/CueList/CueRow.tsx`
+
+---
+
+### Image Display Duration (2026-06-13)
+
+Champ `display_duration_ms: Option<u64>` réintroduit dans `ImageCue` :
+
+- `None` (défaut) : l'image reste affichée jusqu'à un Stop explicite (`stop_on_next_go = true`)
+- `Some(ms)` : mpv reçoit `image-display-duration=X.XXX` au lieu de `inf` → l'image auto-complète via `OutputStatus::Completed` exactement comme une vidéo
+
+`duration()` retourne `None` ou `Some(Duration::from_millis(ms))` selon la valeur, ce qui active la barre de progression et l'Auto-Continue dans l'event loop sans changement de code.
+
+Inspector → onglet Time → checkbox "Display Duration" + saisie en secondes.
+
+**Files changed:** `cue/image_cue.rs`, `engine/output_engine/types.rs`, `engine/output_engine/fade.rs`, `engine/output_engine/mod.rs`, `cue/video_cue.rs` (+ `None` pour le nouveau param), `src/lib/types.ts`, `src/components/Inspector/TimeTab.tsx`, `src/components/Inspector/InspectorPanel.tsx`
+
+---
+
+### Audio SR conversion — refactor architectural (2026-06-13)
+
+**Avant :** `audio_cue.rs` et `video_cue.rs` appelaient `context.audio_engine.sample_rate()` et boulaient `source_sr / output_sr` directement dans `voice.inner.rate_bits`. Problèmes : violation de la séparation des couches (`cue/` ne doit pas interroger les internals du moteur), et `rate_bits` contenait un composite opaque au lieu du rate utilisateur pur.
+
+**Après :**
+- `voice.inner.rate_bits` = pure user rate multiplier (1.0 par défaut, contrôlé par l'inspecteur)
+- `fill_buffer` reçoit `output_sample_rate: u32` capturé dans la closure à l'ouverture du stream
+- Step effectif par voice : `user_rate × (voice.sample_rate / output_sample_rate)`
+
+Résultat : 44.1 kHz, 48 kHz, 96 kHz jouent à la bonne vitesse et durée sur n'importe quel device. **5 tests unitaires** vérifient les cas cross-rate sans device audio réel.
+
+**Note 96 kHz downsampling :** quand `source_sr > output_sr` (ex. 96k → 48k), le callback ne fait pas de filtre anti-repliement avant de sauter des frames. Le contenu au-dessus de la fréquence de Nyquist output (24 kHz pour 48k) peut aliaser. En pratique imperceptible : les fichiers 96 kHz sont déjà band-limités sous 20 kHz par l'encodeur.
+
+**Files changed:** `engine/audio_engine.rs` (signature `fill_buffer`, step SR, 5 tests), `cue/audio_cue.rs` (retire `sr_ratio`), `cue/video_cue.rs` (retire `sr_ratio`)
 
 ---
 

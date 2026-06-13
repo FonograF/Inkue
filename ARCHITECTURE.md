@@ -62,6 +62,63 @@ The timer is rendered via mpv's OSD (`osd-msg1` property), not a Win32 GDI child
 
 **Note**: a legacy `WinCueTimerOverlay` Win32 GDI child window still exists in `win32_window.rs` but is unused (GDI is composited away by DWM when mpv owns the D3D11 surface). Remove in a future cleanup.
 
+## Audio pipeline (`engine/audio_engine.rs`, `engine/voice.rs`)
+
+### Stream opening
+
+`open_stream_inner` appelle `device.default_output_config()` pour obtenir le mix format du device WASAPI (ex. 48 000 Hz). Le stream cpal est ouvert à cette fréquence. `sample_rate` est capturé dans chaque closure de callback.
+
+### Voice
+
+Un `Voice` stocke :
+- `samples: Arc<Vec<f32>>` — PCM interleaved à la fréquence **source** du fichier
+- `sample_rate: u32` — fréquence source (44 100, 48 000, 96 000, etc.)
+- `inner.rate_bits` — **pure user rate multiplier** (1.0 = vitesse normale). Ce champ ne contient PAS de correction SR — c'est une propriété utilisateur exposée dans l'inspecteur.
+
+### Correction sample rate dans `fill_buffer`
+
+`fill_buffer` reçoit `output_sample_rate: u32` et calcule le step d'avance par frame output pour chaque voice :
+
+```rust
+let step = voice.inner.rate() as f64
+    * (voice.sample_rate as f64 / output_sample_rate as f64);
+// frame_pos_f += step  (une fois par output frame)
+```
+
+Cette formule garantit qu'un fichier de N secondes est consommé en exactement N secondes de temps réel, indépendamment des fréquences source et output.
+
+**Exemples :**
+
+| Source SR | Output SR | step (rate=1.0) | Frames source / seconde |
+|---|---|---|---|
+| 44 100 Hz | 48 000 Hz | 0.91875 | 44 100 ✓ |
+| 48 000 Hz | 48 000 Hz | 1.0 | 48 000 ✓ |
+| 96 000 Hz | 48 000 Hz | 2.0 | 96 000 ✓ |
+| 48 000 Hz | 44 100 Hz | 1.0884 | 48 000 ✓ |
+
+**Règle d'architecture :** le ratio SR appartient exclusivement à `fill_buffer`. `cue/audio_cue.rs` et `cue/video_cue.rs` ne doivent **jamais** appeler `audio_engine.sample_rate()` pour corriger leur voice — toute tentative reintroduirait la violation de couche et doublerait la correction.
+
+### Durée des fades
+
+Les fades sont calculés en **frames source** : `total_samples = fade_ms * voice.sample_rate / 1000`. Puisque le step d'avance inclut déjà le ratio SR, le fade dure `fade_ms / user_rate` secondes de temps réel — correct quelle que soit la fréquence source ou output.
+
+### Limitation : downsampling sans anti-aliasing
+
+Quand `source_sr > output_sr` (ex. 96k sur 48k, step = 2.0), le callback saute des frames source sans filtre passe-bas préalable. Le contenu au-dessus de la fréquence de Nyquist output peut aliaser dans le signal audible. En pratique imperceptible : les fichiers haute résolution sont déjà band-limités sous 20 kHz. Un filtre polyphase serait nécessaire pour une qualité audiophile stricte.
+
+### Tests unitaires (`engine::audio_engine::tests`)
+
+5 tests vérifient la mécanique SR sans device audio réel en appelant `fill_buffer` directement sur des voices synthétiques :
+- `sr_ratio_44100_on_48000` — step = 0.91875
+- `sr_ratio_48000_on_48000` — step = 1.0
+- `sr_ratio_48000_on_44100` — step = 1.0884
+- `sr_ratio_96000_on_48000` — step = 2.0
+- `user_rate_2x_on_matching_sr` — rate utilisateur ×2
+
+Tolérance ±1 frame : le ratio 44100/48000 n'est pas exactement représentable en f64, l'accumulation sur N frames introduit un écart sub-frame.
+
+---
+
 ## Transport GO (`show/transport.rs`)
 
 `Transport::go()` returns `GoResult { triggered: Vec<CueId>, stopped: Vec<CueId> }`.
