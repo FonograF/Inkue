@@ -306,7 +306,7 @@ fn open_stream_inner(
         cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
             &stream_cfg,
             move |data: &mut [f32], _| {
-                fill_buffer(data, total_ch, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                fill_buffer(data, total_ch, sample_rate, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
             },
             |err| log::error!("cpal stream error: {err}"),
             None,
@@ -319,7 +319,7 @@ fn open_stream_inner(
                 move |data: &mut [f32], _| {
                     let frames = data.len() / total_ch;
                     let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
                     data.fill(0.0);
                     for f in 0..frames {
                         data[f * total_ch + pair_offset]     = scratch[f * 2];
@@ -339,7 +339,7 @@ fn open_stream_inner(
                 move |data: &mut [i32], _| {
                     let frames = data.len() / total_ch;
                     let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
                     data.fill(0);
                     for f in 0..frames {
                         data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
@@ -373,6 +373,7 @@ fn open_stream_inner(
 fn fill_buffer(
     output: &mut [f32],
     channels: usize,
+    output_sample_rate: u32,
     voices: &Arc<Mutex<Vec<Arc<Voice>>>>,
     cmd_cons: &mut ringbuf::HeapCons<AudioCommand>,
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
@@ -409,8 +410,11 @@ fn fill_buffer(
         let (gain_l, gain_r) = voice.pan_gains();
         let voice_channels = voice.channels as usize;
         let total_frames = voice.total_frames();
-        // Rate as f64 for sub-frame accumulation.  Default 1.0.
-        let rate = voice.inner.rate() as f64;
+        // Effective frame-advance step: user rate × source/output SR ratio.
+        // Without the SR ratio, a 44.1 kHz file on a 48 kHz output plays
+        // ~8.8 % too fast (and vice-versa).
+        let rate = voice.inner.rate() as f64
+            * (voice.sample_rate as f64 / output_sample_rate as f64);
 
         // Maintain frame position as f64 for accurate sub-frame interpolation.
         // The fractional part is lost at callback boundaries (≤ 1 sample / ~22 µs
