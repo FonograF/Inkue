@@ -599,3 +599,72 @@ fn open_asio_host() -> Result<cpal::Host> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ringbuf::HeapRb;
+    use ringbuf::traits::Split;
+
+    /// Build a minimal Voice with `n_frames` of silence at the given sample rate.
+    fn make_voice(n_frames: usize, channels: u16, sample_rate: u32, rate: f32) -> Arc<Voice> {
+        let samples = Arc::new(vec![0.0f32; n_frames * channels as usize]);
+        let mut v = Voice::new(samples, channels, sample_rate, 1.0, 0.0);
+        v.inner.set_rate(rate);
+        v.set_playing();
+        Arc::new(v)
+    }
+
+    /// Call fill_buffer for `output_frames` output frames and return the
+    /// resulting frame_pos stored in the voice.
+    fn run_fill(voice: Arc<Voice>, output_frames: usize, output_sr: u32) -> u64 {
+        let pool: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(vec![voice]));
+        let (_, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
+        let (mut status_prod, _) = HeapRb::<AudioStatus>::new(16).split();
+        let master = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let mut output = vec![0.0f32; output_frames * 2];
+        fill_buffer(&mut output, 2, output_sr, &pool, &mut cmd_cons, &mut status_prod, &master);
+        let pos = pool.lock().unwrap().first().map(|v| v.frame_pos.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
+        pos
+    }
+
+    // The SR ratio (e.g. 44100/48000) is not exactly representable in f64, so
+    // frame_pos after N output frames may be off by ±1 source frame.  All
+    // assertions below allow a tolerance of 1 frame.
+    fn assert_frame_pos(actual: u64, expected: u64, msg: &str) {
+        let diff = (actual as i64 - expected as i64).unsigned_abs();
+        assert!(diff <= 1, "{msg}: expected {expected} ± 1, got {actual}");
+    }
+
+    #[test]
+    fn sr_ratio_44100_on_48000() {
+        // 1 s of 48 kHz output = 48 000 frames → should consume 44 100 source frames.
+        let voice = make_voice(220_500, 2, 44_100, 1.0);
+        let pos = run_fill(voice, 48_000, 48_000);
+        assert_frame_pos(pos, 44_100, "44.1 kHz file on 48 kHz output");
+    }
+
+    #[test]
+    fn sr_ratio_48000_on_48000() {
+        // Same SR: 1 output frame = 1 source frame exactly.
+        let voice = make_voice(96_000, 2, 48_000, 1.0);
+        let pos = run_fill(voice, 48_000, 48_000);
+        assert_frame_pos(pos, 48_000, "48 kHz file on 48 kHz output");
+    }
+
+    #[test]
+    fn sr_ratio_48000_on_44100() {
+        // 1 s of 44.1 kHz output = 44 100 frames → should consume 48 000 source frames.
+        let voice = make_voice(96_000, 2, 48_000, 1.0);
+        let pos = run_fill(voice, 44_100, 44_100);
+        assert_frame_pos(pos, 48_000, "48 kHz file on 44.1 kHz output");
+    }
+
+    #[test]
+    fn user_rate_2x_on_matching_sr() {
+        // rate=2.0 on matching SR: 2 source frames per output frame.
+        let voice = make_voice(96_000, 2, 48_000, 2.0);
+        let pos = run_fill(voice, 48_000, 48_000);
+        assert_frame_pos(pos, 96_000, "rate=2.0 should consume 96 000 frames in 1 s");
+    }
+}
