@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 
 use crate::cue::{
     context::CueContext,
-    types::{ContinueMode, CueId, CueState},
+    types::{ContinueMode, CueId, CueState, CueType},
 };
 
 use super::cue_list::CueList;
@@ -64,12 +64,24 @@ impl Transport {
         // Advance playhead before triggering (matches QLab behaviour).
         cue_list.advance_playhead();
 
-        // Stop any running cues that should automatically stop on the next GO
-        // (e.g. Image Cues in StopOnNextCue mode).
+        // Stop any running cues that should automatically stop on the next GO.
+        // Visual cues (Image, Video) only stop when the incoming cue is also
+        // visual — an audio GO must not cut a displayed image.
+        let incoming_is_visual = cue_list
+            .get(&cue_id)
+            .map(|c| matches!(c.cue_type(), CueType::Video | CueType::Image))
+            .unwrap_or(false);
+
         let stop_ids: Vec<CueId> = cue_list
             .cues
             .iter()
-            .filter(|c| c.is_running() && c.stop_on_next_go() && c.id() != cue_id)
+            .filter(|c| {
+                if !c.is_running() || c.id() == cue_id || !c.stop_on_next_go() {
+                    return false;
+                }
+                let c_is_visual = matches!(c.cue_type(), CueType::Video | CueType::Image);
+                !c_is_visual || incoming_is_visual
+            })
             .map(|c| c.id())
             .collect();
         for id in stop_ids {
