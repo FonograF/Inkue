@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-09
+# WinCue — Project state as of 2026-06-13
 
-## Current version: 0.6.1
+## Current version: 0.6.2
 
 ## cargo build result
 
@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**42 tests pass, 0 failures.**
+**47 tests pass, 0 failures.**
 
 ---
 
@@ -17,10 +17,10 @@
 | Cue type | Status | Details |
 |---|---|---|
 | Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop, rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking |
-| Stop  | ✅ **Functional** | Targeted Stop and Stop All, default 0.5 s fade |
+| Stop  | ✅ **Functional** | QLab-style: target All Cues or a specific cue number; Soft (fade) or Hard (cut); Auto-Follow bug fixed |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
 | Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, scrub/seek; pause/resume with correct elapsed tracking |
-| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades, stop-on-next-cue |
+| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades; stop-on-next-cue only fires for visual GOs (audio GO leaves image running) |
 | Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next|previous |
@@ -34,14 +34,14 @@
 | Module | File | Status |
 |---|---|---|
 | Cue types | `cue/types.rs` | ✅ Complete |
-| Cue trait | `cue/traits.rs` | ✅ Complete — includes `stop_on_next_go()` |
+| Cue trait | `cue/traits.rs` | ✅ Complete — `stop_on_next_go()`, `stop_specification()` |
 | CueRegistry | `cue/registry.rs` | ✅ Complete |
 | CueContext | `cue/context.rs` | ✅ Complete — `audio_engine`, `output_engine`, `stop_fade_ms`, `output_patches`, `output_screen` |
 | AudioCue | `cue/audio_cue.rs` | ✅ 100% functional — pre-wait, fade-in/out, loop, rate, `Voice.out_l/r` routing via OutputPatch; pause freezes elapsed (elapsed_before_pause accumulators); seek works while paused |
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; pause freezes elapsed; seek works while paused |
 | ImageCue | `cue/image_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_content()`. No DisplayDuration mode (StopOnNextCue only). |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete |
-| StopCue | `cue/stop_cue.rs` | ✅ Complete |
+| StopCue | `cue/stop_cue.rs` | ✅ Complete — `target_cue_number` (None = all), `hard_stop_mode`; `stop_specification()` drives transport inline |
 | VoiceState / FadeState | `engine/voice.rs` | ✅ Complete — `out_l`, `out_r` for channel routing |
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
@@ -52,8 +52,8 @@
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
 | CueList | `show/cue_list.rs` | ✅ Complete |
 | Workspace | `show/workspace.rs` | ✅ Complete |
-| Transport | `show/transport.rs` | ✅ Complete — `stop_on_next_go()` called before each GO |
-| Event loop | `show/event_loop.rs` | ✅ Complete — 30fps main tick (drains `OutputStatus`, emits Tauri events) + dedicated 60fps `wincue-timer-refresh` thread for OSD timer |
+| Transport | `show/transport.rs` | ✅ Complete — returns `GoResult { triggered, stopped }`; `stop_on_next_go()` visual-only guard; `stop_specification()` executed before Auto-Follow chain |
+| Event loop | `show/event_loop.rs` | ✅ Complete — 30fps main tick (drains `OutputStatus`, emits Tauri events, emits `cue-state-changed` for stop-cue-stopped IDs) + dedicated 60fps `wincue-timer-refresh` thread for OSD timer |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
 | AppState | `state/app_state.rs` | ✅ Complete — `osc_server: Arc<OscServer>`, `last_go_at: AtomicU64` for double-GO protection |
 | Preferences | `preferences.rs` | ✅ Complete — `DisplayPreferences` + `OscReceiveConfig` (machine-level) |
@@ -69,7 +69,7 @@
 
 | File | Status |
 |---|---|
-| `lib/types.ts` | ✅ Complete — all cue types incl. OSC; `OscPatch`, `OscArg`, `OscMessage`, `OscReceiveConfig` |
+| `lib/types.ts` | ✅ Complete — all cue types incl. OSC and Stop; `OscPatch`, `OscArg`, `OscMessage`, `OscReceiveConfig`, `StopCueData` |
 | `lib/commands.ts` | ✅ Complete — all transport, cue, workspace, device, prefs, OSC commands |
 | `stores/workspaceStore.ts` | ✅ Complete |
 | `stores/transportStore.ts` | ✅ Complete — `oscActivityAt`, `oscLog`, `markOscActivity`, `addOscLog` |
@@ -78,10 +78,10 @@
 | `hooks/useKeyboardShortcuts.ts` | ✅ Complete — F9 toggles output window |
 | `App.tsx` | ✅ Complete — `+ OSC` toolbar button |
 | `components/CueList/` | ✅ Complete |
-| `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image, OSC (Messages tab) |
+| `components/Inspector/InspectorPanel.tsx` | ✅ Complete — audio, video, image, stop, OSC (Messages tab) |
 | `components/Inspector/OscTab.tsx` | ✅ Complete — messages list, patch selector, arg editor, Test send button |
 | `components/OscPatches/OscPatchesPanel.tsx` | ✅ Complete — add/edit/remove OSC patches |
-| `components/Inspector/BasicsTab.tsx` | ✅ Complete |
+| `components/Inspector/BasicsTab.tsx` | ✅ Complete — Stop Cue: Target selector + Cue # field + Stop Mode selector |
 | `components/Inspector/TimeTab.tsx` | ✅ Complete |
 | `components/Inspector/LevelsTab.tsx` | ✅ Complete |
 | `components/Inspector/FadeTab.tsx` | ✅ Complete |
@@ -92,6 +92,37 @@
 | `main.tsx` | ✅ Complete |
 
 ---
+
+---
+
+## Change history additions (0.6.2)
+
+### Stop Cue redesign — QLab semantics + Auto-Follow bug fix (2026-06-13)
+
+#### ✅ Stop Cue is now QLab-compatible
+
+**Problems fixed:**
+
+1. **Auto-Follow killed the chained cue** — with `Auto-Follow` set on a Stop Cue, the stop action was delivered via `CueEvent::StopAll` through a channel that was drained in `transport_cmds.rs` *after* `transport.go()` had already chained the next cue. The chained cue started, then was immediately killed by `stop_all()`.
+
+2. **Stop All only** — the Stop Cue could only stop every running cue globally. QLab lets you target a specific cue by number.
+
+3. **No stop mode choice** — no option for immediate cut vs. fade out.
+
+**Solution:**
+
+- `StopCue` gains two fields: `target_cue_number: Option<String>` (None = all, Some = specific cue number) and `hard_stop_mode: bool`.
+- The new `stop_specification()` method on the `Cue` trait (default: `None`) lets Stop Cue declare its action. Transport reads it and executes the stop **inline inside `transport.go()`**, before the `chain_now` / Auto-Follow evaluation. The chained cue therefore starts on a clean state.
+- The fragile `CueEvent::StopAll` channel mechanism is removed entirely.
+- `transport.go()` now returns `GoResult { triggered: Vec<CueId>, stopped: Vec<CueId> }` so callers can emit `cue-state-changed` for both sets.
+- Inspector Basics tab shows: **Target** (All Cues / Specific Cue…), **Cue #** (when targeting a specific cue), **Stop Mode** (Soft / Hard).
+
+**Image Cue: audio GO no longer cuts the image (2026-06-13)**
+
+- `stop_on_next_go()` returning `true` for Image Cues caused any GO — including audio — to stop the displayed image.
+- Fix: `transport.go()` now checks whether the incoming cue is visual (`CueType::Video | CueType::Image`). A running Image or Video Cue with `stop_on_next_go()` is only stopped when the new GO is also visual.
+
+**Files changed:** `cue/stop_cue.rs`, `cue/traits.rs`, `cue/context.rs`, `show/transport.rs`, `show/event_loop.rs`, `commands/transport_cmds.rs`, `src/lib/types.ts`, `src/components/Inspector/InspectorPanel.tsx`, `src/components/Inspector/BasicsTab.tsx`
 
 ---
 

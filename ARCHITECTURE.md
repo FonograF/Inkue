@@ -62,6 +62,30 @@ The timer is rendered via mpv's OSD (`osd-msg1` property), not a Win32 GDI child
 
 **Note**: a legacy `WinCueTimerOverlay` Win32 GDI child window still exists in `win32_window.rs` but is unused (GDI is composited away by DWM when mpv owns the D3D11 surface). Remove in a future cleanup.
 
+## Transport GO (`show/transport.rs`)
+
+`Transport::go()` returns `GoResult { triggered: Vec<CueId>, stopped: Vec<CueId> }`.
+
+**Execution order within a single GO:**
+
+1. `advance_playhead()` — moves the outer playhead forward.
+2. `stop_on_next_go()` guard — stops running visual cues whose `stop_on_next_go()` returns `true`, **but only if the incoming cue is also visual** (`CueType::Video | CueType::Image`). An audio GO never cuts a displayed image.
+3. `cue.go()` — triggers the cue at the playhead.
+4. `stop_specification()` — if the triggered cue declares a stop action (only `StopCue` does), the transport executes it **immediately and synchronously**, before evaluating the Auto-Follow chain. This prevents a Stop Cue + Auto-Follow from killing the chained cue.
+5. Chain evaluation — `AutoContinue` (post_wait = 0) or instant `AutoFollow` recurses into `go()`.
+
+`GoResult.stopped` carries the IDs of any cues killed by a Stop Cue action; callers emit `cue-state-changed` for them.
+
+## Stop Cue and `stop_specification()`
+
+`StopCue` has two configurable fields:
+- `target_cue_number: Option<String>` — `None` = stop all running cues; `Some(n)` = stop only the cue whose number matches `n`.
+- `hard_stop_mode: bool` — `false` = soft fade, `true` = immediate cut.
+
+`StopCue::stop_specification()` returns `Some((hard_stop_mode, target_cue_number))`.
+
+The `Cue` trait has a default `stop_specification() -> Option<(bool, Option<String>)>` returning `None`. Any future cue type that needs to stop other cues as part of its GO action can override it — no transport changes required.
+
 ## Event loop (`show/event_loop.rs`)
 
 Two threads:
