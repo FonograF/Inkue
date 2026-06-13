@@ -162,11 +162,7 @@ impl VideoCue {
             .loops_remaining
             .store(self.loop_count, std::sync::atomic::Ordering::Relaxed);
 
-        // Compensate for any sample-rate mismatch between the decoded audio and
-        // the output device so the audio plays at the correct pitch/speed.
-        let device_sr = context.audio_engine.sample_rate();
-        let sr_ratio = self.decoded_sample_rate as f64 / device_sr.max(1) as f64;
-        voice.inner.set_rate(sr_ratio as f32);
+        // Rate defaults to 1.0; SR mismatch is corrected in fill_buffer.
 
         if let Some(end) = self.end_time {
             let end_frame = (end.as_secs_f64() * self.decoded_sample_rate as f64) as u64;

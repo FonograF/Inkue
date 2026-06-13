@@ -173,13 +173,7 @@ impl AudioCue {
         );
 
         voice.inner.loops_remaining.store(self.loop_count, std::sync::atomic::Ordering::Relaxed);
-        // Combine the user-specified playback-rate with the ratio needed to
-        // compensate for a sample-rate mismatch between the audio file and the
-        // output device.  Without this correction a 44 100 Hz file played on a
-        // 48 000 Hz device would be heard at 108.8% speed and wrong pitch.
-        let device_sr = context.audio_engine.sample_rate();
-        let sr_ratio = self.decoded_sample_rate as f64 / device_sr.max(1) as f64;
-        voice.inner.set_rate((self.rate * sr_ratio) as f32);
+        voice.inner.set_rate(self.rate as f32);
 
         // Apply start/end time markers (written before play_voice; no RT thread yet).
         if let Some(end) = self.end_time {
