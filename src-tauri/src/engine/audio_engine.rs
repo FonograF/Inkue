@@ -667,4 +667,14 @@ mod tests {
         let pos = run_fill(voice, 48_000, 48_000);
         assert_frame_pos(pos, 96_000, "rate=2.0 should consume 96 000 frames in 1 s");
     }
+
+    #[test]
+    fn sr_ratio_96000_on_48000() {
+        // 96 kHz file on 48 kHz output: rate step = 2.0, correct duration.
+        // Note: no anti-aliasing filter — content above 24 kHz may alias, but
+        // in practice 96 kHz files are already band-limited below 20 kHz.
+        let voice = make_voice(192_000, 2, 96_000, 1.0);
+        let pos = run_fill(voice, 48_000, 48_000);
+        assert_frame_pos(pos, 96_000, "96 kHz file on 48 kHz output: 1 s = 96 000 source frames");
+    }
 }
