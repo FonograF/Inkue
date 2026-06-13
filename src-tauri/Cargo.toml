@@ -42,6 +42,9 @@ base64 = "0.22"
 # OSC
 rosc = "0.10"
 
+# MIDI
+midir = "0.10"
+
 # Logging
 log = "0.4"
 env_logger = "0.11"

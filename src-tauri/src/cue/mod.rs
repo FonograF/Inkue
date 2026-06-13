@@ -7,7 +7,9 @@
 
 pub mod audio_cue;
 pub mod context;
+pub mod fade_cue;
 pub mod group_cue;
+pub mod midi_cue;
 pub mod image_cue;
 pub mod media_decode;
 pub mod memo_cue;

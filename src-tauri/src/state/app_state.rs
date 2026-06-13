@@ -12,7 +12,9 @@ use uuid::Uuid;
 use crate::{
     cue::{
         audio_cue::AudioCueFactory,
+        fade_cue::FadeCueFactory,
         group_cue::GroupCueFactory,
+        midi_cue::MidiCueFactory,
         image_cue::ImageCueFactory,
         memo_cue::MemoCueFactory,
         osc_cue::OscCueFactory,
@@ -62,6 +64,8 @@ impl AppState {
 
         let mut registry = CueRegistry::new();
         registry.register(CueType::Audio, Box::new(AudioCueFactory));
+        registry.register(CueType::Fade,  Box::new(FadeCueFactory));
+        registry.register(CueType::Midi,  Box::new(MidiCueFactory));
         registry.register(CueType::Group, Box::new(GroupCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
         registry.register(CueType::Osc,   Box::new(OscCueFactory));

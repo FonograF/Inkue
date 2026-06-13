@@ -30,6 +30,7 @@ pub struct OscCue {
     pre_wait: Duration,
     post_wait: Duration,
     started_at: Option<Instant>,
+    is_disabled: bool,
     /// The messages to send on GO.
     pub messages: Vec<OscMessage>,
 }
@@ -48,6 +49,7 @@ impl OscCue {
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
             started_at: None,
+            is_disabled: false,
             messages: Vec::new(),
         }
     }
@@ -70,6 +72,8 @@ impl Cue for OscCue {
     fn set_notes(&mut self, notes: String) { self.notes = notes; }
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
     fn state(&self) -> CueState { self.state }
 
     fn load(&mut self, _context: &CueContext) -> Result<()> { Ok(()) }
@@ -144,6 +148,7 @@ impl Cue for OscCue {
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
             "messages": self.messages,
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -223,6 +228,9 @@ impl CueFactory for OscCueFactory {
                     Err(e) => log::warn!("OscCue: skipping invalid message in JSON: {e}"),
                 }
             }
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))

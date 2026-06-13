@@ -40,6 +40,7 @@ pub struct StopCue {
     pub target_cue_number: Option<String>,
     /// `true` = immediate cut; `false` = soft fade using the workspace default.
     pub hard_stop_mode: bool,
+    is_disabled: bool,
 }
 
 impl StopCue {
@@ -58,6 +59,7 @@ impl StopCue {
             started_at: None,
             target_cue_number: None,
             hard_stop_mode: false,
+            is_disabled: false,
         }
     }
 }
@@ -79,6 +81,8 @@ impl Cue for StopCue {
     fn set_notes(&mut self, notes: String) { self.notes = notes; }
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
     fn state(&self) -> CueState { self.state }
 
     fn load(&mut self, _context: &CueContext) -> Result<()> { Ok(()) }
@@ -158,6 +162,7 @@ impl Cue for StopCue {
             "continue_mode": self.continue_mode,
             "target_cue_number": self.target_cue_number,
             "hard_stop_mode": self.hard_stop_mode,
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -210,6 +215,9 @@ impl CueFactory for StopCueFactory {
         }
         if let Some(hard) = value.get("hard_stop_mode").and_then(|v| v.as_bool()) {
             cue.hard_stop_mode = hard;
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))

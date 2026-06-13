@@ -9,6 +9,7 @@ export function BasicsTab({
   isVideo,
   isImage,
   isGroup,
+  isFade,
   isStop,
   onSave,
   onBrowse,
@@ -22,6 +23,7 @@ export function BasicsTab({
   isVideo?: boolean;
   isImage?: boolean;
   isGroup?: boolean;
+  isFade?: boolean;
   isStop?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onSave: (p: Partial<any>) => void;
@@ -111,6 +113,49 @@ export function BasicsTab({
           </select>
         </Field>
       )}
+      {isFade && (
+        <>
+          <Field label="Target Cue #">
+            <input
+              style={inputStyle}
+              placeholder="Cue number (e.g. 1, 1.5, Intro)"
+              defaultValue={cue.target_cue_number ?? ""}
+              onBlur={(e) => onSave({ target_cue_number: e.target.value || null })}
+            />
+          </Field>
+          <Field label="Target Volume (dB)">
+            <input
+              style={inputStyle}
+              type="number"
+              step="0.5"
+              min="-60"
+              max="12"
+              key={`fade-vol-${cue.target_volume_db}`}
+              defaultValue={cue.target_volume_db ?? -60}
+              onBlur={(e) => onSave({ target_volume_db: parseFloat(e.target.value) })}
+            />
+          </Field>
+          <Field label="Curve">
+            <select
+              style={inputStyle}
+              value={cue.fade_curve ?? "s_curve"}
+              onChange={(e) => onSave({ fade_curve: e.target.value })}
+            >
+              <option value="linear">Linear</option>
+              <option value="s_curve">S-Curve</option>
+              <option value="exponential">Exponential</option>
+            </select>
+          </Field>
+          <Field label="Stop at End">
+            <input
+              type="checkbox"
+              checked={cue.stop_at_end ?? false}
+              onChange={(e) => onSave({ stop_at_end: e.target.checked })}
+              style={{ width: 16, height: 16, cursor: "pointer" }}
+            />
+          </Field>
+        </>
+      )}
       {isStop && (
         <>
           <Field label="Target">
@@ -151,6 +196,14 @@ export function BasicsTab({
           </Field>
         </>
       )}
+      <Field label="Disabled">
+        <input
+          type="checkbox"
+          checked={cue.is_disabled ?? false}
+          onChange={(e) => onSave({ is_disabled: e.target.checked })}
+          style={{ width: 16, height: 16, cursor: "pointer" }}
+        />
+      </Field>
       <Field label="Color">
         <ColorPicker
           value={cue.color}

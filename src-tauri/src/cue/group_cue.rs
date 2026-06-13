@@ -49,6 +49,8 @@ pub struct GroupCue {
     continue_mode: ContinueMode,
     auto_continue_fired: bool,
 
+    is_disabled: bool,
+
     // ── Group-specific ────────────────────────────────────────────────────
     pub mode: GroupMode,
     /// Direct child cues (any type, including nested Groups).
@@ -82,6 +84,7 @@ impl GroupCue {
             in_pre_wait: false,
             continue_mode: ContinueMode::DoNotContinue,
             auto_continue_fired: false,
+            is_disabled: false,
             mode: GroupMode::Simultaneous,
             children: Vec::new(),
             seq_current_id: None,
@@ -136,6 +139,9 @@ impl GroupCue {
                     Err(e) => log::warn!("[group] skipping unrecognised child: {e}"),
                 }
             }
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))
@@ -276,6 +282,8 @@ impl Cue for GroupCue {
     fn set_notes(&mut self, notes: String) { self.notes = notes; }
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
 
     // ── State ─────────────────────────────────────────────────────────────
 
@@ -623,6 +631,7 @@ impl Cue for GroupCue {
             "continue_mode": self.continue_mode,
             "group_mode": self.mode,
             "children": children,
+            "is_disabled": self.is_disabled,
         })
     }
 }

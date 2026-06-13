@@ -19,6 +19,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   video: "🎬",
   image: "🖼",
   osc: "📡",
+  midi: "🎹",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {
@@ -103,8 +104,10 @@ export function CueRow({
 }: Props) {
   const timing = useTimingStore((s) => s.timings[cue.id]);
 
-  const isRunning = cue.state === "running";
-  const isPaused  = cue.state === "paused";
+  const isRunning  = cue.state === "running";
+  const isPaused   = cue.state === "paused";
+  const isDisabled = cue.is_disabled ?? false;
+  const isBroken   = cue.is_broken ?? false;
 
   const progressPct =
     isRunning && timing && cue.duration_ms && cue.duration_ms > 0
@@ -137,9 +140,9 @@ export function CueRow({
       ? "inset 0 0 0 1px #3b82f6"
       : "none",
     fontSize: 13,
-    color: "#e2e8f0",
+    color: isDisabled ? "#475569" : "#e2e8f0",
     minHeight: rowHeight,
-    opacity: isDragSource ? 0.4 : 1,
+    opacity: isDragSource ? 0.4 : isDisabled ? 0.55 : 1,
     transition: "opacity 0.1s",
   };
 
@@ -202,14 +205,22 @@ export function CueRow({
               style={{
                 position: "relative",
                 zIndex: 1,
-                display: "block",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
                 overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
                 paddingLeft: 5,
               }}
             >
-              {cue.name}
+              {isBroken && (
+                <span title="Media file missing" style={{ color: "#ef4444", flexShrink: 0, fontSize: 11, fontWeight: 700 }}>!</span>
+              )}
+              {isDisabled && (
+                <span title="Disabled" style={{ color: "#475569", flexShrink: 0, fontSize: 10 }}>off</span>
+              )}
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: isDisabled ? "line-through" : "none" }}>
+                {cue.name}
+              </span>
             </span>
           </div>
         );

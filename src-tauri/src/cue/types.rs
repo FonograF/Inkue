@@ -23,6 +23,8 @@ pub enum CueType {
     Image,
     /// Sends one or more OSC messages over UDP when triggered.
     Osc,
+    /// Sends one or more MIDI messages when triggered.
+    Midi,
 }
 
 impl std::fmt::Display for CueType {
@@ -37,6 +39,7 @@ impl std::fmt::Display for CueType {
             CueType::Video => write!(f, "video"),
             CueType::Image => write!(f, "image"),
             CueType::Osc   => write!(f, "osc"),
+            CueType::Midi  => write!(f, "midi"),
         }
     }
 }
@@ -130,6 +133,21 @@ pub enum GroupMode {
     /// Auto-Continue chains after Post-Wait, Auto-Follow chains at action start,
     /// Do Not Continue stops the sequence.
     Sequential,
+}
+
+/// Parameters passed from a Fade Cue to the transport so it can resolve the
+/// target voice and inject it back via [`super::traits::Cue::set_fade_voice`].
+pub struct FadeAction {
+    /// Cue number to fade (`None` = no target resolved yet; transport fills it in).
+    pub target_cue_number: Option<String>,
+    /// Target linear gain (0.0 = silence, 1.0 = unity).
+    pub target_gain_linear: f32,
+    /// Fade duration in milliseconds.
+    pub duration_ms: u64,
+    /// Curve shape.
+    pub curve: FadeCurve,
+    /// Whether to stop the target cue after the fade completes.
+    pub stop_at_end: bool,
 }
 
 /// Specification for a single fade (in or out).

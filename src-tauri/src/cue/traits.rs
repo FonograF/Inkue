@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{
     context::CueContext,
-    types::{ContinueMode, CueColor, CueId, CueState, CueType, GroupMode},
+    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, GroupMode},
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,22 @@ pub trait Cue: Send {
 
     /// Update the colour label.
     fn set_color(&mut self, color: CueColor);
+
+    /// Whether this cue is disabled.  Disabled cues are skipped by the
+    /// transport — the Playhead advances past them automatically.
+    fn is_disabled(&self) -> bool {
+        false
+    }
+
+    /// Enable or disable this cue.
+    fn set_disabled(&mut self, _disabled: bool) {}
+
+    /// For media cues (Audio, Video, Image): the file path as stored in the
+    /// cue (may be relative to the workspace directory).  Used by the command
+    /// layer to detect broken cues without calling `serialize()`.
+    fn media_file_path(&self) -> Option<&std::path::Path> {
+        None
+    }
 
     // -----------------------------------------------------------------------
     // State
@@ -283,6 +299,17 @@ pub trait Cue: Send {
     fn stop_on_next_go(&self) -> bool {
         false
     }
+
+    /// Fade Cue only: returns the fade parameters so the transport can resolve
+    /// the target voice and call [`set_fade_voice`] before the first tick.
+    fn fade_specification(&self) -> Option<FadeAction> {
+        None
+    }
+
+    /// Inject the resolved target voice ID and its current gain into this cue.
+    /// Called by [`crate::show::transport::Transport::go`] after `go()` for
+    /// Fade Cues so that `tick()` knows which voice to update.
+    fn set_fade_voice(&mut self, _voice_id: Option<CueId>, _start_gain: f32) {}
 
     /// Stop Cue only: describes what to stop after `go()` completes.
     ///

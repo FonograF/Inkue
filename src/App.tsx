@@ -577,7 +577,21 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc", e: React.MouseEvent) => {
+  const handleAddFade = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("fade", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const handleAddMidi = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("midi", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("wincue:cue-drag-start", {
@@ -740,6 +754,22 @@ export default function App() {
             title="Add OSC Cue after selection · Drag to insert at position"
           >
             + OSC
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#93c5fd", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddFade}
+            onMouseDown={(e) => dispatchCueDrag("fade", e)}
+            title="Add Fade Cue after selection · Drag to insert at position"
+          >
+            + Fade
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#86efac", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddMidi}
+            onMouseDown={(e) => dispatchCueDrag("midi", e)}
+            title="Add MIDI Cue after selection · Drag to insert at position"
+          >
+            + MIDI
           </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector

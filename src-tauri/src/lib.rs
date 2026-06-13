@@ -21,6 +21,7 @@ use commands::{
         set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
+    midi_cmds::{list_midi_output_ports, send_midi_test},
     osc_cmds::{
         add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
         send_osc_test, set_osc_config, update_osc_patch,
@@ -172,6 +173,9 @@ pub fn run() {
             get_asio_output_pairs,
             get_output_screen,
             set_output_screen,
+            // MIDI
+            list_midi_output_ports,
+            send_midi_test,
             // OSC
             list_osc_patches,
             add_osc_patch,

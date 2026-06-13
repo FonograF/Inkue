@@ -461,7 +461,7 @@ impl CueList {
             .and_then(|id| self.get(id))
     }
 
-    /// Advance the Playhead to the cue immediately after the current one.
+    /// Advance the Playhead to the next non-disabled cue after the current one.
     /// Returns the new Playhead cue ID, or `None` if we're past the end.
     pub fn advance_playhead(&mut self) -> Option<CueId> {
         let current_idx = self
@@ -469,7 +469,10 @@ impl CueList {
             .as_ref()
             .and_then(|id| self.index_of(id))?;
 
-        let next = self.cues.get(current_idx + 1).map(|c| c.id());
+        let next = self.cues[current_idx + 1..]
+            .iter()
+            .find(|c| !c.is_disabled())
+            .map(|c| c.id());
         self.playhead_cue_id = next;
         next
     }

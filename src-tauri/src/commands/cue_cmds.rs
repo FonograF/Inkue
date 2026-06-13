@@ -36,6 +36,10 @@ pub struct CueSummary {
     pub file_path: Option<String>,
     /// True while the audio file is being decoded in a background thread.
     pub is_loading: bool,
+    /// True when this cue is disabled — skipped by the transport on GO.
+    pub is_disabled: bool,
+    /// True when this cue's media file is missing or unassigned.
+    pub is_broken: bool,
     /// For Group cues: their direct children summaries (recursive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<CueSummary>>,
@@ -49,7 +53,27 @@ pub struct CueSummary {
     pub active_child_id: Option<String>,
 }
 
-fn summarise(cue: &dyn Cue) -> CueSummary {
+/// Returns `true` when a media cue's file is absent or unassigned.
+fn check_broken(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> bool {
+    match cue.cue_type() {
+        CueType::Audio | CueType::Video | CueType::Image => {
+            match cue.media_file_path() {
+                None => true, // no file assigned
+                Some(p) if p.as_os_str().is_empty() => true,
+                Some(p) => {
+                    if p.is_absolute() {
+                        !p.exists()
+                    } else {
+                        workspace_dir.map(|d| !d.join(p).exists()).unwrap_or(true)
+                    }
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSummary {
     CueSummary {
         id: cue.id().to_string(),
         cue_type: cue.cue_type(),
@@ -61,24 +85,21 @@ fn summarise(cue: &dyn Cue) -> CueSummary {
         pre_wait_ms: cue.pre_wait().as_millis() as u64,
         post_wait_ms: cue.post_wait().as_millis() as u64,
         duration_ms: cue.duration().map(|d| d.as_millis() as u64),
-        file_path: None, // populated below for file-based cues
-        is_loading: false, // populated below
-        children: cue.child_cues().map(|ch| ch.iter().map(|c| summarise_recursive(c.as_ref())).collect()),
+        file_path: cue.media_file_path().map(|p| p.to_string_lossy().into_owned()),
+        is_loading: false,
+        is_disabled: cue.is_disabled(),
+        is_broken: check_broken(cue, workspace_dir),
+        children: cue.child_cues().map(|ch| {
+            ch.iter().map(|c| summarise_recursive(c.as_ref(), workspace_dir)).collect()
+        }),
         group_mode: cue.group_mode(),
         active_child_id: cue.active_child_id().map(|id| id.to_string()),
     }
 }
 
 /// Recursively build a CueSummary, including children for Group cues.
-fn summarise_recursive(cue: &dyn Cue) -> CueSummary {
-    let mut s = summarise(cue);
-    // file_path and is_loading for nested audio cues.
-    if cue.cue_type() == CueType::Audio {
-        if let Some(fp) = cue.serialize().get("file_path").and_then(|v| v.as_str()) {
-            s.file_path = Some(fp.to_string());
-        }
-    }
-    s
+fn summarise_recursive(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSummary {
+    summarise(cue, workspace_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -91,22 +112,15 @@ pub fn get_all_cues(state: State<'_, AppState>) -> Result<Vec<CueSummary>, Strin
     let ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
     let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
+    let ws_dir = ws.file_path.as_ref().and_then(|p| p.parent()).map(|p| p.to_owned());
+    let ws_dir_ref = ws_dir.as_deref();
 
     let summaries: Vec<CueSummary> = cue_list
         .cues
         .iter()
         .map(|c| {
-            let mut s = summarise(c.as_ref());
+            let mut s = summarise(c.as_ref(), ws_dir_ref);
             s.is_loading = loading.contains(&c.id());
-            // Populate file_path for file-based cues (Audio, Video, Image) via the
-            // serialised form — avoids unsafe downcasting.
-            if matches!(c.cue_type(), CueType::Audio | CueType::Video | CueType::Image) {
-                let json = c.serialize();
-                s.file_path = json
-                    .get("file_path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
             s
         })
         .collect();

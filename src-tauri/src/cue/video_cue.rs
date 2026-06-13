@@ -69,6 +69,8 @@ pub struct VideoCue {
     /// default patch (or system default if none is configured).
     pub output_patch_id: Option<uuid::Uuid>,
 
+    is_disabled: bool,
+
     // --- Runtime ---
     /// The video voice ID currently in use, if any.
     active_voice_id: Option<VoiceId>,
@@ -116,6 +118,7 @@ impl VideoCue {
             loop_count: 0,
             output_surface_id: None,
             output_patch_id: None,
+            is_disabled: false,
             active_voice_id: None,
             decoded_samples: None,
             decoded_channels: 2,
@@ -261,6 +264,8 @@ impl Cue for VideoCue {
     fn set_notes(&mut self, notes: String) { self.notes = notes; }
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
     fn state(&self) -> CueState { self.state }
 
     // -----------------------------------------------------------------------
@@ -484,6 +489,10 @@ impl Cue for VideoCue {
     fn mark_auto_continue_fired(&mut self) { self.auto_continue_fired = true; }
     fn clear_auto_continue_fired(&mut self) { self.auto_continue_fired = false; }
 
+    fn media_file_path(&self) -> Option<&std::path::Path> {
+        self.file_path.as_deref()
+    }
+
     fn set_runtime_duration(&mut self, duration: Duration) {
         self.cached_duration = Some(duration);
     }
@@ -532,6 +541,7 @@ impl Cue for VideoCue {
             "loop_count": self.loop_count,
             "output_surface_id": self.output_surface_id,
             "output_patch_id": self.output_patch_id,
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -615,6 +625,9 @@ impl CueFactory for VideoCueFactory {
         // global preference (DisplayPreferences::output_screen) and is ignored here.
         if let Some(pid_str) = value.get("output_patch_id").and_then(|v| v.as_str()) {
             cue.output_patch_id = pid_str.parse().ok();
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))

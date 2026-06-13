@@ -35,6 +35,7 @@ pub struct WaitCue {
     wait_duration: Duration,
     /// Elapsed time accumulated before the most recent pause.
     elapsed_before_pause: Duration,
+    is_disabled: bool,
     /// Wall-clock instant when `go()` or `resume()` was last called.
     started_at: Option<Instant>,
 }
@@ -54,6 +55,7 @@ impl WaitCue {
             post_wait: Duration::ZERO,
             wait_duration: Duration::from_secs(5),
             elapsed_before_pause: Duration::ZERO,
+            is_disabled: false,
             started_at: None,
         }
     }
@@ -81,6 +83,9 @@ impl Cue for WaitCue {
 
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
 
     fn state(&self) -> CueState { self.state }
 
@@ -175,6 +180,7 @@ impl Cue for WaitCue {
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
             "wait_duration_ms": self.wait_duration.as_millis() as u64,
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -224,6 +230,9 @@ impl CueFactory for WaitCueFactory {
             if let Ok(color) = serde_json::from_value(col.clone()) {
                 cue.color = color;
             }
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))

@@ -10,6 +10,7 @@ use crate::cue::{
     context::CueContext,
     types::{ContinueMode, CueId, CueState, CueType},
 };
+use crate::engine::ring_command::VoiceId;
 
 use super::cue_list::CueList;
 
@@ -58,6 +59,13 @@ impl Transport {
             None => return Ok(GoResult { triggered: vec![], stopped: vec![] }),
         };
 
+        // If the cue at the playhead is disabled (e.g., toggled while the
+        // playhead was parked on it), advance past it and retry.
+        if cue_list.get(&cue_id).is_some_and(|c| c.is_disabled()) {
+            cue_list.advance_playhead();
+            return self.go(cue_list);
+        }
+
         // If the cue wants to absorb this GO (e.g., a Sequential Group paused
         // mid-sequence), delegate to the cue and skip outer Playhead advancement.
         if cue_list.get(&cue_id).is_some_and(|c| c.absorbs_go()) {
@@ -102,6 +110,23 @@ impl Transport {
                 .get_mut(&cue_id)
                 .ok_or_else(|| anyhow!("Cue not found: {:?}", cue_id))?;
             cue.go(&self.context)?;
+        }
+
+        // Inject the target voice into Fade Cues so tick() can apply gain updates.
+        // Done here, after go(), so the Fade Cue's voice_id slot is ready.
+        let fade_spec = cue_list.get(&cue_id).and_then(|c| c.fade_specification());
+        if let Some(spec) = fade_spec {
+            let target_voice: Option<VoiceId> = spec
+                .target_cue_number
+                .as_deref()
+                .and_then(|num| cue_list.cues.iter().find(|c| c.number() == Some(num)))
+                .and_then(|c| c.playing_voice_id());
+            let start_gain = target_voice
+                .map(|vid| self.context.audio_engine.get_voice_gain(vid))
+                .unwrap_or(1.0);
+            if let Some(fc) = cue_list.get_mut(&cue_id) {
+                fc.set_fade_voice(target_voice, start_gain);
+            }
         }
 
         // Execute the stop action declared by Stop Cues **before** evaluating

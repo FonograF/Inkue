@@ -53,6 +53,8 @@ pub struct ImageCue {
     /// Optional fade-out applied when the image is hidden.
     pub fade_out: Option<FadeSpec>,
 
+    is_disabled: bool,
+
     // --- Runtime ---
     /// Active output voice ID.
     active_voice_id: Option<VoiceId>,
@@ -82,6 +84,7 @@ impl ImageCue {
             file_path: None,
             fade_in: None,
             fade_out: None,
+            is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
             play_generation: 0,
@@ -140,6 +143,8 @@ impl Cue for ImageCue {
     fn set_notes(&mut self, notes: String) { self.notes = notes; }
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
     fn state(&self) -> CueState { self.state }
 
     // -----------------------------------------------------------------------
@@ -280,6 +285,10 @@ impl Cue for ImageCue {
         self.active_voice_id
     }
 
+    fn media_file_path(&self) -> Option<&std::path::Path> {
+        self.file_path.as_deref()
+    }
+
     fn stop_on_next_go(&self) -> bool {
         // Images always stop on the next GO (StopOnNextCue behavior).
         true
@@ -328,6 +337,7 @@ impl Cue for ImageCue {
             "fade_in_curve": self.fade_in.as_ref().map(|f| f.curve),
             "fade_out_ms": self.fade_out.as_ref().map(|f| f.duration_ms),
             "fade_out_curve": self.fade_out.as_ref().map(|f| f.curve),
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -394,6 +404,9 @@ impl CueFactory for ImageCueFactory {
         }
         // "stop_mode", "display_duration_ms", "screen_index" from older workspaces are
         // silently ignored (fields no longer exist in the new architecture).
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
+        }
 
         Ok(Box::new(cue))
     }

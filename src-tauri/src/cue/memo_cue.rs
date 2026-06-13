@@ -29,6 +29,7 @@ pub struct MemoCue {
     post_wait: Duration,
     /// Text displayed in the cue list target column.
     pub memo_text: String,
+    is_disabled: bool,
     /// Timestamp when `go()` was last called (for elapsed tracking).
     started_at: Option<Instant>,
 }
@@ -47,6 +48,7 @@ impl MemoCue {
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
             memo_text: String::new(),
+            is_disabled: false,
             started_at: None,
         }
     }
@@ -98,6 +100,9 @@ impl Cue for MemoCue {
     fn set_color(&mut self, color: CueColor) {
         self.color = color;
     }
+
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
 
     fn state(&self) -> CueState {
         self.state
@@ -197,6 +202,7 @@ impl Cue for MemoCue {
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
             "memo_text": self.memo_text,
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -246,6 +252,9 @@ impl CueFactory for MemoCueFactory {
             if let Ok(color) = serde_json::from_value(col.clone()) {
                 cue.color = color;
             }
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))

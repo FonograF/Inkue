@@ -200,3 +200,16 @@ export const setOscConfig = (config: OscReceiveConfig) =>
   invoke<void>("set_osc_config", { config });
 export const sendOscTest = (patchId: string, message: import("./types").OscMessage) =>
   invoke<string>("send_osc_test", { patchId, message });
+
+// ---------------------------------------------------------------------------
+// MIDI
+// ---------------------------------------------------------------------------
+
+export const listMidiOutputPorts = () => invoke<string[]>("list_midi_output_ports");
+export const sendMidiTest = (
+  portName: string,
+  messageType: string,
+  channel: number,
+  data1: number,
+  data2: number,
+) => invoke<void>("send_midi_test", { portName, messageType, channel, data1, data2 });

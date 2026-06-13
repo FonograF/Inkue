@@ -72,6 +72,8 @@ pub struct AudioCue {
     /// Playback rate multiplier (1.0 = normal speed).
     pub rate: f64,
 
+    is_disabled: bool,
+
     // --- Runtime ---
     /// Pre-decoded samples, loaded by `load()`.
     decoded_samples: Option<Arc<Vec<f32>>>,
@@ -120,6 +122,7 @@ impl AudioCue {
             loop_count: 0,
             output_patch_id: None,
             rate: 1.0,
+            is_disabled: false,
             decoded_samples: None,
             decoded_channels: 2,
             decoded_sample_rate: 44100,
@@ -257,6 +260,8 @@ impl Cue for AudioCue {
     fn set_notes(&mut self, notes: String) { self.notes = notes; }
     fn color(&self) -> CueColor { self.color }
     fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn is_disabled(&self) -> bool { self.is_disabled }
+    fn set_disabled(&mut self, d: bool) { self.is_disabled = d; }
     fn state(&self) -> CueState { self.state }
 
     fn load(&mut self, _context: &CueContext) -> Result<()> {
@@ -498,6 +503,10 @@ impl Cue for AudioCue {
         self.cached_duration
     }
 
+    fn media_file_path(&self) -> Option<&std::path::Path> {
+        self.file_path.as_deref()
+    }
+
     fn extract_decoded_audio(
         &self,
     ) -> Option<(std::sync::Arc<Vec<f32>>, u16, u32, Duration)> {
@@ -571,6 +580,7 @@ impl Cue for AudioCue {
             "loop_count": self.loop_count,
             "output_patch_id": self.output_patch_id,
             "rate": self.rate,
+            "is_disabled": self.is_disabled,
         })
     }
 }
@@ -653,6 +663,9 @@ impl CueFactory for AudioCueFactory {
         }
         if let Some(rate) = value.get("rate").and_then(|v| v.as_f64()) {
             cue.rate = rate;
+        }
+        if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
+            cue.is_disabled = b;
         }
 
         Ok(Box::new(cue))

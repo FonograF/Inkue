@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -44,6 +44,10 @@ export interface CueSummary {
   file_path: string | null;
   /** True while the audio file is being decoded in a background thread. */
   is_loading: boolean;
+  /** True when this cue is disabled — skipped by the transport on GO. */
+  is_disabled: boolean;
+  /** True when this cue's media file is missing or unassigned. */
+  is_broken: boolean;
   /** For Group cues: direct child cue summaries (recursive). */
   children?: CueSummary[];
   /** For Group cues: playback mode. */
@@ -89,6 +93,44 @@ export interface ImageCueData extends CueSummary {
   fade_in_curve: FadeCurve | null;
   fade_out_ms: number | null;
   fade_out_curve: FadeCurve | null;
+}
+
+// ---------------------------------------------------------------------------
+// MIDI types
+// ---------------------------------------------------------------------------
+
+export type MidiMessageType = "note_on" | "note_off" | "control_change" | "program_change";
+
+export interface MidiMessage {
+  port_name: string;
+  message_type: MidiMessageType;
+  /** MIDI channel 1–16 */
+  channel: number;
+  /** Note / CC number / program (0–127) */
+  data1: number;
+  /** Velocity / CC value (0–127); unused for program_change */
+  data2: number;
+}
+
+/** Full cue data returned by get_cue for a MIDI Cue. */
+export interface MidiCueData extends CueSummary {
+  notes: string;
+  messages: MidiMessage[];
+}
+
+/** Full cue data returned by get_cue for a Fade Cue. */
+export interface FadeCueData extends CueSummary {
+  notes: string;
+  /** Cue number to target. null = no target (fade is a no-op). */
+  target_cue_number: string | null;
+  /** Target volume in dB (-60 = silence, 0 = unity). */
+  target_volume_db: number;
+  /** Fade duration in milliseconds. */
+  fade_duration_ms: number;
+  /** Fade curve shape. */
+  fade_curve: FadeCurve;
+  /** Stop the target cue once the fade completes. */
+  stop_at_end: boolean;
 }
 
 /** Full cue data returned by get_cue for a Wait Cue. */

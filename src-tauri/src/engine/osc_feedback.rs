@@ -87,6 +87,7 @@ pub fn send_running(cues: &[(String, String)]) {
 // ---------------------------------------------------------------------------
 
 static PENDING_LIST_REQUEST: AtomicBool = AtomicBool::new(false);
+static PENDING_PLAYHEAD_REQUEST: AtomicBool = AtomicBool::new(false);
 
 /// Request an immediate send of the full cue list on the next event-loop tick.
 /// Called by the OSC server when `/wincue/cues/request` is received.
@@ -97,6 +98,17 @@ pub fn request_cue_list() {
 /// Returns `true` if an OSC client requested the cue list since the last send.
 pub fn is_cue_list_requested() -> bool {
     PENDING_LIST_REQUEST.load(Ordering::Relaxed)
+}
+
+/// Request an immediate send of the current playhead state on the next event-loop tick.
+/// Called by the OSC server when `/wincue/playhead/request` is received.
+pub fn request_playhead() {
+    PENDING_PLAYHEAD_REQUEST.store(true, Ordering::Relaxed);
+}
+
+/// Returns `true` if an OSC client requested the playhead state since the last send.
+pub fn is_playhead_requested() -> bool {
+    PENDING_PLAYHEAD_REQUEST.swap(false, Ordering::Relaxed)
 }
 
 /// Send the full ordered cue list to the configured destination.

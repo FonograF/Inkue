@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-13
 
-## Current version: 0.6.2
+## Current version: 0.6.5
 
 ## cargo build result
 
@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**47 tests pass, 0 failures.**
+**57 tests pass, 0 failures.**
 
 ---
 
@@ -23,7 +23,9 @@
 | Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades; stop-on-next-cue only fires for visual GOs (audio GO leaves image running) |
 | Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
+| Fade  | ✅ **Functional** | Targets a running cue by number; interpolates its volume from current level to target dB over a configurable duration; configurable curve (Linear/S-Curve/Exponential); optional Stop at End; pause/resume supported |
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next|previous |
+| MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 
 ---
 
@@ -370,13 +372,13 @@ A global `OUTPUT_PCM_DISCARD: OnceLock<Arc<AtomicBool>>` flag controls routing:
 | 19. Wait Cue | ✅ Fixed duration delay; registered in CueRegistry |
 | 20. Output timer | ✅ OSD via mpv; 60fps thread; font/size/position/margin/ms; live preview |
 | 21. OSC Cue | ✅ Send multiple OSC messages on GO; workspace patches; inspector Messages tab; receive server with allowlist; Preferences OSC tab; activity dot in transport bar |
+| 22. Fade Cue | ✅ Volume fade to target dB, configurable curve (Linear/S-Curve/Exponential), stop-at-end, pause/resume, pre-wait |
 
 ---
 
 ## Next priorities
 
-1. **Future cue types** — architecture is ready; add via `CueRegistry` without touching transport.
-   Priority order: **Fade** (fade a running audio cue) → MIDI.
+See `WHATSNEXT.md` for the full roadmap with effort estimates.
 2. **Optional: active A/V resync** — nudge the video audio voice's rate to track
    mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
 3. **ASIO→WASAPI Output Patch validation** — routing wired, needs hardware test.
