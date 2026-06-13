@@ -19,9 +19,6 @@ pub enum CueEvent {
     Stopped { cue_id: uuid::Uuid },
     /// The cue's post-wait has elapsed; continue mode should be evaluated.
     PostWaitElapsed { cue_id: uuid::Uuid },
-    /// Emitted by [`StopCue`](crate::cue::stop_cue::StopCue) to request that
-    /// the transport stop all currently-running cues.
-    StopAll,
 }
 
 /// Shared context passed to every cue lifecycle call (`go`, `stop`, `pause`, …).

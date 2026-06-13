@@ -1,8 +1,15 @@
-//! [`StopCue`] — a cue that stops all running cues when triggered.
+//! [`StopCue`] — stops one or all running cues when triggered.
 //!
-//! When GO is pressed on a Stop cue it immediately emits a [`CueEvent::StopAll`]
-//! signal, which the transport layer honours by calling `stop_all` on the cue
-//! list.  The Stop cue itself completes synchronously with no audio action.
+//! The Stop Cue can target:
+//! - **All cues** (default) — equivalent to pressing Stop All.
+//! - **A specific cue number** — only that cue is stopped.
+//!
+//! It also supports two stop modes:
+//! - **Soft** (default) — applies the workspace's default fade-out.
+//! - **Hard** — immediate cut, no fade.
+//!
+//! The cue completes synchronously; Auto-Follow / Auto-Continue chain
+//! *after* the stop action executes (transport handles this ordering).
 
 use std::time::{Duration, Instant};
 
@@ -11,12 +18,12 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::{
-    context::{CueContext, CueEvent},
-    traits::{Cue, CueFactory},
+    context::CueContext,
+    traits::{Cue, CueFactory, RuntimeState},
     types::{ContinueMode, CueColor, CueId, CueState, CueType},
 };
 
-/// A cue that stops all currently-running cues when triggered.
+/// A cue that stops one or all running cues when triggered.
 pub struct StopCue {
     id: CueId,
     name: String,
@@ -28,6 +35,11 @@ pub struct StopCue {
     pre_wait: Duration,
     post_wait: Duration,
     started_at: Option<Instant>,
+
+    /// `None` = stop all running cues; `Some(n)` = stop only the cue with cue-number `n`.
+    pub target_cue_number: Option<String>,
+    /// `true` = immediate cut; `false` = soft fade using the workspace default.
+    pub hard_stop_mode: bool,
 }
 
 impl StopCue {
@@ -35,7 +47,7 @@ impl StopCue {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
-            name: String::from("Stop All"),
+            name: String::from("Stop Cue"),
             number: None,
             notes: String::new(),
             color: CueColor::Red,
@@ -44,6 +56,8 @@ impl StopCue {
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
             started_at: None,
+            target_cue_number: None,
+            hard_stop_mode: false,
         }
     }
 }
@@ -55,79 +69,34 @@ impl Default for StopCue {
 }
 
 impl Cue for StopCue {
-    fn id(&self) -> CueId {
-        self.id
-    }
+    fn id(&self) -> CueId { self.id }
+    fn cue_type(&self) -> CueType { CueType::Stop }
+    fn name(&self) -> &str { &self.name }
+    fn set_name(&mut self, name: String) { self.name = name; }
+    fn number(&self) -> Option<&str> { self.number.as_deref() }
+    fn set_number(&mut self, number: Option<String>) { self.number = number; }
+    fn notes(&self) -> &str { &self.notes }
+    fn set_notes(&mut self, notes: String) { self.notes = notes; }
+    fn color(&self) -> CueColor { self.color }
+    fn set_color(&mut self, color: CueColor) { self.color = color; }
+    fn state(&self) -> CueState { self.state }
 
-    fn cue_type(&self) -> CueType {
-        CueType::Stop
-    }
+    fn load(&mut self, _context: &CueContext) -> Result<()> { Ok(()) }
 
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = name;
-    }
-
-    fn number(&self) -> Option<&str> {
-        self.number.as_deref()
-    }
-
-    fn set_number(&mut self, number: Option<String>) {
-        self.number = number;
-    }
-
-    fn notes(&self) -> &str {
-        &self.notes
-    }
-
-    fn set_notes(&mut self, notes: String) {
-        self.notes = notes;
-    }
-
-    fn color(&self) -> CueColor {
-        self.color
-    }
-
-    fn set_color(&mut self, color: CueColor) {
-        self.color = color;
-    }
-
-    fn state(&self) -> CueState {
-        self.state
-    }
-
-    fn load(&mut self, _context: &CueContext) -> Result<()> {
-        Ok(())
-    }
-
-    fn go(&mut self, context: &CueContext) -> Result<()> {
-        self.state = CueState::Running;
-        self.started_at = Some(Instant::now());
-        context.emit(CueEvent::ActionStarted { cue_id: self.id });
-        // Signal the transport to stop all running cues.
-        context.emit(CueEvent::StopAll);
+    fn go(&mut self, _context: &CueContext) -> Result<()> {
         self.state = CueState::Completed;
-        context.emit(CueEvent::ActionCompleted { cue_id: self.id });
+        self.started_at = Some(Instant::now());
         Ok(())
     }
 
-    fn stop(&mut self, context: &CueContext) -> Result<()> {
+    fn stop(&mut self, _context: &CueContext) -> Result<()> {
         self.state = CueState::Standby;
         self.started_at = None;
-        context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
 
-    fn pause(&mut self, _context: &CueContext) -> Result<()> {
-        Ok(())
-    }
-
-    fn resume(&mut self, _context: &CueContext) -> Result<()> {
-        Ok(())
-    }
+    fn pause(&mut self, _context: &CueContext) -> Result<()> { Ok(()) }
+    fn resume(&mut self, _context: &CueContext) -> Result<()> { Ok(()) }
 
     fn hard_stop(&mut self, context: &CueContext) -> Result<()> {
         self.stop(context)
@@ -139,42 +108,40 @@ impl Cue for StopCue {
         Ok(())
     }
 
-    fn pre_wait(&self) -> Duration {
-        self.pre_wait
-    }
+    fn pre_wait(&self) -> Duration { self.pre_wait }
+    fn set_pre_wait(&mut self, d: Duration) { self.pre_wait = d; }
+    fn post_wait(&self) -> Duration { self.post_wait }
+    fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
-    fn set_pre_wait(&mut self, d: Duration) {
-        self.pre_wait = d;
-    }
-
-    fn post_wait(&self) -> Duration {
-        self.post_wait
-    }
-
-    fn set_post_wait(&mut self, d: Duration) {
-        self.post_wait = d;
-    }
-
-    fn duration(&self) -> Option<Duration> {
-        None
-    }
+    fn duration(&self) -> Option<Duration> { None }
 
     fn elapsed(&self) -> Duration {
-        self.started_at
-            .map(|t| t.elapsed())
-            .unwrap_or(Duration::ZERO)
+        self.started_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO)
     }
 
-    fn action_elapsed(&self) -> Duration {
-        self.elapsed()
+    fn action_elapsed(&self) -> Duration { self.elapsed() }
+
+    fn continue_mode(&self) -> ContinueMode { self.continue_mode }
+    fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
+
+    /// Returns the stop action for the transport to execute immediately after
+    /// `go()`, before any Auto-Follow chain fires.
+    fn stop_specification(&self) -> Option<(bool, Option<String>)> {
+        Some((self.hard_stop_mode, self.target_cue_number.clone()))
     }
 
-    fn continue_mode(&self) -> ContinueMode {
-        self.continue_mode
+    fn runtime_state(&self) -> RuntimeState {
+        RuntimeState {
+            state: self.state,
+            voice_id: None,
+            started_at: self.started_at,
+            action_started_at: self.started_at,
+        }
     }
 
-    fn set_continue_mode(&mut self, mode: ContinueMode) {
-        self.continue_mode = mode;
+    fn restore_runtime_state(&mut self, snap: RuntimeState) {
+        self.state = snap.state;
+        self.started_at = snap.started_at;
     }
 
     fn serialize(&self) -> Value {
@@ -189,6 +156,8 @@ impl Cue for StopCue {
             "pre_wait_ms": self.pre_wait.as_millis() as u64,
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
+            "target_cue_number": self.target_cue_number,
+            "hard_stop_mode": self.hard_stop_mode,
         })
     }
 }
@@ -236,7 +205,72 @@ impl CueFactory for StopCueFactory {
                 cue.color = color;
             }
         }
+        if let Some(target) = value.get("target_cue_number").and_then(|v| v.as_str()) {
+            cue.target_cue_number = Some(target.to_string());
+        }
+        if let Some(hard) = value.get("hard_stop_mode").and_then(|v| v.as_bool()) {
+            cue.hard_stop_mode = hard;
+        }
 
         Ok(Box::new(cue))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_targets_all_with_soft_stop() {
+        let cue = StopCue::new();
+        let spec = cue.stop_specification().unwrap();
+        assert!(!spec.0, "hard_stop_mode should default to false");
+        assert!(spec.1.is_none(), "target should default to None (all)");
+    }
+
+    #[test]
+    fn target_cue_number_roundtrips() {
+        let factory = StopCueFactory;
+        let mut cue = StopCue::new();
+        cue.target_cue_number = Some("5".to_string());
+        cue.hard_stop_mode = true;
+
+        let json = cue.serialize();
+        let rebuilt = factory.from_json(json).unwrap();
+
+        let spec = rebuilt.stop_specification().unwrap();
+        assert!(spec.0);
+        assert_eq!(spec.1.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn go_sets_completed_state() {
+        let cue = StopCue::new();
+        assert_eq!(cue.state(), CueState::Standby);
+    }
+
+    #[test]
+    fn cue_type_is_stop() {
+        assert_eq!(StopCue::new().cue_type(), CueType::Stop);
+    }
+
+    #[test]
+    fn serialize_roundtrip() {
+        let factory = StopCueFactory;
+        let mut cue = StopCue::new();
+        cue.set_name("My Stop".to_string());
+        cue.target_cue_number = Some("3".to_string());
+
+        let json = cue.serialize();
+        assert_eq!(json["name"], "My Stop");
+        assert_eq!(json["target_cue_number"], "3");
+        assert_eq!(json["hard_stop_mode"], false);
+
+        let rebuilt = factory.from_json(json).unwrap();
+        assert_eq!(rebuilt.name(), "My Stop");
     }
 }

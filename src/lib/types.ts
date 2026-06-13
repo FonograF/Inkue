@@ -98,6 +98,15 @@ export interface WaitCueData extends CueSummary {
   wait_duration_ms: number;
 }
 
+/** Full cue data returned by get_cue for a Stop Cue. */
+export interface StopCueData extends CueSummary {
+  notes: string;
+  /** null = stop all running cues; string = cue number to stop specifically. */
+  target_cue_number: string | null;
+  /** true = immediate cut (no fade); false = soft stop with workspace fade-out. */
+  hard_stop_mode: boolean;
+}
+
 /** Information about a connected monitor. */
 export interface ScreenInfo {
   index: number;

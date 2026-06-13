@@ -13,6 +13,7 @@ use crate::{
     state::AppState,
 };
 
+
 // ---------------------------------------------------------------------------
 // Shared helper
 // ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
 
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
 
-    let (tx, rx) = crossbeam_channel::unbounded::<CueEvent>();
+    let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     let context = CueContext::new(
         state.audio_engine.clone(),
         state.output_engine.clone(),
@@ -113,35 +114,23 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         }
     }
 
-    let triggered = transport.go(cue_list).map_err(|e| e.to_string())?;
+    let result = transport.go(cue_list).map_err(|e| e.to_string())?;
 
-    // Handle any events emitted synchronously during go() — notably StopAll
-    // from a StopCue, which must stop all running cues immediately.
-    while let Ok(event) = rx.try_recv() {
-        if let CueEvent::StopAll = event {
-            let stop_context = make_context(&state, stop_fade_ms);
-            let mut stop_transport = Transport::new(stop_context);
-            let stopping: Vec<_> = cue_list
-                .cues
-                .iter()
-                .filter(|c| c.is_running() || c.is_paused())
-                .map(|c| c.id())
-                .collect();
-            let _ = stop_transport.stop_all(cue_list);
-            for id in stopping {
-                let _ = app_handle.emit(
-                    "cue-state-changed",
-                    serde_json::json!({
-                        "cue_id": id,
-                        "old_state": "running",
-                        "new_state": "standby",
-                    }),
-                );
-            }
-        }
+    // Emit state changes for cues stopped by a Stop Cue action.
+    for id in &result.stopped {
+        let _ = app_handle.emit(
+            "cue-state-changed",
+            serde_json::json!({
+                "cue_id": id,
+                "old_state": "running",
+                "new_state": "standby",
+            }),
+        );
     }
 
-    for &id in triggered.iter().skip(1) {
+    // Emit state changes for chained cues (skip the primary — the frontend
+    // already shows it as triggered via playhead-moved + cue-list-refresh).
+    for &id in result.triggered.iter().skip(1) {
         let _ = app_handle.emit(
             "cue-state-changed",
             serde_json::json!({

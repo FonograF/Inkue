@@ -341,13 +341,15 @@ fn tick(
     // 9. Fire Auto-Continue / Auto-Follow GO.
     // ------------------------------------------------------------------
     let mut go_triggered: Vec<CueId> = Vec::new();
+    let mut go_stopped: Vec<CueId> = Vec::new();
     let mut go_final_playhead: Option<CueId> = None;
 
     if should_go {
         let context = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone());
         let mut transport = Transport::new(context);
-        if let Ok(ids) = transport.go(cue_list) {
-            go_triggered = ids;
+        if let Ok(result) = transport.go(cue_list) {
+            go_triggered = result.triggered;
+            go_stopped = result.stopped;
             go_final_playhead = cue_list.playhead_cue_id;
         }
     }
@@ -410,7 +412,7 @@ fn tick(
 
     let playhead_payload: Option<(String, String)> = {
         let id = playhead_now.as_ref().map(|(id, _, _)| *id);
-        if id != *prev_playhead_cue {
+        if id != *prev_playhead_cue || crate::engine::osc_feedback::is_playhead_requested() {
             *prev_playhead_cue = id;
             Some(playhead_now.map(|(_, n, name)| (n, name)).unwrap_or_default())
         } else {
@@ -479,6 +481,17 @@ fn tick(
     // (e.g., a timed child completed and the inner playhead advanced).
     if group_child_changed {
         let _ = handle.emit("cue-list-refresh", serde_json::json!({}));
+    }
+
+    for stopped_id in &go_stopped {
+        let _ = handle.emit(
+            "cue-state-changed",
+            serde_json::json!({
+                "cue_id": stopped_id,
+                "old_state": "running",
+                "new_state": "standby",
+            }),
+        );
     }
 
     if !go_triggered.is_empty() {

@@ -2,7 +2,7 @@
 // Shows cue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useState } from "react";
-import type { AudioCueData, CueSummary, ImageCueData, OscCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import type { AudioCueData, CueSummary, ImageCueData, OscCueData, StopCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
 import { WaveformModal } from "../WaveformModal";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -21,7 +21,7 @@ interface Props {
 type Tab = "basics" | "time" | "levels" | "fade" | "messages";
 
 export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props) {
-  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | OscCueData | null>(null);
+  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | OscCueData | StopCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
 
@@ -69,6 +69,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
   const isGroup = selectedCue.cue_type === "group";
   const isWait  = selectedCue.cue_type === "wait";
   const isOsc   = selectedCue.cue_type === "osc";
+  const isStop  = selectedCue.cue_type === "stop";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
@@ -165,7 +166,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
           background: "#020617",
         }}
       >
-        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isOsc ? "📡" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isOsc ? "📡" : isStop ? "⏹" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
@@ -202,6 +203,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
             isVideo={isVideo}
             isImage={isImage}
             isGroup={isGroup}
+            isStop={isStop}
             onSave={save}
             onRefresh={onRefresh}
             onBrowse={handleBrowse}

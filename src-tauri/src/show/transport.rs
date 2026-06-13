@@ -13,6 +13,15 @@ use crate::cue::{
 
 use super::cue_list::CueList;
 
+/// Result returned by [`Transport::go`].
+pub struct GoResult {
+    /// IDs of all cues triggered by this GO (including chained Auto-Continue /
+    /// Auto-Follow cues).  The first element is always the primary cue.
+    pub triggered: Vec<CueId>,
+    /// IDs of cues stopped by a Stop Cue's action during this GO.
+    pub stopped: Vec<CueId>,
+}
+
 /// Manages playback state for a single [`CueList`].
 pub struct Transport {
     pub context: CueContext,
@@ -30,26 +39,23 @@ impl Transport {
 
     /// Trigger the cue at the Playhead.
     ///
-    /// Returns the IDs of **all** cues triggered in this call, including any
-    /// cues chained immediately via Auto-Continue (post_wait = 0) or via
-    /// Auto-Follow on an instant (synchronously-completing) cue.
+    /// Returns a [`GoResult`] containing:
+    /// - `triggered`: IDs of **all** cues fired in this call (primary + chains).
+    /// - `stopped`: IDs of cues stopped by a Stop Cue action.
     ///
     /// Sequence:
     /// 1. Read the cue at the Playhead.
     /// 2. Advance the Playhead to the next cue.
-    /// 3. Call `cue.go()`.
-    /// 4. If the cue has **AutoContinue + post_wait = 0** (audio *or* instant):
-    ///    mark it as fired and immediately chain to the next cue — no 30 fps
-    ///    delay.  The event loop will not re-fire because `is_auto_continue_fired`
-    ///    is already `true`.
-    /// 5. If the cue is an **instant cue with AutoFollow** (already done): chain
-    ///    immediately.
-    /// 6. Delayed chains (post_wait > 0) and audio AutoFollow are handled by
-    ///    the 30 fps event loop.
-    pub fn go(&mut self, cue_list: &mut CueList) -> Result<Vec<CueId>> {
+    /// 3. Stop any running cues with `stop_on_next_go()` (visual-only logic).
+    /// 4. Call `cue.go()`.
+    /// 5. Execute any stop action declared by `cue.stop_specification()` — this
+    ///    runs **before** chain evaluation so Auto-Follow cannot start a cue that
+    ///    the Stop Cue would immediately kill.
+    /// 6. Chain via Auto-Continue (post_wait = 0) or instant Auto-Follow.
+    pub fn go(&mut self, cue_list: &mut CueList) -> Result<GoResult> {
         let cue_id = match cue_list.playhead_cue_id {
             Some(id) => id,
-            None => return Ok(vec![]), // Nothing at the playhead.
+            None => return Ok(GoResult { triggered: vec![], stopped: vec![] }),
         };
 
         // If the cue wants to absorb this GO (e.g., a Sequential Group paused
@@ -58,7 +64,7 @@ impl Transport {
             if let Some(cue) = cue_list.get_mut(&cue_id) {
                 cue.go(&self.context)?;
             }
-            return Ok(vec![cue_id]);
+            return Ok(GoResult { triggered: vec![cue_id], stopped: vec![] });
         }
 
         // Advance playhead before triggering (matches QLab behaviour).
@@ -98,6 +104,37 @@ impl Transport {
             cue.go(&self.context)?;
         }
 
+        // Execute the stop action declared by Stop Cues **before** evaluating
+        // Auto-Follow, so the chained cue is not immediately killed.
+        let stop_spec = cue_list.get(&cue_id).and_then(|c| c.stop_specification());
+        let mut stopped: Vec<CueId> = Vec::new();
+        if let Some((hard, target)) = stop_spec {
+            let ids_to_stop: Vec<CueId> = match &target {
+                None => cue_list
+                    .cues
+                    .iter()
+                    .filter(|c| (c.is_running() || c.is_paused()) && c.id() != cue_id)
+                    .map(|c| c.id())
+                    .collect(),
+                Some(num) => cue_list
+                    .cues
+                    .iter()
+                    .filter(|c| c.number() == Some(num.as_str()) && c.id() != cue_id)
+                    .map(|c| c.id())
+                    .collect(),
+            };
+            for id in &ids_to_stop {
+                if let Some(c) = cue_list.get_mut(id) {
+                    if hard {
+                        let _ = c.hard_stop(&self.context);
+                    } else {
+                        let _ = c.stop(&self.context);
+                    }
+                }
+            }
+            stopped = ids_to_stop;
+        }
+
         // Read continue-mode metadata after go() (state may have changed for
         // instant cues that complete synchronously).
         let (continue_mode, post_wait, is_still_running, holds_playhead) = cue_list
@@ -126,7 +163,6 @@ impl Transport {
             || (!is_still_running && continue_mode == ContinueMode::AutoFollow);
 
         if continue_mode == ContinueMode::AutoContinue && post_wait.is_zero() {
-            // Mark before chaining so the event loop never fires a duplicate GO.
             if let Some(cue) = cue_list.get_mut(&cue_id) {
                 cue.mark_auto_continue_fired();
             }
@@ -136,10 +172,11 @@ impl Transport {
 
         if chain_now {
             let mut rest = self.go(cue_list)?;
-            triggered.append(&mut rest);
+            triggered.append(&mut rest.triggered);
+            stopped.extend(rest.stopped);
         }
 
-        Ok(triggered)
+        Ok(GoResult { triggered, stopped })
     }
 
     // -----------------------------------------------------------------------

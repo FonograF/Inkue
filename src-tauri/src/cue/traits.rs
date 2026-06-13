@@ -284,6 +284,18 @@ pub trait Cue: Send {
         false
     }
 
+    /// Stop Cue only: describes what to stop after `go()` completes.
+    ///
+    /// Returns `Some((hard_stop, target_cue_number))` where:
+    /// - `hard_stop` — `true` = immediate cut, `false` = soft fade.
+    /// - `target_cue_number` — `None` = stop all, `Some(n)` = stop cue with number `n`.
+    ///
+    /// Transport reads this and executes the stop **before** evaluating
+    /// Auto-Follow chains, preventing the chained cue from being killed.
+    fn stop_specification(&self) -> Option<(bool, Option<String>)> {
+        None
+    }
+
     /// Capture the volatile runtime state so it can be transplanted into a
     /// freshly-rebuilt instance.  Called by `update_cue` just before the
     /// old cue is replaced.  Default returns a Standby snapshot with no voice

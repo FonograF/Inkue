@@ -9,6 +9,7 @@ export function BasicsTab({
   isVideo,
   isImage,
   isGroup,
+  isStop,
   onSave,
   onBrowse,
   onBrowseVideo,
@@ -21,6 +22,7 @@ export function BasicsTab({
   isVideo?: boolean;
   isImage?: boolean;
   isGroup?: boolean;
+  isStop?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onSave: (p: Partial<any>) => void;
   onBrowse: () => void;
@@ -108,6 +110,46 @@ export function BasicsTab({
             <option value="sequential">Sequential</option>
           </select>
         </Field>
+      )}
+      {isStop && (
+        <>
+          <Field label="Target">
+            <select
+              style={inputStyle}
+              value={cue.target_cue_number == null ? "__all__" : "__specific__"}
+              onChange={(e) => {
+                if (e.target.value === "__all__") {
+                  onSave({ target_cue_number: null });
+                } else {
+                  onSave({ target_cue_number: "" });
+                }
+              }}
+            >
+              <option value="__all__">All Cues</option>
+              <option value="__specific__">Specific Cue…</option>
+            </select>
+          </Field>
+          {cue.target_cue_number != null && (
+            <Field label="Cue #">
+              <input
+                style={inputStyle}
+                placeholder="Cue number (e.g. 5, 1.5, Intro)"
+                defaultValue={cue.target_cue_number ?? ""}
+                onBlur={(e) => onSave({ target_cue_number: e.target.value || null })}
+              />
+            </Field>
+          )}
+          <Field label="Stop Mode">
+            <select
+              style={inputStyle}
+              value={cue.hard_stop_mode ? "hard" : "soft"}
+              onChange={(e) => onSave({ hard_stop_mode: e.target.value === "hard" })}
+            >
+              <option value="soft">Soft (fade out)</option>
+              <option value="hard">Hard (immediate cut)</option>
+            </select>
+          </Field>
+        </>
       )}
       <Field label="Color">
         <ColorPicker
