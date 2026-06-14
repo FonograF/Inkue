@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-14
 
-## Current version: 0.7.2
+## Current version: 0.7.3
 
 ## cargo build result
 
@@ -96,6 +96,27 @@
 | `main.tsx` | ✅ Complete |
 
 ---
+
+---
+
+## Change history additions (0.7.3)
+
+### Normalize button — Audio Cue Levels tab (2026-06-14)
+
+Nouveau bouton **Normalize to 0 dBFS** dans l'onglet Levels des Audio Cue, sous le slider Volume.
+
+**Comportement** :
+- Lit le peak de l'audio déjà décodé en mémoire (`extract_decoded_audio` → `Arc::clone`, non destructif)
+- Calcule `volume_db = 20 × log10(1 / peak)` → le fader Volume est ajusté exactement pour que le sample le plus fort joue à 0 dBFS
+- La valeur est arrondie à 0.1 dB et clampée dans [-60, +12] dB (identique à la plage du slider)
+- Si l'audio n'est pas encore chargé (pas de fichier assigné ou decode en cours) : message d'erreur inline
+- Si le fichier est silencieux (peak < -120 dBFS) : erreur "File is silent — cannot normalize"
+
+**Implémentation** :
+- `commands/cue_cmds.rs` — commande `get_normalize_db(cue_id)` : lit les samples décodés du cue actif, retourne le `volume_db` normalisé
+- `lib.rs` — `get_normalize_db` enregistré dans `invoke_handler`
+- `src/lib/commands.ts` — `getNormalizeDb(cueId)` exposé côté frontend
+- `src/components/Inspector/LevelsTab.tsx` — bouton "Normalize to 0 dBFS" + état loading/erreur inline (uniquement pour `isAudio`)
 
 ---
 

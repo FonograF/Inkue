@@ -542,6 +542,40 @@ pub fn get_waveform_peaks(
     })
 }
 
+/// Compute the `volume_db` that normalises this audio cue's peak to 0 dBFS.
+///
+/// Reads the already-decoded samples (non-destructively via `Arc::clone`),
+/// finds the absolute peak, and returns `20 × log10(1 / peak)` — the gain
+/// the fader must be set to so the loudest sample plays at exactly 0 dBFS.
+///
+/// Errors if the audio has not been decoded yet or if the file is silent.
+#[tauri::command]
+pub fn get_normalize_db(
+    cue_id: String,
+    state: State<'_, AppState>,
+) -> Result<f64, String> {
+    let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let samples = {
+        let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
+        let cue = cue_list.get(&id).ok_or("Cue not found")?;
+        cue.extract_decoded_audio()
+            .ok_or("Audio not loaded yet — open the file first")?
+            .0
+        // workspace lock released here
+    };
+
+    let peak: f32 = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+
+    if peak < 1e-6 {
+        return Err("File is silent — cannot normalize".into());
+    }
+
+    let normalize_db = (1.0_f64 / peak as f64).log10() * 20.0;
+    Ok(normalize_db.clamp(-60.0, 12.0))
+}
+
 /// Set the file path of an audio cue.
 /// Uses the same JSON-merge-and-rebuild strategy as [`update_cue`].
 #[tauri::command]

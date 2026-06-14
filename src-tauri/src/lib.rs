@@ -14,7 +14,7 @@ use commands::{
     cue_cmds::{
         add_cue, add_cue_to_group, duplicate_cue, duplicate_cues,
         get_all_cues, get_cue, get_playhead,
-        get_output_window_visible, get_waveform_peaks,
+        get_output_window_visible, get_waveform_peaks, get_normalize_db,
         group_cues, list_video_screens, move_cue, move_cues, preview_cue,
         move_to_top_level, remove_cue, remove_cues, remove_cue_from_group,
         set_audio_file, set_group_mode, set_image_file, set_playhead,
@@ -138,6 +138,7 @@ pub fn run() {
             set_video_file,
             set_image_file,
             get_waveform_peaks,
+            get_normalize_db,
             list_video_screens,
             preview_cue,
             stop_preview,

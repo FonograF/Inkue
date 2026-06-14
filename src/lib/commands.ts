@@ -92,6 +92,8 @@ export const setVideoFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_video_file", { cueId, filePath });
 export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
+export const getNormalizeDb = (cueId: CueId) =>
+  invoke<number>("get_normalize_db", { cueId });
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
 export const listSystemFonts  = () => invoke<string[]>("list_system_fonts");
 export const previewOutputTimer = (
