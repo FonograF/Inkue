@@ -131,7 +131,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 // --- Fade overlay (layered, full-size, dip-to-black) ---
                 let overlay_name = wide("WinCueFadeOverlay\0");
                 let overlay_hwnd = CreateWindowExW(
-                    WS_EX_LAYERED | WS_EX_TRANSPARENT,
+                    WS_EX_LAYERED,
                     overlay_class.as_ptr(),
                     overlay_name.as_ptr(),
                     WS_CHILD | WS_VISIBLE,
@@ -493,6 +493,18 @@ unsafe extern "system" fn overlay_wnd_proc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    // Return HTTRANSPARENT so all mouse events fall through to the parent window
+    // (drag, double-click fullscreen). This replaces WS_EX_TRANSPARENT, which must
+    // NOT be combined with WS_EX_LAYERED — that combination prevents SetLayeredWindowAttributes
+    // from rendering the overlay's own black background, breaking fade animations.
+    const WM_NCHITTEST:  u32   = 0x0084;
+    const HTTRANSPARENT: isize = -1;
+
+    if msg == WM_NCHITTEST {
+        return HTTRANSPARENT;
+    }
+
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 

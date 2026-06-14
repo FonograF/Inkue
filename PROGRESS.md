@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-13
+# WinCue — Project state as of 2026-06-14
 
-## Current version: 0.7.1
+## Current version: 0.7.2
 
 ## cargo build result
 
@@ -96,6 +96,37 @@
 | `main.tsx` | ✅ Complete |
 
 ---
+
+---
+
+## Change history additions (0.7.2)
+
+### Fix: Image Cue fade-in / fade-out visuellement inactifs (2026-06-14)
+
+**Symptômes** : le fade-in affichait l'image instantanément ; le fade-out attendait la durée configurée puis coupait net — sans fondu visible dans les deux cas.
+
+**Cause racine** : la fenêtre overlay de fondu (`WS_EX_LAYERED | WS_EX_TRANSPARENT`) ne rendait pas son propre fond noir. Sous Windows, `WS_EX_TRANSPARENT` sur une fenêtre enfant layered force le composite à afficher le contenu des siblings en dessous (mpv) plutôt que la surface propre de la fenêtre. `SetLayeredWindowAttributes` animait bien la valeur alpha en interne (le timer tournait), mais sans effet visuel — l'overlay restait transparent quel que soit l'alpha.
+
+**Fix** :
+- Overlay créé avec `WS_EX_LAYERED` seul (plus `WS_EX_TRANSPARENT`).
+- `overlay_wnd_proc` retourne `HTTRANSPARENT` sur `WM_NCHITTEST` → tous les événements souris (drag, double-clic fullscreen) passent au travers vers la fenêtre parente, identique au comportement antérieur.
+
+**Files changed:** `engine/output_engine/win32_window.rs`
+
+---
+
+### Fix: Barre d'onglets Cue List disparaît au chargement d'un projet (2026-06-14)
+
+**Symptôme** : au démarrage, la barre des onglets Cue List s'affichait correctement. Après avoir chargé un projet (File → Open), la barre disparaissait ou restait figée sur l'état de démarrage.
+
+**Cause racine** : `load_workspace` et `new_workspace` n'émettaient que `workspace-modified`. Le handler frontend de cet event ne rafraîchissait que les cues et les infos workspace — jamais les cue lists. L'event `cue-lists-changed` (qui met à jour la barre d'onglets) n'était jamais déclenché lors du chargement.
+
+**Fix** :
+- `emit_cue_lists_changed` rendue publique dans `cue_list_cmds.rs`.
+- `load_workspace` et `new_workspace` dans `workspace_cmds.rs` appellent `emit_cue_lists_changed` juste après avoir modifié le workspace → la barre se met à jour avec les listes et l'active_cue_list_id corrects du projet chargé.
+- `App.tsx` : bootstrap simplifié — utilise `refreshCueLists()` du store au lieu d'un appel ad-hoc. `handleOpen` et `handleNew` ne font plus de gestion manuelle des cue lists, le backend s'en charge via l'event.
+
+**Files changed:** `commands/cue_list_cmds.rs`, `commands/workspace_cmds.rs`, `src/App.tsx`
 
 ---
 

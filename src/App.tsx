@@ -11,7 +11,6 @@ import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow } from "./lib/commands";
-import { getCueLists } from "./lib/commands";
 import type { CueSummary } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -390,7 +389,7 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
 }
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, setCueLists } =
+  const { refreshCues, refreshCueLists, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(true);
@@ -412,13 +411,11 @@ export default function App() {
   // Bootstrap
   useEffect(() => {
     refreshCues();
+    refreshCueLists();
     refreshWorkspaceInfo();
     loadGeneralPrefs();
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);
-    void getCueLists().then((lists) => {
-      if (lists.length > 0) setCueLists(lists, lists[0].id);
-    });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // -------------------------------------------------------------------------
@@ -456,19 +453,15 @@ export default function App() {
     });
     if (typeof path === "string") {
       await loadWorkspace(path).catch(console.error);
-      const lists = await getCueLists().catch(() => []);
-      if (lists.length > 0) setCueLists(lists, lists[0].id);
-      await refreshCues();
-      await refreshWorkspaceInfo();
+      // cue-lists-changed is emitted by the backend and handled in useTauriEvents.
+      // workspace-modified triggers refreshCues + refreshWorkspaceInfo.
     }
-  }, [refreshCues, refreshWorkspaceInfo, setCueLists]);
+  }, []);
 
   const handleNew = useCallback(async () => {
     await newWorkspace().catch(console.error);
-    const lists = await getCueLists().catch(() => []);
-    if (lists.length > 0) setCueLists(lists, lists[0].id);
-    await refreshCues();
-  }, [setCueLists, refreshCues]);
+    // cue-lists-changed and workspace-modified are emitted by the backend.
+  }, []);
 
   // -------------------------------------------------------------------------
   // Close-request interception

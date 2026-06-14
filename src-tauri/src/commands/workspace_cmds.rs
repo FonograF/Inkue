@@ -7,6 +7,7 @@ use std::time::Duration;
 use tauri::{Emitter, State};
 
 use crate::{
+    commands::cue_list_cmds,
     cue::types::CueType,
     show::Workspace,
     state::AppState,
@@ -35,6 +36,7 @@ fn collect_media_cues(cues: &[Box<dyn crate::cue::traits::Cue>], out: &mut Vec<(
 pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     *ws = Workspace::new("Untitled");
+    cue_list_cmds::emit_cue_lists_changed(&app_handle, &ws);
     drop(ws);
     state.output_engine.set_floating_timer_visible(false);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
@@ -75,6 +77,7 @@ pub fn load_workspace(
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         *ws = loaded;
+        cue_list_cmds::emit_cue_lists_changed(&app_handle, &ws);
     }
     state.output_engine.set_floating_timer_visible(show_floating);
     {

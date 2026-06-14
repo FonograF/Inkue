@@ -119,7 +119,7 @@ fn cue_list_infos(ws: &Workspace) -> Vec<CueListInfo> {
         .collect()
 }
 
-fn emit_cue_lists_changed(handle: &tauri::AppHandle, ws: &Workspace) {
+pub fn emit_cue_lists_changed(handle: &tauri::AppHandle, ws: &Workspace) {
     let _ = handle.emit(
         "cue-lists-changed",
         serde_json::json!({
