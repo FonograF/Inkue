@@ -34,7 +34,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     // Clear stale data immediately so isAudio/isVideo flags never mismatch cueData.
     setCueData(null);
     const hasLevels = selectedCue.cue_type === "audio" || selectedCue.cue_type === "video";
-    const hasFade = selectedCue.cue_type === "audio";
+    const hasFade = selectedCue.cue_type === "audio" || selectedCue.cue_type === "image";
     const hasMessages = selectedCue.cue_type === "osc" || selectedCue.cue_type === "midi";
     setActiveTab((prev) => {
       if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages)) return "basics";
@@ -185,7 +185,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
             Levels
           </button>
         )}
-        {isAudio && (
+        {(isAudio || isImage) && (
           <button style={tabStyle("fade")} onClick={() => setActiveTab("fade")}>
             Fade
           </button>
@@ -231,8 +231,8 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         {activeTab === "levels" && (isAudio || isVideo) && (
           <LevelsTab cue={cueData as AudioCueData | VideoCueData} isAudio={isAudio} onSave={save} />
         )}
-        {activeTab === "fade" && isAudio && (
-          <FadeTab cue={cueData as AudioCueData} onSave={save} />
+        {activeTab === "fade" && (isAudio || isImage) && (
+          <FadeTab cue={cueData as AudioCueData | ImageCueData} onSave={save} />
         )}
         {activeTab === "messages" && isOsc && (
           <OscTab cue={cueData as OscCueData} onSave={save} />
