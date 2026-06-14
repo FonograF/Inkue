@@ -56,10 +56,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   refreshCueLists: async () => {
     try {
       const cueLists = await getCueLists();
-      set((prev) => ({
-        cueLists,
-        activeCueListId: prev.activeCueListId ?? cueLists[0]?.id ?? null,
-      }));
+      set((prev) => {
+        // Keep the active ID only if it still exists in the new list.
+        const validId = cueLists.some((cl) => cl.id === prev.activeCueListId)
+          ? prev.activeCueListId
+          : (cueLists[0]?.id ?? null);
+        return { cueLists, activeCueListId: validId };
+      });
     } catch (e) {
       console.error("Failed to refresh cue lists:", e);
     }

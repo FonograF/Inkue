@@ -10,7 +10,7 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow } from "./lib/commands";
+import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists } from "./lib/commands";
 import type { CueSummary } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -389,7 +389,7 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
 }
 
 export default function App() {
-  const { refreshCues, refreshCueLists, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
+  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(true);
@@ -411,7 +411,15 @@ export default function App() {
   // Bootstrap
   useEffect(() => {
     refreshCues();
-    refreshCueLists();
+    // Use getState() inside the .then() so we read the store at resolution time,
+    // not at call time. This prevents a stale response from overwriting a
+    // cue-lists-changed event that fired while the IPC was in flight.
+    void getCueLists().then((lists) => {
+      const store = useWorkspaceStore.getState();
+      if (store.cueLists.length === 0 && lists.length > 0) {
+        store.setCueLists(lists, lists[0].id);
+      }
+    }).catch(console.error);
     refreshWorkspaceInfo();
     loadGeneralPrefs();
     loadDisplayPrefs();
