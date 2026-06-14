@@ -532,6 +532,21 @@ impl CueList {
             }
         }
 
+        // TODO(compat): Remove once all workspace files have been re-saved with
+        // `target_cue_id`.  This pass converts the legacy `target_cue_number`
+        // string into a stable UUID for the current session.  It is a no-op for
+        // files that already carry `target_cue_id`.  When removed, also delete:
+        //   - `StopCue.target_cue_number` field and its serialize/from_json code
+        //   - `Cue::resolve_stop_target` trait method and its impl in StopCue
+        //   - The `target_cue_number` field in `StopCueData` (types.ts)
+        let number_to_id: std::collections::HashMap<String, crate::cue::types::CueId> = cues
+            .iter()
+            .filter_map(|c| c.number().map(|n| (n.to_string(), c.id())))
+            .collect();
+        for cue in &mut cues {
+            cue.resolve_stop_target(&number_to_id);
+        }
+
         Ok(Self {
             id,
             name,

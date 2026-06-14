@@ -125,24 +125,39 @@ pub(super) fn create_output_window() -> Result<isize> {
 
                 const WS_EX_LAYERED: u32     = 0x0008_0000;
                 const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
+                const WS_EX_TOPMOST: u32     = 0x0000_0008;
+                const WS_EX_TOOLWINDOW: u32  = 0x0000_0080;
                 const WS_CHILD: u32          = 0x4000_0000;
-                const WS_VISIBLE: u32        = 0x1000_0000;
 
-                // --- Fade overlay (layered, full-size, dip-to-black) ---
+                // --- Fade overlay: top-level owned popup (NOT a child window) ---
+                //
+                // Using a WS_CHILD | WS_EX_LAYERED window does NOT work when mpv's
+                // D3D11 swap chain is a sibling: the D3D11 driver presents frames
+                // via DirectFlip / MPO, bypassing DWM composition for child windows,
+                // so SetLayeredWindowAttributes has no visual effect no matter what.
+                //
+                // A top-level WS_POPUP window with parent_hwnd as its owner has its
+                // own DWM redirection surface and is composited independently.
+                // Owned windows are always Z-above their owner, so the overlay
+                // naturally sits above mpv's D3D11 output without any Z-order
+                // management.  WS_EX_TOPMOST keeps it above all normal windows.
+                // WS_EX_TOOLWINDOW hides it from Alt+Tab and the taskbar.
                 let overlay_name = wide("WinCueFadeOverlay\0");
                 let overlay_hwnd = CreateWindowExW(
-                    WS_EX_LAYERED,
+                    WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                     overlay_class.as_ptr(),
                     overlay_name.as_ptr(),
-                    WS_CHILD | WS_VISIBLE,
-                    0, 0, 1280, 720,
-                    parent_hwnd, 0, hinstance, std::ptr::null(),
+                    WS_POPUP,
+                    100, 100, 1280, 720,   // initial position matches parent
+                    parent_hwnd,           // owner (not parent) → always above output window
+                    0, hinstance, std::ptr::null(),
                 );
 
                 if overlay_hwnd != 0 {
                     use windows_sys::Win32::UI::WindowsAndMessaging::SetLayeredWindowAttributes;
                     const LWA_ALPHA: u32 = 0x2;
                     SetLayeredWindowAttributes(overlay_hwnd, 0, 0, LWA_ALPHA);
+                    ShowWindow(overlay_hwnd, SW_HIDE); // hidden until first content load
                     FADE_OVERLAY_HWND.get_or_init(|| overlay_hwnd);
                 } else {
                     log::warn!("[output] CreateWindowExW (fade overlay) failed — fades disabled");
@@ -191,12 +206,9 @@ pub(super) fn create_output_window() -> Result<isize> {
                 RegisterClassExW(&wc_float);
 
                 // --- Create floating timer window ---
-                // WS_EX_TOPMOST  : always on top of other windows
-                // WS_EX_TOOLWINDOW: no taskbar button
+                // WS_EX_TOPMOST / WS_EX_TOOLWINDOW defined above (shared with overlay).
                 // WS_EX_NOACTIVATE: won't steal focus from the main app
                 // WS_POPUP | WS_SIZEBOX: borderless + resizable grip
-                const WS_EX_TOPMOST:     u32 = 0x0000_0008;
-                const WS_EX_TOOLWINDOW:  u32 = 0x0000_0080;
                 let float_name = wide("WinCue Timer\0");
                 let float_hwnd = CreateWindowExW(
                     WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -356,15 +368,18 @@ unsafe extern "system" fn output_wnd_proc(
             };
             const GWL_EXSTYLE: i32 = -20;
             const WS_EX_TRANSPARENT: isize = 0x20;
+            // Make mpv's child window click-through so drag/dblclick reach the parent.
+            // GetWindow(GW_CHILD) returns the topmost child — after mpv initialises
+            // that is always mpv's own D3D11 child (the timer overlay is still hidden
+            // and the fade overlay is no longer a child window).
             let child = GetWindow(hwnd, GW_CHILD);
             if child != 0 {
                 let ex = GetWindowLongPtrW(child, GWL_EXSTYLE);
                 SetWindowLongPtrW(child, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT);
             }
-            // Fade overlay on top of mpv child, timer overlay on top of fade.
-            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                SetWindowPos(overlay, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            // Keep the timer overlay (child window) on top of mpv's child.
+            // The fade overlay is now a top-level owned window and is always above
+            // the output window — no Z-order management needed here.
             if let Some(&timer) = TIMER_OVERLAY_HWND.get() {
                 SetWindowPos(timer, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
@@ -375,19 +390,40 @@ unsafe extern "system" fn output_wnd_proc(
             let w = (lparam & 0xFFFF) as i32;
             let h = ((lparam >> 16) & 0xFFFF) as i32;
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOMOVE,
+                SetWindowPos, SWP_NOZORDER, SWP_NOACTIVATE,
             };
-            // Resize fade overlay to fill the parent.
-            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                SetWindowPos(overlay, 0, 0, 0, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
-            }
-            // Keep timer overlay centered and proportional (70% × 40%).
+            // Keep timer overlay (child) centered and proportional (70% × 40%).
+            // The fade overlay is now a top-level window; it is resized in
+            // WM_WINDOWPOSCHANGED which fires for both moves and size changes.
             if let Some(&timer) = TIMER_OVERLAY_HWND.get() {
                 let tw = (w * 70 / 100).max(400);
                 let th = (h * 40 / 100).max(160);
                 let tx_pos = (w - tw) / 2;
                 let ty_pos = (h - th) / 2;
                 SetWindowPos(timer, 0, tx_pos, ty_pos, tw, th, SWP_NOACTIVATE | SWP_NOZORDER);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        // Keep the top-level fade overlay aligned with the output window whenever
+        // the output window moves or resizes.  WM_WINDOWPOSCHANGED is fired for
+        // both moves and size changes, so it is the single sync point.
+        0x0047 /* WM_WINDOWPOSCHANGED */ => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, WINDOWPOS,
+            };
+            let wp = &*(lparam as *const WINDOWPOS);
+            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+                // Only bother when position or size actually changed.
+                const SWP_NOMOVE_F: u32 = 0x0002;
+                const SWP_NOSIZE_F: u32 = 0x0001;
+                if wp.flags & (SWP_NOMOVE_F | SWP_NOSIZE_F) != (SWP_NOMOVE_F | SWP_NOSIZE_F) {
+                    SetWindowPos(
+                        overlay, 0,
+                        wp.x, wp.y, wp.cx, wp.cy,
+                        SWP_NOACTIVATE | SWP_NOZORDER,
+                    );
+                }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }

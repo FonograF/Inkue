@@ -724,6 +724,9 @@ impl OutputEngine {
                 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
+            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+                ShowWindow(overlay, SW_SHOWNA);
+            }
         }
     }
 
@@ -733,6 +736,9 @@ impl OutputEngine {
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
             ShowWindow(self.hwnd, SW_HIDE);
+            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+                ShowWindow(overlay, SW_HIDE);
+            }
         }
     }
 
@@ -878,8 +884,9 @@ impl OutputEngine {
 
     fn position_window(&self, screen_index: Option<u32>) {
         unsafe {
+            use windows_sys::Win32::Foundation::RECT;
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
+                GetWindowRect, SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
                 SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED,
             };
 
@@ -900,6 +907,15 @@ impl OutputEngine {
                         s.x, s.y, s.width as i32, s.height as i32,
                         SWP_NOACTIVATE | SWP_FRAMECHANGED,
                     );
+                    // Position the top-level fade overlay at the same screen area.
+                    if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+                        ShowWindow(overlay, SW_SHOWNA);
+                        SetWindowPos(
+                            overlay, HWND_TOPMOST,
+                            s.x, s.y, s.width as i32, s.height as i32,
+                            SWP_NOACTIVATE,
+                        );
+                    }
                 }
             }
 
@@ -914,6 +930,26 @@ impl OutputEngine {
                 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
+
+            // When no screen_index was given (operator positioned manually), sync
+            // the overlay to wherever the output window currently is.
+            if screen_index.is_none() {
+                if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+                    ShowWindow(overlay, SW_SHOWNA);
+                    let mut rc: RECT = std::mem::zeroed();
+                    GetWindowRect(self.hwnd, &mut rc);
+                    SetWindowPos(
+                        overlay, HWND_TOPMOST,
+                        rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+                        SWP_NOACTIVATE,
+                    );
+                }
+            }
+
+            // Re-raise the output window after all overlay operations.
+            // The owned overlay is always Z-above its owner by Windows Z-order
+            // rules, so: overlay (transparent/opaque) > output window > rest.
+            SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 

@@ -313,15 +313,22 @@ pub trait Cue: Send {
 
     /// Stop Cue only: describes what to stop after `go()` completes.
     ///
-    /// Returns `Some((hard_stop, target_cue_number))` where:
+    /// Returns `Some((hard_stop, target_cue_id))` where:
     /// - `hard_stop` — `true` = immediate cut, `false` = soft fade.
-    /// - `target_cue_number` — `None` = stop all, `Some(n)` = stop cue with number `n`.
+    /// - `target_cue_id` — `None` = stop all, `Some(id)` = stop the cue with that UUID.
     ///
     /// Transport reads this and executes the stop **before** evaluating
     /// Auto-Follow chains, preventing the chained cue from being killed.
-    fn stop_specification(&self) -> Option<(bool, Option<String>)> {
+    fn stop_specification(&self) -> Option<(bool, Option<CueId>)> {
         None
     }
+
+    /// Resolve the stop target from a cue-number string to a UUID.
+    ///
+    /// Called once per cue after the whole cue list is loaded, allowing Stop
+    /// Cues saved in the old format (number only, no UUID) to be upgraded
+    /// in-memory for the current session.  Default implementation is a no-op.
+    fn resolve_stop_target(&mut self, _number_to_id: &std::collections::HashMap<String, CueId>) {}
 
     /// Capture the volatile runtime state so it can be transplanted into a
     /// freshly-rebuilt instance.  Called by `update_cue` just before the

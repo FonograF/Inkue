@@ -149,7 +149,9 @@ export interface WaitCueData extends CueSummary {
 /** Full cue data returned by get_cue for a Stop Cue. */
 export interface StopCueData extends CueSummary {
   notes: string;
-  /** null = stop all running cues; string = cue number to stop specifically. */
+  /** UUID of the target cue, or null to stop all. Primary key at runtime. */
+  target_cue_id: string | null;
+  /** Display label: cue number of the target (kept in sync with target_cue_id). */
   target_cue_number: string | null;
   /** true = immediate cut (no fade); false = soft stop with workspace fade-out. */
   hard_stop_mode: boolean;

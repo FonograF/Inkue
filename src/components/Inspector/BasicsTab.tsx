@@ -2,6 +2,7 @@ import type { AudioCueData } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
 import { ColorPicker } from "./ColorPicker";
 import { setGroupMode } from "../../lib/commands";
+import { useWorkspaceStore } from "../../stores/workspaceStore";
 
 export function BasicsTab({
   cue,
@@ -32,6 +33,8 @@ export function BasicsTab({
   onBrowseImage?: () => void;
   onRefresh?: () => void;
 }) {
+  const allCues = useWorkspaceStore((s) => s.cues);
+
   return (
     <>
       <Field label="Cue #">
@@ -161,29 +164,30 @@ export function BasicsTab({
           <Field label="Target">
             <select
               style={inputStyle}
-              value={cue.target_cue_number == null ? "__all__" : "__specific__"}
+              value={cue.target_cue_id ?? "__all__"}
               onChange={(e) => {
-                if (e.target.value === "__all__") {
-                  onSave({ target_cue_number: null });
+                const val = e.target.value;
+                if (val === "__all__") {
+                  onSave({ target_cue_id: null, target_cue_number: null });
                 } else {
-                  onSave({ target_cue_number: "" });
+                  const picked = allCues.find((c) => c.id === val);
+                  onSave({
+                    target_cue_id: val,
+                    target_cue_number: picked?.number ?? null,
+                  });
                 }
               }}
             >
               <option value="__all__">All Cues</option>
-              <option value="__specific__">Specific Cue…</option>
+              {allCues
+                .filter((c) => c.id !== cue.id)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.number ? `${c.number} — ` : ""}{c.name}
+                  </option>
+                ))}
             </select>
           </Field>
-          {cue.target_cue_number != null && (
-            <Field label="Cue #">
-              <input
-                style={inputStyle}
-                placeholder="Cue number (e.g. 5, 1.5, Intro)"
-                defaultValue={cue.target_cue_number ?? ""}
-                onBlur={(e) => onSave({ target_cue_number: e.target.value || null })}
-              />
-            </Field>
-          )}
           <Field label="Stop Mode">
             <select
               style={inputStyle}

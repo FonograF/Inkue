@@ -57,6 +57,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .on_window_event(|window, event| {
+            // When the main window is destroyed, the Win32 output-window thread
+            // and the audio / event-loop threads keep the process alive
+            // indefinitely.  Force-exit so the OS cleans everything up.
+            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
+                std::process::exit(0);
+            }
+        })
         .setup(|app| {
             // ----------------------------------------------------------------
             // Initialise engines and managed state.

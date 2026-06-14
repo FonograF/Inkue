@@ -134,17 +134,17 @@ impl Transport {
         let stop_spec = cue_list.get(&cue_id).and_then(|c| c.stop_specification());
         let mut stopped: Vec<CueId> = Vec::new();
         if let Some((hard, target)) = stop_spec {
-            let ids_to_stop: Vec<CueId> = match &target {
+            let ids_to_stop: Vec<CueId> = match target {
                 None => cue_list
                     .cues
                     .iter()
                     .filter(|c| (c.is_running() || c.is_paused()) && c.id() != cue_id)
                     .map(|c| c.id())
                     .collect(),
-                Some(num) => cue_list
+                Some(target_id) => cue_list
                     .cues
                     .iter()
-                    .filter(|c| c.number() == Some(num.as_str()) && c.id() != cue_id)
+                    .filter(|c| c.id() == target_id && c.id() != cue_id)
                     .map(|c| c.id())
                     .collect(),
             };

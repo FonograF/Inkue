@@ -36,7 +36,14 @@ pub struct StopCue {
     post_wait: Duration,
     started_at: Option<Instant>,
 
-    /// `None` = stop all running cues; `Some(n)` = stop only the cue with cue-number `n`.
+    /// UUID of the specific cue to stop, or `None` to stop all running cues.
+    /// This is the primary key used at runtime.  Stable across cue renumbering
+    /// and insertion of new cues before the target.
+    pub target_cue_id: Option<CueId>,
+    /// Human-readable cue number stored alongside the UUID for display in the
+    /// inspector.  Also used as a fallback during load of old workspace files
+    /// that pre-date UUID-based targeting (resolved to `target_cue_id` by
+    /// `resolve_stop_target` after the full cue list is loaded).
     pub target_cue_number: Option<String>,
     /// `true` = immediate cut; `false` = soft fade using the workspace default.
     pub hard_stop_mode: bool,
@@ -57,6 +64,7 @@ impl StopCue {
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
             started_at: None,
+            target_cue_id: None,
             target_cue_number: None,
             hard_stop_mode: false,
             is_disabled: false,
@@ -128,10 +136,18 @@ impl Cue for StopCue {
     fn continue_mode(&self) -> ContinueMode { self.continue_mode }
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
-    /// Returns the stop action for the transport to execute immediately after
-    /// `go()`, before any Auto-Follow chain fires.
-    fn stop_specification(&self) -> Option<(bool, Option<String>)> {
-        Some((self.hard_stop_mode, self.target_cue_number.clone()))
+    fn stop_specification(&self) -> Option<(bool, Option<CueId>)> {
+        Some((self.hard_stop_mode, self.target_cue_id))
+    }
+
+    fn resolve_stop_target(&mut self, number_to_id: &std::collections::HashMap<String, CueId>) {
+        if self.target_cue_id.is_none() {
+            if let Some(num) = &self.target_cue_number {
+                if let Some(&id) = number_to_id.get(num) {
+                    self.target_cue_id = Some(id);
+                }
+            }
+        }
     }
 
     fn runtime_state(&self) -> RuntimeState {
@@ -160,6 +176,7 @@ impl Cue for StopCue {
             "pre_wait_ms": self.pre_wait.as_millis() as u64,
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
+            "target_cue_id": self.target_cue_id,
             "target_cue_number": self.target_cue_number,
             "hard_stop_mode": self.hard_stop_mode,
             "is_disabled": self.is_disabled,
@@ -210,6 +227,9 @@ impl CueFactory for StopCueFactory {
                 cue.color = color;
             }
         }
+        if let Some(id_str) = value.get("target_cue_id").and_then(|v| v.as_str()) {
+            cue.target_cue_id = id_str.parse().ok();
+        }
         if let Some(target) = value.get("target_cue_number").and_then(|v| v.as_str()) {
             cue.target_cue_number = Some(target.to_string());
         }
@@ -241,9 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn target_cue_number_roundtrips() {
+    fn target_cue_id_roundtrips() {
         let factory = StopCueFactory;
         let mut cue = StopCue::new();
+        let target_id = Uuid::new_v4();
+        cue.target_cue_id = Some(target_id);
         cue.target_cue_number = Some("5".to_string());
         cue.hard_stop_mode = true;
 
@@ -252,7 +274,20 @@ mod tests {
 
         let spec = rebuilt.stop_specification().unwrap();
         assert!(spec.0);
-        assert_eq!(spec.1.as_deref(), Some("5"));
+        assert_eq!(spec.1, Some(target_id));
+    }
+
+    #[test]
+    fn resolve_stop_target_from_number() {
+        let mut cue = StopCue::new();
+        cue.target_cue_number = Some("5".to_string());
+
+        let target_id = Uuid::new_v4();
+        let mut map = std::collections::HashMap::new();
+        map.insert("5".to_string(), target_id);
+
+        cue.resolve_stop_target(&map);
+        assert_eq!(cue.target_cue_id, Some(target_id));
     }
 
     #[test]
