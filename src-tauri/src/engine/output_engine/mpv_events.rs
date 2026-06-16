@@ -19,7 +19,9 @@ use crate::engine::mpv_sys::{
 use crate::engine::AudioEngine;
 
 use super::types::{MpvCtx, OutputStatus, VoiceId};
-use super::{cs, OUTPUT_CURRENT_AUDIO_VOICE, WM_SETUP_MPV_CHILD};
+use super::{cs, OUTPUT_CURRENT_AUDIO_VOICE};
+#[cfg(target_os = "windows")]
+use super::WM_SETUP_MPV_CHILD;
 
 pub(super) fn mpv_event_loop(
     lib: Arc<MpvLib>,
@@ -133,6 +135,9 @@ pub(super) fn mpv_event_loop(
 
             MPV_EVENT_FILE_LOADED => {
                 log::info!("[output-mpv] MPV_EVENT_FILE_LOADED");
+                // On Windows: notify the parent WndProc to make mpv's D3D11 child
+                // click-through so drag/dblclick events reach the parent window.
+                #[cfg(target_os = "windows")]
                 unsafe {
                     use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                     PostMessageW(parent_hwnd, WM_SETUP_MPV_CHILD, 0, 0);
@@ -262,6 +267,7 @@ fn start_video_playback(
                 s.pending = None;
             }
         }
+        #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
             PostMessageW(parent_hwnd, super::WM_DO_FADE, 0, 0);

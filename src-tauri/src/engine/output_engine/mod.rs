@@ -20,13 +20,15 @@
 mod fade;
 mod mpv_events;
 mod types;
+#[cfg(target_os = "windows")]
 mod win32_window;
 
 pub use types::{OutputStatus, OutputSurface, ScreenInfo, SurfaceId, VoiceId};
 use types::{
-    FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice, OutputWndState,
-    PendingVideoStart,
+    FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice, PendingVideoStart,
 };
+#[cfg(target_os = "windows")]
+use types::OutputWndState;
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
@@ -42,15 +44,14 @@ use uuid::Uuid;
 use crate::cue::types::{db_to_linear, FadeSpec};
 use crate::engine::AudioEngine;
 
-use super::mpv_sys::{MpvLib, MPV_FORMAT_INT64};
+use super::mpv_sys::MpvLib;
+#[cfg(target_os = "windows")]
+use super::mpv_sys::MPV_FORMAT_INT64;
 
 // ---------------------------------------------------------------------------
-// Global Win32 / mpv state
+// Global mpv state (cross-platform)
 // ---------------------------------------------------------------------------
 
-pub(super) static OUTPUT_WND_STATE: OnceLock<Mutex<OutputWndState>> = OnceLock::new();
-pub(super) static OUTPUT_PARENT_HWND: OnceLock<isize> = OnceLock::new();
-pub(super) static FADE_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
 pub(super) static FADE_STATE: OnceLock<Mutex<FadeAnimState>> = OnceLock::new();
 pub(super) static OUTPUT_MPV_CTX: OnceLock<Arc<MpvCtx>> = OnceLock::new();
 pub(super) static OUTPUT_MPV_LIB: OnceLock<Arc<MpvLib>> = OnceLock::new();
@@ -65,30 +66,51 @@ pub(super) static OUTPUT_PENDING_VIDEO_START: OnceLock<Mutex<Option<PendingVideo
 /// Resumed at the first PLAYBACK_RESTART (start in lockstep with frame 0),
 /// paused/resumed/stopped together with the video.
 pub(super) static OUTPUT_CURRENT_AUDIO_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
-/// Text currently shown on the timer overlay ("" = nothing displayed).
-pub(super) static TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
-/// HWND of the timer text overlay child window.
-pub(super) static TIMER_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
 /// When `Some`, the timer refresh loop shows this text instead of live cue time.
 /// Used for the preferences preview mode.
 pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-/// Text currently shown in the floating timer window.
+/// Text currently shown in the floating timer window (Phase B: Tauri WebView).
 pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
-/// HWND of the standalone floating timer window (top-level, always-on-top).
-pub(super) static FLOAT_TIMER_HWND: OnceLock<isize> = OnceLock::new();
 /// Font family name for the floating timer (mirrors the OSD font setting).
 pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
-// Constants
+// Global Win32-only state
+// ---------------------------------------------------------------------------
+
+/// Fullscreen / saved-rect state for the Win32 output window.
+#[cfg(target_os = "windows")]
+pub(super) static OUTPUT_WND_STATE: OnceLock<Mutex<OutputWndState>> = OnceLock::new();
+/// HWND of the Win32 parent output window.
+#[cfg(target_os = "windows")]
+pub(super) static OUTPUT_PARENT_HWND: OnceLock<isize> = OnceLock::new();
+/// HWND of the Win32 layered fade-overlay popup window.
+#[cfg(target_os = "windows")]
+pub(super) static FADE_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
+/// Text currently shown on the Win32 timer overlay child window.
+#[cfg(target_os = "windows")]
+pub(super) static TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
+/// HWND of the Win32 timer text overlay child window.
+#[cfg(target_os = "windows")]
+pub(super) static TIMER_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
+/// HWND of the Win32 standalone floating timer window (Phase B: replaced by Tauri WebView).
+#[cfg(target_os = "windows")]
+pub(super) static FLOAT_TIMER_HWND: OnceLock<isize> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// Win32 message constants (Windows only)
 // ---------------------------------------------------------------------------
 
 /// `WM_APP + 1`: posted by the mpv event thread after `MPV_EVENT_FILE_LOADED`.
+#[cfg(target_os = "windows")]
 pub(super) const WM_SETUP_MPV_CHILD: u32 = 0x8001;
 /// `WM_APP + 2`: posted by show_content/stop_content to start the fade timer.
-pub(super) const WM_DO_FADE: u32        = 0x8002;
+#[cfg(target_os = "windows")]
+pub(super) const WM_DO_FADE: u32 = 0x8002;
 /// `WM_APP + 4`: posted to the floating timer window to show/hide it.
+#[cfg(target_os = "windows")]
 pub(super) const WM_FLOAT_VISIBILITY: u32 = 0x8004;
+#[cfg(target_os = "windows")]
 pub(super) const FADE_TIMER_ID: usize = 1;
 
 // ---------------------------------------------------------------------------
@@ -122,7 +144,12 @@ impl OutputEngine {
     pub fn new(audio_engine: Arc<AudioEngine>) -> Result<Self> {
         let lib = Arc::new(MpvLib::load()?);
 
+        // Windows: create a Win32 parent window and embed mpv into it.
+        // macOS / Linux: mpv creates and manages its own native window.
+        #[cfg(target_os = "windows")]
         let hwnd = win32_window::create_output_window()?;
+        #[cfg(not(target_os = "windows"))]
+        let hwnd: isize = 0;
 
         let ctx = unsafe { (lib.mpv_create)() };
         if ctx.is_null() {
@@ -130,19 +157,32 @@ impl OutputEngine {
         }
 
         unsafe {
-            let wid_name = cs("wid");
-            let mut wid_val: i64 = hwnd as i64;
-            (lib.mpv_set_option)(
-                ctx,
-                wid_name.as_ptr(),
-                MPV_FORMAT_INT64,
-                &mut wid_val as *mut i64 as *mut c_void,
-            );
+            // Embed mpv into the Win32 parent window (Windows only).
+            #[cfg(target_os = "windows")]
+            {
+                let wid_name = cs("wid");
+                let mut wid_val: i64 = hwnd as i64;
+                (lib.mpv_set_option)(
+                    ctx,
+                    wid_name.as_ptr(),
+                    MPV_FORMAT_INT64,
+                    &mut wid_val as *mut i64 as *mut c_void,
+                );
+            }
 
             opt_str(&lib, ctx, "vo", "gpu");
-            opt_str(&lib, ctx, "gpu-api", "d3d11");
-            opt_str(&lib, ctx, "d3d11-sync-interval", "0"); // non-blocking Present(); video-sync=desync needs this
-            opt_str(&lib, ctx, "force-window", "immediate");
+
+            // Windows: D3D11 backend with non-blocking Present (needed for desync).
+            // macOS / Linux: gpu-api=auto lets mpv choose Metal / Vulkan / OpenGL.
+            #[cfg(target_os = "windows")]
+            {
+                opt_str(&lib, ctx, "gpu-api", "d3d11");
+                opt_str(&lib, ctx, "d3d11-sync-interval", "0");
+                opt_str(&lib, ctx, "force-window", "immediate");
+            }
+            #[cfg(not(target_os = "windows"))]
+            opt_str(&lib, ctx, "force-window", "yes");
+
             opt_str(&lib, ctx, "hwdec", "auto");
 
             opt_str(&lib, ctx, "osc", "no");
@@ -227,7 +267,7 @@ impl OutputEngine {
             default_surface_id: Uuid::new_v4(),
             audio_engine,
             go_sent_at,
-            visible: Arc::new(AtomicBool::new(true)),
+            visible: Arc::new(AtomicBool::new(false)), // window starts SW_HIDE; show_output() sets true
         })
     }
 
@@ -306,48 +346,54 @@ impl OutputEngine {
 
     /// Enumerate all connected monitors.  Index 0 is always the primary.
     pub fn list_screens() -> Vec<ScreenInfo> {
-        let mut screens: Vec<ScreenInfo> = Vec::new();
-        unsafe {
-            use windows_sys::Win32::Graphics::Gdi::{
-                EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO,
-            };
-            extern "system" fn cb(
-                hmon: windows_sys::Win32::Graphics::Gdi::HMONITOR,
-                _hdc: windows_sys::Win32::Graphics::Gdi::HDC,
-                _rect: *mut windows_sys::Win32::Foundation::RECT,
-                data: windows_sys::Win32::Foundation::LPARAM,
-            ) -> windows_sys::Win32::Foundation::BOOL {
-                unsafe {
-                    let list = &mut *(data as *mut Vec<ScreenInfo>);
-                    let mut mi: MONITORINFO = std::mem::zeroed();
-                    mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-                    if GetMonitorInfoW(hmon, &mut mi) != 0 {
-                        let r = mi.rcMonitor;
-                        let is_primary = (mi.dwFlags & 1) != 0;
-                        list.push(ScreenInfo {
-                            index: list.len() as u32,
-                            width: (r.right - r.left) as u32,
-                            height: (r.bottom - r.top) as u32,
-                            x: r.left,
-                            y: r.top,
-                            is_primary,
-                        });
+        #[cfg(target_os = "windows")]
+        {
+            let mut screens: Vec<ScreenInfo> = Vec::new();
+            unsafe {
+                use windows_sys::Win32::Graphics::Gdi::{
+                    EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO,
+                };
+                extern "system" fn cb(
+                    hmon: windows_sys::Win32::Graphics::Gdi::HMONITOR,
+                    _hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+                    _rect: *mut windows_sys::Win32::Foundation::RECT,
+                    data: windows_sys::Win32::Foundation::LPARAM,
+                ) -> windows_sys::Win32::Foundation::BOOL {
+                    unsafe {
+                        let list = &mut *(data as *mut Vec<ScreenInfo>);
+                        let mut mi: MONITORINFO = std::mem::zeroed();
+                        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                        if GetMonitorInfoW(hmon, &mut mi) != 0 {
+                            let r = mi.rcMonitor;
+                            let is_primary = (mi.dwFlags & 1) != 0;
+                            list.push(ScreenInfo {
+                                index: list.len() as u32,
+                                width: (r.right - r.left) as u32,
+                                height: (r.bottom - r.top) as u32,
+                                x: r.left,
+                                y: r.top,
+                                is_primary,
+                            });
+                        }
+                        1
                     }
-                    1
                 }
+                EnumDisplayMonitors(
+                    0,
+                    std::ptr::null(),
+                    Some(cb),
+                    &mut screens as *mut Vec<ScreenInfo> as isize,
+                );
             }
-            EnumDisplayMonitors(
-                0,
-                std::ptr::null(),
-                Some(cb),
-                &mut screens as *mut Vec<ScreenInfo> as isize,
-            );
+            screens.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then(a.x.cmp(&b.x)));
+            for (i, s) in screens.iter_mut().enumerate() {
+                s.index = i as u32;
+            }
+            screens
         }
-        screens.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then(a.x.cmp(&b.x)));
-        for (i, s) in screens.iter_mut().enumerate() {
-            s.index = i as u32;
-        }
-        screens
+        // Phase B: cross-platform screen enumeration (winit MonitorHandle or mpv display-names).
+        #[cfg(not(target_os = "windows"))]
+        Vec::new()
     }
 
     /// The ID of the default "Screen 1" surface.
@@ -464,6 +510,7 @@ impl OutputEngine {
                 state.timer_active = false;
                 state.pending = Some(FadePending::Load(params));
             }
+            #[cfg(target_os = "windows")]
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                 PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
@@ -504,6 +551,7 @@ impl OutputEngine {
                         state.timer_active = false;
                         state.pending = None;
                     }
+                    #[cfg(target_os = "windows")]
                     unsafe {
                         use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                         PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
@@ -560,6 +608,7 @@ impl OutputEngine {
                 state.timer_active = false;
                 state.pending = Some(FadePending::Stop);
             }
+            #[cfg(target_os = "windows")]
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                 PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
@@ -603,6 +652,39 @@ impl OutputEngine {
         if let Some(vid) = voice_id {
             self.stop_content(vid, 0);
         }
+    }
+
+    /// Return the current overlay alpha (0 = transparent, 255 = black).
+    pub fn get_overlay_alpha(&self) -> u8 {
+        FADE_STATE.get()
+            .and_then(|fs| fs.lock().ok())
+            .map(|s| s.current_alpha)
+            .unwrap_or(0)
+    }
+
+    /// Directly set the overlay alpha — called from FadeCue.tick() at ~30 fps
+    /// to animate a visual fade without going through the Win32 timer system.
+    ///
+    /// - alpha = 0   → overlay transparent (content fully visible)
+    /// - alpha = 255 → overlay opaque black (content hidden)
+    pub fn set_overlay_alpha_direct(&self, alpha: u8) {
+        #[cfg(target_os = "windows")]
+        if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+            if alpha > 0 {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNA};
+                    ShowWindow(overlay, SW_SHOWNA);
+                }
+            }
+        }
+        fade::set_overlay_alpha(alpha);
+    }
+
+    /// Return the AudioEngine voice ID of the current video's audio track.
+    pub fn get_current_audio_voice(&self) -> Option<VoiceId> {
+        OUTPUT_CURRENT_AUDIO_VOICE.get()
+            .and_then(|m| m.lock().ok())
+            .and_then(|g| *g)
     }
 
     // ── Legacy API kept for VideoCue ─────────────────────────────────────────
@@ -713,26 +795,25 @@ impl OutputEngine {
     /// Make the output window visible.
     pub fn show_output(&self) {
         self.visible.store(true, Ordering::Relaxed);
+        #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
-                SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
+                SetWindowPos, HWND_TOPMOST,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
             };
-            ShowWindow(self.hwnd, SW_SHOWNA);
             SetWindowPos(
                 self.hwnd, HWND_TOPMOST,
                 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
-            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                ShowWindow(overlay, SW_SHOWNA);
-            }
         }
+        // Phase B: mpv `hidden=no` property on Mac/Linux.
     }
 
     /// Hide the output window.
     pub fn hide_output(&self) {
         self.visible.store(false, Ordering::Relaxed);
+        #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
             ShowWindow(self.hwnd, SW_HIDE);
@@ -740,6 +821,7 @@ impl OutputEngine {
                 ShowWindow(overlay, SW_HIDE);
             }
         }
+        // Phase B: mpv `hidden=yes` property on Mac/Linux.
     }
 
     /// Return whether the output window is currently visible.
@@ -800,8 +882,10 @@ impl OutputEngine {
 
     /// Show or hide the standalone floating timer window.
     ///
-    /// Safe to call from any thread — posts `WM_FLOAT_VISIBILITY` to the Win32 window.
+    /// On Windows: posts `WM_FLOAT_VISIBILITY` to the Win32 window.
+    /// Phase B (all platforms): emits a Tauri event to the WebView float-timer window.
     pub fn set_floating_timer_visible(&self, visible: bool) {
+        #[cfg(target_os = "windows")]
         if let Some(&hwnd) = FLOAT_TIMER_HWND.get() {
             if hwnd != 0 {
                 unsafe {
@@ -810,6 +894,7 @@ impl OutputEngine {
                 }
             }
         }
+        let _ = visible; // suppress unused-variable warning on non-Windows
     }
 
     /// Write the current timer text to the floating window and request a repaint.
@@ -822,6 +907,7 @@ impl OutputEngine {
         }).unwrap_or(false);
 
         if changed {
+            #[cfg(target_os = "windows")]
             if let Some(&hwnd) = FLOAT_TIMER_HWND.get() {
                 if hwnd != 0 {
                     unsafe {
@@ -853,11 +939,13 @@ impl OutputEngine {
 
     /// Toggle the output window between windowed and true fullscreen.
     pub fn toggle_fullscreen(&self) {
+        #[cfg(target_os = "windows")]
         if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
             if let Ok(mut state) = state_mutex.lock() {
                 win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
             }
         }
+        // Phase B: mpv `fullscreen` property toggle on Mac/Linux.
     }
 
     // ── Status / GC ──────────────────────────────────────────────────────────
@@ -883,6 +971,7 @@ impl OutputEngine {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn position_window(&self, screen_index: Option<u32>) {
+        #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::Foundation::RECT;
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -907,7 +996,6 @@ impl OutputEngine {
                         s.x, s.y, s.width as i32, s.height as i32,
                         SWP_NOACTIVATE | SWP_FRAMECHANGED,
                     );
-                    // Position the top-level fade overlay at the same screen area.
                     if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
                         ShowWindow(overlay, SW_SHOWNA);
                         SetWindowPos(
@@ -919,10 +1007,6 @@ impl OutputEngine {
                 }
             }
 
-            // Always show and raise to TOPMOST when content is displayed.
-            // If no output_screen is configured, leave the window geometry untouched —
-            // the operator may have manually fullscreened or repositioned it.
-            // Mirrors the original VideoEngine apply_window_layout behaviour.
             self.visible.store(true, Ordering::Relaxed);
             ShowWindow(self.hwnd, SW_SHOWNA);
             SetWindowPos(
@@ -931,8 +1015,6 @@ impl OutputEngine {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
 
-            // When no screen_index was given (operator positioned manually), sync
-            // the overlay to wherever the output window currently is.
             if screen_index.is_none() {
                 if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
                     ShowWindow(overlay, SW_SHOWNA);
@@ -946,10 +1028,13 @@ impl OutputEngine {
                 }
             }
 
-            // Re-raise the output window after all overlay operations.
-            // The owned overlay is always Z-above its owner by Windows Z-order
-            // rules, so: overlay (transparent/opaque) > output window > rest.
             SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        // Phase B: mpv `--screen=N` + show_output() on Mac/Linux.
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.visible.store(true, Ordering::Relaxed);
+            let _ = screen_index;
         }
     }
 

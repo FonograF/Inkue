@@ -7,15 +7,18 @@ use crate::engine::mpv_sys::MpvLib;
 
 use super::types::{FadePending, FadePendingParams, PendingVideoStart};
 use super::{
-    cs, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB,
+    cs, FADE_STATE, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB,
     OUTPUT_PENDING_VIDEO_START,
 };
+#[cfg(target_os = "windows")]
+use super::{FADE_OVERLAY_HWND, FADE_TIMER_ID};
 
 /// Set the fade overlay alpha (0 = transparent, 255 = opaque black).
 ///
 /// Also updates `FADE_STATE.current_alpha` so stop/start transitions can
 /// read the correct starting alpha for their animations.
 pub(super) fn set_overlay_alpha(alpha: u8) {
+    #[cfg(target_os = "windows")]
     if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::SetLayeredWindowAttributes;
@@ -23,6 +26,7 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
             SetLayeredWindowAttributes(overlay, 0, alpha, LWA_ALPHA);
         }
     }
+    // Phase B: mpv overlay-add alpha update on Mac/Linux.
     if let Some(fs) = FADE_STATE.get() {
         if let Ok(mut state) = fs.lock() {
             state.current_alpha = alpha;
@@ -30,8 +34,9 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
     }
 }
 
-/// Execute whatever action was pending when the fade timer reached its target.
-/// Called from the Win32 timer handler after the fade completes.
+/// Execute whatever action was pending when the Win32 fade timer reached its target.
+/// Called from the Win32 `WM_TIMER` / `WM_DO_FADE` handler after the fade completes.
+#[cfg(target_os = "windows")]
 pub(super) fn execute_fade_pending(hwnd: isize) {
     let pending = FADE_STATE
         .get()

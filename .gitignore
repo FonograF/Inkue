@@ -27,6 +27,10 @@ Thumbs.db
 # Claude Code local config
 .claude/
 
+# Markdown docs are local-only (README.md is the only public-facing doc)
+*.md
+!README.md
+
 # Logs
 *.log
 npm-debug.log*

@@ -49,11 +49,10 @@ midir = "0.10"
 log = "0.4"
 env_logger = "0.11"
 
-# Windows-specific dependencies
-# winreg is used for ASIO driver detection (asio-support feature only)
+symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
+
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.52", optional = true }
-symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

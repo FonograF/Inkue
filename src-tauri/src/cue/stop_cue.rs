@@ -36,15 +36,14 @@ pub struct StopCue {
     post_wait: Duration,
     started_at: Option<Instant>,
 
-    /// UUID of the specific cue to stop, or `None` to stop all running cues.
-    /// This is the primary key used at runtime.  Stable across cue renumbering
-    /// and insertion of new cues before the target.
-    pub target_cue_id: Option<CueId>,
-    /// Human-readable cue number stored alongside the UUID for display in the
-    /// inspector.  Also used as a fallback during load of old workspace files
-    /// that pre-date UUID-based targeting (resolved to `target_cue_id` by
+    /// UUIDs of cues to stop (empty = stop all running cues).
+    /// Primary keys used at runtime — stable across renumbering.
+    pub target_cue_ids: Vec<CueId>,
+    /// Human-readable cue numbers kept in sync with target_cue_ids for display.
+    /// Also used as fallback when loading old workspace files that carried a
+    /// single `target_cue_id` / `target_cue_number` (resolved by
     /// `resolve_stop_target` after the full cue list is loaded).
-    pub target_cue_number: Option<String>,
+    pub target_cue_numbers: Vec<String>,
     /// `true` = immediate cut; `false` = soft fade using the workspace default.
     pub hard_stop_mode: bool,
     is_disabled: bool,
@@ -64,8 +63,8 @@ impl StopCue {
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
             started_at: None,
-            target_cue_id: None,
-            target_cue_number: None,
+            target_cue_ids: Vec::new(),
+            target_cue_numbers: Vec::new(),
             hard_stop_mode: false,
             is_disabled: false,
         }
@@ -136,15 +135,17 @@ impl Cue for StopCue {
     fn continue_mode(&self) -> ContinueMode { self.continue_mode }
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
-    fn stop_specification(&self) -> Option<(bool, Option<CueId>)> {
-        Some((self.hard_stop_mode, self.target_cue_id))
+    fn stop_specification(&self) -> Option<(bool, Vec<CueId>)> {
+        Some((self.hard_stop_mode, self.target_cue_ids.clone()))
     }
 
     fn resolve_stop_target(&mut self, number_to_id: &std::collections::HashMap<String, CueId>) {
-        if self.target_cue_id.is_none() {
-            if let Some(num) = &self.target_cue_number {
+        if self.target_cue_ids.is_empty() {
+            for num in &self.target_cue_numbers {
                 if let Some(&id) = number_to_id.get(num) {
-                    self.target_cue_id = Some(id);
+                    if !self.target_cue_ids.contains(&id) {
+                        self.target_cue_ids.push(id);
+                    }
                 }
             }
         }
@@ -176,8 +177,8 @@ impl Cue for StopCue {
             "pre_wait_ms": self.pre_wait.as_millis() as u64,
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
-            "target_cue_id": self.target_cue_id,
-            "target_cue_number": self.target_cue_number,
+            "target_cue_ids": self.target_cue_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            "target_cue_numbers": self.target_cue_numbers,
             "hard_stop_mode": self.hard_stop_mode,
             "is_disabled": self.is_disabled,
         })
@@ -227,11 +228,23 @@ impl CueFactory for StopCueFactory {
                 cue.color = color;
             }
         }
-        if let Some(id_str) = value.get("target_cue_id").and_then(|v| v.as_str()) {
-            cue.target_cue_id = id_str.parse().ok();
+        // New format: arrays.
+        if let Some(arr) = value.get("target_cue_ids").and_then(|v| v.as_array()) {
+            cue.target_cue_ids = arr.iter()
+                .filter_map(|v| v.as_str()?.parse().ok())
+                .collect();
+        } else if let Some(id_str) = value.get("target_cue_id").and_then(|v| v.as_str()) {
+            // Backward compat: single UUID from old workspace file.
+            if let Ok(id) = id_str.parse() {
+                cue.target_cue_ids = vec![id];
+            }
         }
-        if let Some(target) = value.get("target_cue_number").and_then(|v| v.as_str()) {
-            cue.target_cue_number = Some(target.to_string());
+        if let Some(arr) = value.get("target_cue_numbers").and_then(|v| v.as_array()) {
+            cue.target_cue_numbers = arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+        } else if let Some(s) = value.get("target_cue_number").and_then(|v| v.as_str()) {
+            cue.target_cue_numbers = vec![s.to_string()];
         }
         if let Some(hard) = value.get("hard_stop_mode").and_then(|v| v.as_bool()) {
             cue.hard_stop_mode = hard;
@@ -257,16 +270,17 @@ mod tests {
         let cue = StopCue::new();
         let spec = cue.stop_specification().unwrap();
         assert!(!spec.0, "hard_stop_mode should default to false");
-        assert!(spec.1.is_none(), "target should default to None (all)");
+        assert!(spec.1.is_empty(), "target should default to empty (stop all)");
     }
 
     #[test]
-    fn target_cue_id_roundtrips() {
+    fn target_cue_ids_roundtrip() {
         let factory = StopCueFactory;
         let mut cue = StopCue::new();
-        let target_id = Uuid::new_v4();
-        cue.target_cue_id = Some(target_id);
-        cue.target_cue_number = Some("5".to_string());
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        cue.target_cue_ids = vec![id1, id2];
+        cue.target_cue_numbers = vec!["5".to_string(), "6".to_string()];
         cue.hard_stop_mode = true;
 
         let json = cue.serialize();
@@ -274,20 +288,39 @@ mod tests {
 
         let spec = rebuilt.stop_specification().unwrap();
         assert!(spec.0);
-        assert_eq!(spec.1, Some(target_id));
+        assert_eq!(spec.1, vec![id1, id2]);
+    }
+
+    #[test]
+    fn backward_compat_single_target_id() {
+        let factory = StopCueFactory;
+        let target_id = Uuid::new_v4();
+        let old_json = serde_json::json!({
+            "type": "stop", "cue_type": "stop",
+            "id": Uuid::new_v4().to_string(),
+            "name": "Stop", "notes": "", "color": "red",
+            "pre_wait_ms": 0u64, "post_wait_ms": 0u64,
+            "continue_mode": "do_not_continue",
+            "target_cue_id": target_id.to_string(),
+            "target_cue_number": "5",
+            "hard_stop_mode": false, "is_disabled": false,
+        });
+        let rebuilt = factory.from_json(old_json).unwrap();
+        let spec = rebuilt.stop_specification().unwrap();
+        assert_eq!(spec.1, vec![target_id]);
     }
 
     #[test]
     fn resolve_stop_target_from_number() {
         let mut cue = StopCue::new();
-        cue.target_cue_number = Some("5".to_string());
+        cue.target_cue_numbers = vec!["5".to_string()];
 
         let target_id = Uuid::new_v4();
         let mut map = std::collections::HashMap::new();
         map.insert("5".to_string(), target_id);
 
         cue.resolve_stop_target(&map);
-        assert_eq!(cue.target_cue_id, Some(target_id));
+        assert_eq!(cue.target_cue_ids, vec![target_id]);
     }
 
     #[test]
@@ -306,11 +339,11 @@ mod tests {
         let factory = StopCueFactory;
         let mut cue = StopCue::new();
         cue.set_name("My Stop".to_string());
-        cue.target_cue_number = Some("3".to_string());
+        cue.target_cue_numbers = vec!["3".to_string()];
 
         let json = cue.serialize();
         assert_eq!(json["name"], "My Stop");
-        assert_eq!(json["target_cue_number"], "3");
+        assert_eq!(json["target_cue_numbers"][0], "3");
         assert_eq!(json["hard_stop_mode"], false);
 
         let rebuilt = factory.from_json(json).unwrap();

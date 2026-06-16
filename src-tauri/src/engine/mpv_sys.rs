@@ -125,33 +125,64 @@ impl MpvLib {
     /// Load `libmpv-2.dll` from the executable's directory and resolve all symbols.
     ///
     /// Returns an error if the DLL is missing or any symbol cannot be found.
-    /// Try to open `libmpv-2.dll` from several candidate paths:
-    /// 1. Next to the exe (dev: build.rs copies it there; install: tauri bundle places it there)
-    /// 2. `vendor/mpv/` subdirectory relative to the exe (fallback for older installs)
-    /// 3. Bare filename — Windows DLL search order (PATH, System32, …)
+    /// Search for libmpv in platform-appropriate locations and load it.
+    ///
+    /// - Windows: `libmpv-2.dll` next to the exe or in `vendor/mpv/`
+    /// - macOS:   `libmpv.dylib` in `Contents/Frameworks/` (app bundle) or Homebrew paths
+    /// - Linux:   `libmpv.so.2` / `libmpv.so` from the system library path
     fn open_dll() -> Result<Library> {
         let candidates: Vec<std::path::PathBuf> = {
             let mut v = Vec::new();
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(dir) = exe.parent() {
-                    v.push(dir.join("libmpv-2.dll"));
-                    v.push(dir.join("vendor").join("mpv").join("libmpv-2.dll"));
+                    #[cfg(target_os = "windows")]
+                    {
+                        v.push(dir.join("libmpv-2.dll"));
+                        v.push(dir.join("vendor").join("mpv").join("libmpv-2.dll"));
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Inside a .app bundle: exe is Contents/MacOS/<binary>,
+                        // bundled dylib lives at Contents/Frameworks/libmpv.dylib.
+                        if let Some(contents) = dir.parent() {
+                            v.push(contents.join("Frameworks").join("libmpv.dylib"));
+                        }
+                        v.push(dir.join("libmpv.dylib"));
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        v.push(dir.join("libmpv.so.2"));
+                        v.push(dir.join("libmpv.so"));
+                    }
                 }
             }
+            #[cfg(target_os = "windows")]
             v.push(std::path::PathBuf::from("libmpv-2.dll"));
+            #[cfg(target_os = "macos")]
+            {
+                v.push(std::path::PathBuf::from("libmpv.dylib"));
+                // Homebrew on Apple Silicon and Intel
+                v.push(std::path::PathBuf::from("/opt/homebrew/lib/libmpv.dylib"));
+                v.push(std::path::PathBuf::from("/usr/local/lib/libmpv.dylib"));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                v.push(std::path::PathBuf::from("libmpv.so.2"));
+                v.push(std::path::PathBuf::from("libmpv.so"));
+            }
             v
         };
 
         for path in &candidates {
-            // SAFETY: loading an external DLL is inherently unsafe.
+            // SAFETY: loading an external shared library is inherently unsafe.
             if let Ok(lib) = unsafe { Library::new(path) } {
-                log::info!("libmpv-2.dll loaded from {}", path.display());
+                log::info!("libmpv loaded from {}", path.display());
                 return Ok(lib);
             }
         }
 
         Err(anyhow!(
-            "Failed to load libmpv-2.dll — searched in: {}",
+            "Failed to load libmpv — searched in: {}",
             candidates
                 .iter()
                 .map(|p| p.display().to_string())
