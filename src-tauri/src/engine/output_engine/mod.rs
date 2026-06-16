@@ -157,21 +157,21 @@ impl OutputEngine {
                 );
             }
 
-            opt_str(&lib, ctx, "vo", "gpu");
-
             // Windows: D3D11 backend with non-blocking Present (needed for desync).
-            // macOS / Linux: gpu-api=auto lets mpv choose Metal / Vulkan / OpenGL.
+            // macOS / Linux: gpu with x11/xv/sdl fallback for VMs / headless builds.
             #[cfg(target_os = "windows")]
             {
+                opt_str(&lib, ctx, "vo", "gpu");
                 opt_str(&lib, ctx, "gpu-api", "d3d11");
                 opt_str(&lib, ctx, "d3d11-sync-interval", "0");
                 opt_str(&lib, ctx, "force-window", "immediate");
             }
             #[cfg(not(target_os = "windows"))]
             {
+                opt_str(&lib, ctx, "vo", "gpu,xv,x11");
                 opt_str(&lib, ctx, "force-window", "yes");
-                opt_str(&lib, ctx, "border", "no");   // no title bar / OS chrome
-                opt_str(&lib, ctx, "ontop", "yes");   // equivalent to WS_EX_TOPMOST
+                opt_str(&lib, ctx, "border", "no");
+                opt_str(&lib, ctx, "ontop", "yes");
             }
 
             opt_str(&lib, ctx, "hwdec", "auto");
