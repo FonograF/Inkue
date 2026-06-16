@@ -132,6 +132,12 @@ impl OutputEngine {
         #[cfg(not(target_os = "windows"))]
         let hwnd: isize = 0;
 
+        // mpv requires LC_NUMERIC=C; set it before mpv_create() on non-Windows.
+        #[cfg(not(target_os = "windows"))]
+        unsafe {
+            libc::setlocale(libc::LC_NUMERIC, b"C\0".as_ptr() as *const libc::c_char);
+        }
+
         let ctx = unsafe { (lib.mpv_create)() };
         if ctx.is_null() {
             return Err(anyhow!("mpv_create() returned null"));

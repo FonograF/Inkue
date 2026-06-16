@@ -215,6 +215,9 @@ fn decode_via_mpv(path: &Path) -> Result<Option<(Vec<f32>, u16, u32)>> {
 
     let decode_result: Result<()> = (|| {
         unsafe {
+            #[cfg(not(target_os = "windows"))]
+            libc::setlocale(libc::LC_NUMERIC, b"C\0".as_ptr() as *const libc::c_char);
+
             let ctx = (mpv.mpv_create)();
             if ctx.is_null() {
                 return Err(anyhow!("mpv_create returned null"));

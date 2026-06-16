@@ -51,6 +51,9 @@ env_logger = "0.11"
 
 symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.52", optional = true }
 windows-sys = { version = "0.52", features = [
