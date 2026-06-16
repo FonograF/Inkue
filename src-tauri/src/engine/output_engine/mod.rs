@@ -305,12 +305,10 @@ impl OutputEngine {
             };
             let cmd_cstr     = cs("loadfile");
             let replace_cstr = cs("replace");
-            let index_cstr   = cs("0");
-            let args: [*const std::ffi::c_char; 5] = [
+            let args: [*const std::ffi::c_char; 4] = [
                 cmd_cstr.as_ptr(),
                 path_cstr.as_ptr(),
                 replace_cstr.as_ptr(),
-                index_cstr.as_ptr(),
                 std::ptr::null(),
             ];
             (lib.mpv_command)(ctx, args.as_ptr());
