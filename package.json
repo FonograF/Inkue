@@ -19,7 +19,7 @@
     "zustand": "^5.0.0"
   },
   "pnpm": {
-    "allowedBuildScripts": ["esbuild"]
+    "onlyBuiltDependencies": ["esbuild"]
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
