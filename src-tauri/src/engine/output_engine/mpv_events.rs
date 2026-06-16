@@ -236,7 +236,7 @@ pub(super) fn mpv_event_loop(
 fn start_video_playback(
     lib: &MpvLib,
     ctx: &MpvCtx,
-    parent_hwnd: isize,
+    _parent_hwnd: isize,
     audio_engine: &Arc<AudioEngine>,
     fade_in_ms: u32,
 ) {
@@ -270,7 +270,7 @@ fn start_video_playback(
         #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-            PostMessageW(parent_hwnd, super::WM_DO_FADE, 0, 0);
+            PostMessageW(_parent_hwnd, super::WM_DO_FADE, 0, 0);
         }
     } else {
         super::fade::set_overlay_alpha(0);

@@ -99,6 +99,8 @@ pub(super) const FADE_TIMER_ID: usize = 1;
 pub struct OutputEngine {
     mpv_lib: Arc<MpvLib>,
     mpv_ctx: Arc<MpvCtx>,
+    /// Win32 parent HWND (0 on Mac/Linux — mpv manages its own window).
+    #[allow(dead_code)]
     hwnd: isize,
     current_voice: Arc<Mutex<Option<VoiceId>>>,
     voices: Mutex<HashMap<VoiceId, OutputVoice>>,

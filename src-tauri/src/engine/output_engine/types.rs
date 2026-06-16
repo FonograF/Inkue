@@ -140,6 +140,7 @@ impl FadeAnimState {
 // Win32 window state
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "windows")]
 pub(crate) struct OutputWndState {
     pub is_fullscreen: bool,
     pub saved_rect: (i32, i32, i32, i32),

@@ -92,17 +92,12 @@ pub fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, Str
 /// with `system_default` so the frontend always receives a valid choice.
 #[tauri::command]
 pub fn get_machine_audio_config() -> MachineAudioConfig {
-    let config = crate::machine_config::load();
+    #[allow(unused_mut)]
+    let mut config = crate::machine_config::load();
     #[cfg(not(target_os = "windows"))]
-    {
-        use crate::preferences::AudioBackend;
-        let mut c = config;
-        if !matches!(c.backend, AudioBackend::SystemDefault) {
-            c.backend = AudioBackend::SystemDefault;
-        }
-        return c;
+    if !matches!(config.backend, crate::preferences::AudioBackend::SystemDefault) {
+        config.backend = crate::preferences::AudioBackend::SystemDefault;
     }
-    #[allow(clippy::let_and_return)]
     config
 }
 
