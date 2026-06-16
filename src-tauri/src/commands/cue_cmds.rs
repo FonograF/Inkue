@@ -26,6 +26,8 @@ pub struct CueSummary {
     pub cue_type: CueType,
     pub name: String,
     pub number: Option<String>,
+    /// Free-form notes visible in the Notes column and inspector.
+    pub notes: String,
     pub state: CueState,
     pub continue_mode: ContinueMode,
     pub color: CueColor,
@@ -42,6 +44,9 @@ pub struct CueSummary {
     pub is_broken: bool,
     /// True for non-critical problems (no file assigned, zero duration, empty group).
     pub is_warning: bool,
+    /// Duration of one loop iteration (file duration without start/end markers applied
+    /// and without the loop-count multiplier).  `None` for non-media cues.
+    pub file_duration_ms: Option<u64>,
     /// Human-readable description of the warning condition, when `is_warning` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning_message: Option<String>,
@@ -113,6 +118,7 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSumma
         cue_type: cue.cue_type(),
         name: cue.name().to_string(),
         number: cue.number().map(|s| s.to_string()),
+        notes: cue.notes().to_string(),
         state: cue.state(),
         continue_mode: cue.continue_mode(),
         color: cue.color(),
@@ -125,6 +131,7 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSumma
         is_broken: check_broken(cue, workspace_dir),
         is_warning: warning_message.is_some(),
         warning_message,
+        file_duration_ms: cue.file_duration().map(|d| d.as_millis() as u64),
         children: cue.child_cues().map(|ch| {
             ch.iter().map(|c| summarise_recursive(c.as_ref(), workspace_dir)).collect()
         }),

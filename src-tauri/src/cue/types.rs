@@ -135,12 +135,12 @@ pub enum GroupMode {
     Sequential,
 }
 
-/// Parameters passed from a Fade Cue to the transport so it can resolve the
-/// target voice and inject it back via [`super::traits::Cue::set_fade_voice`].
+/// Parameters passed from a Fade Cue to the transport so it can resolve
+/// target voices and inject them back via [`super::traits::Cue::set_fade_voices`].
 pub struct FadeAction {
-    /// Cue number to fade (`None` = no target resolved yet; transport fills it in).
-    pub target_cue_number: Option<String>,
-    /// Target linear gain (0.0 = silence, 1.0 = unity).
+    /// UUIDs of cues to fade (empty = no-op).
+    pub target_cue_ids: Vec<CueId>,
+    /// Target linear gain (0.0 = silence / black, 1.0 = unity / fully visible).
     pub target_gain_linear: f32,
     /// Fade duration in milliseconds.
     pub duration_ms: u64,

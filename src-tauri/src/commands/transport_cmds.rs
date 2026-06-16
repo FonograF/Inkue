@@ -100,9 +100,12 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     // If the Audio Cue at the playhead has no decoded samples yet (still
     // loading), skip silently.  Video Cues are exempt — they stream directly
     // from disk and need no pre-loading step.
+    // NOTE: use file_duration() (raw decoded length) rather than duration()
+    // to avoid blocking infinite-loop cues (loop_count = u32::MAX makes
+    // duration() return None even when the file is fully decoded).
     if let Some(cue) = cue_list.playhead_cue() {
         if cue.cue_type() == CueType::Audio
-            && cue.duration().is_none()
+            && cue.file_duration().is_none()
             && cue
                 .serialize()
                 .get("file_path")

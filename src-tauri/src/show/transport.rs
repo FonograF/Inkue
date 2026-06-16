@@ -112,20 +112,48 @@ impl Transport {
             cue.go(&self.context)?;
         }
 
-        // Inject the target voice into Fade Cues so tick() can apply gain updates.
-        // Done here, after go(), so the Fade Cue's voice_id slot is ready.
+        // Inject target voices into Fade Cues so tick() can apply gain updates,
+        // and trigger visual overlay fade for Video/Image targets.
         let fade_spec = cue_list.get(&cue_id).and_then(|c| c.fade_specification());
         if let Some(spec) = fade_spec {
-            let target_voice: Option<VoiceId> = spec
-                .target_cue_number
-                .as_deref()
-                .and_then(|num| cue_list.cues.iter().find(|c| c.number() == Some(num)))
-                .and_then(|c| c.playing_voice_id());
-            let start_gain = target_voice
-                .map(|vid| self.context.audio_engine.get_voice_gain(vid))
-                .unwrap_or(1.0);
+            let mut voice_infos: Vec<(VoiceId, f32)> = Vec::new();
+            let mut has_visual = false;
+
+            for &target_id in &spec.target_cue_ids {
+                if let Some(target) = cue_list.cues.iter().find(|c| c.id() == target_id) {
+                    match target.cue_type() {
+                        CueType::Audio => {
+                            if let Some(vid) = target.playing_voice_id() {
+                                let gain = self.context.audio_engine.get_voice_gain(vid);
+                                voice_infos.push((vid, gain));
+                            }
+                        }
+                        CueType::Video => {
+                            // Fade the video's paired audio voice.
+                            if let Some(aid) = self.context.output_engine.get_current_audio_voice() {
+                                let gain = self.context.audio_engine.get_voice_gain(aid);
+                                voice_infos.push((aid, gain));
+                            }
+                            has_visual = true;
+                        }
+                        CueType::Image => {
+                            has_visual = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // target_gain_linear: 0.0 → black (alpha 255), 1.0 → visible (alpha 0).
+            let visual_start_alpha = if has_visual {
+                self.context.output_engine.get_overlay_alpha()
+            } else {
+                0
+            };
+            let visual_target_alpha = ((1.0 - spec.target_gain_linear.clamp(0.0, 1.0)) * 255.0) as u8;
+
             if let Some(fc) = cue_list.get_mut(&cue_id) {
-                fc.set_fade_voice(target_voice, start_gain);
+                fc.set_fade_voices(voice_infos, has_visual, visual_start_alpha, visual_target_alpha);
             }
         }
 
@@ -133,20 +161,19 @@ impl Transport {
         // Auto-Follow, so the chained cue is not immediately killed.
         let stop_spec = cue_list.get(&cue_id).and_then(|c| c.stop_specification());
         let mut stopped: Vec<CueId> = Vec::new();
-        if let Some((hard, target)) = stop_spec {
-            let ids_to_stop: Vec<CueId> = match target {
-                None => cue_list
+        if let Some((hard, target_ids)) = stop_spec {
+            let ids_to_stop: Vec<CueId> = if target_ids.is_empty() {
+                // Empty = stop all running/paused cues (except the Stop Cue itself).
+                cue_list
                     .cues
                     .iter()
                     .filter(|c| (c.is_running() || c.is_paused()) && c.id() != cue_id)
                     .map(|c| c.id())
-                    .collect(),
-                Some(target_id) => cue_list
-                    .cues
-                    .iter()
-                    .filter(|c| c.id() == target_id && c.id() != cue_id)
-                    .map(|c| c.id())
-                    .collect(),
+                    .collect()
+            } else {
+                target_ids.iter().copied()
+                    .filter(|&tid| tid != cue_id)
+                    .collect()
             };
             for id in &ids_to_stop {
                 if let Some(c) = cue_list.get_mut(id) {

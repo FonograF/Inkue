@@ -1,11 +1,13 @@
-//! [`FadeCue`] — fades the volume of a running audio cue over a set duration.
+//! [`FadeCue`] — fades the volume/brightness of one or more running cues.
 //!
-//! On GO, the Fade Cue locates the target cue by number and smoothly
-//! interpolates its gain from the current level to the configured target
-//! level.  Optionally stops the target cue once the fade completes.
+//! On GO the Fade Cue locates its targets by UUID and:
+//! - For **audio** cues: smoothly interpolates the voice gain in `tick()`.
+//! - For **video** cues: interpolates the paired audio voice gain AND animates
+//!   the OutputEngine overlay from current alpha to the target alpha.
+//! - For **image** cues: animates the overlay only (no audio voice).
 //!
-//! The fade is applied in `tick()` at the event-loop frame rate (~30 fps),
-//! which is sufficient resolution for all practical fade durations.
+//! `target_gain_linear = 0.0` → fade to black/silence.
+//! `target_gain_linear = 1.0` → fade to full brightness/unity volume.
 
 use std::time::{Duration, Instant};
 
@@ -45,21 +47,29 @@ pub struct FadeCue {
     elapsed_before_pause: Duration,
     action_elapsed_before_pause: Duration,
 
-    /// Cue number to target (`None` = no target, fade is a no-op).
-    pub target_cue_number: Option<String>,
-    /// Target volume in dB (-60.0 = silence, 0.0 = unity).
+    /// UUIDs of cues to fade (empty = no-op).
+    pub target_cue_ids: Vec<CueId>,
+    /// Display labels kept in sync with target_cue_ids (for inspector).
+    pub target_cue_numbers: Vec<String>,
+    /// Target volume in dB; also maps to visual brightness (-60 = black, 0 = full).
     pub target_volume_db: f64,
-    /// Duration of the fade in milliseconds (also the action duration).
+    /// Fade duration in milliseconds.
     pub fade_duration_ms: u64,
     /// Fade curve shape.
     pub fade_curve: FadeCurve,
-    /// Stop the target cue after the fade completes.
+    /// Stop the target cue(s) after the fade completes.
     pub stop_at_end: bool,
     is_disabled: bool,
 
     // Runtime — injected by transport after go()
-    target_voice_id: Option<Uuid>,
-    start_gain: f32,
+    /// (audio_voice_id, start_gain) for each audio/video audio-track target.
+    target_voices: Vec<(Uuid, f32)>,
+    /// True when at least one target is a Video or Image cue.
+    has_visual_target: bool,
+    /// Overlay alpha at GO time (0 = transparent).
+    visual_start_alpha: u8,
+    /// Overlay alpha at fade completion (255 = black).
+    visual_target_alpha: u8,
     fade_complete: bool,
 }
 
@@ -81,14 +91,17 @@ impl FadeCue {
             auto_continue_fired: false,
             elapsed_before_pause: Duration::ZERO,
             action_elapsed_before_pause: Duration::ZERO,
-            target_cue_number: None,
+            target_cue_ids: Vec::new(),
+            target_cue_numbers: Vec::new(),
             target_volume_db: -60.0,
             fade_duration_ms: 2000,
             fade_curve: FadeCurve::SCurve,
             stop_at_end: false,
             is_disabled: false,
-            target_voice_id: None,
-            start_gain: 1.0,
+            target_voices: Vec::new(),
+            has_visual_target: false,
+            visual_start_alpha: 0,
+            visual_target_alpha: 0,
             fade_complete: false,
         }
     }
@@ -133,8 +146,10 @@ impl Cue for FadeCue {
         self.auto_continue_fired = false;
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
-        self.target_voice_id = None;
-        self.start_gain = 1.0;
+        self.target_voices = Vec::new();
+        self.has_visual_target = false;
+        self.visual_start_alpha = 0;
+        self.visual_target_alpha = 0;
         self.fade_complete = false;
         self.started_at = Some(Instant::now());
 
@@ -198,7 +213,10 @@ impl Cue for FadeCue {
         self.in_pre_wait = false;
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
-        self.target_voice_id = None;
+        self.target_voices = Vec::new();
+        self.has_visual_target = false;
+        self.visual_start_alpha = 0;
+        self.visual_target_alpha = 0;
         self.fade_complete = false;
         Ok(())
     }
@@ -208,7 +226,6 @@ impl Cue for FadeCue {
             return Ok(());
         }
 
-        // Pre-wait: wait until it expires, then start the action.
         if self.in_pre_wait {
             if let Some(st) = self.started_at {
                 if st.elapsed() >= self.pre_wait {
@@ -224,7 +241,10 @@ impl Cue for FadeCue {
             return Ok(());
         }
 
-        let Some(vid) = self.target_voice_id else { return Ok(()); };
+        // No targets → nothing to drive; just wait for duration to expire.
+        if self.target_voices.is_empty() && !self.has_visual_target {
+            return Ok(());
+        }
 
         let elapsed_ms = self.action_elapsed().as_millis() as f64;
         let duration_ms = self.fade_duration_ms as f64;
@@ -232,13 +252,31 @@ impl Cue for FadeCue {
         let curved_t = self.fade_curve.apply(t) as f32;
 
         let target_gain = db_to_linear(self.target_volume_db) as f32;
-        let gain = self.start_gain + (target_gain - self.start_gain) * curved_t;
-        let _ = context.audio_engine.set_voice_gain(vid, gain);
 
+        // Interpolate gain for each audio voice.
+        for &(vid, start_gain) in &self.target_voices {
+            let gain = start_gain + (target_gain - start_gain) * curved_t;
+            let _ = context.audio_engine.set_voice_gain(vid, gain);
+        }
+
+        // Interpolate overlay alpha for visual targets (direct, no Win32 timer).
+        if self.has_visual_target {
+            let start = self.visual_start_alpha as f32;
+            let target = self.visual_target_alpha as f32;
+            let alpha = (start + (target - start) * curved_t).round() as u8;
+            context.output_engine.set_overlay_alpha_direct(alpha);
+        }
+
+        // At fade completion, optionally stop targets.
         if t >= 1.0 && !self.fade_complete {
             self.fade_complete = true;
             if self.stop_at_end {
-                let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.fade_curve));
+                for &(vid, _) in &self.target_voices {
+                    let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.fade_curve));
+                }
+                if self.has_visual_target {
+                    context.output_engine.hard_stop_current();
+                }
             }
         }
 
@@ -292,7 +330,7 @@ impl Cue for FadeCue {
 
     fn fade_specification(&self) -> Option<FadeAction> {
         Some(FadeAction {
-            target_cue_number: self.target_cue_number.clone(),
+            target_cue_ids: self.target_cue_ids.clone(),
             target_gain_linear: db_to_linear(self.target_volume_db) as f32,
             duration_ms: self.fade_duration_ms,
             curve: self.fade_curve,
@@ -300,9 +338,27 @@ impl Cue for FadeCue {
         })
     }
 
-    fn set_fade_voice(&mut self, voice_id: Option<CueId>, start_gain: f32) {
-        self.target_voice_id = voice_id;
-        self.start_gain = start_gain;
+    fn set_fade_voices(
+        &mut self,
+        voices: Vec<(CueId, f32)>,
+        has_visual: bool,
+        visual_start_alpha: u8,
+        visual_target_alpha: u8,
+    ) {
+        self.target_voices = voices;
+        self.has_visual_target = has_visual;
+        self.visual_start_alpha = visual_start_alpha;
+        self.visual_target_alpha = visual_target_alpha;
+    }
+
+    fn resolve_fade_targets(&mut self, number_to_id: &std::collections::HashMap<String, CueId>) {
+        if self.target_cue_ids.is_empty() {
+            for num in &self.target_cue_numbers {
+                if let Some(&id) = number_to_id.get(num) {
+                    self.target_cue_ids.push(id);
+                }
+            }
+        }
     }
 
     fn runtime_state(&self) -> RuntimeState {
@@ -333,7 +389,8 @@ impl Cue for FadeCue {
             "pre_wait_ms": self.pre_wait.as_millis() as u64,
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
-            "target_cue_number": self.target_cue_number,
+            "target_cue_ids": self.target_cue_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            "target_cue_numbers": self.target_cue_numbers,
             "target_volume_db": self.target_volume_db,
             "fade_duration_ms": self.fade_duration_ms,
             "fade_curve": self.fade_curve,
@@ -385,8 +442,20 @@ impl CueFactory for FadeCueFactory {
                 cue.color = color;
             }
         }
-        if let Some(s) = value.get("target_cue_number").and_then(|v| v.as_str()) {
-            cue.target_cue_number = Some(s.to_string());
+        // New format: target_cue_ids array.
+        if let Some(arr) = value.get("target_cue_ids").and_then(|v| v.as_array()) {
+            cue.target_cue_ids = arr.iter()
+                .filter_map(|v| v.as_str()?.parse().ok())
+                .collect();
+        }
+        // target_cue_numbers array.
+        if let Some(arr) = value.get("target_cue_numbers").and_then(|v| v.as_array()) {
+            cue.target_cue_numbers = arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+        } else if let Some(s) = value.get("target_cue_number").and_then(|v| v.as_str()) {
+            // Backward compat: old single cue-number field.
+            cue.target_cue_numbers = vec![s.to_string()];
         }
         if let Some(db) = value.get("target_volume_db").and_then(|v| v.as_f64()) {
             cue.target_volume_db = db;
@@ -429,6 +498,7 @@ mod tests {
         assert_eq!(c.fade_duration_ms, 2000);
         assert!((c.target_volume_db - (-60.0)).abs() < 1e-9);
         assert!(!c.stop_at_end);
+        assert!(c.target_cue_ids.is_empty());
     }
 
     #[test]
@@ -436,14 +506,15 @@ mod tests {
         let factory = FadeCueFactory;
         let mut cue = FadeCue::new();
         cue.set_name("My Fade".to_string());
-        cue.target_cue_number = Some("3".to_string());
+        let target_id = Uuid::new_v4();
+        cue.target_cue_ids = vec![target_id];
+        cue.target_cue_numbers = vec!["3".to_string()];
         cue.target_volume_db = -6.0;
         cue.fade_duration_ms = 3000;
         cue.stop_at_end = true;
 
         let json = cue.serialize();
         assert_eq!(json["name"], "My Fade");
-        assert_eq!(json["target_cue_number"], "3");
         assert_eq!(json["target_volume_db"], -6.0);
         assert_eq!(json["fade_duration_ms"], 3000u64);
         assert_eq!(json["stop_at_end"], true);
@@ -455,15 +526,36 @@ mod tests {
     #[test]
     fn fade_specification_returns_action() {
         let mut cue = FadeCue::new();
-        cue.target_cue_number = Some("1".to_string());
+        let id = Uuid::new_v4();
+        cue.target_cue_ids = vec![id];
         cue.target_volume_db = 0.0;
         cue.fade_duration_ms = 1000;
         cue.stop_at_end = true;
 
         let spec = cue.fade_specification().unwrap();
-        assert_eq!(spec.target_cue_number.as_deref(), Some("1"));
+        assert_eq!(spec.target_cue_ids, vec![id]);
         assert!((spec.target_gain_linear - 1.0).abs() < 1e-4);
         assert_eq!(spec.duration_ms, 1000);
         assert!(spec.stop_at_end);
+    }
+
+    #[test]
+    fn backward_compat_single_target_number() {
+        let factory = FadeCueFactory;
+        // Simulate old-format JSON with target_cue_number (not _ids).
+        let old_json = serde_json::json!({
+            "type": "fade", "cue_type": "fade",
+            "id": Uuid::new_v4().to_string(),
+            "name": "Old Fade", "notes": "", "color": "blue",
+            "pre_wait_ms": 0u64, "post_wait_ms": 0u64,
+            "continue_mode": "auto_follow",
+            "target_cue_number": "5",
+            "target_volume_db": -60.0, "fade_duration_ms": 2000u64,
+            "fade_curve": "s_curve", "stop_at_end": false, "is_disabled": false,
+        });
+        let cue = factory.from_json(old_json).unwrap();
+        let spec = cue.fade_specification().unwrap();
+        // UUIDs not resolved yet (no workspace loaded), but number is stored.
+        assert!(spec.target_cue_ids.is_empty());
     }
 }

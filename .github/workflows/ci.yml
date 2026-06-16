@@ -19,6 +19,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Create stub libmpv-2.dll for tauri-build resource validation
+        run: |
+          New-Item -ItemType Directory -Force vendor\mpv | Out-Null
+          [System.IO.File]::WriteAllBytes("vendor\mpv\libmpv-2.dll", @())
       - run: cargo check
       - run: cargo test
 

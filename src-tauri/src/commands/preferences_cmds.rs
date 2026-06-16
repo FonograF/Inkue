@@ -237,56 +237,59 @@ pub fn preview_output_timer(
     Ok(())
 }
 
-/// Enumerate all font family names installed on this Windows machine.
+/// Enumerate all font family names installed on the system.
 ///
-/// Uses GDI `EnumFontFamiliesExW` so the names match exactly what mpv's
-/// `osd-font` property accepts.  Results are sorted case-insensitively;
-/// vertical-text (`@`-prefixed) families are excluded.
+/// On Windows: uses GDI `EnumFontFamiliesExW` so names match exactly what
+/// mpv's `osd-font` property accepts. Vertical-text (`@`-prefixed) families
+/// are excluded.
+/// On macOS / Linux: returns an empty list (Phase B: use platform font APIs).
 #[tauri::command]
 pub fn list_system_fonts() -> Vec<String> {
-    use windows_sys::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, EnumFontFamiliesExW,
-        LOGFONTW, TEXTMETRICW,
-    };
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, EnumFontFamiliesExW,
+            LOGFONTW, TEXTMETRICW,
+        };
 
-    // windows-sys 0.52 exposes the callback as (*const LOGFONTW, …).
-    // The actual struct passed by Windows is ENUMLOGFONTEXW, whose first field
-    // is LOGFONTW, so lfFaceName is at the same offset — safe to read directly.
-    unsafe extern "system" fn enum_cb(
-        lpelfe: *const LOGFONTW,
-        _: *const TEXTMETRICW,
-        _: u32,
-        lparam: isize,
-    ) -> i32 {
-        let list = &mut *(lparam as *mut Vec<String>);
-        let face = (*lpelfe).lfFaceName;
-        let len = face.iter().position(|&c| c == 0).unwrap_or(32);
-        let name = String::from_utf16_lossy(&face[..len]);
-        if !name.starts_with('@') {
-            list.push(name);
+        unsafe extern "system" fn enum_cb(
+            lpelfe: *const LOGFONTW,
+            _: *const TEXTMETRICW,
+            _: u32,
+            lparam: isize,
+        ) -> i32 {
+            let list = &mut *(lparam as *mut Vec<String>);
+            let face = (*lpelfe).lfFaceName;
+            let len = face.iter().position(|&c| c == 0).unwrap_or(32);
+            let name = String::from_utf16_lossy(&face[..len]);
+            if !name.starts_with('@') {
+                list.push(name);
+            }
+            1
         }
-        1 // continue enumeration
-    }
 
-    let mut fonts: Vec<String> = Vec::new();
-    unsafe {
-        let hdc = CreateCompatibleDC(0);
-        if hdc != 0 {
-            let mut lf: LOGFONTW = std::mem::zeroed();
-            lf.lfCharSet = 1; // DEFAULT_CHARSET — all charsets
-            EnumFontFamiliesExW(
-                hdc,
-                &lf,
-                Some(enum_cb),
-                &mut fonts as *mut Vec<String> as isize,
-                0,
-            );
-            DeleteDC(hdc);
+        let mut fonts: Vec<String> = Vec::new();
+        unsafe {
+            let hdc = CreateCompatibleDC(0);
+            if hdc != 0 {
+                let mut lf: LOGFONTW = std::mem::zeroed();
+                lf.lfCharSet = 1;
+                EnumFontFamiliesExW(
+                    hdc,
+                    &lf,
+                    Some(enum_cb),
+                    &mut fonts as *mut Vec<String> as isize,
+                    0,
+                );
+                DeleteDC(hdc);
+            }
         }
+        fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        fonts.dedup();
+        fonts
     }
-    fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-    fonts.dedup();
-    fonts
+    #[cfg(not(target_os = "windows"))]
+    Vec::new()
 }
 
 /// Return all available audio output devices for the given backend.

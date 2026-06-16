@@ -38,7 +38,8 @@ pub(super) fn create_output_window() -> Result<isize> {
                     CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassExW,
                     ShowWindow, TranslateMessage,
                     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-                    MSG, SW_HIDE, SW_SHOWNA, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_POPUP, WS_SIZEBOX,
+                    MSG, SW_HIDE, SW_SHOWNA, WS_CLIPCHILDREN,
+                    WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_POPUP, WS_SIZEBOX,
                     WNDCLASSEXW,
                 };
 
@@ -99,9 +100,13 @@ pub(super) fn create_output_window() -> Result<isize> {
                 RegisterClassExW(&wc_timer);
 
                 // --- Create parent window ---
+                // WS_EX_TOPMOST at creation is the only reliable way to maintain
+                // always-on-top behaviour on Windows 11 with DWM: SetWindowPos
+                // (HWND_TOPMOST) can be silently ignored when the window is not yet
+                // active, but the extended-style flag is permanent.
                 let window_name = wide("WinCue Output\0");
                 let parent_hwnd = CreateWindowExW(
-                    WS_EX_NOACTIVATE,
+                    WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                     parent_class.as_ptr(),
                     window_name.as_ptr(),
                     WS_POPUP | WS_CLIPCHILDREN | WS_SIZEBOX,
@@ -125,7 +130,7 @@ pub(super) fn create_output_window() -> Result<isize> {
 
                 const WS_EX_LAYERED: u32     = 0x0008_0000;
                 const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
-                const WS_EX_TOPMOST: u32     = 0x0000_0008;
+                // WS_EX_TOPMOST imported above
                 const WS_EX_TOOLWINDOW: u32  = 0x0000_0080;
                 const WS_CHILD: u32          = 0x4000_0000;
 

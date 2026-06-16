@@ -494,6 +494,10 @@ impl Cue for VideoCue {
         self.cached_duration = Some(duration);
     }
 
+    fn file_duration(&self) -> Option<Duration> {
+        self.cached_duration
+    }
+
     fn runtime_state(&self) -> RuntimeState {
         RuntimeState {
             state: self.state,

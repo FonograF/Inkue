@@ -545,6 +545,7 @@ impl CueList {
             .collect();
         for cue in &mut cues {
             cue.resolve_stop_target(&number_to_id);
+            cue.resolve_fade_targets(&number_to_id);
         }
 
         Ok(Self {

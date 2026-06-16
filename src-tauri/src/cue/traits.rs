@@ -301,34 +301,50 @@ pub trait Cue: Send {
     }
 
     /// Fade Cue only: returns the fade parameters so the transport can resolve
-    /// the target voice and call [`set_fade_voice`] before the first tick.
+    /// target voices and call [`set_fade_voices`] before the first tick.
     fn fade_specification(&self) -> Option<FadeAction> {
         None
     }
 
-    /// Inject the resolved target voice ID and its current gain into this cue.
-    /// Called by [`crate::show::transport::Transport::go`] after `go()` for
-    /// Fade Cues so that `tick()` knows which voice to update.
-    fn set_fade_voice(&mut self, _voice_id: Option<CueId>, _start_gain: f32) {}
+    /// Inject resolved audio voice IDs (and their current gains) into this cue,
+    /// plus visual fade parameters for any Video/Image targets.
+    ///
+    /// - `voices`: `(audio_voice_id, start_gain)` for each audio/video target.
+    /// - `has_visual`: true when at least one target is a Video or Image cue.
+    /// - `visual_start_alpha`: current overlay alpha at GO time (read from OutputEngine).
+    /// - `visual_target_alpha`: desired overlay alpha when fade completes.
+    ///
+    /// Called by [`crate::show::transport::Transport::go`] after `go()` so that
+    /// `tick()` knows which voices/overlay to update.
+    fn set_fade_voices(
+        &mut self,
+        _voices: Vec<(CueId, f32)>,
+        _has_visual: bool,
+        _visual_start_alpha: u8,
+        _visual_target_alpha: u8,
+    ) {}
 
     /// Stop Cue only: describes what to stop after `go()` completes.
     ///
-    /// Returns `Some((hard_stop, target_cue_id))` where:
+    /// Returns `Some((hard_stop, target_cue_ids))` where:
     /// - `hard_stop` — `true` = immediate cut, `false` = soft fade.
-    /// - `target_cue_id` — `None` = stop all, `Some(id)` = stop the cue with that UUID.
+    /// - `target_cue_ids` — empty = stop all, non-empty = stop those UUIDs only.
     ///
     /// Transport reads this and executes the stop **before** evaluating
     /// Auto-Follow chains, preventing the chained cue from being killed.
-    fn stop_specification(&self) -> Option<(bool, Option<CueId>)> {
+    fn stop_specification(&self) -> Option<(bool, Vec<CueId>)> {
         None
     }
 
-    /// Resolve the stop target from a cue-number string to a UUID.
+    /// Resolve stop/fade targets from cue-number strings to UUIDs.
     ///
-    /// Called once per cue after the whole cue list is loaded, allowing Stop
-    /// Cues saved in the old format (number only, no UUID) to be upgraded
+    /// Called once per cue after the whole cue list is loaded, allowing cues
+    /// saved in the old format (number only, no UUID) to be upgraded
     /// in-memory for the current session.  Default implementation is a no-op.
     fn resolve_stop_target(&mut self, _number_to_id: &std::collections::HashMap<String, CueId>) {}
+
+    /// Fade Cue only: resolve target UUIDs from cue-number labels.
+    fn resolve_fade_targets(&mut self, _number_to_id: &std::collections::HashMap<String, CueId>) {}
 
     /// Capture the volatile runtime state so it can be transplanted into a
     /// freshly-rebuilt instance.  Called by `update_cue` just before the
