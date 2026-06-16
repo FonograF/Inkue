@@ -153,7 +153,9 @@ impl MpvLib {
                     }
                     #[cfg(target_os = "linux")]
                     {
+                        // Ubuntu 24.04+ ships libmpv.so.2; Ubuntu 22.04 ships libmpv.so.1
                         v.push(dir.join("libmpv.so.2"));
+                        v.push(dir.join("libmpv.so.1"));
                         v.push(dir.join("libmpv.so"));
                     }
                 }
@@ -169,7 +171,11 @@ impl MpvLib {
             }
             #[cfg(target_os = "linux")]
             {
+                // Bare names let the system linker (ld.so) search LD_LIBRARY_PATH
+                // and /usr/lib — works whether libmpv.so.2 (Ubuntu 24.04+) or
+                // libmpv.so.1 (Ubuntu 22.04) is installed.
                 v.push(std::path::PathBuf::from("libmpv.so.2"));
+                v.push(std::path::PathBuf::from("libmpv.so.1"));
                 v.push(std::path::PathBuf::from("libmpv.so"));
             }
             v
