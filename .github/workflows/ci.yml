@@ -23,6 +23,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force vendor\mpv | Out-Null
           [System.IO.File]::WriteAllBytes("vendor\mpv\libmpv-2.dll", @())
+      - name: Create empty frontend dist for tauri::generate_context!
+        run: New-Item -ItemType Directory -Force ..\dist | Out-Null
       - run: cargo check
       - run: cargo test
 
@@ -37,6 +39,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Create empty frontend dist for tauri::generate_context!
+        run: mkdir -p ../dist
       - run: cargo check
 
   check-linux:
@@ -60,4 +64,6 @@ jobs:
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
             libasound2-dev
+      - name: Create empty frontend dist for tauri::generate_context!
+        run: mkdir -p ../dist
       - run: cargo check

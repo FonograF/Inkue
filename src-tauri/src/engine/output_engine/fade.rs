@@ -1,6 +1,7 @@
 //! Fade overlay helpers: alpha animation, load execution, stop execution.
 
 use std::ffi::{c_void, CString};
+#[cfg(target_os = "windows")]
 use std::time::Instant;
 
 use crate::engine::mpv_sys::MpvLib;
