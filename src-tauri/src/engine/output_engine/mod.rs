@@ -168,7 +168,7 @@ impl OutputEngine {
             }
             #[cfg(not(target_os = "windows"))]
             {
-                opt_str(&lib, ctx, "vo", "gpu,xv,x11");
+                opt_str(&lib, ctx, "vo", "gpu,wlshm,xv,x11");
                 opt_str(&lib, ctx, "force-window", "yes");
                 opt_str(&lib, ctx, "border", "no");
                 opt_str(&lib, ctx, "ontop", "yes");
