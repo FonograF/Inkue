@@ -2,13 +2,20 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 export function FloatTimerWindow() {
-    const [text, setText] = useState("--:--.---");
+    const [text, setText]   = useState("--:--.---");
+    const [font, setFont]   = useState("monospace");
 
     useEffect(() => {
-        const unlisten = listen<string>("float-timer-text", (event) => {
-            setText(event.payload || "--:--.---");
+        const unlistenText = listen<string>("float-timer-text", (e) => {
+            setText(e.payload || "--:--.---");
         });
-        return () => { unlisten.then((f) => f()); };
+        const unlistenFont = listen<string>("float-timer-font", (e) => {
+            if (e.payload) setFont(e.payload);
+        });
+        return () => {
+            unlistenText.then((f) => f());
+            unlistenFont.then((f) => f());
+        };
     }, []);
 
     return (
@@ -22,7 +29,7 @@ export function FloatTimerWindow() {
                 alignItems: "center",
                 justifyContent: "center",
                 userSelect: "none",
-                fontFamily: "monospace",
+                fontFamily: `"${font}", monospace`,
                 fontSize: "3.2rem",
                 fontWeight: "bold",
                 color: "#ffffff",
@@ -30,7 +37,6 @@ export function FloatTimerWindow() {
                 borderRadius: "8px",
                 boxSizing: "border-box",
                 cursor: "move",
-                // Subtle border so the window is visible against any background.
                 outline: "1px solid rgba(255,255,255,0.12)",
             }}
         >

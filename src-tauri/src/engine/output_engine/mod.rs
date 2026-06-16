@@ -160,7 +160,11 @@ impl OutputEngine {
                 opt_str(&lib, ctx, "force-window", "immediate");
             }
             #[cfg(not(target_os = "windows"))]
-            opt_str(&lib, ctx, "force-window", "yes");
+            {
+                opt_str(&lib, ctx, "force-window", "yes");
+                opt_str(&lib, ctx, "border", "no");   // no title bar / OS chrome
+                opt_str(&lib, ctx, "ontop", "yes");   // equivalent to WS_EX_TOPMOST
+            }
 
             opt_str(&lib, ctx, "hwdec", "auto");
 
@@ -187,6 +191,11 @@ impl OutputEngine {
                 (lib.mpv_terminate_destroy)(ctx);
                 return Err(anyhow!("mpv_initialize() failed with code {ret}"));
             }
+
+            // Start hidden on Mac / Linux — shown on first GO or F9.
+            // On Windows the Win32 window is created with SW_HIDE instead.
+            #[cfg(not(target_os = "windows"))]
+            prop_str(&lib, ctx, "hidden", "yes");
 
             // OSD style for the cue timer overlay (applied after init as properties).
             prop_str(&lib, ctx, "osd-font-size",     "120");
@@ -329,7 +338,7 @@ impl OutputEngine {
     }
 
     /// Enumerate all connected monitors.  Index 0 is always the primary.
-    pub fn list_screens() -> Vec<ScreenInfo> {
+    pub fn list_screens(&self) -> Vec<ScreenInfo> {
         #[cfg(target_os = "windows")]
         {
             let mut screens: Vec<ScreenInfo> = Vec::new();
@@ -375,8 +384,42 @@ impl OutputEngine {
             }
             screens
         }
+
         #[cfg(not(target_os = "windows"))]
-        Vec::new()
+        {
+            use tauri::Manager;
+            // Enumerate via the main Tauri window — available on the calling thread.
+            let win = self.app_handle.get_webview_window("main");
+            let Some(win) = win else { return Vec::new(); };
+
+            let all = win.available_monitors().unwrap_or_default();
+            let primary_pos = win.primary_monitor().ok().flatten().map(|p| *p.position());
+
+            let mut screens: Vec<ScreenInfo> = all
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let pos = m.position();
+                    let sz  = m.size();
+                    let is_primary = primary_pos
+                        .map(|pp| pp.x == pos.x && pp.y == pos.y)
+                        .unwrap_or(i == 0);
+                    ScreenInfo {
+                        index: i as u32,
+                        width: sz.width,
+                        height: sz.height,
+                        x: pos.x,
+                        y: pos.y,
+                        is_primary,
+                    }
+                })
+                .collect();
+            screens.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then(a.x.cmp(&b.x)));
+            for (i, s) in screens.iter_mut().enumerate() {
+                s.index = i as u32;
+            }
+            screens
+        }
     }
 
     /// The ID of the default "Screen 1" surface.
@@ -807,8 +850,12 @@ impl OutputEngine {
         margin: u32,
     ) {
         use crate::preferences::TimerPosition;
-        if let Some(m) = FLOAT_TIMER_FONT.get() {
-            if let Ok(mut g) = m.lock() { *g = font.to_owned(); }
+        let font_changed = FLOAT_TIMER_FONT.get().and_then(|m| m.lock().ok()).map(|mut g| {
+            if *g != font { *g = font.to_owned(); true } else { false }
+        }).unwrap_or(false);
+        if font_changed {
+            use tauri::Emitter;
+            let _ = self.app_handle.emit("float-timer-font", font);
         }
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             unsafe {
@@ -929,7 +976,7 @@ impl OutputEngine {
             };
 
             if let Some(idx) = screen_index {
-                let screens = Self::list_screens();
+                let screens = self.list_screens();
                 if let Some(s) = screens.into_iter().find(|s| s.index == idx) {
                     if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
                         if let Ok(mut state) = state_mutex.lock() {
@@ -1011,6 +1058,7 @@ pub(super) fn cs(s: &str) -> CString {
     CString::new(s).expect("cs(): interior NUL byte in literal")
 }
 
+#[cfg(target_os = "windows")]
 pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
