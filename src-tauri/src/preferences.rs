@@ -12,7 +12,12 @@ use crate::cue::types::FadeCurve;
 // Audio backend choice
 // ---------------------------------------------------------------------------
 
-/// Which WASAPI/ASIO mode the engine uses for output.
+/// Audio output backend.
+///
+/// `WasapiShared` / `WasapiExclusive` / `Asio` are Windows-specific.
+/// `SystemDefault` is used on Mac / Linux where cpal picks CoreAudio or ALSA.
+/// Unknown values from old configs are deserialized as `WasapiShared` on Windows
+/// and normalised to `SystemDefault` on Mac / Linux by `get_machine_audio_config`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBackend {
@@ -20,6 +25,7 @@ pub enum AudioBackend {
     WasapiShared,
     WasapiExclusive,
     Asio,
+    SystemDefault,
 }
 
 // ---------------------------------------------------------------------------

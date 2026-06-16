@@ -86,6 +86,13 @@ const btnStyle: React.CSSProperties = {
   borderRadius: 4, color: "#cbd5e1", fontSize: 11, cursor: "pointer",
 };
 
+const BACKEND_LABELS: Record<string, string> = {
+  wasapi_shared:    "WASAPI Shared",
+  wasapi_exclusive: "WASAPI Exclusive",
+  asio:             "ASIO",
+  system_default:   "System Default (CoreAudio / ALSA)",
+};
+
 // ---------------------------------------------------------------------------
 // Audio content
 // ---------------------------------------------------------------------------
@@ -154,11 +161,12 @@ function AudioContent({
               })
             }
           >
-            <option value="wasapi_shared">WASAPI Shared</option>
-            <option value="wasapi_exclusive">WASAPI Exclusive</option>
-            <option value="asio" disabled={!asioAvailable}>
-              ASIO{!asioAvailable ? " (install ASIO4ALL or ASIO drivers)" : ""}
-            </option>
+            {availableBackends.map((id) => (
+              <option key={id} value={id} disabled={id === "asio" && !asioAvailable}>
+                {BACKEND_LABELS[id] ?? id}
+                {id === "asio" && !asioAvailable ? " (install ASIO4ALL or ASIO drivers)" : ""}
+              </option>
+            ))}
           </select>
         </Row>
 

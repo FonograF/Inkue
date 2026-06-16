@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "vendor/mpv/libmpv.dylib": "libmpv.dylib"
+    }
+  }
+}

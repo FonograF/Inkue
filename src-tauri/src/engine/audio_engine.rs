@@ -248,7 +248,9 @@ fn open_stream_inner(
     use crate::preferences::AudioBackend;
 
     let host = match config.backend {
-        AudioBackend::WasapiShared | AudioBackend::WasapiExclusive => cpal::default_host(),
+        AudioBackend::WasapiShared | AudioBackend::WasapiExclusive | AudioBackend::SystemDefault => {
+            cpal::default_host()
+        }
         AudioBackend::Asio => open_asio_host()?,
     };
 
@@ -287,7 +289,7 @@ fn open_stream_inner(
     // WASAPI Shared uses the Windows audio engine period (~10 ms); Fixed is ignored.
     let buf_size = match config.backend {
         AudioBackend::WasapiExclusive => cpal::BufferSize::Fixed(config.buffer_size),
-        AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
+        _ => cpal::BufferSize::Default,
     };
 
     let stream_cfg = StreamConfig {

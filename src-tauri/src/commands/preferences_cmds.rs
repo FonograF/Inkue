@@ -21,25 +21,27 @@ pub fn get_asio_output_pairs(state: State<'_, AppState>) -> u32 {
     (ch / 2).max(1)
 }
 
-/// Return the list of audio backends actually available on this machine.
+/// Return the list of audio backends available on this platform.
 ///
-/// Always includes `wasapi_shared` and `wasapi_exclusive`.
-/// `asio` is added only when the `asio-support` Cargo feature is enabled
-/// **and** at least one ASIO driver is registered in the Windows registry.
+/// Windows: `wasapi_shared`, `wasapi_exclusive`, and `asio` (when installed).
+/// Mac / Linux: `system_default` — cpal picks CoreAudio / ALSA automatically.
 #[tauri::command]
-#[allow(unused_mut)] // `push` is behind #[cfg(feature = "asio-support")]
 pub fn get_available_backends() -> Vec<String> {
-    let mut backends = vec![
-        "wasapi_shared".to_string(),
-        "wasapi_exclusive".to_string(),
-    ];
-
-    #[cfg(feature = "asio-support")]
-    if asio_drivers_installed() {
-        backends.push("asio".to_string());
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(unused_mut)]
+        let mut backends = vec![
+            "wasapi_shared".to_string(),
+            "wasapi_exclusive".to_string(),
+        ];
+        #[cfg(feature = "asio-support")]
+        if asio_drivers_installed() {
+            backends.push("asio".to_string());
+        }
+        backends
     }
-
-    backends
+    #[cfg(not(target_os = "windows"))]
+    vec!["system_default".to_string()]
 }
 
 /// Returns `true` when at least one ASIO driver is registered under
@@ -84,10 +86,24 @@ pub fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, Str
     Ok(ws.preferences.clone())
 }
 
-/// Return the machine audio config (device, backend, buffer) from `%APPDATA%\WinCue\audio.json`.
+/// Return the machine audio config from disk, normalised for the current platform.
+///
+/// On Mac / Linux any Windows-specific backend (`wasapi_*`, `asio`) is replaced
+/// with `system_default` so the frontend always receives a valid choice.
 #[tauri::command]
 pub fn get_machine_audio_config() -> MachineAudioConfig {
-    crate::machine_config::load()
+    let config = crate::machine_config::load();
+    #[cfg(not(target_os = "windows"))]
+    {
+        use crate::preferences::AudioBackend;
+        let mut c = config;
+        if !matches!(c.backend, AudioBackend::SystemDefault) {
+            c.backend = AudioBackend::SystemDefault;
+        }
+        return c;
+    }
+    #[allow(clippy::let_and_return)]
+    config
 }
 
 /// Persist machine audio config to `%APPDATA%\WinCue\audio.json`, restart the

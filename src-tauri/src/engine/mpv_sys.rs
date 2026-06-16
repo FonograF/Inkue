@@ -142,9 +142,11 @@ impl MpvLib {
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        // Inside a .app bundle: exe is Contents/MacOS/<binary>,
-                        // bundled dylib lives at Contents/Frameworks/libmpv.dylib.
+                        // Inside a .app bundle: exe is Contents/MacOS/<binary>.
+                        // Tauri bundles resources to Contents/Resources/.
+                        // Frameworks live at Contents/Frameworks/ (optional placement).
                         if let Some(contents) = dir.parent() {
+                            v.push(contents.join("Resources").join("libmpv.dylib"));
                             v.push(contents.join("Frameworks").join("libmpv.dylib"));
                         }
                         v.push(dir.join("libmpv.dylib"));
