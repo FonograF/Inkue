@@ -47,15 +47,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": {
-      "vendor/mpv/libmpv-2.dll": "libmpv-2.dll"
-    },
-    "windows": {
-      "webviewInstallMode": {
-        "type": "embedBootstrapper",
-        "silent": false
-      }
-    }
+    ]
   }
 }
