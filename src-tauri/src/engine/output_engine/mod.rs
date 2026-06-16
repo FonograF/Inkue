@@ -1,21 +1,12 @@
-//! [`OutputEngine`] — unified Win32 + libmpv output for both video and image cues.
+//! [`OutputEngine`] — unified output for both video and image cues.
 //!
-//! A single persistent Win32 popup window (`WS_POPUP`) is created at startup
-//! and stays visible for the lifetime of the application (black when idle).
-//! libmpv renders both video files and image files into this window:
-//! - Video: normal mpv `loadfile`
-//! - Image: `loadfile image.jpg audio=no,image-display-duration=inf`
+//! Windows: a single persistent `WS_POPUP` Win32 window hosts libmpv via the `wid`
+//! option.  A `WS_EX_LAYERED` overlay window provides dip-to-black transitions.
 //!
-//! # Fade overlay
+//! Mac / Linux: mpv creates and manages its own native window (`force-window=yes`).
+//! Fades are driven by an `osd-overlay` ASS drawing and a 16 ms background thread.
 //!
-//! A child window with `WS_EX_LAYERED | WS_EX_TRANSPARENT` sits above mpv's
-//! D3D11 render child.  Its alpha (0 = transparent, 255 = opaque black) is
-//! animated via a 16 ms Win32 timer to produce dip-to-black transitions.
-//!
-//! # Freeze fix
-//!
-//! The window is created and shown at startup (not lazily on first GO).  mpv
-//! is also initialised immediately.  Result: the first GO no longer blocks.
+//! In both cases the floating cue timer is a Tauri WebView window (`float-timer`).
 
 mod fade;
 mod mpv_events;
@@ -47,6 +38,8 @@ use crate::engine::AudioEngine;
 use super::mpv_sys::MpvLib;
 #[cfg(target_os = "windows")]
 use super::mpv_sys::MPV_FORMAT_INT64;
+#[cfg(not(target_os = "windows"))]
+use super::mpv_sys::MPV_FORMAT_FLAG;
 
 // ---------------------------------------------------------------------------
 // Global mpv state (cross-platform)
@@ -63,15 +56,12 @@ pub(super) static OUTPUT_CURRENT_FADE_OUT_MS: OnceLock<Mutex<u32>> = OnceLock::n
 pub(super) static OUTPUT_PENDING_VIDEO_START: OnceLock<Mutex<Option<PendingVideoStart>>> =
     OnceLock::new();
 /// The AudioEngine voice carrying the current video's audio track, if any.
-/// Resumed at the first PLAYBACK_RESTART (start in lockstep with frame 0),
-/// paused/resumed/stopped together with the video.
 pub(super) static OUTPUT_CURRENT_AUDIO_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
 /// When `Some`, the timer refresh loop shows this text instead of live cue time.
-/// Used for the preferences preview mode.
 pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-/// Text currently shown in the floating timer window (Phase B: Tauri WebView).
+/// Deduplication cache for the floating timer text (avoids redundant Tauri events).
 pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
-/// Font family name for the floating timer (mirrors the OSD font setting).
+/// Font family mirrored from OSD settings → emitted to the float-timer window.
 pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
@@ -87,15 +77,6 @@ pub(super) static OUTPUT_PARENT_HWND: OnceLock<isize> = OnceLock::new();
 /// HWND of the Win32 layered fade-overlay popup window.
 #[cfg(target_os = "windows")]
 pub(super) static FADE_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
-/// Text currently shown on the Win32 timer overlay child window.
-#[cfg(target_os = "windows")]
-pub(super) static TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
-/// HWND of the Win32 timer text overlay child window.
-#[cfg(target_os = "windows")]
-pub(super) static TIMER_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
-/// HWND of the Win32 standalone floating timer window (Phase B: replaced by Tauri WebView).
-#[cfg(target_os = "windows")]
-pub(super) static FLOAT_TIMER_HWND: OnceLock<isize> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Win32 message constants (Windows only)
@@ -107,9 +88,6 @@ pub(super) const WM_SETUP_MPV_CHILD: u32 = 0x8001;
 /// `WM_APP + 2`: posted by show_content/stop_content to start the fade timer.
 #[cfg(target_os = "windows")]
 pub(super) const WM_DO_FADE: u32 = 0x8002;
-/// `WM_APP + 4`: posted to the floating timer window to show/hide it.
-#[cfg(target_os = "windows")]
-pub(super) const WM_FLOAT_VISIBILITY: u32 = 0x8004;
 #[cfg(target_os = "windows")]
 pub(super) const FADE_TIMER_ID: usize = 1;
 
@@ -117,9 +95,7 @@ pub(super) const FADE_TIMER_ID: usize = 1;
 // OutputEngine
 // ---------------------------------------------------------------------------
 
-/// Manages the single native Win32 popup window + libmpv context for all
-/// video and image output.  The window is always visible at startup (black
-/// when idle) — no creation lag on first GO.
+/// Manages the output window + libmpv context for all video and image output.
 pub struct OutputEngine {
     mpv_lib: Arc<MpvLib>,
     mpv_ctx: Arc<MpvCtx>,
@@ -134,17 +110,20 @@ pub struct OutputEngine {
     go_sent_at: Arc<Mutex<Option<Instant>>>,
     /// Whether the output window is currently user-visible.
     visible: Arc<AtomicBool>,
+    /// Tauri app handle — used to show/hide and emit events to the float-timer window.
+    app_handle: tauri::AppHandle,
 }
 
 impl OutputEngine {
     /// Construct the engine.
     ///
-    /// Creates the Win32 window (shown immediately), loads libmpv, and
-    /// initialises the mpv context.
-    pub fn new(audio_engine: Arc<AudioEngine>) -> Result<Self> {
+    /// On Windows creates the Win32 window (shown immediately) and starts the Win32
+    /// message loop.  On Mac / Linux mpv manages its own window; a cross-platform
+    /// 16 ms fade-loop thread is started instead.
+    pub fn new(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Result<Self> {
         let lib = Arc::new(MpvLib::load()?);
 
-        // Windows: create a Win32 parent window and embed mpv into it.
+        // Windows: create a Win32 parent window and embed mpv into it via wid.
         // macOS / Linux: mpv creates and manages its own native window.
         #[cfg(target_os = "windows")]
         let hwnd = win32_window::create_output_window()?;
@@ -186,8 +165,6 @@ impl OutputEngine {
             opt_str(&lib, ctx, "hwdec", "auto");
 
             opt_str(&lib, ctx, "osc", "no");
-            // osd-level 1: shows explicit osd-msg1/2/3 messages but no automatic
-            // position/seek feedback.  Required for the output-window timer overlay.
             opt_str(&lib, ctx, "osd-level", "1");
             opt_str(&lib, ctx, "input-default-bindings", "no");
             opt_str(&lib, ctx, "input-vo-keyboard", "no");
@@ -196,11 +173,8 @@ impl OutputEngine {
             opt_str(&lib, ctx, "keep-open", "no");
             opt_str(&lib, ctx, "idle", "yes");
 
-            // mpv plays VIDEO ONLY.  Each video's audio track is decoded
-            // separately by the cue and played as a normal AudioEngine voice
-            // (Output Patch routing, master volume, VU, fades).  Disabling mpv
-            // audio entirely keeps its display clock free of the A/V-sync
-            // breakage that piping mpv audio out (ao=pcm) used to cause.
+            // mpv plays VIDEO ONLY.  Each video's audio track is decoded separately
+            // as a normal AudioEngine voice (Output Patch routing, VU, fades).
             opt_str(&lib, ctx, "ao", "null");
             opt_str(&lib, ctx, "audio", "no");
             opt_str(&lib, ctx, "video-sync", "desync");
@@ -214,8 +188,7 @@ impl OutputEngine {
                 return Err(anyhow!("mpv_initialize() failed with code {ret}"));
             }
 
-            // OSD style for the cue timer overlay (set after init, as properties).
-            // Large bold centered text with a dark border for contrast on any content.
+            // OSD style for the cue timer overlay (applied after init as properties).
             prop_str(&lib, ctx, "osd-font-size",     "120");
             prop_str(&lib, ctx, "osd-color",         "#FFFFFF");
             prop_str(&lib, ctx, "osd-border-color",  "#000000");
@@ -240,14 +213,16 @@ impl OutputEngine {
         OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
         FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
         TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
+        FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
+        FLOAT_TIMER_FONT.get_or_init(|| Mutex::new("Arial".to_owned()));
 
         {
-            let lib2  = Arc::clone(&lib);
-            let ctx2  = Arc::clone(&mpv_ctx);
+            let lib2   = Arc::clone(&lib);
+            let ctx2   = Arc::clone(&mpv_ctx);
             let voice2 = Arc::clone(&current_voice);
-            let tx2   = status_tx.clone();
-            let gsa2  = Arc::clone(&go_sent_at);
-            let ae    = Arc::clone(&audio_engine);
+            let tx2    = status_tx.clone();
+            let gsa2   = Arc::clone(&go_sent_at);
+            let ae     = Arc::clone(&audio_engine);
             std::thread::Builder::new()
                 .name("wincue-output-mpv-events".into())
                 .spawn(move || {
@@ -255,6 +230,14 @@ impl OutputEngine {
                 })
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
+
+        // Mac / Linux: drive fade animations on a dedicated 16 ms thread.
+        // Windows uses the Win32 WM_TIMER mechanism instead.
+        #[cfg(not(target_os = "windows"))]
+        std::thread::Builder::new()
+            .name("wincue-output-fade".into())
+            .spawn(fade::run_cross_platform_fade_loop)
+            .map_err(|e| anyhow!("Failed to spawn fade loop thread: {e}"))?;
 
         Ok(Self {
             mpv_lib: lib,
@@ -267,7 +250,8 @@ impl OutputEngine {
             default_surface_id: Uuid::new_v4(),
             audio_engine,
             go_sent_at,
-            visible: Arc::new(AtomicBool::new(false)), // window starts SW_HIDE; show_output() sets true
+            visible: Arc::new(AtomicBool::new(false)),
+            app_handle,
         })
     }
 
@@ -391,7 +375,6 @@ impl OutputEngine {
             }
             screens
         }
-        // Phase B: cross-platform screen enumeration (winit MonitorHandle or mpv display-names).
         #[cfg(not(target_os = "windows"))]
         Vec::new()
     }
@@ -413,10 +396,6 @@ impl OutputEngine {
     // ── Unified content display ──────────────────────────────────────────────
 
     /// Display content (video or image) on the output window.
-    ///
-    /// If the current content has a stored `fade_out_ms > 0`, the transition
-    /// is: fade-to-black → load new content → fade-from-black.
-    /// Otherwise the new content loads immediately (with optional fade-from-black).
     #[allow(clippy::too_many_arguments)]
     pub fn show_content(
         &self,
@@ -457,10 +436,6 @@ impl OutputEngine {
             *m.lock().unwrap() = this_fade_out_ms;
         }
 
-        // Cross-stop the previous video's audio voice and install the new one
-        // (None for an image, which silences any prior video's audio).  A
-        // playing previous voice fades out over the dip duration; a paused,
-        // never-revealed one hard-stops (handled inside the AudioEngine).
         if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
             let previous = {
                 let mut g = av.lock().unwrap();
@@ -475,10 +450,6 @@ impl OutputEngine {
             }
         }
 
-        // go_sent_at marks GO time and tags the next PLAYBACK_RESTART as a video
-        // reveal (vs an idle/image restart).  The video is loaded *paused* (see
-        // execute_load_params); the first PLAYBACK_RESTART reveals the overlay,
-        // unpauses, and resumes the paired audio voice — all from frame 0.
         if !is_image {
             *self.go_sent_at.lock().unwrap() = Some(Instant::now());
         } else {
@@ -515,9 +486,9 @@ impl OutputEngine {
                 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                 PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
             }
+            // Non-Windows: the cross-platform fade thread detects target_alpha != current_alpha.
         } else {
-            // Abort any in-progress stop fade so the timer cannot kill this new content
-            // or keep the overlay dark over it.
+            // Abort any in-progress stop fade.
             if let Some(fs) = FADE_STATE.get() {
                 if let Ok(mut state) = fs.lock() {
                     if matches!(state.pending, Some(FadePending::Stop)) {
@@ -531,16 +502,10 @@ impl OutputEngine {
             }
             if is_image {
                 if fade_in_ms > 0 {
-                    // Black out the overlay BEFORE loading the image so it stays
-                    // hidden until the fade animation reveals it.  Without this the
-                    // overlay is at alpha=0 (transparent from the previous operation)
-                    // and the image would flash visible before the fade starts.
                     fade::set_overlay_alpha(255);
                 }
                 fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
                 if fade_in_ms > 0 {
-                    // Images do not go through the gated PLAYBACK_RESTART reveal,
-                    // so start the fade-from-black immediately.
                     if let Some(fs) = FADE_STATE.get() {
                         let mut state = fs.lock().unwrap();
                         state.start_alpha = 255;
@@ -556,14 +521,11 @@ impl OutputEngine {
                         use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                         PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
                     }
+                    // Non-Windows: fade thread picks up the state change.
                 } else {
                     fade::set_overlay_alpha(0);
                 }
             } else {
-                // Video: black out the overlay *before* loading so the
-                // loadfile/d3d11 reconfigure flash is hidden.  The first
-                // PLAYBACK_RESTART then reveals + unpauses once frame 0 is decoded
-                // (applying fade_in_ms there if set), aligned with the first frame.
                 fade::set_overlay_alpha(255);
                 fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
             }
@@ -574,9 +536,6 @@ impl OutputEngine {
 
     /// Stop the content identified by `voice_id` with an optional fade-to-black.
     pub fn stop_content(&self, voice_id: VoiceId, fade_out_ms: u32) {
-        // Only the *current* voice may touch the output.  A newer cue may have
-        // already replaced this one (its `Completed` event has not been processed
-        // yet); stopping it then would wrongly black out / mute the new content.
         let was_current = {
             let mut cv = self.current_voice.lock().unwrap();
             if *cv == Some(voice_id) {
@@ -613,6 +572,7 @@ impl OutputEngine {
                 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                 PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
             }
+            // Non-Windows: fade thread picks up the state change.
         } else {
             unsafe {
                 let stop = cs("stop");
@@ -626,14 +586,11 @@ impl OutputEngine {
             *m.lock().unwrap() = 0;
         }
 
-        // Cancel any in-flight paused-load reveal so a late PLAYBACK_RESTART
-        // cannot unpause / reveal content that has just been stopped.
         if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
             *m.lock().unwrap() = None;
         }
         *self.go_sent_at.lock().unwrap() = None;
 
-        // Stop the paired audio voice with the same fade as the video dip.
         if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
             let audio_id = av.lock().unwrap().take();
             if let Some(aid) = audio_id {
@@ -662,11 +619,7 @@ impl OutputEngine {
             .unwrap_or(0)
     }
 
-    /// Directly set the overlay alpha — called from FadeCue.tick() at ~30 fps
-    /// to animate a visual fade without going through the Win32 timer system.
-    ///
-    /// - alpha = 0   → overlay transparent (content fully visible)
-    /// - alpha = 255 → overlay opaque black (content hidden)
+    /// Directly set the overlay alpha — called from FadeCue.tick() at ~30 fps.
     pub fn set_overlay_alpha_direct(&self, alpha: u8) {
         #[cfg(target_os = "windows")]
         if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
@@ -689,7 +642,6 @@ impl OutputEngine {
 
     // ── Legacy API kept for VideoCue ─────────────────────────────────────────
 
-    /// Begin video playback.  Delegates to `show_content` with `is_image = false`.
     #[allow(clippy::too_many_arguments)]
     pub fn play_voice(
         &self,
@@ -708,18 +660,15 @@ impl OutputEngine {
         )
     }
 
-    /// Stop the given voice.
     pub fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32) -> Result<()> {
         self.stop_content(voice_id, fade_ms);
         Ok(())
     }
 
-    /// Stop the currently-playing voice, if any.
     pub fn stop_current_voice(&self, _fade_ms: u32) {
         self.hard_stop_current();
     }
 
-    /// Pause the given voice — both the mpv video and the paired audio voice.
     pub fn pause_voice(&self, _voice_id: VoiceId) -> Result<()> {
         unsafe {
             (self.mpv_lib.mpv_set_property_string)(
@@ -734,7 +683,6 @@ impl OutputEngine {
         Ok(())
     }
 
-    /// Resume a paused voice — both the mpv video and the paired audio voice.
     pub fn resume_voice(&self, _voice_id: VoiceId) -> Result<()> {
         unsafe {
             (self.mpv_lib.mpv_set_property_string)(
@@ -749,7 +697,6 @@ impl OutputEngine {
         Ok(())
     }
 
-    /// Update the playback volume of a running voice (the paired audio voice).
     pub fn set_voice_volume(&self, _voice_id: VoiceId, volume_db: f64) -> Result<()> {
         if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
             if let Some(aid) = *av.lock().unwrap() {
@@ -759,7 +706,6 @@ impl OutputEngine {
         Ok(())
     }
 
-    /// Seek the current video to `position_ms` and re-anchor the paired audio voice.
     pub fn seek(&self, position_ms: u64) {
         let pos_str = format!("{:.3}", position_ms as f64 / 1000.0);
         let cmd_cstr = cs("seek");
@@ -807,7 +753,12 @@ impl OutputEngine {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
-        // Phase B: mpv `hidden=no` property on Mac/Linux.
+        #[cfg(not(target_os = "windows"))]
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                (lib.mpv_set_property_string)(ctx.0, cs("hidden").as_ptr(), cs("no").as_ptr());
+            }
+        }
     }
 
     /// Hide the output window.
@@ -821,7 +772,12 @@ impl OutputEngine {
                 ShowWindow(overlay, SW_HIDE);
             }
         }
-        // Phase B: mpv `hidden=yes` property on Mac/Linux.
+        #[cfg(not(target_os = "windows"))]
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                (lib.mpv_set_property_string)(ctx.0, cs("hidden").as_ptr(), cs("yes").as_ptr());
+            }
+        }
     }
 
     /// Return whether the output window is currently visible.
@@ -829,10 +785,11 @@ impl OutputEngine {
         self.visible.load(Ordering::Relaxed)
     }
 
-    /// Update the countdown text shown on the output window timer overlay.
+    // ── OSD / timer ──────────────────────────────────────────────────────────
+
+    /// Update the countdown text shown on the output window timer (mpv OSD).
     ///
     /// Pass `None` (or an empty string) to hide the timer.
-    /// The text is drawn via mpv's OSD so it always appears above D3D11 content.
     pub fn set_output_timer(&self, text: Option<&str>) {
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             unsafe {
@@ -842,9 +799,6 @@ impl OutputEngine {
     }
 
     /// Apply font, size, position and margin settings for the OSD timer overlay.
-    ///
-    /// Call this whenever the user changes timer display preferences; mpv
-    /// picks up property changes immediately, even while the OSD is visible.
     pub fn set_timer_style(
         &self,
         font: &str,
@@ -853,7 +807,6 @@ impl OutputEngine {
         margin: u32,
     ) {
         use crate::preferences::TimerPosition;
-        // Mirror font name to the floating timer window.
         if let Some(m) = FLOAT_TIMER_FONT.get() {
             if let Ok(mut g) = m.lock() { *g = font.to_owned(); }
         }
@@ -880,48 +833,30 @@ impl OutputEngine {
         }
     }
 
-    /// Show or hide the standalone floating timer window.
-    ///
-    /// On Windows: posts `WM_FLOAT_VISIBILITY` to the Win32 window.
-    /// Phase B (all platforms): emits a Tauri event to the WebView float-timer window.
+    // ── Floating timer (Tauri WebView window) ─────────────────────────────────
+
+    /// Show or hide the standalone floating timer window (Tauri WebView).
     pub fn set_floating_timer_visible(&self, visible: bool) {
-        #[cfg(target_os = "windows")]
-        if let Some(&hwnd) = FLOAT_TIMER_HWND.get() {
-            if hwnd != 0 {
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                    PostMessageW(hwnd, WM_FLOAT_VISIBILITY, if visible { 1 } else { 0 }, 0);
-                }
-            }
+        use tauri::Manager;
+        if let Some(win) = self.app_handle.get_webview_window("float-timer") {
+            let _ = if visible { win.show() } else { win.hide() };
         }
-        let _ = visible; // suppress unused-variable warning on non-Windows
     }
 
-    /// Write the current timer text to the floating window and request a repaint.
-    ///
-    /// Only invalidates when the text actually changed to avoid unnecessary paints.
+    /// Write the current timer text to the floating window.
+    /// Only emits a Tauri event when the text actually changed.
     pub fn update_floating_timer(&self, text: Option<&str>) {
         let new_text = text.unwrap_or("");
         let changed = FLOAT_TIMER_TEXT.get().and_then(|m| m.lock().ok()).map(|mut g| {
             if *g != new_text { *g = new_text.to_owned(); true } else { false }
         }).unwrap_or(false);
-
         if changed {
-            #[cfg(target_os = "windows")]
-            if let Some(&hwnd) = FLOAT_TIMER_HWND.get() {
-                if hwnd != 0 {
-                    unsafe {
-                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
-                    }
-                }
-            }
+            use tauri::Emitter;
+            let _ = self.app_handle.emit("float-timer-text", new_text);
         }
     }
 
-    /// Set or clear the preview text shown on the OSD timer (overrides live cue time).
-    ///
-    /// Used by the preferences panel to show a placeholder like `"00:00.000"`
-    /// while the user adjusts timer settings.  Pass `None` to return to live mode.
+    /// Set or clear the preview text shown on the OSD timer.
     pub fn set_timer_preview(&self, text: Option<String>) {
         if let Some(m) = TIMER_PREVIEW.get() {
             if let Ok(mut g) = m.lock() {
@@ -930,7 +865,7 @@ impl OutputEngine {
         }
     }
 
-    /// Return the current preview text, if any.  Used by the timer refresh loop.
+    /// Return the current preview text, if any.
     pub fn get_timer_preview(&self) -> Option<String> {
         TIMER_PREVIEW.get()?.lock().ok()?.clone()
     }
@@ -945,12 +880,26 @@ impl OutputEngine {
                 win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
             }
         }
-        // Phase B: mpv `fullscreen` property toggle on Mac/Linux.
+        #[cfg(not(target_os = "windows"))]
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                let name = cs("fullscreen");
+                let mut flag: i32 = 0;
+                (lib.mpv_get_property)(
+                    ctx.0, name.as_ptr(), MPV_FORMAT_FLAG,
+                    &mut flag as *mut i32 as *mut c_void,
+                );
+                let toggled = if flag == 0 { 1i32 } else { 0i32 };
+                (lib.mpv_set_property)(
+                    ctx.0, name.as_ptr(), MPV_FORMAT_FLAG,
+                    &toggled as *const i32 as *mut c_void,
+                );
+            }
+        }
     }
 
     // ── Status / GC ──────────────────────────────────────────────────────────
 
-    /// No-op kept for API compatibility.
     pub fn push_status(&self, _status: OutputStatus) {}
 
     /// Drain all pending status events.  Called by the 30 fps event loop.
@@ -963,7 +912,7 @@ impl OutputEngine {
         out
     }
 
-    /// Remove a completed voice.  Window stays visible showing black.
+    /// Remove a completed voice.
     pub fn gc_voice(&self, voice_id: VoiceId) {
         self.voices.lock().unwrap().remove(&voice_id);
     }
@@ -1030,14 +979,22 @@ impl OutputEngine {
 
             SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
-        // Phase B: mpv `--screen=N` + show_output() on Mac/Linux.
+
         #[cfg(not(target_os = "windows"))]
         {
-            self.visible.store(true, Ordering::Relaxed);
-            let _ = screen_index;
+            if let Some(idx) = screen_index {
+                if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+                    let screen_str = idx.to_string();
+                    unsafe {
+                        (lib.mpv_set_property_string)(
+                            ctx.0, cs("screen").as_ptr(), cs(&screen_str).as_ptr(),
+                        );
+                    }
+                }
+            }
+            self.show_output();
         }
     }
-
 }
 
 impl Drop for OutputEngine {
@@ -1047,7 +1004,7 @@ impl Drop for OutputEngine {
 }
 
 // ---------------------------------------------------------------------------
-// Private utility functions (used by methods and sub-modules)
+// Private utility functions
 // ---------------------------------------------------------------------------
 
 pub(super) fn cs(s: &str) -> CString {

@@ -32,6 +32,18 @@
         "decorations": false,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "float-timer",
+        "title": "WinCue Timer",
+        "width": 420,
+        "height": 110,
+        "decorations": false,
+        "visible": false,
+        "resizable": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true
       }
     ],
     "security": {

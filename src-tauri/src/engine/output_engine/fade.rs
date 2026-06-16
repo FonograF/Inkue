@@ -1,7 +1,10 @@
 //! Fade overlay helpers: alpha animation, load execution, stop execution.
+//!
+//! The fade overlay is implemented differently per platform:
+//!   Windows  — a child `WS_EX_LAYERED` Win32 window with `SetLayeredWindowAttributes`
+//!   Mac/Linux — an mpv `osd-overlay` ASS drawing that covers the entire video surface
 
 use std::ffi::{c_void, CString};
-#[cfg(target_os = "windows")]
 use std::time::Instant;
 
 use crate::engine::mpv_sys::MpvLib;
@@ -14,11 +17,13 @@ use super::{
 #[cfg(target_os = "windows")]
 use super::{FADE_OVERLAY_HWND, FADE_TIMER_ID};
 
-/// Set the fade overlay alpha (0 = transparent, 255 = opaque black).
-///
-/// Also updates `FADE_STATE.current_alpha` so stop/start transitions can
-/// read the correct starting alpha for their animations.
-pub(super) fn set_overlay_alpha(alpha: u8) {
+// ---------------------------------------------------------------------------
+// Visual overlay — platform implementations
+// ---------------------------------------------------------------------------
+
+/// Apply `alpha` to the visual overlay (Win32 layered window or mpv OSD).
+/// Does NOT update `FADE_STATE.current_alpha` — caller owns that.
+pub(super) fn apply_overlay_alpha(alpha: u8) {
     #[cfg(target_os = "windows")]
     if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
         unsafe {
@@ -27,7 +32,52 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
             SetLayeredWindowAttributes(overlay, 0, alpha, LWA_ALPHA);
         }
     }
-    // Phase B: mpv overlay-add alpha update on Mac/Linux.
+
+    #[cfg(not(target_os = "windows"))]
+    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+        if alpha == 0 {
+            // Remove the OSD overlay entirely when fully transparent.
+            unsafe {
+                let cmd  = cs("osd-overlay");
+                let id   = cs("1");
+                let none = cs("none");
+                let empty = cs("");
+                let args: [*const std::ffi::c_char; 5] = [
+                    cmd.as_ptr(), id.as_ptr(), none.as_ptr(), empty.as_ptr(), std::ptr::null(),
+                ];
+                (lib.mpv_command)(ctx.0, args.as_ptr());
+            }
+        } else {
+            // ASS drawing: full-screen black rectangle with variable primary alpha.
+            // \1a&H<AA>& — primary alpha (00=opaque, FF=transparent in ASS).
+            // res_x / res_y define the coordinate space; mpv scales to the window.
+            let ass_alpha = format!("{:02X}", 255u8.saturating_sub(alpha));
+            let ass_text = cs(&format!(
+                "{{\\an7\\pos(0,0)\\c&H000000&\\1a&H{}&\\bord0\\shad0\\p1}}m 0 0 l 1920 0 l 1920 1080 l 0 1080{{\\p0}}",
+                ass_alpha
+            ));
+            unsafe {
+                let cmd     = cs("osd-overlay");
+                let id      = cs("1");
+                let fmt     = cs("ass-events");
+                let res_x   = cs("1920");
+                let res_y   = cs("1080");
+                let args: [*const std::ffi::c_char; 7] = [
+                    cmd.as_ptr(), id.as_ptr(), fmt.as_ptr(), ass_text.as_ptr(),
+                    res_x.as_ptr(), res_y.as_ptr(), std::ptr::null(),
+                ];
+                (lib.mpv_command)(ctx.0, args.as_ptr());
+            }
+        }
+    }
+}
+
+/// Set the fade overlay alpha (0 = transparent, 255 = opaque black).
+///
+/// Applies the visual change AND updates `FADE_STATE.current_alpha` so that
+/// stop/start transitions can read the correct starting alpha.
+pub(super) fn set_overlay_alpha(alpha: u8) {
+    apply_overlay_alpha(alpha);
     if let Some(fs) = FADE_STATE.get() {
         if let Ok(mut state) = fs.lock() {
             state.current_alpha = alpha;
@@ -35,10 +85,16 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
     }
 }
 
-/// Execute whatever action was pending when the Win32 fade timer reached its target.
-/// Called from the Win32 `WM_TIMER` / `WM_DO_FADE` handler after the fade completes.
-#[cfg(target_os = "windows")]
-pub(super) fn execute_fade_pending(hwnd: isize) {
+// ---------------------------------------------------------------------------
+// Shared pending-action executor
+// ---------------------------------------------------------------------------
+
+/// Execute whatever action was pending after the fade completed.
+///
+/// `on_image_fade_in` is called when an image needs a fade-in timer armed:
+///   Windows  — sets a Win32 timer (16 ms)
+///   non-Windows — no-op (the cross-platform fade thread picks up FADE_STATE)
+fn do_execute_fade_pending(on_image_fade_in: impl FnOnce()) {
     let pending = FADE_STATE
         .get()
         .and_then(|fs| fs.lock().ok().and_then(|mut s| s.pending.take()));
@@ -61,10 +117,7 @@ pub(super) fn execute_fade_pending(hwnd: isize) {
                         state.timer_active = true;
                         state.pending = None;
                     }
-                    unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::SetTimer;
-                        SetTimer(hwnd, FADE_TIMER_ID, 16, None);
-                    }
+                    on_image_fade_in();
                 } else {
                     set_overlay_alpha(0);
                 }
@@ -100,8 +153,81 @@ pub(super) fn execute_fade_pending(hwnd: isize) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Platform-specific wrappers
+// ---------------------------------------------------------------------------
+
+/// Execute the pending fade action — called from the Win32 `WM_TIMER` handler.
+#[cfg(target_os = "windows")]
+pub(super) fn execute_fade_pending(hwnd: isize) {
+    do_execute_fade_pending(|| {
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::SetTimer;
+            SetTimer(hwnd, FADE_TIMER_ID, 16, None);
+        }
+    });
+}
+
+/// Execute the pending fade action — called from the cross-platform fade thread.
+/// The fade thread is already running and will pick up the new FADE_STATE automatically.
+#[cfg(not(target_os = "windows"))]
+pub(super) fn execute_fade_pending_nw() {
+    do_execute_fade_pending(|| {
+        // No timer setup needed — cross_platform_fade_loop() detects FADE_STATE changes.
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Cross-platform fade animation thread (non-Windows)
+// ---------------------------------------------------------------------------
+
+/// Background thread that drives fade animations on Mac and Linux.
+///
+/// On Windows the Win32 `WM_TIMER` mechanism handles this instead.
+/// Polls `FADE_STATE` every ~16 ms and interpolates alpha toward the target.
+#[cfg(not(target_os = "windows"))]
+pub(super) fn run_cross_platform_fade_loop() {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(16));
+
+        let step = FADE_STATE.get().and_then(|fs| {
+            fs.lock().ok().and_then(|mut state| {
+                if state.target_alpha == state.current_alpha {
+                    return None;
+                }
+
+                let elapsed_ms = state.start_time.elapsed().as_millis() as u32;
+                let done = state.duration_ms == 0 || elapsed_ms >= state.duration_ms;
+
+                let alpha = if done {
+                    state.target_alpha
+                } else {
+                    let t = elapsed_ms as f32 / state.duration_ms as f32;
+                    let start = state.start_alpha as f32;
+                    let end   = state.target_alpha as f32;
+                    (start + (end - start) * t).round() as u8
+                };
+
+                state.current_alpha = alpha;
+                Some((alpha, done))
+            })
+        });
+
+        if let Some((alpha, done)) = step {
+            apply_overlay_alpha(alpha);
+            if done {
+                execute_fade_pending_nw();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// mpv loadfile executor (cross-platform)
+// ---------------------------------------------------------------------------
+
 /// Send an mpv `loadfile` command for the given content parameters.
-/// Called either immediately (no fade) or from `execute_fade_pending` after fade-out.
+/// Called either immediately (no fade) or from `execute_*_fade_pending` after fade-out.
 pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx: *mut c_void) {
     unsafe {
         let path_cstr = match CString::new(params.path.as_str()) {
@@ -175,11 +301,10 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             );
 
             // Load the video *paused*.  While paused mpv finishes opening the
-            // file, initialises the d3d11 hardware decoder and buffers the first
-            // frames — all behind the black overlay.  The first PLAYBACK_RESTART
-            // then reveals, unpauses and resumes the paired audio voice, so
-            // playback starts from frame 0 with a warm decoder and zero A/V
-            // offset (no frozen-frame-while-audio-plays startup).
+            // file, initialises the decoder and buffers the first frames — all
+            // behind the black overlay.  The first PLAYBACK_RESTART then reveals,
+            // unpauses and resumes the paired audio voice, so playback starts from
+            // frame 0 with a warm decoder and zero A/V offset.
             (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
             if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
                 if let Ok(mut p) = m.lock() {

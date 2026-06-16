@@ -77,7 +77,7 @@ pub fn run() {
                 Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
             })?;
             let output_engine = Arc::new(
-                OutputEngine::new(Arc::clone(&audio_engine))
+                OutputEngine::new(Arc::clone(&audio_engine), app.handle().clone())
                     .map_err(|e| {
                         show_fatal_error(&format!("Output engine failed to start:\n\n{e}"));
                         Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
