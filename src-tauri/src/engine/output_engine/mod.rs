@@ -187,7 +187,23 @@ impl OutputEngine {
             opt_str(&lib, ctx, "osd-level", "1");
             opt_str(&lib, ctx, "input-default-bindings", "no");
             opt_str(&lib, ctx, "input-vo-keyboard", "no");
+
+            // Windows: the Win32 parent window owns dragging (WM_LBUTTONDOWN →
+            // drag_window()) and double-click fullscreen (WM_LBUTTONDBLCLK) — mpv's
+            // own mouse handling would only get in the way, so cursor input stays off.
+            //
+            // Mac/Linux: mpv creates and owns its native window (no custom WndProc to
+            // do this for us), so mpv must receive mouse events for its built-in
+            // window-dragging to work. Default bindings stay off (no seek/volume/OSC
+            // side effects from stray clicks); double-click-to-fullscreen is rebound
+            // explicitly below since it would otherwise come from the disabled defaults.
+            #[cfg(target_os = "windows")]
             opt_str(&lib, ctx, "input-cursor", "no");
+            #[cfg(not(target_os = "windows"))]
+            {
+                opt_str(&lib, ctx, "input-cursor", "yes");
+                opt_str(&lib, ctx, "window-dragging", "yes");
+            }
 
             opt_str(&lib, ctx, "keep-open", "no");
             opt_str(&lib, ctx, "idle", "yes");
@@ -211,6 +227,20 @@ impl OutputEngine {
             // On Windows the Win32 window is created with SW_HIDE instead.
             #[cfg(not(target_os = "windows"))]
             prop_str(&lib, ctx, "hidden", "yes");
+
+            // Rebind double-click → fullscreen explicitly: this is normally one of
+            // mpv's *default* mouse bindings, which we disabled above to avoid other
+            // unwanted default behaviour (seeking, volume, screenshot, etc.).
+            #[cfg(not(target_os = "windows"))]
+            {
+                let keybind_cmd = cs("keybind");
+                let dblclick    = cs("MOUSE_BTN0_DBL");
+                let action      = cs("cycle fullscreen");
+                let args: [*const std::ffi::c_char; 4] = [
+                    keybind_cmd.as_ptr(), dblclick.as_ptr(), action.as_ptr(), std::ptr::null(),
+                ];
+                (lib.mpv_command)(ctx, args.as_ptr());
+            }
 
             // OSD style for the cue timer overlay (applied after init as properties).
             prop_str(&lib, ctx, "osd-font-size",     "120");
