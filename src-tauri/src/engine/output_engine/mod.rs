@@ -166,17 +166,20 @@ impl OutputEngine {
                 opt_str(&lib, ctx, "d3d11-sync-interval", "0");
                 opt_str(&lib, ctx, "force-window", "immediate");
             }
+            // force-window starts at "no" — with idle=yes and no file loaded, this
+            // means mpv creates no window at all at startup. show_output()/
+            // hide_output() flip it to "yes"/"no" at runtime to fully create/destroy
+            // the window instead of just minimizing it.
             #[cfg(target_os = "macos")]
             {
                 opt_str(&lib, ctx, "vo", "gpu");  // Metal via gpu-api=auto
-                opt_str(&lib, ctx, "force-window", "yes");
+                opt_str(&lib, ctx, "force-window", "no");
                 opt_str(&lib, ctx, "border", "no");
-                opt_str(&lib, ctx, "ontop", "yes");
             }
             #[cfg(target_os = "linux")]
             {
                 opt_str(&lib, ctx, "vo", "gpu,wlshm,xv,x11");
-                opt_str(&lib, ctx, "force-window", "yes");
+                opt_str(&lib, ctx, "force-window", "no");
                 opt_str(&lib, ctx, "border", "no");
                 opt_str(&lib, ctx, "ontop", "yes");
             }
@@ -222,11 +225,6 @@ impl OutputEngine {
                 (lib.mpv_terminate_destroy)(ctx);
                 return Err(anyhow!("mpv_initialize() failed with code {ret}"));
             }
-
-            // Start hidden on Mac / Linux — shown on first GO or F9.
-            // On Windows the Win32 window is created with SW_HIDE instead.
-            #[cfg(not(target_os = "windows"))]
-            prop_str(&lib, ctx, "hidden", "yes");
 
             // Rebind double-click → fullscreen explicitly: this is normally one of
             // mpv's *default* mouse bindings, which we disabled above to avoid other
@@ -839,12 +837,14 @@ impl OutputEngine {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
+        // cocoa-cb's "vo" thread creates the NSWindow via dispatch_sync onto the
+        // main queue, which only completes if the main thread's run loop is free to
+        // service it. Our (sync, non-async) Tauri command handler runs inline on the
+        // main thread itself, so calling into mpv here directly — or routing it back
+        // onto the main thread — blocks the very thread cocoa-cb's dispatch_sync
+        // needs. Spawning a plain background thread keeps the main run loop free.
         #[cfg(not(target_os = "windows"))]
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe {
-                (lib.mpv_set_property_string)(ctx.0, cs("hidden").as_ptr(), cs("no").as_ptr());
-            }
-        }
+        std::thread::spawn(|| set_mpv_window_visible(true));
     }
 
     /// Hide the output window.
@@ -859,10 +859,9 @@ impl OutputEngine {
             }
         }
         #[cfg(not(target_os = "windows"))]
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe {
-                (lib.mpv_set_property_string)(ctx.0, cs("hidden").as_ptr(), cs("yes").as_ptr());
-            }
+        {
+            // See show_output() for why this must run off the main thread.
+            std::thread::spawn(|| set_mpv_window_visible(false));
         }
     }
 
@@ -1072,17 +1071,22 @@ impl OutputEngine {
 
         #[cfg(not(target_os = "windows"))]
         {
-            if let Some(idx) = screen_index {
-                if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-                    let screen_str = idx.to_string();
-                    unsafe {
-                        (lib.mpv_set_property_string)(
-                            ctx.0, cs("screen").as_ptr(), cs(&screen_str).as_ptr(),
-                        );
+            self.visible.store(true, Ordering::Relaxed);
+            // Same off-main-thread requirement as show_output()/hide_output() —
+            // bundle the screen placement into the same background-thread call.
+            std::thread::spawn(move || {
+                if let Some(idx) = screen_index {
+                    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+                        let screen_str = idx.to_string();
+                        unsafe {
+                            (lib.mpv_set_property_string)(
+                                ctx.0, cs("screen").as_ptr(), cs(&screen_str).as_ptr(),
+                            );
+                        }
                     }
                 }
-            }
-            self.show_output();
+                set_mpv_window_visible(true);
+            });
         }
     }
 }
@@ -1096,6 +1100,30 @@ impl Drop for OutputEngine {
 // ---------------------------------------------------------------------------
 // Private utility functions
 // ---------------------------------------------------------------------------
+
+/// Create or destroy mpv's native window (Mac/Linux only). Must be called off the
+/// main thread — cocoa-cb's "vo" thread does a `dispatch_sync` onto the main queue
+/// during window creation/destruction, which deadlocks if the main thread is the
+/// one blocked waiting on this call instead of free to service it.
+#[cfg(not(target_os = "windows"))]
+fn set_mpv_window_visible(visible: bool) {
+    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+        unsafe {
+            // force-window=no fully destroys the window when idle (nothing loaded).
+            // If a video is actively loaded, mpv needs a window for the VO and
+            // force-window has no effect — window-minimized is the fallback that
+            // takes it off-screen in that case.
+            let force_window = if visible { "yes" } else { "no" };
+            let minimized = if visible { "no" } else { "yes" };
+            (lib.mpv_set_property_string)(
+                ctx.0, cs("force-window").as_ptr(), cs(force_window).as_ptr(),
+            );
+            (lib.mpv_set_property_string)(
+                ctx.0, cs("window-minimized").as_ptr(), cs(minimized).as_ptr(),
+            );
+        }
+    }
+}
 
 pub(super) fn cs(s: &str) -> CString {
     CString::new(s).expect("cs(): interior NUL byte in literal")
