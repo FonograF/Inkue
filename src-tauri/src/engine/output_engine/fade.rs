@@ -256,9 +256,13 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let file_opts = cs(&opts_str);
             let cmd   = cs("loadfile");
             let flags = cs("replace");
-            let args: [*const std::ffi::c_char; 5] = [
+            let index = cs("-1");
+            // mpv's loadfile syntax is `loadfile <file> [<flags> [<index> [<options>]]]` —
+            // the index slot must be present (even though "replace" ignores it), otherwise
+            // mpv parses the options string as the index and fails to convert it to an int.
+            let args: [*const std::ffi::c_char; 6] = [
                 cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                file_opts.as_ptr(), std::ptr::null(),
+                index.as_ptr(), file_opts.as_ptr(), std::ptr::null(),
             ];
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
@@ -288,9 +292,11 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let opts_cstr    = cs(&opts_str);
             let cmd_cstr     = cs("loadfile");
             let replace_cstr = cs("replace");
-            let args: [*const std::ffi::c_char; 5] = [
+            let index_cstr   = cs("-1");
+            // See the image branch above for why the index slot is required.
+            let args: [*const std::ffi::c_char; 6] = [
                 cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-                opts_cstr.as_ptr(), std::ptr::null(),
+                index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
             ];
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("profile").as_ptr(), cs("fast").as_ptr());
