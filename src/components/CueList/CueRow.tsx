@@ -1,9 +1,45 @@
 // A single row in the cue list table.
 
+import { useState } from "react";
 import { PlayheadIndicator } from "./PlayheadIndicator";
 import type { ColumnDef } from "./columns";
 import type { CueSummary } from "../../lib/types";
 import { useTimingStore } from "../../stores/timingStore";
+
+function StopButton({ onStop }: { onStop: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      title="Stop"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); onStop(); }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: hovered ? "rgba(239,68,68,0.25)" : "rgba(239,68,68,0.12)",
+        border: `1px solid ${hovered ? "#ef4444" : "rgba(239,68,68,0.45)"}`,
+        borderRadius: 4,
+        cursor: "pointer",
+        padding: 0,
+        width: 22,
+        height: 22,
+        flexShrink: 0,
+      }}
+    >
+      <div
+        style={{
+          width: 8,
+          height: 8,
+          background: hovered ? "#fca5a5" : "#ef4444",
+          borderRadius: 1,
+        }}
+      />
+    </button>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -75,6 +111,7 @@ interface Props {
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
+  onStop?: (cueId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +138,7 @@ export function CueRow({
   onClick,
   onDoubleClick,
   onContextMenu,
+  onStop,
 }: Props) {
   const timing = useTimingStore((s) => s.timings[cue.id]);
 
@@ -110,9 +148,12 @@ export function CueRow({
   const isBroken   = cue.is_broken ?? false;
   const isWarning  = cue.is_warning ?? false;
 
+  // Use file_duration_ms (single loop period) so the bar resets at each loop
+  // iteration. Falls back to total duration_ms for non-looping cues.
+  const loopPeriodMs = cue.file_duration_ms ?? cue.duration_ms;
   const progressPct =
-    isRunning && timing && cue.duration_ms && cue.duration_ms > 0
-      ? Math.min(100, (timing.action_elapsed_ms / cue.duration_ms) * 100)
+    isRunning && timing && loopPeriodMs && loopPeriodMs > 0
+      ? Math.min(100, ((timing.action_elapsed_ms % loopPeriodMs) / loopPeriodMs) * 100)
       : null;
 
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue("--wc-accent").trim() || "#3b82f6";
@@ -283,6 +324,34 @@ export function CueRow({
           <span style={{ display: "block", textAlign: "center", color: "#64748b" }}>
             {CONTINUE_LABELS[cue.continue_mode] ?? ""}
           </span>
+        );
+
+      case "notes":
+        return (
+          <span
+            title={cue.notes || undefined}
+            style={{
+              display: "block",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: "#64748b",
+              fontSize: 12,
+              fontStyle: cue.notes ? "normal" : "italic",
+              paddingLeft: 5,
+            }}
+          >
+            {cue.notes || ""}
+          </span>
+        );
+
+      case "stop_btn":
+        return (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+            {(isRunning || isPaused) && (
+              <StopButton onStop={() => onStop?.(cue.id)} />
+            )}
+          </div>
         );
 
       default:

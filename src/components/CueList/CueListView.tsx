@@ -39,6 +39,7 @@ import {
   setVideoFile,
   setImageFile,
   setPlayhead,
+  stopCue,
   updateCue,
 } from "../../lib/commands";
 
@@ -962,7 +963,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
   return (
     <div
-      style={{ display: "flex", flexDirection: "column", height: "100%", outline: "none", position: "relative" }}
+      style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, outline: "none", position: "relative" }}
       tabIndex={0}
       onKeyDown={handleKeyDown}
       onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, cueId: null }); }}
@@ -1163,6 +1164,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 e.stopPropagation();
                 setContextMenu({ x: e.clientX, y: e.clientY, cueId: cue.id, parentGroupId });
               }}
+              onStop={(id) => stopCue(id).catch(console.error)}
             />
           </Fragment>
         ))}

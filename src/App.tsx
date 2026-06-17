@@ -308,22 +308,17 @@ function FileMenu({
 // View menu
 // ---------------------------------------------------------------------------
 
-function ViewMenu({
-  surfaceVisible,
-  onToggle,
-}: {
-  surfaceVisible: boolean;
-  onToggle: () => void;
-}) {
+interface ViewMenuItem {
+  label: string;
+  checked: boolean;
+  onClick: () => void;
+}
+
+function ViewMenu({ items }: { items: ViewMenuItem[] }) {
   const [open, setOpen] = useState(false);
-  const [hovered, setHovered] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
 
   const close = () => setOpen(false);
-
-  const handleToggle = () => {
-    close();
-    onToggle();
-  };
 
   return (
     <div style={{ position: "relative", flexShrink: 0 }}>
@@ -349,27 +344,65 @@ function ViewMenu({
             boxShadow: "0 8px 24px rgba(0,0,0,0.7)", zIndex: 9999,
           }}
         >
-          <button
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            onClick={(e) => { e.stopPropagation(); handleToggle(); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 8,
-              width: "100%", padding: "6px 14px",
-              background: hovered ? "#334155" : "transparent",
-              border: "none", color: "#e2e8f0", fontSize: 13,
-              cursor: "pointer", textAlign: "left",
-            }}
-          >
-            <span style={{ width: 14, textAlign: "center", color: "#94a3b8" }}>
-              {surfaceVisible ? "✓" : ""}
-            </span>
-            <span>Output Surface</span>
-          </button>
+          {items.map((item) => (
+            <button
+              key={item.label}
+              onMouseEnter={() => setHovered(item.label)}
+              onMouseLeave={() => setHovered(null)}
+              onClick={(e) => { e.stopPropagation(); close(); item.onClick(); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                width: "100%", padding: "6px 14px",
+                background: hovered === item.label ? "#334155" : "transparent",
+                border: "none", color: "#e2e8f0", fontSize: 13,
+                cursor: "pointer", textAlign: "left",
+              }}
+            >
+              <span style={{ width: 14, textAlign: "center", color: "#94a3b8" }}>
+                {item.checked ? "✓" : ""}
+              </span>
+              <span>{item.label}</span>
+            </button>
+          ))}
         </div>
       )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Persisted UI layout (panel visibility) — mirrors the column-config pattern.
+// ---------------------------------------------------------------------------
+
+const LS_LAYOUT_KEY = "wincue_ui_layout";
+
+interface UiLayout {
+  showCueListTabs: boolean;
+  inspectorOpen: boolean;
+}
+
+const DEFAULT_UI_LAYOUT: UiLayout = { showCueListTabs: true, inspectorOpen: true };
+
+function loadUiLayout(): UiLayout {
+  try {
+    const raw = localStorage.getItem(LS_LAYOUT_KEY);
+    if (!raw) return DEFAULT_UI_LAYOUT;
+    const parsed = JSON.parse(raw) as Partial<UiLayout>;
+    return {
+      showCueListTabs: parsed.showCueListTabs ?? true,
+      inspectorOpen: parsed.inspectorOpen ?? true,
+    };
+  } catch {
+    return DEFAULT_UI_LAYOUT;
+  }
+}
+
+function saveUiLayout(layout: UiLayout): void {
+  try {
+    localStorage.setItem(LS_LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // ignore (private / storage-full)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -392,11 +425,17 @@ export default function App() {
   const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
     useWorkspaceStore();
 
-  const [inspectorOpen, setInspectorOpen]         = useState(true);
+  const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
+  const [showCueListTabs, setShowCueListTabs]     = useState(() => loadUiLayout().showCueListTabs);
   const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
   const [gotoOpen, setGotoOpen]                   = useState(false);
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
   const [loadError, setLoadError]                 = useState<string | null>(null);
+
+  // Persist panel visibility across launches.
+  useEffect(() => {
+    saveUiLayout({ showCueListTabs, inspectorOpen });
+  }, [showCueListTabs, inspectorOpen]);
 
   // Apply theme CSS variables whenever display prefs change
   useEffect(() => {
@@ -667,9 +706,8 @@ export default function App() {
         />
       )}
 
-      {/* Custom title bar */}
+      {/* Custom title bar — no drag-region on the container so menus/buttons work on Linux */}
       <div
-        data-tauri-drag-region
         style={{
           display: "flex", alignItems: "center", height: 36, padding: "0 12px",
           background: "var(--wc-bg-surface, #0f172a)", borderBottom: "1px solid #1e293b",
@@ -685,8 +723,11 @@ export default function App() {
           onPreferences={() => void openPreferencesWindow()}
         />
         <ViewMenu
-          surfaceVisible={outputSurfaceVisible}
-          onToggle={() => void handleToggleSurface()}
+          items={[
+            { label: "Cue List Tabs",  checked: showCueListTabs,     onClick: () => setShowCueListTabs((v) => !v) },
+            { label: "Inspector",      checked: inspectorOpen,        onClick: () => setInspectorOpen((v) => !v) },
+            { label: "Output Surface", checked: outputSurfaceVisible, onClick: () => void handleToggleSurface() },
+          ]}
         />
 
         {/* Drag region: app name + workspace name */}
@@ -790,8 +831,8 @@ export default function App() {
 
       {/* Main area */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <CueListTabs onRefresh={handleRefresh} />
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
           <CueListView
             onCueDoubleClick={(cue: CueSummary) => {
               useWorkspaceStore.getState().setSelectedCueId(cue.id);

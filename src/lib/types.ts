@@ -35,6 +35,7 @@ export interface CueSummary {
   cue_type: CueType;
   name: string;
   number: string | null;
+  notes: string;
   state: CueState;
   continue_mode: ContinueMode;
   color: CueColor;
@@ -52,6 +53,8 @@ export interface CueSummary {
   is_warning: boolean;
   /** Human-readable warning description, present when is_warning is true. */
   warning_message?: string;
+  /** Duration of one loop iteration in ms (raw file duration, no loop multiplier). null for non-media cues. */
+  file_duration_ms: number | null;
   /** For Group cues: direct child cue summaries (recursive). */
   children?: CueSummary[];
   /** For Group cues: playback mode. */
@@ -127,15 +130,17 @@ export interface MidiCueData extends CueSummary {
 /** Full cue data returned by get_cue for a Fade Cue. */
 export interface FadeCueData extends CueSummary {
   notes: string;
-  /** Cue number to target. null = no target (fade is a no-op). */
-  target_cue_number: string | null;
-  /** Target volume in dB (-60 = silence, 0 = unity). */
+  /** UUIDs of cues to fade (empty = no-op). */
+  target_cue_ids: string[];
+  /** Display labels kept in sync with target_cue_ids. */
+  target_cue_numbers: string[];
+  /** Target volume in dB (-60 = silence/black, 0 = unity/full brightness). */
   target_volume_db: number;
   /** Fade duration in milliseconds. */
   fade_duration_ms: number;
   /** Fade curve shape. */
   fade_curve: FadeCurve;
-  /** Stop the target cue once the fade completes. */
+  /** Stop the target cue(s) once the fade completes. */
   stop_at_end: boolean;
 }
 
@@ -149,10 +154,10 @@ export interface WaitCueData extends CueSummary {
 /** Full cue data returned by get_cue for a Stop Cue. */
 export interface StopCueData extends CueSummary {
   notes: string;
-  /** UUID of the target cue, or null to stop all. Primary key at runtime. */
-  target_cue_id: string | null;
-  /** Display label: cue number of the target (kept in sync with target_cue_id). */
-  target_cue_number: string | null;
+  /** UUIDs of cues to stop. Empty = stop all running cues. */
+  target_cue_ids: string[];
+  /** Display labels kept in sync with target_cue_ids. */
+  target_cue_numbers: string[];
   /** true = immediate cut (no fade); false = soft stop with workspace fade-out. */
   hard_stop_mode: boolean;
 }

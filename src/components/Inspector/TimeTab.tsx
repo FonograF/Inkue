@@ -3,6 +3,8 @@ import { Field, inputStyle } from "./Field";
 import { WaveformViewer } from "./WaveformViewer";
 import { ScrubBar } from "./ScrubBar";
 
+const LOOP_INFINITE = 4294967295; // u32::MAX
+
 export function TimeTab({
   cue,
   selectedCue,
@@ -27,10 +29,16 @@ export function TimeTab({
 }) {
   const liveState = selectedCue?.state ?? "standby";
   const liveDurationMs = selectedCue?.duration_ms ?? cue.duration_ms ?? null;
+  // file_duration_ms = duration of one loop iteration (no loop multiplier).
+  const fileDurationMs: number | null = selectedCue?.file_duration_ms ?? cue.file_duration_ms ?? null;
+  // Detect looping: either infinite (duration null but file known) or finite multi-loop.
+  const isLooping = fileDurationMs != null && (liveDurationMs == null || fileDurationMs < liveDurationMs);
+  // Duration to use for the scrub bar: single iteration when looping, total otherwise.
+  const scrubDurationMs = isLooping ? fileDurationMs : liveDurationMs;
   const showScrubber =
     (isAudio || isVideo) &&
-    liveDurationMs != null &&
-    liveDurationMs > 0 &&
+    scrubDurationMs != null &&
+    scrubDurationMs > 0 &&
     (liveState === "running" || liveState === "paused");
 
   return (
@@ -38,8 +46,9 @@ export function TimeTab({
       {showScrubber && (
         <ScrubBar
           cueId={cue.id}
-          durationMs={liveDurationMs!}
+          durationMs={scrubDurationMs!}
           cueState={liveState}
+          loopDurationMs={isLooping ? fileDurationMs! : undefined}
         />
       )}
       {isWait && (
@@ -189,16 +198,55 @@ export function TimeTab({
               }
             />
           </Field>
-          <Field label="Loop Count">
-            <input
-              style={inputStyle}
-              type="number"
-              min="0"
-              defaultValue={cue.loop_count}
-              onBlur={(e) =>
-                onSave({ loop_count: parseInt(e.target.value, 10) })
-              }
-            />
+          <Field label="Loop">
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={cue.loop_count > 0}
+                onChange={(e) =>
+                  onSave({ loop_count: e.target.checked ? 1 : 0 })
+                }
+              />
+              {cue.loop_count > 0 && cue.loop_count < LOOP_INFINITE && (
+                <input
+                  style={{ ...inputStyle, width: 56 }}
+                  type="number"
+                  min="1"
+                  key={`loop-${cue.loop_count}`}
+                  defaultValue={cue.loop_count}
+                  onBlur={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    onSave({ loop_count: v >= 1 ? v : 1 });
+                  }}
+                />
+              )}
+              {cue.loop_count === LOOP_INFINITE && (
+                <span style={{ fontSize: 16, lineHeight: 1 }}>∞</span>
+              )}
+              {cue.loop_count > 0 && (
+                <button
+                  title={cue.loop_count === LOOP_INFINITE ? "Set finite loop count" : "Loop infinitely"}
+                  onClick={() =>
+                    onSave({
+                      loop_count:
+                        cue.loop_count === LOOP_INFINITE ? 1 : LOOP_INFINITE,
+                    })
+                  }
+                  style={{
+                    background: cue.loop_count === LOOP_INFINITE ? "#3b82f6" : "transparent",
+                    border: "1px solid #3b82f6",
+                    borderRadius: 4,
+                    color: cue.loop_count === LOOP_INFINITE ? "#fff" : "#3b82f6",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    padding: "1px 6px",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  ∞
+                </button>
+              )}
+            </div>
           </Field>
           {isAudio && (
             <Field label="Rate">

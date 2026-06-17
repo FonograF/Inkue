@@ -17,9 +17,11 @@ interface Props {
   cueId: string;
   durationMs: number;
   cueState: string;
+  /** When set, progress wraps modulo this value so the bar resets each loop. */
+  loopDurationMs?: number;
 }
 
-export function ScrubBar({ cueId, durationMs, cueState }: Props) {
+export function ScrubBar({ cueId, durationMs, cueState, loopDurationMs }: Props) {
   const timing = useTimingStore((s) => s.timings[cueId]);
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -38,7 +40,9 @@ export function ScrubBar({ cueId, durationMs, cueState }: Props) {
     }
   }, [timing?.action_elapsed_ms, seekOverrideMs]);
 
-  const liveMs = timing?.action_elapsed_ms ?? 0;
+  const rawMs = timing?.action_elapsed_ms ?? 0;
+  // For looping cues, show position within the current iteration.
+  const liveMs = loopDurationMs && loopDurationMs > 0 ? rawMs % loopDurationMs : rawMs;
   const displayMs = isDragging ? dragMs : (seekOverrideMs ?? liveMs);
   const pct = durationMs > 0 ? Math.min(100, (displayMs / durationMs) * 100) : 0;
 
