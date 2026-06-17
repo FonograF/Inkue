@@ -55,7 +55,7 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-winreg = { version = "0.52", optional = true }
+winreg = "0.52"
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -69,11 +69,11 @@ windows-sys = { version = "0.52", features = [
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-# Enable ASIO support. Requires:
+# Enable ASIO support (Windows only). Requires:
 #   1. Steinberg ASIO SDK (free at steinberg.net/developers)
 #   2. CPAL_ASIO_DIR env var pointing to the SDK root before building
-#   3. Build with: cargo build --features asio-support
-asio-support = ["cpal/asio", "winreg"]
+#   3. Build with: cargo build --features asio-support  (Windows only)
+asio-support = ["cpal/asio"]
 
 [profile.release]
 opt-level = 3

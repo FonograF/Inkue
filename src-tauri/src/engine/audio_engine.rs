@@ -584,7 +584,7 @@ fn apply_command(
 /// Requires the `asio-support` Cargo feature. Returns an error when the
 /// feature is absent or no ASIO host is detected at runtime.
 fn open_asio_host() -> Result<cpal::Host> {
-    #[cfg(feature = "asio-support")]
+    #[cfg(all(windows, feature = "asio-support"))]
     {
         let asio = cpal::available_hosts()
             .into_iter()
@@ -592,7 +592,7 @@ fn open_asio_host() -> Result<cpal::Host> {
             .find_map(|id| cpal::host_from_id(id).ok());
         asio.ok_or_else(|| anyhow!("No ASIO host found. Ensure your ASIO drivers are installed."))
     }
-    #[cfg(not(feature = "asio-support"))]
+    #[cfg(not(all(windows, feature = "asio-support")))]
     {
         Err(anyhow!(
             "ASIO support is not compiled in. \

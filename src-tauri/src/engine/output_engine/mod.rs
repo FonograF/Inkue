@@ -166,7 +166,14 @@ impl OutputEngine {
                 opt_str(&lib, ctx, "d3d11-sync-interval", "0");
                 opt_str(&lib, ctx, "force-window", "immediate");
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
+            {
+                opt_str(&lib, ctx, "vo", "gpu");  // Metal via gpu-api=auto
+                opt_str(&lib, ctx, "force-window", "yes");
+                opt_str(&lib, ctx, "border", "no");
+                opt_str(&lib, ctx, "ontop", "yes");
+            }
+            #[cfg(target_os = "linux")]
             {
                 opt_str(&lib, ctx, "vo", "gpu,wlshm,xv,x11");
                 opt_str(&lib, ctx, "force-window", "yes");

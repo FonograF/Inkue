@@ -47,7 +47,7 @@ pub fn get_available_backends() -> Vec<String> {
 /// Returns `true` when at least one ASIO driver is registered under
 /// `HKEY_LOCAL_MACHINE\SOFTWARE\ASIO` (checked only when the
 /// `asio-support` feature is enabled).
-#[cfg(feature = "asio-support")]
+#[cfg(all(windows, feature = "asio-support"))]
 fn asio_drivers_installed() -> bool {
     use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -61,7 +61,7 @@ fn asio_drivers_installed() -> bool {
 /// Returns one `DeviceInfo` per subkey under `HKLM\SOFTWARE\ASIO`.
 /// Channels and sample rate are left at defaults — ASIO drivers report their
 /// actual capabilities only after they are opened.
-#[cfg(feature = "asio-support")]
+#[cfg(all(windows, feature = "asio-support"))]
 fn list_asio_drivers_from_registry() -> Vec<crate::engine::device_manager::DeviceInfo> {
     use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -321,7 +321,7 @@ pub fn list_audio_devices(
 
     // For ASIO: cpal's output_devices() is unreliable (COM/thread issues).
     // Read driver names directly from the Windows registry instead.
-    #[cfg(feature = "asio-support")]
+    #[cfg(all(windows, feature = "asio-support"))]
     if matches!(ab, AudioBackend::Asio) {
         return Ok(list_asio_drivers_from_registry());
     }
