@@ -140,8 +140,12 @@ pub enum GroupMode {
 pub struct FadeAction {
     /// UUIDs of cues to fade (empty = no-op).
     pub target_cue_ids: Vec<CueId>,
-    /// Target linear gain (0.0 = silence / black, 1.0 = unity / fully visible).
+    /// Target linear gain for audio (0.0 = silence, 1.0 = unity).
     pub target_gain_linear: f32,
+    /// Explicit visual (GL overlay) target alpha.  `None` = derive from
+    /// `target_gain_linear` (legacy behaviour); `Some(alpha)` = independent
+    /// from the audio target so brightness and volume can be set separately.
+    pub target_visual_alpha: Option<u8>,
     /// Fade duration in milliseconds.
     pub duration_ms: u64,
     /// Curve shape.

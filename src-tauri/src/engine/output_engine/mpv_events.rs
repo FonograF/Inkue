@@ -20,7 +20,7 @@ use crate::engine::AudioEngine;
 
 use super::types::{MpvCtx, OutputStatus, VoiceId};
 use super::{cs, OUTPUT_CURRENT_AUDIO_VOICE};
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
 use super::WM_SETUP_MPV_CHILD;
 
 pub(super) fn mpv_event_loop(
@@ -135,9 +135,10 @@ pub(super) fn mpv_event_loop(
 
             MPV_EVENT_FILE_LOADED => {
                 log::info!("[output-mpv] MPV_EVENT_FILE_LOADED");
-                // On Windows: notify the parent WndProc to make mpv's D3D11 child
-                // click-through so drag/dblclick events reach the parent window.
-                #[cfg(target_os = "windows")]
+                // Legacy Win32 path only: notify the parent WndProc to make mpv's
+                // D3D11 child click-through.  In the unified GL path mpv has no
+                // child window (vo=libmpv renders via render context, not a HWND).
+                #[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
                 unsafe {
                     use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                     PostMessageW(parent_hwnd, WM_SETUP_MPV_CHILD, 0, 0);
@@ -255,19 +256,22 @@ fn start_video_playback(
     }
 
     if fade_in_ms > 0 {
-        // Reveal via a fade-from-black aligned with playback start.
+        // Set FADE_STATE for fade-from-black.
+        // - Unified GL path: the render thread picks up target_alpha=0 and
+        //   animates automatically — no PostMessage needed.
+        // - Legacy Win32 path: PostMessage WM_DO_FADE to start the Win32 timer.
         if let Some(fs) = super::FADE_STATE.get() {
             if let Ok(mut s) = fs.lock() {
-                s.start_alpha = 255;
+                s.start_alpha   = 255;
                 s.current_alpha = 255;
-                s.target_alpha = 0;
-                s.duration_ms = fade_in_ms;
-                s.start_time = Instant::now();
-                s.timer_active = false;
-                s.pending = None;
+                s.target_alpha  = 0;
+                s.duration_ms   = fade_in_ms;
+                s.start_time    = Instant::now();
+                s.timer_active  = false;
+                s.pending       = None;
             }
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
             PostMessageW(_parent_hwnd, super::WM_DO_FADE, 0, 0);

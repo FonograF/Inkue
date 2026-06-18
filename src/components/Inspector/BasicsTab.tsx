@@ -177,9 +177,8 @@ export function BasicsTab({
         const showVolume = hasAudio || hasVideo || (!hasVisual && !hasAudio);
         // Show brightness when: targets include image or video, or no target selected.
         const showBrightness = hasVisual || (!hasAudio && !hasVisual);
-        // target_volume_db maps to brightness: -60 dB = 0% (black), 0 dB = 100% (visible).
         const volDb: number = cue.target_volume_db ?? -60;
-        const brightnessPercent = Math.round(((volDb + 60) / 60) * 100);
+        const brightnessPercent: number = cue.target_brightness_pct ?? 0;
         return (
           <>
             <Field label="Targets">
@@ -221,9 +220,7 @@ export function BasicsTab({
                   defaultValue={brightnessPercent}
                   onBlur={(e) => {
                     const pct = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
-                    // Map [0, 100]% → [-60, 0] dB
-                    const db = (pct / 100) * 60 - 60;
-                    onSave({ target_volume_db: Math.round(db * 10) / 10 });
+                    onSave({ target_brightness_pct: pct });
                   }}
                 />
               </Field>

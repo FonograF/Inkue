@@ -83,10 +83,18 @@ export interface AudioCueData extends CueSummary {
 export interface VideoCueData extends CueSummary {
   notes: string;
   volume_db: number;
+  /** Audio track fade-in. */
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;
+  /** Audio track fade-out. */
   fade_out_ms: number | null;
   fade_out_curve: FadeCurve | null;
+  /** Visual (GL overlay) fade-in — independent from audio. */
+  video_fade_in_ms: number | null;
+  video_fade_in_curve: FadeCurve | null;
+  /** Visual (GL overlay) fade-out — independent from audio. */
+  video_fade_out_ms: number | null;
+  video_fade_out_curve: FadeCurve | null;
   start_time_ms: number | null;
   end_time_ms: number | null;
   loop_count: number;
@@ -134,8 +142,10 @@ export interface FadeCueData extends CueSummary {
   target_cue_ids: string[];
   /** Display labels kept in sync with target_cue_ids. */
   target_cue_numbers: string[];
-  /** Target volume in dB (-60 = silence/black, 0 = unity/full brightness). */
+  /** Target audio volume in dB (−60 = silence, 0 = unity). */
   target_volume_db: number;
+  /** Target visual brightness in percent (0 = black, 100 = fully visible). Independent from volume. */
+  target_brightness_pct: number;
   /** Fade duration in milliseconds. */
   fade_duration_ms: number;
   /** Fade curve shape. */

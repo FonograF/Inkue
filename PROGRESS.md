@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-16
+# WinCue — Project state as of 2026-06-18
 
-## Current version: 0.8.1
+## Current version: 0.9.1
 
 ## cargo build result
 
@@ -8,7 +8,7 @@
 
 ## cargo test result
 
-**62 tests pass, 0 failures.**
+**65 tests pass, 0 failures.**
 
 ---
 
@@ -19,8 +19,8 @@
 | Audio | ✅ **100% functional** | Pre/post-wait, fade-in/out, loop (finite + infinite), rate, Output Patch routing, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking; SR conversion in `fill_buffer` (44.1k/48k/96k all correct) |
 | Stop  | ✅ **Functional** | UUID-based targeting; multi-target (stop any subset of cues); target All Cues or specific cues; Soft (fade) or Hard (cut) |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
-| Video | ✅ **Functional** | Single persistent Win32 window, paused-load start (no frame-0 freeze), dip-to-black fades, scrub/seek; pause/resume; loop (finite + infinite) |
-| Image | ✅ **Functional** | Same Win32 window as Video via libmpv, dip-to-black fades; stop-on-next-cue only fires for visual GOs (audio GO leaves image running); loop support |
+| Video | ✅ **Functional** | Unified GL Render API path (Windows); paused-load start (no frame-0 freeze), dip-to-black fades (GL quad), scrub/seek; pause/resume; loop (finite + infinite) |
+| Image | ✅ **Functional** | Same GL output window as Video via libmpv Render API; dip-to-black fades; stop-on-next-cue only fires for visual GOs (audio GO leaves image running); loop support |
 | Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
 | Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues); audio fade (gain interpolation at 30 fps); visual fade for Video/Image (overlay alpha interpolation at 30 fps, `set_overlay_alpha_direct`); configurable curve; optional Stop at End; context-aware inspector (volume dB for audio/video, brightness % for image, both for video) |
@@ -49,7 +49,7 @@
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO; SR conversion in `fill_buffer`; infinite loop (`loops_remaining = u32::MAX`) never sends Completed; 5 unit tests |
-| OutputEngine | `engine/output_engine/` | ✅ Complete — unified libmpv engine; single persistent Win32 window; dip-to-black fade overlay; OSD + floating timer; `get_overlay_alpha()`, `set_overlay_alpha_direct()`, `get_current_audio_voice()`, `start_overlay_fade()` (kept for reference) |
+| OutputEngine | `engine/output_engine/` | ✅ Complete — unified GL Render API (Stage 1); `vo=libmpv`; Win32 GL window (all 3 OS: macOS/Linux TODOs); mpv_render_context; GL fade quad; OSD + floating timer; `get_overlay_alpha()`, `set_overlay_alpha_direct()`; legacy Win32+D3D11 behind `legacy-win32-output` feature flag |
 | OscPatch | `engine/osc_patch.rs` | ✅ Complete |
 | OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, 50ms hash dedup cache |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
@@ -100,6 +100,57 @@
 | `main.tsx` | ✅ Complete |
 
 ---
+
+---
+
+## Change history additions (0.9.1)
+
+### GL output window — fixes de démarrage et gestion fenêtre (2026-06-18)
+
+Correctifs appliqués après premier test réel sur Windows.
+
+**Fix 1 — Race condition "No render context set"** : `OutputEngine::new()` retournait avant que `mpv_render_context_create()` soit terminé ; le premier GO envoyait `loadfile` à mpv avant que le contexte GL soit prêt → `MPV_EVENT_END_FILE reason=ERROR`. Corrigé : canal one-shot `ready_tx/ready_rx` — `new()` bloque jusqu'au signal du thread render.
+
+**Fix 2 — WGL SetPixelFormat double-appel** : `DisplayApiPreference::WglThenEgl(Some(rwh))` appelait `SetPixelFormat` sur notre HWND lors du chargement des extensions WGL, puis `create_window_surface` l'appelait une seconde fois → `ERROR_INVALID_PARAMETER` (le pixel format ne peut être défini qu'une fois par fenêtre). Corrigé : `WglThenEgl(None)` — glutin utilise une fenêtre temporaire invisible pour charger les extensions, notre HWND n'est touché qu'une seule fois lors de la création du surface.
+
+**Fix 3 — Erreur propagée dans la dialog de démarrage** : le thread render mourait silencieusement ; la dialog affichait "render thread exited before signalling ready" sans détail. Corrigé : macro `try_init!` enveloppe chaque initialisation glutin et envoie l'erreur réelle sur `ready_tx` avant de propager.
+
+**Fix 4 — Drag, resize, double-clic fullscreen** : `gl_wnd_proc` n'avait que `WM_CLOSE` / `WM_DESTROY`. Ajouté :
+- `WM_MOUSEACTIVATE` → `MA_NOACTIVATE` (ne vole pas le focus)
+- `WM_NCHITTEST` : resize par detection des bords (8 px), centre retourne `HTCAPTION` → drag natif système
+- `WM_NCLBUTTONDBLCLK(HTCAPTION)` → `toggle_fullscreen_gl()` (fullscreen custom, pas SC_MAXIMIZE)
+- State fullscreen partagé entre wndproc (dbl-clic) et `OutputEngine::toggle_fullscreen()` (F9) via statiques `GL_IS_FULLSCREEN` + `GL_SAVED_RECT`
+
+**Fix 5 — Curseur moulinant** : `hCursor = 0` dans WNDCLASSEXW → curseur d'attente. Corrigé : `LoadCursorW(0, IDC_ARROW)`.
+
+**Divers** : `RenderCtx` (struct jamais construite) supprimé ; `OutputWndState` gated derrière `#[cfg(all(feature="legacy-win32-output", target_os="windows"))]`.
+
+**Tests** : `cargo check` vert, zéro warning, `cargo test` 65/65.
+
+---
+
+## Change history additions (0.9.0)
+
+### Unified GL Render API output path — Stage 1 (2026-06-17)
+
+Remplace le chemin Win32+D3D11 par le mpv Render API (OpenGL 3.3 Core) sur les 3 OS.
+Le chemin Win32 historique est conservé derrière `#[cfg(feature="legacy-win32-output")]` (éteint par défaut).
+
+**Architecture** :
+- `vo=libmpv` — mpv ne crée plus de fenêtre propre ; tout le rendu passe par `mpv_render_context_render()`.
+- Fenêtre GL : Win32 `WS_POPUP` créé dans un thread dédié (même patron que le chemin legacy, sans le `wid` mpv). macOS/Linux : TODOs marqués pour Stage 2.
+- Contexte GL : `glutin 0.32` (rwh 0.6, compatible Tauri 2.x). WGL sur Windows (opengl32 + gdi32 systèmes), CGL auto macOS, EGL Linux.
+- Fade overlay : quad GL noir `vec4(0,0,0,alpha)` dessiné après le rendu mpv, avant le swap. Remplace la layered window Win32 et l'osd-overlay ASS.
+- OSD timer (`osd-msg1`) : composite dans le FBO par mpv — aucun changement de code dans l'event loop 60 fps.
+- Thread render (`wincue-output-render`) : condvar réveillé par le callback mpv `on_mpv_update`; timeout 16 ms si fade actif.
+- `hwdec=auto-copy` cross-platform (remplace `hwdec=auto`).
+- vsync via `glutin` `SwapInterval::Wait(1)` (remplace `d3d11-sync-interval=0`).
+
+**Raison du non-usage de `tauri::WindowBuilder` (unstable)** : la feature `unstable` de Tauri compile du code qui importe `TaskDialogIndirect` depuis `comctl32.dll`. Sans manifest comctl32 v6 dans le binaire de test, STATUS_ENTRYPOINT_NOT_FOUND avant le premier test.
+
+**Tests** : `cargo check` vert, `cargo test` 65/65 verts.
+
+**Files changed:** `Cargo.toml`, `engine/mpv_sys.rs` (+Render API), `engine/output_engine/mod.rs`, `engine/output_engine/render.rs` (new), `engine/output_engine/fade.rs`, `engine/output_engine/types.rs`, `engine/output_engine/mpv_events.rs`
 
 ---
 

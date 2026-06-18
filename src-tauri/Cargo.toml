@@ -51,11 +51,39 @@ env_logger = "0.11"
 
 symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
 
+# GL context management for the unified mpv Render API output path.
+# Direct dep on rwh 0.6 — same as Tauri 2.x and glutin 0.32 (no duplicate).
+raw-window-handle = "0.6"
+
+# Cross-platform window creation (Win32/X11/Wayland) — used by the unified
+# GL output path to create the native window that holds the GL surface.
+# winit 0.30 uses rwh 0.6 (same as glutin 0.32 and Tauri 2.x).
+# winit itself does NOT import comctl32 v6, so the test binary is safe.
+winit = "0.30"
+
+# Thin safe wrapper around OpenGL for the fade quad shader.
+glow = "0.13"
+
+# glutin 0.32 — platform-specific features avoid unnecessary DLL dependencies.
+# On Windows we only enable WGL (opengl32 + gdi32, always present).
+# Enabling `egl` on Windows would link glutin_egl_sys against ANGLE's libEGL.dll
+# which is NOT installed by default — causing STATUS_ENTRYPOINT_NOT_FOUND at
+# test-binary load time.  CGL on macOS is auto-detected; no feature needed.
+[target.'cfg(target_os = "windows")'.dependencies]
+glutin = { version = "0.32", features = ["wgl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+glutin = { version = "0.32" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+glutin = { version = "0.32", features = ["egl", "glx", "x11"] }
+
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+# windows-sys — used by both the legacy Win32 output path and lib.rs error dialog.
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -74,6 +102,10 @@ custom-protocol = ["tauri/custom-protocol"]
 #   2. CPAL_ASIO_DIR env var pointing to the SDK root before building
 #   3. Build with: cargo build --features asio-support  (Windows only)
 asio-support = ["cpal/asio"]
+# Keep the old Win32 + D3D11 + --wid output path. OFF by default.
+# The unified OpenGL Render API path (render.rs) is used instead.
+# Re-enable only for regression testing / fallback during the transition.
+legacy-win32-output = []
 
 [profile.release]
 opt-level = 3

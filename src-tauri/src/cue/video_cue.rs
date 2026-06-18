@@ -53,10 +53,14 @@ pub struct VideoCue {
     pub file_path: Option<PathBuf>,
     /// Playback volume in dB (−60 to +12).
     pub volume_db: f64,
-    /// Optional fade-in (controls HTML5 video element opacity via JS).
+    /// Audio fade-in applied to the decoded audio voice.
     pub fade_in: Option<FadeSpec>,
-    /// Optional fade-out (applied on soft stop; default 500 ms).
+    /// Audio fade-out applied to the decoded audio voice on stop.
     pub fade_out: Option<FadeSpec>,
+    /// Visual (GL overlay) fade-in — independent from audio.
+    pub video_fade_in: Option<FadeSpec>,
+    /// Visual (GL overlay) fade-out — independent from audio.
+    pub video_fade_out: Option<FadeSpec>,
     /// Start playback at this offset into the file.
     pub start_time: Option<Duration>,
     /// Stop playback at this offset into the file.
@@ -113,6 +117,8 @@ impl VideoCue {
             volume_db: 0.0,
             fade_in: None,
             fade_out: None,
+            video_fade_in: None,
+            video_fade_out: None,
             start_time: None,
             end_time: None,
             loop_count: 0,
@@ -207,8 +213,8 @@ impl VideoCue {
     fn start_video_action(&mut self, context: &CueContext) -> Result<()> {
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
-        let fade_in_ms: u32 = 0;
-        let fade_out_ms: u32 = 0;
+        let fade_in_ms = self.video_fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+        let fade_out_ms = self.video_fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
 
         // Submit the audio voice (paused) first so it is ready to resume the
         // instant the video's first frame is presented.
@@ -323,12 +329,9 @@ impl Cue for VideoCue {
         self.in_pre_wait = false;
 
         if let Some(vid) = self.active_voice_id.take() {
-            let fade_ms = self
-                .fade_out
-                .as_ref()
-                .map(|_| 0_u32)
-                .unwrap_or(0);
-            let _ = context.output_engine.stop_voice(vid, fade_ms);
+            let visual_fade_ms = self.video_fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+            let audio_fade_ms  = self.fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+            context.output_engine.stop_content(vid, visual_fade_ms, audio_fade_ms);
         }
 
         self.state = CueState::Standby;
@@ -537,6 +540,10 @@ impl Cue for VideoCue {
             "fade_in_curve": self.fade_in.as_ref().map(|f| f.curve),
             "fade_out_ms": self.fade_out.as_ref().map(|f| f.duration_ms),
             "fade_out_curve": self.fade_out.as_ref().map(|f| f.curve),
+            "video_fade_in_ms": self.video_fade_in.as_ref().map(|f| f.duration_ms),
+            "video_fade_in_curve": self.video_fade_in.as_ref().map(|f| f.curve),
+            "video_fade_out_ms": self.video_fade_out.as_ref().map(|f| f.duration_ms),
+            "video_fade_out_curve": self.video_fade_out.as_ref().map(|f| f.curve),
             "start_time_ms": self.start_time.map(|d| d.as_millis() as u64),
             "end_time_ms": self.end_time.map(|d| d.as_millis() as u64),
             "loop_count": self.loop_count,
@@ -609,6 +616,20 @@ impl CueFactory for VideoCueFactory {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(FadeCurve::SCurve);
             cue.fade_out = Some(FadeSpec { duration_ms: ms, curve });
+        }
+        if let Some(ms) = value.get("video_fade_in_ms").and_then(|v| v.as_u64()) {
+            let curve = value
+                .get("video_fade_in_curve")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(FadeCurve::SCurve);
+            cue.video_fade_in = Some(FadeSpec { duration_ms: ms, curve });
+        }
+        if let Some(ms) = value.get("video_fade_out_ms").and_then(|v| v.as_u64()) {
+            let curve = value
+                .get("video_fade_out_curve")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(FadeCurve::SCurve);
+            cue.video_fade_out = Some(FadeSpec { duration_ms: ms, curve });
         }
         if let Some(ms) = value.get("start_time_ms").and_then(|v| v.as_u64()) {
             cue.start_time = Some(Duration::from_millis(ms));

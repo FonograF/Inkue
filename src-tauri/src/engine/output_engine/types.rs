@@ -137,10 +137,10 @@ impl FadeAnimState {
 }
 
 // ---------------------------------------------------------------------------
-// Win32 window state
+// Win32 window state — legacy path only
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
 pub(crate) struct OutputWndState {
     pub is_fullscreen: bool,
     pub saved_rect: (i32, i32, i32, i32),

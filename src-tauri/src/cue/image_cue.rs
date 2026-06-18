@@ -187,7 +187,7 @@ impl Cue for ImageCue {
                 .as_ref()
                 .map(|f| f.duration_ms as u32)
                 .unwrap_or(0);
-            context.output_engine.stop_content(vid, fade_ms);
+            context.output_engine.stop_content(vid, fade_ms, 0);
         }
 
         self.state = CueState::Standby;
@@ -216,7 +216,7 @@ impl Cue for ImageCue {
         self.in_pre_wait = false;
 
         if let Some(vid) = self.active_voice_id.take() {
-            context.output_engine.stop_content(vid, 0);
+            context.output_engine.stop_content(vid, 0, 0);
         }
 
         self.state = CueState::Standby;

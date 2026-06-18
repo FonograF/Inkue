@@ -51,8 +51,11 @@ pub struct FadeCue {
     pub target_cue_ids: Vec<CueId>,
     /// Display labels kept in sync with target_cue_ids (for inspector).
     pub target_cue_numbers: Vec<String>,
-    /// Target volume in dB; also maps to visual brightness (-60 = black, 0 = full).
+    /// Target audio volume in dB (−60 = silence, 0 = unity).
     pub target_volume_db: f64,
+    /// Target visual brightness in percent (0 = black overlay, 100 = fully visible).
+    /// Independent from `target_volume_db`.
+    pub target_brightness_pct: f64,
     /// Fade duration in milliseconds.
     pub fade_duration_ms: u64,
     /// Fade curve shape.
@@ -94,6 +97,7 @@ impl FadeCue {
             target_cue_ids: Vec::new(),
             target_cue_numbers: Vec::new(),
             target_volume_db: -60.0,
+            target_brightness_pct: 0.0,
             fade_duration_ms: 2000,
             fade_curve: FadeCurve::SCurve,
             stop_at_end: false,
@@ -329,9 +333,12 @@ impl Cue for FadeCue {
     fn clear_auto_continue_fired(&mut self) { self.auto_continue_fired = false; }
 
     fn fade_specification(&self) -> Option<FadeAction> {
+        let visual_alpha = ((1.0 - self.target_brightness_pct.clamp(0.0, 100.0) / 100.0) * 255.0)
+            .round() as u8;
         Some(FadeAction {
             target_cue_ids: self.target_cue_ids.clone(),
             target_gain_linear: db_to_linear(self.target_volume_db) as f32,
+            target_visual_alpha: Some(visual_alpha),
             duration_ms: self.fade_duration_ms,
             curve: self.fade_curve,
             stop_at_end: self.stop_at_end,
@@ -392,6 +399,7 @@ impl Cue for FadeCue {
             "target_cue_ids": self.target_cue_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
             "target_cue_numbers": self.target_cue_numbers,
             "target_volume_db": self.target_volume_db,
+            "target_brightness_pct": self.target_brightness_pct,
             "fade_duration_ms": self.fade_duration_ms,
             "fade_curve": self.fade_curve,
             "stop_at_end": self.stop_at_end,
@@ -459,6 +467,9 @@ impl CueFactory for FadeCueFactory {
         }
         if let Some(db) = value.get("target_volume_db").and_then(|v| v.as_f64()) {
             cue.target_volume_db = db;
+        }
+        if let Some(pct) = value.get("target_brightness_pct").and_then(|v| v.as_f64()) {
+            cue.target_brightness_pct = pct;
         }
         if let Some(ms) = value.get("fade_duration_ms").and_then(|v| v.as_u64()) {
             cue.fade_duration_ms = ms;

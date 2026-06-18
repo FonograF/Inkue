@@ -150,7 +150,9 @@ impl Transport {
             } else {
                 0
             };
-            let visual_target_alpha = ((1.0 - spec.target_gain_linear.clamp(0.0, 1.0)) * 255.0) as u8;
+            let visual_target_alpha = spec.target_visual_alpha.unwrap_or_else(|| {
+                ((1.0 - spec.target_gain_linear.clamp(0.0, 1.0)) * 255.0) as u8
+            });
 
             if let Some(fc) = cue_list.get_mut(&cue_id) {
                 fc.set_fade_voices(voice_infos, has_visual, visual_start_alpha, visual_target_alpha);
