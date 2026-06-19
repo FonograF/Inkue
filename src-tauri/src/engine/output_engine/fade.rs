@@ -255,10 +255,11 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let file_opts = cs(&opts_str);
             let cmd       = cs("loadfile");
             let flags     = cs("replace");
-            let index     = cs("-1");
-            let args: [*const std::ffi::c_char; 6] = [
+            // mpv 0.37 (Ubuntu 24.04 system lib) does not accept a positional
+            // playlist-index argument here — it misparses the options string.
+            let args: [*const std::ffi::c_char; 5] = [
                 cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                index.as_ptr(), file_opts.as_ptr(), std::ptr::null(),
+                file_opts.as_ptr(), std::ptr::null(),
             ];
             let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 { log::warn!("[output] mpv loadfile (image) failed: {ret}"); }
@@ -283,10 +284,9 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let opts_cstr    = cs(&opts_str);
             let cmd_cstr     = cs("loadfile");
             let replace_cstr = cs("replace");
-            let index_cstr   = cs("-1");
-            let args: [*const std::ffi::c_char; 6] = [
+            let args: [*const std::ffi::c_char; 5] = [
                 cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-                index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
+                opts_cstr.as_ptr(), std::ptr::null(),
             ];
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto-copy").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());

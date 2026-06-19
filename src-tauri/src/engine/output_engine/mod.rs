@@ -10,6 +10,7 @@
 
 mod fade;
 mod mpv_events;
+mod render;
 mod types;
 #[cfg(target_os = "windows")]
 mod win32_window;
@@ -38,7 +39,7 @@ use crate::engine::AudioEngine;
 use super::mpv_sys::MpvLib;
 #[cfg(target_os = "windows")]
 use super::mpv_sys::MPV_FORMAT_INT64;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use super::mpv_sys::MPV_FORMAT_FLAG;
 
 // ---------------------------------------------------------------------------
@@ -176,13 +177,10 @@ impl OutputEngine {
                 opt_str(&lib, ctx, "force-window", "no");
                 opt_str(&lib, ctx, "border", "no");
             }
+            // Linux: render API path (render.rs) — mpv renders into our own winit
+            // window via mpv_render_context_render() instead of creating its own.
             #[cfg(target_os = "linux")]
-            {
-                opt_str(&lib, ctx, "vo", "gpu,wlshm,xv,x11");
-                opt_str(&lib, ctx, "force-window", "no");
-                opt_str(&lib, ctx, "border", "no");
-                opt_str(&lib, ctx, "ontop", "yes");
-            }
+            opt_str(&lib, ctx, "vo", "libmpv");
 
             opt_str(&lib, ctx, "hwdec", "auto");
 
@@ -195,14 +193,17 @@ impl OutputEngine {
             // drag_window()) and double-click fullscreen (WM_LBUTTONDBLCLK) — mpv's
             // own mouse handling would only get in the way, so cursor input stays off.
             //
-            // Mac/Linux: mpv creates and owns its native window (no custom WndProc to
-            // do this for us), so mpv must receive mouse events for its built-in
+            // Linux: render.rs's own winit window owns dragging and double-click
+            // fullscreen directly (no native mpv window exists under vo=libmpv).
+            //
+            // macOS: mpv still creates and owns its native window (Stage 2 TODO in
+            // render.rs), so mpv must receive mouse events for its built-in
             // window-dragging to work. Default bindings stay off (no seek/volume/OSC
             // side effects from stray clicks); double-click-to-fullscreen is rebound
             // explicitly below since it would otherwise come from the disabled defaults.
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             opt_str(&lib, ctx, "input-cursor", "no");
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             {
                 opt_str(&lib, ctx, "input-cursor", "yes");
                 opt_str(&lib, ctx, "window-dragging", "yes");
@@ -229,7 +230,8 @@ impl OutputEngine {
             // Rebind double-click → fullscreen explicitly: this is normally one of
             // mpv's *default* mouse bindings, which we disabled above to avoid other
             // unwanted default behaviour (seeking, volume, screenshot, etc.).
-            #[cfg(not(target_os = "windows"))]
+            // macOS only — Linux's render.rs window has no mpv-native input to bind.
+            #[cfg(target_os = "macos")]
             {
                 let keybind_cmd = cs("keybind");
                 let dblclick    = cs("MOUSE_BTN0_DBL");
@@ -268,6 +270,11 @@ impl OutputEngine {
         FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
         FLOAT_TIMER_FONT.get_or_init(|| Mutex::new("Arial".to_owned()));
 
+        // Linux: create the winit/GL output window and block until mpv's render
+        // context is live, so no `loadfile` can race ahead of it.
+        #[cfg(target_os = "linux")]
+        render::init(&app_handle, Arc::clone(&lib), Arc::clone(&mpv_ctx))?;
+
         {
             let lib2   = Arc::clone(&lib);
             let ctx2   = Arc::clone(&mpv_ctx);
@@ -282,14 +289,6 @@ impl OutputEngine {
                 })
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
-
-        // Mac / Linux: drive fade animations on a dedicated 16 ms thread.
-        // Windows uses the Win32 WM_TIMER mechanism instead.
-        #[cfg(not(target_os = "windows"))]
-        std::thread::Builder::new()
-            .name("wincue-output-fade".into())
-            .spawn(fade::run_cross_platform_fade_loop)
-            .map_err(|e| anyhow!("Failed to spawn fade loop thread: {e}"))?;
 
         Ok(Self {
             mpv_lib: lib,
@@ -618,8 +617,9 @@ impl OutputEngine {
         Ok(voice_id)
     }
 
-    /// Stop the content identified by `voice_id` with an optional fade-to-black.
-    pub fn stop_content(&self, voice_id: VoiceId, fade_out_ms: u32) {
+    /// Stop the content identified by `voice_id`, fading the visual overlay
+    /// to black over `visual_fade_ms` and the audio voice out over `audio_fade_ms`.
+    pub fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32) {
         let was_current = {
             let mut cv = self.current_voice.lock().unwrap();
             if *cv == Some(voice_id) {
@@ -641,12 +641,12 @@ impl OutputEngine {
             return;
         }
 
-        if fade_out_ms > 0 {
+        if visual_fade_ms > 0 {
             if let Some(fs) = FADE_STATE.get() {
                 let mut state = fs.lock().unwrap();
                 state.start_alpha = state.current_alpha;
                 state.target_alpha = 255;
-                state.duration_ms = fade_out_ms;
+                state.duration_ms = visual_fade_ms;
                 state.start_time = Instant::now();
                 state.timer_active = false;
                 state.pending = Some(FadePending::Stop);
@@ -680,7 +680,7 @@ impl OutputEngine {
             if let Some(aid) = audio_id {
                 let _ = self.audio_engine.stop_voice(
                     aid,
-                    fade_out_ms,
+                    audio_fade_ms,
                     crate::engine::ring_command::FadeCurve::SCurve,
                 );
             }
@@ -691,7 +691,7 @@ impl OutputEngine {
     pub fn hard_stop_current(&self) {
         let voice_id = *self.current_voice.lock().unwrap();
         if let Some(vid) = voice_id {
-            self.stop_content(vid, 0);
+            self.stop_content(vid, 0, 0);
         }
     }
 
@@ -745,7 +745,7 @@ impl OutputEngine {
     }
 
     pub fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32) -> Result<()> {
-        self.stop_content(voice_id, fade_ms);
+        self.stop_content(voice_id, fade_ms, fade_ms);
         Ok(())
     }
 
@@ -837,13 +837,17 @@ impl OutputEngine {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
+        // Linux: render.rs owns its own winit window directly — no native mpv
+        // window to dispatch through, so this can run inline on the calling thread.
+        #[cfg(target_os = "linux")]
+        render::show();
         // cocoa-cb's "vo" thread creates the NSWindow via dispatch_sync onto the
         // main queue, which only completes if the main thread's run loop is free to
         // service it. Our (sync, non-async) Tauri command handler runs inline on the
         // main thread itself, so calling into mpv here directly — or routing it back
         // onto the main thread — blocks the very thread cocoa-cb's dispatch_sync
         // needs. Spawning a plain background thread keeps the main run loop free.
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         std::thread::spawn(|| set_mpv_window_visible(true));
     }
 
@@ -858,7 +862,9 @@ impl OutputEngine {
                 ShowWindow(overlay, SW_HIDE);
             }
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        render::hide();
+        #[cfg(target_os = "macos")]
         {
             // See show_output() for why this must run off the main thread.
             std::thread::spawn(|| set_mpv_window_visible(false));
@@ -969,7 +975,9 @@ impl OutputEngine {
                 win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
             }
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        render::toggle_fullscreen();
+        #[cfg(target_os = "macos")]
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             unsafe {
                 let name = cs("fullscreen");
@@ -1069,7 +1077,18 @@ impl OutputEngine {
             SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        {
+            self.visible.store(true, Ordering::Relaxed);
+            if let Some(idx) = screen_index {
+                if let Some(s) = self.list_screens().into_iter().find(|s| s.index == idx) {
+                    render::set_outer_rect(s.x, s.y, s.width, s.height);
+                }
+            }
+            render::show();
+        }
+
+        #[cfg(target_os = "macos")]
         {
             self.visible.store(true, Ordering::Relaxed);
             // Same off-main-thread requirement as show_output()/hide_output() —
@@ -1101,11 +1120,12 @@ impl Drop for OutputEngine {
 // Private utility functions
 // ---------------------------------------------------------------------------
 
-/// Create or destroy mpv's native window (Mac/Linux only). Must be called off the
-/// main thread — cocoa-cb's "vo" thread does a `dispatch_sync` onto the main queue
-/// during window creation/destruction, which deadlocks if the main thread is the
-/// one blocked waiting on this call instead of free to service it.
-#[cfg(not(target_os = "windows"))]
+/// Create or destroy mpv's native window (macOS only — Linux uses render.rs's own
+/// winit window instead). Must be called off the main thread — cocoa-cb's "vo"
+/// thread does a `dispatch_sync` onto the main queue during window creation/
+/// destruction, which deadlocks if the main thread is the one blocked waiting on
+/// this call instead of free to service it.
+#[cfg(target_os = "macos")]
 fn set_mpv_window_visible(visible: bool) {
     if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
         unsafe {

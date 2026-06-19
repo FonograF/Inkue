@@ -487,7 +487,11 @@ fn render_thread_main(
         .map_err(|e| anyhow!("make_current: {e}")));
 
     // ── 6. vsync ──────────────────────────────────────────────────────────────
-    if let Err(e) = surface.set_swap_interval(&ctx, SwapInterval::Wait(NonZeroU32::new(1).unwrap())) {
+    // mpv's own clock (video-sync=desync) paces playback, not our swap — blocking
+    // on the driver's vblank here just adds a second, redundant sync point. Under
+    // a compositor with a virtualized/emulated vblank (VMs), that block can stall
+    // long enough to visibly stutter the whole desktop, not just this window.
+    if let Err(e) = surface.set_swap_interval(&ctx, SwapInterval::DontWait) {
         log::warn!("[render] swap_interval: {e:?}");
     }
 
