@@ -1,4 +1,4 @@
-import type { AudioCueData, ImageCueData, VideoCueData } from "../../lib/types";
+import type { AudioCueData, FadeCurve, ImageCueData, VideoCueData } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
 import { CurveSelect } from "../common/CurveSelect";
 
@@ -11,7 +11,7 @@ function FadeSection({
 }: {
   label: string;
   durationMs: number | null;
-  curve: string | null;
+  curve: FadeCurve | null;
   idPrefix: string;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
