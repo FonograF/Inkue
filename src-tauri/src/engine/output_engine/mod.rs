@@ -653,6 +653,12 @@ impl OutputEngine {
                     [stop.as_ptr(), std::ptr::null()];
                 (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
             }
+            // Hard cut: mpv goes idle. On the GL path the render loop would otherwise
+            // skip drawing (no new frame + transparent overlay) and leave the last
+            // frame frozen on screen. Force the overlay to black — it wakes the render
+            // loop and paints an opaque black quad over the stale frame, matching the
+            // end state of a stop-with-fade.
+            fade::set_overlay_alpha(255);
         }
 
         if let Some(m) = OUTPUT_CURRENT_FADE_OUT_MS.get() {

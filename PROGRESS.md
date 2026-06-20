@@ -136,6 +136,21 @@ même surface** (immunisé contre cette classe de bug DWM) et était déjà acti
 
 **Files changed:** `build.rs`, `engine/output_engine/{mod,fade,render,mpv_events,types}.rs`
 
+### Fix (GL) : stop net d'un cue vidéo/image figeait la dernière frame au lieu de passer au noir (2026-06-20)
+
+**Symptôme** (Linux, et nouveau défaut Windows) : stopper un cue vidéo/image **sans fondu**
+laissait la dernière frame / l'image figée à l'écran au lieu d'un noir.
+
+**Cause** : sur le chemin GL, un stop net émet `mpv stop` → mpv passe en idle, mais la boucle
+render saute le rendu quand il n'y a pas de nouvelle frame **et** que l'overlay est transparent
+(`!has_frame && alpha == 0`) → le framebuffer garde la dernière frame.
+
+**Fix** : `stop_content` (branche hard-cut) appelle `fade::set_overlay_alpha(255)` après `mpv stop`.
+L'alpha=255 réveille la boucle render et peint un quad noir opaque par-dessus la frame figée —
+même état final qu'un stop avec fondu. Sans effet sur le chemin legacy Win32 (mpv idle rend déjà noir).
+
+**Files changed:** `engine/output_engine/mod.rs`
+
 ---
 
 ## Change history additions (0.9.1)
