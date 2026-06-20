@@ -81,11 +81,11 @@ pub(super) struct OutputVoice {
 // Fade overlay state
 // ---------------------------------------------------------------------------
 
-/// Parameters for a pending content load (stored while fading to black).
-#[allow(dead_code)]
+/// Parameters for a pending content load, passed directly to `execute_load_params`.
 pub(crate) struct FadePendingParams {
     pub path: String,
     pub is_image: bool,
+    #[allow(dead_code)]
     pub voice_id: Uuid,
     pub fade_in_ms: u32,
     pub loop_count: u32,
@@ -97,7 +97,6 @@ pub(crate) struct FadePendingParams {
 }
 
 pub(crate) enum FadePending {
-    Load(FadePendingParams),
     Stop,
 }
 
@@ -137,10 +136,10 @@ impl FadeAnimState {
 }
 
 // ---------------------------------------------------------------------------
-// Win32 window state — legacy path only
+// Win32 window state
 // ---------------------------------------------------------------------------
 
-#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
+#[cfg(output_win32)]
 pub(crate) struct OutputWndState {
     pub is_fullscreen: bool,
     pub saved_rect: (i32, i32, i32, i32),

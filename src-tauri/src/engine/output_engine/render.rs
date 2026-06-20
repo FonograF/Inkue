@@ -73,6 +73,22 @@ static GL_HEIGHT: AtomicU32 = AtomicU32::new(1080);
 // Public helpers called from OutputEngine
 // ---------------------------------------------------------------------------
 
+/// Wake the render thread immediately.
+///
+/// `tick_fade()` self-paces at 16 ms only while an animation is in progress
+/// (`current_alpha != target_alpha`).  When a Fade Cue drives the overlay alpha
+/// externally at 30 fps — setting `current == target` each step — the loop would
+/// otherwise sleep up to 100 ms between redraws.  Calling this on each alpha
+/// change keeps that fade smooth.
+pub(super) fn wake() {
+    if let Some(sig) = RENDER_SIGNAL.get() {
+        if let Ok(mut r) = sig.0.lock() {
+            *r = true;
+            sig.1.notify_one();
+        }
+    }
+}
+
 pub(super) fn show() {
     if let Some(w) = GL_WINDOW.get() { w.set_visible(true); }
 }
@@ -96,29 +112,6 @@ pub(super) fn set_outer_rect(x: i32, y: i32, width: u32, height: u32) {
     if let Some(w) = GL_WINDOW.get() {
         w.set_outer_position(LogicalPosition::new(x, y));
         let _ = w.request_inner_size(LogicalSize::new(width, height));
-    }
-}
-
-/// Move the window to the monitor at `monitor_index` without resizing.
-pub(super) fn set_monitor(index: u32) {
-    if let Some(w) = GL_WINDOW.get() {
-        let monitor = w.available_monitors().nth(index as usize);
-        if let Some(m) = monitor {
-            let pos = m.position();
-            w.set_outer_position(LogicalPosition::new(pos.x, pos.y));
-        }
-    }
-}
-
-/// Return available monitor names.
-pub(super) fn list_monitors() -> Vec<String> {
-    if let Some(w) = GL_WINDOW.get() {
-        w.available_monitors()
-            .enumerate()
-            .map(|(i, m)| m.name().unwrap_or_else(|| format!("Monitor {i}")))
-            .collect()
-    } else {
-        vec![]
     }
 }
 
@@ -323,7 +316,7 @@ impl ApplicationHandler for OutputApp {
 #[cfg(target_os = "windows")]
 fn build_event_loop() -> Result<EventLoop<()>> {
     use winit::platform::windows::EventLoopBuilderExtWindows;
-    winit::event_loop::EventLoopBuilder::new()
+    EventLoop::builder()
         .with_any_thread(true)
         .build()
         .map_err(|e| anyhow!("EventLoop (Windows): {e}"))
@@ -332,7 +325,7 @@ fn build_event_loop() -> Result<EventLoop<()>> {
 #[cfg(target_os = "linux")]
 fn build_event_loop() -> Result<EventLoop<()>> {
     use winit::platform::x11::EventLoopBuilderExtX11;
-    winit::event_loop::EventLoopBuilder::new()
+    EventLoop::builder()
         .with_any_thread(true)
         .build()
         .map_err(|e| anyhow!("EventLoop (Linux/X11): {e}"))
@@ -496,11 +489,12 @@ fn render_thread_main(
     }
 
     // ── 7. glow GL loader ─────────────────────────────────────────────────────
+    // Used only on this render thread — no Arc/sharing needed.
     let display_box = Box::new(display);
     let gl = unsafe {
-        Arc::new(glow::Context::from_loader_function_cstr(|name| {
+        glow::Context::from_loader_function_cstr(|name| {
             display_box.get_proc_address(name) as *const _
-        }))
+        })
     };
 
     // ── 8. Fade-quad shader ───────────────────────────────────────────────────

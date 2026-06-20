@@ -20,7 +20,7 @@ use crate::engine::AudioEngine;
 
 use super::types::{MpvCtx, OutputStatus, VoiceId};
 use super::{cs, OUTPUT_CURRENT_AUDIO_VOICE};
-#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
+#[cfg(output_win32)]
 use super::WM_SETUP_MPV_CHILD;
 
 pub(super) fn mpv_event_loop(
@@ -138,7 +138,7 @@ pub(super) fn mpv_event_loop(
                 // Legacy Win32 path only: notify the parent WndProc to make mpv's
                 // D3D11 child click-through.  In the unified GL path mpv has no
                 // child window (vo=libmpv renders via render context, not a HWND).
-                #[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
+                #[cfg(output_win32)]
                 unsafe {
                     use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                     PostMessageW(parent_hwnd, WM_SETUP_MPV_CHILD, 0, 0);
@@ -271,11 +271,14 @@ fn start_video_playback(
                 s.pending       = None;
             }
         }
-        #[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
+        #[cfg(output_win32)]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
             PostMessageW(_parent_hwnd, super::WM_DO_FADE, 0, 0);
         }
+        // Unified GL path: wake the render loop so it animates the fade-from-black.
+        #[cfg(output_winit)]
+        super::render::wake();
     } else {
         super::fade::set_overlay_alpha(0);
     }

@@ -1,10 +1,11 @@
-# WinCue — Project state as of 2026-06-18
+# WinCue — Project state as of 2026-06-20
 
-## Current version: 0.9.1
+## Current version: 0.9.2
 
 ## cargo build result
 
-**Compiles without errors, zero warnings.**
+**Compiles without errors, zero warnings** — default (winit/GL) **and**
+`--features legacy-win32-output`.
 
 ## cargo test result
 
@@ -103,7 +104,79 @@
 
 ---
 
+## Change history additions (0.9.2)
+
+### Windows : fenêtre de sortie basculée sur winit/GL par défaut (2026-06-20)
+
+**Pourquoi** : sur Windows la sortie utilisait encore le chemin Win32 (fenêtre `WS_POPUP` +
+mpv embarqué via `wid` en `vo=gpu`/d3d11 + overlay de fondu `WS_EX_LAYERED` séparé piloté par
+`WM_TIMER`). Ce chemin est intrinsèquement fragile — c'est lui qui produisait la saccade
+« image au noir à ~1 s » (transition DirectFlip de DWM, contournée par `d3d11-flip=no`).
+Le chemin **winit + mpv Render API** (`render.rs`) dessine le fondu comme un **quad GL dans la
+même surface** (immunisé contre cette classe de bug DWM) et était déjà actif sur Linux.
+
+**Changement** : le chemin **winit/GL devient le défaut sur Windows** ; le Win32 historique est
+**conservé derrière la feature `legacy-win32-output`** (OFF par défaut) comme repli de régression.
+
+- `build.rs` émet deux alias `cfg` : `output_winit` (Linux + Windows par défaut) et
+  `output_win32` (Windows + feature `legacy-win32-output`), avec `rustc-check-cfg` (zéro warning).
+  Rend aussi la copie de `libmpv-2.dll` résiliente au verrou (build possible pendant `tauri dev`).
+- `mod.rs` : sur le chemin `output_winit`, `vo=libmpv` + `render::init()` + gestion fenêtre via
+  `render::show/hide/set_outer_rect/toggle_fullscreen` (comme Linux). Plus de `wid`, plus de bloc
+  d3d11/`d3d11-flip`, plus d'overlay layered. Le bloc Win32 (wid + d3d11 + overlay + WM_TIMER) est
+  désormais `#[cfg(output_win32)]`.
+- `fade.rs` : `tick_fade`/`execute_pending` (anim par la boucle render) → `output_winit` ;
+  `apply_overlay_alpha`/`execute_fade_pending` → `output_win32`. `set_overlay_alpha` réveille la
+  boucle render (`render::wake()`) pour que les Fade Cue visuels (pilotés à 30 fps) restent fluides.
+- `render.rs` : ajout de `wake()` ; suppression de `set_monitor`/`list_monitors` (code mort).
+- `mpv_events.rs`, `types.rs` : gates Win32 alignées sur `output_win32`.
+
+**Vérif** : `cargo build`/`clippy` zéro warning et `cargo test` 65/65 sur le défaut **et** sur
+`--features legacy-win32-output`.
+
+**Files changed:** `build.rs`, `engine/output_engine/{mod,fade,render,mpv_events,types}.rs`
+
+---
+
 ## Change history additions (0.9.1)
+
+### Fix: fade-in visuel — saccade « image au noir » à ~1 s (DWM DirectFlip) (2026-06-20)
+
+> **Note (0.9.2)** : ce correctif `d3d11-flip=no` ne concerne plus que le repli
+> `--features legacy-win32-output`. Le chemin par défaut (winit/GL) n'a plus d'overlay
+> layered ni de swapchain d3d11 propre, donc le problème n'existe pas.
+
+**Symptôme** : un fade-in sur une cue Image (ou un Fade Cue ciblant une image) faisait
+passer l'image **toute noire un instant à ~1 s**, puis le fondu reprenait. Reproductible sur
+les deux mécanismes de fondu (fade-in d'Image Cue **et** Fade Cue visuel).
+
+**Investigation** : prouvé par tests headless directs sur libmpv (`examples/image_probe.rs`,
+supprimé depuis) que mpv **v0.41** tient parfaitement l'image — `time-pos` figé à 0, `eof=no`,
+`core-idle=no`, `vo-configured=yes` bien au-delà d'1 s, et les screenshots `window` de mpv sont
+identiques à 0,4 / 0,7 / 0,95 / 1,05 / 1,3 / 1,7 s. mpv ne blanke donc jamais l'image. Les deux
+chemins d'animation d'alpha de l'overlay sont par ailleurs strictement monotones. Une première
+piste (`image-display-duration=inf` rejeté en option per-file, mpv #14077) a été écartée : en
+0.41 le per-file `inf` est accepté.
+
+**Cause racine** : le dip-to-black est une fenêtre overlay distincte `WS_EX_LAYERED` composée par
+**DWM** par-dessus la fenêtre enfant d3d11 de mpv. mpv utilise le **flip model** d3d11 par défaut,
+auquel DWM accorde un plan matériel **DirectFlip/MPO**. Dès que l'overlay layered recouvre cet
+enfant, DWM doit **désengager DirectFlip** et repasser en présentation composée ; cette transition
+unique (~1 s après l'apparition de l'overlay) affiche **une frame noire**. Le bug n'apparaît que
+*pendant un fade* (overlay visible) — signature exacte de ce comportement.
+
+**Fix** : `opt_str(&lib, ctx, "d3d11-flip", "no")` dans les options mpv Windows → swapchain
+**blit-model**, toujours composé par DWM, donc pas de transition DirectFlip à glitcher.
+
+**Portée cross-platform** : correctif et bug sont **Windows-only par nature**. `d3d11-flip` est une
+option Direct3D 11 (gardée sous `#[cfg(target_os = "windows")]`) et le défaut vient de composer une
+fenêtre overlay *séparée* par-dessus un swapchain flip-model d3d11 via DWM. Les autres OS n'ont pas
+cette combinaison : **Linux** utilise le chemin GL unifié (le fondu est un quad GL dans le *même*
+framebuffer mpv — pas de seconde fenêtre, immunisé par construction) ; **macOS** n'utilise ni d3d11
+ni DWM (CGL/Metal) et adoptera le même quad GL quand le Stage 2 de `render.rs` sera câblé. Aucun
+portage nécessaire.
+
+**Files changed:** `engine/output_engine/mod.rs`
 
 ### GL output window — fixes de démarrage et gestion fenêtre (2026-06-18)
 

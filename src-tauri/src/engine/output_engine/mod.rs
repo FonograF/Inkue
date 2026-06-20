@@ -10,16 +10,17 @@
 
 mod fade;
 mod mpv_events;
+#[cfg(output_winit)]
 mod render;
 mod types;
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 mod win32_window;
 
 pub use types::{OutputStatus, OutputSurface, ScreenInfo, SurfaceId, VoiceId};
 use types::{
     FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice, PendingVideoStart,
 };
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 use types::OutputWndState;
 
 use std::collections::HashMap;
@@ -37,7 +38,7 @@ use crate::cue::types::{db_to_linear, FadeSpec};
 use crate::engine::AudioEngine;
 
 use super::mpv_sys::MpvLib;
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 use super::mpv_sys::MPV_FORMAT_INT64;
 #[cfg(target_os = "macos")]
 use super::mpv_sys::MPV_FORMAT_FLAG;
@@ -70,13 +71,13 @@ pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
 // ---------------------------------------------------------------------------
 
 /// Fullscreen / saved-rect state for the Win32 output window.
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) static OUTPUT_WND_STATE: OnceLock<Mutex<OutputWndState>> = OnceLock::new();
 /// HWND of the Win32 parent output window.
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) static OUTPUT_PARENT_HWND: OnceLock<isize> = OnceLock::new();
 /// HWND of the Win32 layered fade-overlay popup window.
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) static FADE_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
@@ -84,12 +85,12 @@ pub(super) static FADE_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
 // ---------------------------------------------------------------------------
 
 /// `WM_APP + 1`: posted by the mpv event thread after `MPV_EVENT_FILE_LOADED`.
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) const WM_SETUP_MPV_CHILD: u32 = 0x8001;
 /// `WM_APP + 2`: posted by show_content/stop_content to start the fade timer.
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) const WM_DO_FADE: u32 = 0x8002;
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) const FADE_TIMER_ID: usize = 1;
 
 // ---------------------------------------------------------------------------
@@ -126,11 +127,12 @@ impl OutputEngine {
     pub fn new(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Result<Self> {
         let lib = Arc::new(MpvLib::load()?);
 
-        // Windows: create a Win32 parent window and embed mpv into it via wid.
-        // macOS / Linux: mpv creates and manages its own native window.
-        #[cfg(target_os = "windows")]
+        // Legacy Win32 path: create a Win32 parent window and embed mpv into it via wid.
+        // winit path (Linux + Windows default) / macOS: the winit or mpv-native window
+        // owns presentation, so `hwnd` is unused (0).
+        #[cfg(output_win32)]
         let hwnd = win32_window::create_output_window()?;
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(output_win32))]
         let hwnd: isize = 0;
 
         // mpv requires LC_NUMERIC=C; set it before mpv_create() on non-Windows.
@@ -145,8 +147,8 @@ impl OutputEngine {
         }
 
         unsafe {
-            // Embed mpv into the Win32 parent window (Windows only).
-            #[cfg(target_os = "windows")]
+            // Legacy Win32 path only: embed mpv into the Win32 parent window via wid.
+            #[cfg(output_win32)]
             {
                 let wid_name = cs("wid");
                 let mut wid_val: i64 = hwnd as i64;
@@ -158,13 +160,17 @@ impl OutputEngine {
                 );
             }
 
-            // Windows: D3D11 backend with non-blocking Present (needed for desync).
-            // macOS / Linux: gpu with x11/xv/sdl fallback for VMs / headless builds.
-            #[cfg(target_os = "windows")]
+            // Legacy Win32 path: D3D11 backend with non-blocking Present (needed for
+            // desync), embedded in our own HWND. `d3d11-flip=no` avoids the DWM
+            // DirectFlip→composed transition that flashes black when the layered fade
+            // overlay covers the swapchain. The unified GL path below has no such
+            // overlay (the fade is a GL quad in the same surface), so it is not needed.
+            #[cfg(output_win32)]
             {
                 opt_str(&lib, ctx, "vo", "gpu");
                 opt_str(&lib, ctx, "gpu-api", "d3d11");
                 opt_str(&lib, ctx, "d3d11-sync-interval", "0");
+                opt_str(&lib, ctx, "d3d11-flip", "no");
                 opt_str(&lib, ctx, "force-window", "immediate");
             }
             // force-window starts at "no" — with idle=yes and no file loaded, this
@@ -177,9 +183,9 @@ impl OutputEngine {
                 opt_str(&lib, ctx, "force-window", "no");
                 opt_str(&lib, ctx, "border", "no");
             }
-            // Linux: render API path (render.rs) — mpv renders into our own winit
-            // window via mpv_render_context_render() instead of creating its own.
-            #[cfg(target_os = "linux")]
+            // Unified GL path (render.rs): mpv renders into our own winit window via
+            // mpv_render_context_render() instead of creating its own window.
+            #[cfg(output_winit)]
             opt_str(&lib, ctx, "vo", "libmpv");
 
             opt_str(&lib, ctx, "hwdec", "auto");
@@ -270,9 +276,10 @@ impl OutputEngine {
         FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
         FLOAT_TIMER_FONT.get_or_init(|| Mutex::new("Arial".to_owned()));
 
-        // Linux: create the winit/GL output window and block until mpv's render
-        // context is live, so no `loadfile` can race ahead of it.
-        #[cfg(target_os = "linux")]
+        // Unified GL path (Linux + Windows default): create the winit/GL output
+        // window and block until mpv's render context is live, so no `loadfile` can
+        // race ahead of it.
+        #[cfg(output_winit)]
         render::init(&app_handle, Arc::clone(&lib), Arc::clone(&mpv_ctx))?;
 
         {
@@ -485,7 +492,7 @@ impl OutputEngine {
         file_path: &Path,
         is_image: bool,
         fade_in_ms: u32,
-        this_fade_out_ms: u32,
+        _this_fade_out_ms: u32,
         loop_count: u32,
         start_ms: Option<u64>,
         end_ms: Option<u64>,
@@ -495,30 +502,22 @@ impl OutputEngine {
     ) -> Result<VoiceId> {
         let voice_id = Uuid::new_v4();
 
+        // Replace the old voice.
         if let Some(old_id) = self.current_voice.lock().unwrap().take() {
             self.voices.lock().unwrap().remove(&old_id);
             let _ = self.status_tx.send(OutputStatus::Completed { voice_id: old_id });
         }
-
         *self.current_voice.lock().unwrap() = Some(voice_id);
         self.voices.lock().unwrap().insert(
             voice_id,
             OutputVoice { id: voice_id, started_at: Instant::now(), duration: None },
         );
-
         if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
             *cv.lock().unwrap() = Some(voice_id);
         }
 
-        let current_fade_out_ms = OUTPUT_CURRENT_FADE_OUT_MS
-            .get()
-            .map(|m| *m.lock().unwrap())
-            .unwrap_or(0);
-
-        if let Some(m) = OUTPUT_CURRENT_FADE_OUT_MS.get() {
-            *m.lock().unwrap() = this_fade_out_ms;
-        }
-
+        // Stop the previous video's audio track (hard cut — the visual fade-out
+        // of the previous cue is handled by its own stop_content() call).
         if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
             let previous = {
                 let mut g = av.lock().unwrap();
@@ -527,7 +526,7 @@ impl OutputEngine {
             if let Some(prev_id) = previous {
                 let _ = self.audio_engine.stop_voice(
                     prev_id,
-                    current_fade_out_ms,
+                    0,
                     crate::engine::ring_command::FadeCurve::SCurve,
                 );
             }
@@ -540,7 +539,6 @@ impl OutputEngine {
         }
 
         let path_str = file_path.to_string_lossy().replace('\\', "/");
-
         self.position_window(screen_index);
 
         let params = FadePendingParams {
@@ -554,64 +552,53 @@ impl OutputEngine {
             display_duration_ms,
         };
 
-        if current_fade_out_ms > 0 {
-            if let Some(fs) = FADE_STATE.get() {
-                let mut state = fs.lock().unwrap();
-                state.start_alpha = state.current_alpha;
-                state.target_alpha = 255;
-                state.duration_ms = current_fade_out_ms;
-                state.start_time = Instant::now();
-                state.timer_active = false;
-                state.pending = Some(FadePending::Load(params));
+        // Abort any overlay animation that may be running (e.g. a stop-fade
+        // that was started by a preceding stop_content call).  Clear timer_active
+        // so the Win32 timer tick detects the abort and kills itself.
+        if let Some(fs) = FADE_STATE.get() {
+            if let Ok(mut s) = fs.lock() {
+                s.pending      = None;
+                s.duration_ms  = 0;
+                s.timer_active = false;
+                s.target_alpha = s.current_alpha;
+                s.start_alpha  = s.current_alpha;
             }
-            #[cfg(target_os = "windows")]
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-            }
-            // Non-Windows: the cross-platform fade thread detects target_alpha != current_alpha.
-        } else {
-            // Abort any in-progress stop fade.
-            if let Some(fs) = FADE_STATE.get() {
-                if let Ok(mut state) = fs.lock() {
-                    if matches!(state.pending, Some(FadePending::Stop)) {
-                        state.pending = None;
-                        state.target_alpha = 0;
-                        state.current_alpha = 0;
-                        state.start_alpha = 0;
-                        state.duration_ms = 0;
-                    }
-                }
-            }
-            if is_image {
-                if fade_in_ms > 0 {
-                    fade::set_overlay_alpha(255);
-                }
-                fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
-                if fade_in_ms > 0 {
-                    if let Some(fs) = FADE_STATE.get() {
-                        let mut state = fs.lock().unwrap();
-                        state.start_alpha = 255;
-                        state.current_alpha = 255;
-                        state.target_alpha = 0;
-                        state.duration_ms = fade_in_ms;
-                        state.start_time = Instant::now();
-                        state.timer_active = false;
-                        state.pending = None;
-                    }
-                    #[cfg(target_os = "windows")]
-                    unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                        PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-                    }
-                    // Non-Windows: fade thread picks up the state change.
-                } else {
-                    fade::set_overlay_alpha(0);
-                }
-            } else {
+        }
+
+        if is_image {
+            if fade_in_ms > 0 {
+                // Black overlay (alpha=255) hides whatever was on screen while the
+                // image loads.  The fade then reveals it (255 → 0).
                 fade::set_overlay_alpha(255);
-                fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
             }
+            fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
+            if fade_in_ms > 0 {
+                if let Some(fs) = FADE_STATE.get() {
+                    let mut s = fs.lock().unwrap();
+                    s.start_alpha  = 255;
+                    s.current_alpha = 255;
+                    s.target_alpha = 0;
+                    s.duration_ms  = fade_in_ms;
+                    s.start_time   = Instant::now();
+                    s.timer_active = false;
+                    s.pending      = None;
+                }
+                #[cfg(output_win32)]
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+                    PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
+                }
+                // GL path: wake the render loop so it animates the new FADE_STATE.
+                #[cfg(output_winit)]
+                render::wake();
+            } else {
+                fade::set_overlay_alpha(0);
+            }
+        } else {
+            // Video: hold black overlay while the first frame is decoded.
+            // PLAYBACK_RESTART in mpv_events reveals + unpauses once frame 0 is ready.
+            fade::set_overlay_alpha(255);
+            fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
         }
 
         Ok(voice_id)
@@ -651,12 +638,14 @@ impl OutputEngine {
                 state.timer_active = false;
                 state.pending = Some(FadePending::Stop);
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(output_win32)]
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
                 PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
             }
-            // Non-Windows: fade thread picks up the state change.
+            // GL path: wake the render loop so it animates the stop fade.
+            #[cfg(output_winit)]
+            render::wake();
         } else {
             unsafe {
                 let stop = cs("stop");
@@ -705,7 +694,7 @@ impl OutputEngine {
 
     /// Directly set the overlay alpha — called from FadeCue.tick() at ~30 fps.
     pub fn set_overlay_alpha_direct(&self, alpha: u8) {
-        #[cfg(target_os = "windows")]
+        #[cfg(output_win32)]
         if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
             if alpha > 0 {
                 unsafe {
@@ -825,7 +814,7 @@ impl OutputEngine {
     /// Make the output window visible.
     pub fn show_output(&self) {
         self.visible.store(true, Ordering::Relaxed);
-        #[cfg(target_os = "windows")]
+        #[cfg(output_win32)]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 SetWindowPos, HWND_TOPMOST,
@@ -837,9 +826,9 @@ impl OutputEngine {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
-        // Linux: render.rs owns its own winit window directly — no native mpv
-        // window to dispatch through, so this can run inline on the calling thread.
-        #[cfg(target_os = "linux")]
+        // Unified GL path: render.rs owns its own winit window directly — no native
+        // mpv window to dispatch through, so this can run inline on the calling thread.
+        #[cfg(output_winit)]
         render::show();
         // cocoa-cb's "vo" thread creates the NSWindow via dispatch_sync onto the
         // main queue, which only completes if the main thread's run loop is free to
@@ -849,12 +838,14 @@ impl OutputEngine {
         // needs. Spawning a plain background thread keeps the main run loop free.
         #[cfg(target_os = "macos")]
         std::thread::spawn(|| set_mpv_window_visible(true));
+        use tauri::Emitter;
+        let _ = self.app_handle.emit("output-window-visible", true);
     }
 
     /// Hide the output window.
     pub fn hide_output(&self) {
         self.visible.store(false, Ordering::Relaxed);
-        #[cfg(target_os = "windows")]
+        #[cfg(output_win32)]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
             ShowWindow(self.hwnd, SW_HIDE);
@@ -862,13 +853,16 @@ impl OutputEngine {
                 ShowWindow(overlay, SW_HIDE);
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(output_winit)]
         render::hide();
+
         #[cfg(target_os = "macos")]
         {
             // See show_output() for why this must run off the main thread.
             std::thread::spawn(|| set_mpv_window_visible(false));
         }
+        use tauri::Emitter;
+        let _ = self.app_handle.emit("output-window-visible", false);
     }
 
     /// Return whether the output window is currently visible.
@@ -969,13 +963,13 @@ impl OutputEngine {
 
     /// Toggle the output window between windowed and true fullscreen.
     pub fn toggle_fullscreen(&self) {
-        #[cfg(target_os = "windows")]
+        #[cfg(output_win32)]
         if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
             if let Ok(mut state) = state_mutex.lock() {
                 win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(output_winit)]
         render::toggle_fullscreen();
         #[cfg(target_os = "macos")]
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
@@ -1017,7 +1011,7 @@ impl OutputEngine {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn position_window(&self, screen_index: Option<u32>) {
-        #[cfg(target_os = "windows")]
+        #[cfg(output_win32)]
         unsafe {
             use windows_sys::Win32::Foundation::RECT;
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1077,7 +1071,7 @@ impl OutputEngine {
             SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(output_winit)]
         {
             self.visible.store(true, Ordering::Relaxed);
             if let Some(idx) = screen_index {
@@ -1107,6 +1101,8 @@ impl OutputEngine {
                 set_mpv_window_visible(true);
             });
         }
+        use tauri::Emitter;
+        let _ = self.app_handle.emit("output-window-visible", true);
     }
 }
 
@@ -1149,7 +1145,7 @@ pub(super) fn cs(s: &str) -> CString {
     CString::new(s).expect("cs(): interior NUL byte in literal")
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }

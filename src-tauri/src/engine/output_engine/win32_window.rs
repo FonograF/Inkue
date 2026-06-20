@@ -8,7 +8,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::fade::{execute_fade_pending, set_overlay_alpha};
+use super::fade::{apply_overlay_alpha, execute_fade_pending, set_overlay_alpha};
 use super::types::OutputWndState;
 use super::{
     wide, FADE_OVERLAY_HWND, FADE_STATE, FADE_TIMER_ID,
@@ -327,31 +327,44 @@ unsafe extern "system" fn output_wnd_proc(
         WM_TIMER => {
             if wparam == FADE_TIMER_ID {
                 if let Some(fs) = FADE_STATE.get() {
-                    let (new_alpha, done) = {
+                    let result = {
                         let mut state = fs.lock().unwrap();
-                        let elapsed = state.start_time.elapsed().as_millis() as u32;
-                        let progress = if state.duration_ms == 0 {
-                            1.0_f32
+                        // If timer_active was cleared by show_content aborting a
+                        // stop-fade, this tick is stale — kill the timer and bail.
+                        if !state.timer_active {
+                            None
                         } else {
-                            (elapsed as f32 / state.duration_ms as f32).min(1.0)
-                        };
-                        let delta =
-                            (state.target_alpha as i16 - state.start_alpha as i16) as f32;
-                        let new_alpha = (state.start_alpha as f32 + delta * progress) as u8;
-                        state.current_alpha = new_alpha;
-                        let done = progress >= 1.0 || elapsed >= state.duration_ms;
-                        if done {
-                            state.current_alpha = state.target_alpha;
-                            state.timer_active = false;
+                            let elapsed = state.start_time.elapsed().as_millis() as u32;
+                            let progress = if state.duration_ms == 0 {
+                                1.0_f32
+                            } else {
+                                (elapsed as f32 / state.duration_ms as f32).min(1.0)
+                            };
+                            let delta =
+                                (state.target_alpha as i16 - state.start_alpha as i16) as f32;
+                            let new_alpha =
+                                (state.start_alpha as f32 + delta * progress) as u8;
+                            state.current_alpha = new_alpha;
+                            let done = progress >= 1.0 || elapsed >= state.duration_ms;
+                            if done {
+                                state.current_alpha = state.target_alpha;
+                                state.timer_active = false;
+                            }
+                            Some((state.current_alpha, done))
                         }
-                        (state.current_alpha, done)
                     };
 
-                    set_overlay_alpha(new_alpha);
-
-                    if done {
-                        KillTimer(hwnd, FADE_TIMER_ID);
-                        execute_fade_pending(hwnd);
+                    match result {
+                        None => { KillTimer(hwnd, FADE_TIMER_ID); }
+                        Some((new_alpha, done)) => {
+                            // Use apply_overlay_alpha here — set_overlay_alpha would
+                            // reset duration_ms/target_alpha and kill the animation.
+                            apply_overlay_alpha(new_alpha);
+                            if done {
+                                KillTimer(hwnd, FADE_TIMER_ID);
+                                execute_fade_pending(hwnd);
+                            }
+                        }
                     }
                 }
             }

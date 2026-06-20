@@ -10,16 +10,14 @@
 //!   `apply_overlay_alpha` drives `SetLayeredWindowAttributes`; a Win32 timer
 //!   in `output_wnd_proc` advances the animation via `execute_fade_pending`.
 
-use std::time::Instant;
-
 use super::{cs, FADE_STATE, OUTPUT_CURRENT_VOICE, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB};
 use super::types::{FadePending, FadePendingParams, PendingVideoStart};
 use std::ffi::c_void;
 use crate::engine::mpv_sys::MpvLib;
 
-// Legacy Win32 imports.
-#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
-use super::{FADE_OVERLAY_HWND, FADE_TIMER_ID};
+// Win32 fade overlay imports.
+#[cfg(output_win32)]
+use super::FADE_OVERLAY_HWND;
 
 // ---------------------------------------------------------------------------
 // Unified: alpha state
@@ -42,9 +40,14 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
         }
     }
 
-    // Legacy Win32: also push to the layered overlay window immediately.
-    #[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
+    // Win32: also push to the layered overlay window immediately.
+    #[cfg(output_win32)]
     apply_overlay_alpha(alpha);
+
+    // GL path: the render loop self-paces at 16 ms only while animating; wake it so
+    // externally-driven alpha changes (Fade Cue at 30 fps) redraw the quad at once.
+    #[cfg(output_winit)]
+    super::render::wake();
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,7 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
 /// Returns `(current_alpha, did_complete)`.  `did_complete` is `true` exactly
 /// once — on the frame where `current_alpha` first reaches `target_alpha`.
 /// The caller should invoke `execute_pending()` when `did_complete` is `true`.
+#[cfg(output_winit)]
 pub(super) fn tick_fade() -> (u8, bool) {
     let Some(fs) = FADE_STATE.get() else {
         return (0, false);
@@ -91,37 +95,13 @@ pub(super) fn tick_fade() -> (u8, bool) {
 ///
 /// Called by the render thread immediately after `tick_fade()` returns
 /// `did_complete = true`.
+#[cfg(output_winit)]
 pub(super) fn execute_pending() {
     let pending = FADE_STATE
         .get()
         .and_then(|fs| fs.lock().ok().and_then(|mut s| s.pending.take()));
 
     match pending {
-        Some(FadePending::Load(params)) => {
-            if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-                execute_load_params(&params, lib, ctx.0);
-            }
-            if params.is_image {
-                // Images are not gated on PLAYBACK_RESTART — reveal immediately.
-                if params.fade_in_ms > 0 {
-                    if let Some(fs) = FADE_STATE.get() {
-                        if let Ok(mut s) = fs.lock() {
-                            s.start_alpha   = 255;
-                            s.current_alpha = 255;
-                            s.target_alpha  = 0;
-                            s.duration_ms   = params.fade_in_ms;
-                            s.start_time    = Instant::now();
-                            s.pending       = None;
-                        }
-                    }
-                    // Render thread picks up the new FADE_STATE on the next frame.
-                } else {
-                    set_overlay_alpha(0);
-                }
-            }
-            // Video: overlay stays at alpha=255 (black).  PLAYBACK_RESTART in
-            // mpv_events sets target_alpha=0 once frame 0 is decoded and warm.
-        }
         Some(FadePending::Stop) => {
             // Guard: new content may have been loaded while the stop fade ran.
             // In that case, don't issue a `stop` command — just clear the overlay.
@@ -157,7 +137,7 @@ pub(super) fn execute_pending() {
 /// Apply `alpha` directly to the Win32 layered fade overlay window.
 ///
 /// Does NOT update `FADE_STATE.current_alpha`; use `set_overlay_alpha` for that.
-#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
+#[cfg(output_win32)]
 pub(super) fn apply_overlay_alpha(alpha: u8) {
     if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
         unsafe {
@@ -169,38 +149,13 @@ pub(super) fn apply_overlay_alpha(alpha: u8) {
 }
 
 /// Execute the pending fade action — called from the Win32 `WM_TIMER` handler.
-#[cfg(all(feature = "legacy-win32-output", target_os = "windows"))]
-pub(super) fn execute_fade_pending(hwnd: isize) {
+#[cfg(output_win32)]
+pub(super) fn execute_fade_pending(_hwnd: isize) {
     let pending = FADE_STATE
         .get()
         .and_then(|fs| fs.lock().ok().and_then(|mut s| s.pending.take()));
 
     match pending {
-        Some(FadePending::Load(params)) => {
-            if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-                execute_load_params(&params, lib, ctx.0);
-            }
-            if params.is_image {
-                if params.fade_in_ms > 0 {
-                    if let Some(fs) = FADE_STATE.get() {
-                        let mut state = fs.lock().unwrap();
-                        state.start_alpha   = 255;
-                        state.current_alpha = 255;
-                        state.target_alpha  = 0;
-                        state.duration_ms   = params.fade_in_ms;
-                        state.start_time    = Instant::now();
-                        state.timer_active  = true;
-                        state.pending       = None;
-                    }
-                    unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::SetTimer;
-                        SetTimer(hwnd, FADE_TIMER_ID, 16, None);
-                    }
-                } else {
-                    set_overlay_alpha(0);
-                }
-            }
-        }
         Some(FadePending::Stop) => {
             let has_new_content = OUTPUT_CURRENT_VOICE
                 .get()
@@ -255,13 +210,27 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let file_opts = cs(&opts_str);
             let cmd       = cs("loadfile");
             let flags     = cs("replace");
-            // mpv 0.37 (Ubuntu 24.04 system lib) does not accept a positional
-            // playlist-index argument here — it misparses the options string.
-            let args: [*const std::ffi::c_char; 5] = [
-                cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                file_opts.as_ptr(), std::ptr::null(),
-            ];
-            let ret = (lib.mpv_command)(ctx, args.as_ptr());
+            // Windows mpv (≥ 0.38): loadfile url flags index options
+            // Linux mpv 0.37: loadfile url flags options (no index accepted)
+            #[cfg(target_os = "windows")]
+            let idx = cs("0");
+            let ret;
+            #[cfg(target_os = "windows")]
+            {
+                let args: [*const std::ffi::c_char; 6] = [
+                    cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
+                    idx.as_ptr(), file_opts.as_ptr(), std::ptr::null(),
+                ];
+                ret = (lib.mpv_command)(ctx, args.as_ptr());
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let args: [*const std::ffi::c_char; 5] = [
+                    cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
+                    file_opts.as_ptr(), std::ptr::null(),
+                ];
+                ret = (lib.mpv_command)(ctx, args.as_ptr());
+            }
             if ret < 0 { log::warn!("[output] mpv loadfile (image) failed: {ret}"); }
         } else {
             let mut opts: Vec<String> = vec!["audio=no".to_string()];
@@ -284,10 +253,6 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let opts_cstr    = cs(&opts_str);
             let cmd_cstr     = cs("loadfile");
             let replace_cstr = cs("replace");
-            let args: [*const std::ffi::c_char; 5] = [
-                cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-                opts_cstr.as_ptr(), std::ptr::null(),
-            ];
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto-copy").as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());
 
@@ -299,7 +264,27 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
                 }
             }
 
-            let ret = (lib.mpv_command)(ctx, args.as_ptr());
+            // Windows mpv (≥ 0.38): loadfile url flags index options
+            // Linux mpv 0.37: loadfile url flags options (no index accepted)
+            #[cfg(target_os = "windows")]
+            let index_cstr = cs("0");
+            let ret;
+            #[cfg(target_os = "windows")]
+            {
+                let args: [*const std::ffi::c_char; 6] = [
+                    cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
+                    index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
+                ];
+                ret = (lib.mpv_command)(ctx, args.as_ptr());
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let args: [*const std::ffi::c_char; 5] = [
+                    cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
+                    opts_cstr.as_ptr(), std::ptr::null(),
+                ];
+                ret = (lib.mpv_command)(ctx, args.as_ptr());
+            }
             if ret < 0 { log::warn!("[output] mpv loadfile (video) failed: {ret}"); }
             log::info!("[output] loadfile (paused) sent: {} opts=[{opts_str}]", params.path);
         }
