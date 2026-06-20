@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
 import { CueListTabs } from "./components/CueList/CueListTabs";
@@ -463,6 +464,12 @@ export default function App() {
     loadGeneralPrefs();
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);
+
+    let unlistenVisible: (() => void) | undefined;
+    listen<boolean>("output-window-visible", (e) => {
+      setOutputSurfaceVisible(e.payload);
+    }).then((u) => { unlistenVisible = u; }).catch(console.error);
+    return () => { unlistenVisible?.(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // -------------------------------------------------------------------------
@@ -575,7 +582,7 @@ export default function App() {
 
   const handleToggleSurface = async () => {
     await toggleOutputWindow().catch(console.error);
-    setOutputSurfaceVisible((v) => !v);
+    // outputSurfaceVisible is driven by the "output-window-visible" event from Rust
   };
 
   const handleAddAudio = async () => {

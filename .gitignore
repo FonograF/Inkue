@@ -15,6 +15,13 @@ src-tauri/WixTools/
 # Workspace files (user data, not source)
 *.wincue
 
+# Loose user data at repo root (Open Stage Control sessions, runtime config) —
+# personal test artifacts, never source.
+/Wincue.config
+/Export control.json
+/wincue interface mobile.json
+/wincue-monitor.json
+
 # IDE & OS
 .vscode/
 .vs/
@@ -36,5 +43,7 @@ npm-debug.log*
 .env
 .env.local
 
-# Vendor binaries — large binaries not tracked in git (copy manually or via LFS)
+# Vendor binaries — large binaries not tracked in git (copy manually or via LFS).
+# libmpv-2.dll (~113 MB) lives in vendor/mpv/ and is intentionally not versioned.
 src-tauri/vendor/
+vendor/mpv/

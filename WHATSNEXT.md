@@ -1,6 +1,6 @@
 # WinCue — Roadmap
 
-Mise à jour : 2026-06-13 (v0.7.1)
+Mise à jour : 2026-06-20 (v0.9.2)
 
 ## Ce qui est fait
 
@@ -15,6 +15,12 @@ Mise à jour : 2026-06-13 (v0.7.1)
 | Multiple Cue Lists (tabs, add/rename/delete, playhead indépendant par liste) | 0.7.0 |
 | Cue Warnings (badge ⚠ jaune — no file assigned, durée zéro, groupe vide) | 0.7.1 |
 | Image Display Duration (durée d'affichage optionnelle, auto-complete via mpv) | 0.7.1 |
+| Cue List Notes column + bouton Stop par cue | 0.8.0 |
+| Fade/Stop Cue multi-target UUID + fade visuel (Video/Image) | 0.8.0 |
+| Audio/Video loop fini + infini (∞) | 0.8.0 |
+| Output Mac/Linux + floating timer en WebView Tauri | 0.8.1 |
+| Chemin de sortie unifié GL Render API (winit + mpv), legacy Win32 derrière un flag | 0.9.0–0.9.2 |
+| Bouton Pause/Resume dans la transport bar | 0.9.2 |
 
 ---
 
@@ -103,6 +109,6 @@ Mise à jour : 2026-06-13 (v0.7.1)
 
 ## Note sur la compatibilité macOS
 
-La surface de portage macOS est **fixée et connue** — aucune des features ci-dessus n'agrandit le périmètre de portage (voir `ARCHITECTURE.md` pour le détail). Le seul blocage reste `engine/output_engine/` (Win32 → NSView). Toutes les features peuvent être développées sans compromis sur macOS.
+La surface de portage macOS/Linux est **fixée et connue** — aucune des features ci-dessus n'agrandit le périmètre de portage (voir `PORTAGE.md` pour le détail). Depuis 0.9.0 le rendu passe par le chemin GL unifié (`vo=libmpv` + Render API) ; il ne reste que la **création de la fenêtre native** (Stage 2 : NSWindow/CGL sur macOS, GDK/EGL sur Linux). Toutes les features peuvent être développées sans compromis cross-platform.
 
 Seule exception à surveiller : **Input Patches** — si on utilise des API WASAPI spécifiques plutôt que `cpal` générique. Rester sur `cpal` les garde cross-platform.

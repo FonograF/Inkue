@@ -42,7 +42,7 @@ Il n'y a qu'une impl : `render.rs` avec de petits helpers `#[cfg]` pour la créa
 - [x] **mpv_sys.rs** : +6 symboles Render API (`mpv_render_context_create/render/free/…`)
 - [x] **render.rs** (nouveau) : fenêtre Win32 GL + glutin WGL + mpv RenderContext + boucle rendu + fade quad GL
 - [x] **fade.rs** : simplifié — `tick_fade()` + `execute_pending()` driven par le thread render ; legacy derrière feature flag
-- [x] **mod.rs** : `vo=libmpv` uniforme ; `render::init()` dans `OutputEngine::new()` ; show/hide/position via `render::GL_HWND` (Win32 direct)
+- [x] **mod.rs** : `vo=libmpv` uniforme ; `render::init()` dans `OutputEngine::new()` ; show/hide/position via `render::GL_WINDOW` (API winit cross-platform ; était `GL_HWND` Win32 en Stage 1, migré vers winit en 0.9.2)
 - [x] **Cargo.toml** : `glutin 0.32`, `glow 0.13`, `raw-window-handle 0.6`, feature `legacy-win32-output`
 - [ ] **macOS fenêtre GL** : NSWindow via objc2 + `app_handle.run_on_main_thread()` → CGL display
 - [ ] **Linux fenêtre GL** : GDK/GTK via `app_handle.run_on_main_thread()` → EGL display
@@ -57,32 +57,19 @@ Il n'y a qu'une impl : `render.rs` avec de petits helpers `#[cfg]` pour la créa
 
 ## Détails par composant
 
-### Fenêtre output — Win32 (actuel)
+### Fenêtre output — winit (actuel)
 
-`create_native_window()` dans `render.rs` :
-- Thread dédié `wincue-output-gl-win32`
-- `CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOPMOST, WS_POPUP, ...)` masquée au démarrage
-- HWND stocké dans `render::GL_HWND: OnceLock<isize>`
-- Show/hide/position : `SetWindowPos` / `ShowWindow` depuis n'importe quel thread
-- Proc minimaliste : `WM_CLOSE → SW_HIDE`, `WM_DESTROY → PostQuitMessage`
-
-### Fenêtre output — macOS (TODO)
-
-```rust
-// app_handle.run_on_main_thread() sur le thread principal Tauri :
-// 1. Créer NSWindow borderless + NSView via objc2
-// 2. Envoyer le nsView ptr via channel → render thread
-// 3. Créer CGL context sur ce NSView
-```
-
-### Fenêtre output — Linux (TODO)
-
-```rust
-// app_handle.run_on_main_thread() :
-// 1. Créer GdkWindow via GTK
-// 2. Récupérer X11 XID ou Wayland surface
-// 3. Créer EGL display + context
-```
+Depuis 0.9.2, `render.rs` crée la fenêtre via **`winit 0.30`** (un seul chemin
+cross-platform) au lieu d'appels Win32 bruts :
+- Thread `wincue-output-window` : `winit::event_loop::EventLoop` + gestion des events
+  (drag, resize, double-clic fullscreen). Thread `wincue-output-render` : contexte GL
+  glutin + `mpv_render_context`.
+- Fenêtre stockée dans `render::GL_WINDOW: OnceLock<Arc<winit::window::Window>>` —
+  `OutputEngine` (show/hide/position/fullscreen) appelle l'API winit cross-platform
+  depuis n'importe quel thread.
+- **Windows / Linux** : la fenêtre winit est créée depuis le thread de fond.
+- **macOS** : nécessite le thread principal AppKit → création via
+  `AppHandle::run_on_main_thread()` puis transfert au render thread *(Stage 2 — TODO)*.
 
 ### Render API mpv (mpv/render.h)
 

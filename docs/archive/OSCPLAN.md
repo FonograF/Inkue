@@ -1,3 +1,7 @@
+> **Archived (2026-06-20).** Historical design/implementation plan — OSC shipped in
+> v0.6.0. Kept for reference only; the live behaviour is documented in `README.md`,
+> `ARCHITECTURE.md`, and `PROGRESS.md`.
+
 # OSC Implementation Plan — WinCue
 
 ## Design decisions (from design session)

@@ -145,10 +145,10 @@ impl CueList {
             id: &CueId,
             slot: &mut Option<Box<dyn crate::cue::traits::Cue>>,
         ) -> bool {
-            for i in 0..cues.len() {
-                if cues[i].id() == *id {
+            for cue in cues.iter_mut() {
+                if cue.id() == *id {
                     if let Some(c) = slot.take() {
-                        cues[i] = c;
+                        *cue = c;
                     }
                     return true;
                 }

@@ -126,6 +126,7 @@ fn collect_time_snapshots(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(Cue
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick(
     handle: &tauri::AppHandle,
     audio_engine: &Arc<AudioEngine>,
