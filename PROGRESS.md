@@ -106,6 +106,36 @@
 
 ## Change history additions (0.9.2)
 
+### UI : bouton Pause/Resume bleu clair dans la barre de transport (2026-06-20)
+
+La pause n'était accessible que via OSC. Un bouton **PAUSE** (bleu clair `#38bdf8`) est ajouté à
+côté de GO/STOP dans `TransportBar.tsx`. Comportement toggle, même sémantique que l'OSC
+`/wincue/pause_toggle` (logique réutilisée) : s'il y a des cues **en lecture** → met tout en pause
+(« ⏸ PAUSE ») ; sinon des cues **en pause** → reprend tout (« ▶ RESUME ») ; **désactivé** quand rien
+ne joue.
+
+**Files changed:** `src/components/Transport/TransportBar.tsx`
+
+### Fix : timer flottant — drag impossible + compteur figé (capability Tauri v2 manquante) (2026-06-20)
+
+**Symptôme** : la fenêtre de timer flottante ne pouvait pas être déplacée, et le compteur restait
+bloqué sur « --:--.--- » même pendant la lecture.
+
+**Cause** : la fenêtre `float-timer` n'était couverte par **aucune capability** Tauri v2 → **zéro
+permission**. `data-tauri-drag-region` (→ `startDragging`) et `listen("float-timer-text")` étaient
+**silencieusement refusés** — d'où l'absence de drag *et* de mise à jour du texte (un seul manque
+expliquait les deux).
+
+**Fix** : nouveau `capabilities/float-timer.json` (patron de `image-surface.json`) accordant
+`core:default` (réactive `event:listen`) + `core:window:allow-start-dragging` (réactive le drag).
+Nécessite un rebuild (capabilities compilées au build-time, pas de HMR).
+
+> **Non résolu** : un **crash sur Linux** à l'affichage du timer (mode flottant ET OSD) est un bug
+> *distinct*, en cours d'investigation (piste : `set_floating_timer_visible` faisant un
+> `show()/hide()` GTK hors thread principal). En attente du log de crash réel.
+
+**Files changed:** `src-tauri/capabilities/float-timer.json` (new)
+
 ### Windows : fenêtre de sortie basculée sur winit/GL par défaut (2026-06-20)
 
 **Pourquoi** : sur Windows la sortie utilisait encore le chemin Win32 (fenêtre `WS_POPUP` +
