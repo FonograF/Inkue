@@ -1,7 +1,7 @@
 // Bottom transport bar: GO / STOP + running cue info + horizontal VU-meter + volume slider.
 
 import { useEffect, useRef, useState } from "react";
-import { go, stopAll, setMasterVolume, getPreferences } from "../../lib/commands";
+import { go, stopAll, pauseCue, resumeCue, setMasterVolume, getPreferences } from "../../lib/commands";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTransportStore } from "../../stores/transportStore";
 import { OscMonitor } from "../Osc/OscMonitor";
@@ -294,6 +294,26 @@ export function TransportBar({ onRefresh }: Props) {
     (c) => c.state === "running" || c.state === "paused"
   );
 
+  // Pause toggle: pause every running cue, or (if none running) resume every
+  // paused cue — same semantics as the OSC `/wincue/pause_toggle` handler.
+  const hasRunning = cues.some((c) => c.state === "running");
+  const hasPaused = cues.some((c) => c.state === "paused");
+  const pauseDisabled = !hasRunning && !hasPaused;
+  const pauseLabel = hasRunning ? "⏸ PAUSE" : hasPaused ? "▶ RESUME" : "⏸ PAUSE";
+
+  const handlePauseToggle = async () => {
+    try {
+      if (hasRunning) {
+        for (const c of cues.filter((c) => c.state === "running")) await pauseCue(c.id);
+      } else if (hasPaused) {
+        for (const c of cues.filter((c) => c.state === "paused")) await resumeCue(c.id);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    onRefresh();
+  };
+
   return (
     <div
       style={{
@@ -355,6 +375,28 @@ export function TransportBar({ onRefresh }: Props) {
         }}
       >
         ■ STOP
+      </button>
+
+      {/* PAUSE / RESUME (toggle) */}
+      <button
+        onClick={handlePauseToggle}
+        disabled={pauseDisabled}
+        title="Pause all running cues / resume all paused cues"
+        style={{
+          padding: "14px 22px",
+          fontSize: 18,
+          fontWeight: 600,
+          background: pauseDisabled ? "#1e293b" : "#38bdf8",
+          color: pauseDisabled ? "#475569" : "white",
+          border: "none",
+          borderRadius: 8,
+          cursor: pauseDisabled ? "default" : "pointer",
+          boxShadow: pauseDisabled ? "none" : "0 2px 12px #38bdf899",
+          flexShrink: 0,
+          userSelect: "none",
+        }}
+      >
+        {pauseLabel}
       </button>
 
       {/* Running cue info */}
