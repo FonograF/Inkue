@@ -123,7 +123,8 @@ fix, not the full investigation.
 ### 0.9.2 (2026-06-20)
 
 - **Transport-bar Pause/Resume button** — light-blue PAUSE toggle next to GO/STOP; same semantics as OSC `/wincue/pause_toggle` (pause all running, else resume all paused; disabled when idle). `TransportBar.tsx`.
-- **Floating timer drag + counter fixed** — the `float-timer` window had no Tauri v2 capability, so `startDragging` and `listen("float-timer-text")` were silently denied. Added `capabilities/float-timer.json` (`core:default` + `core:window:allow-start-dragging`); needs a rebuild. *(A separate Linux crash when showing the timer is still under investigation.)*
+- **Floating timer drag + counter fixed** — the `float-timer` window had no Tauri v2 capability, so `startDragging` and `listen("float-timer-text")` were silently denied. Added `capabilities/float-timer.json` (`core:default` + `core:window:allow-start-dragging`); needs a rebuild.
+- **Floating timer Linux crash fixed** — `set_floating_timer_visible` called `WebviewWindow::show()/hide()` directly from a Tauri command thread; on Linux that touches GTK off the main thread → crash (it also fired in OSD mode because the prefs-apply path always hides the floating window). Now routed through `app_handle.run_on_main_thread()`, so show/hide is main-thread-safe on all 3 OS. `output_engine/mod.rs`.
 - **Windows output → winit/GL by default** — the GL Render API path (`render.rs`) is now the Windows default; the old Win32+D3D11+`wid`+layered-overlay path is gated behind `legacy-win32-output` (off). `build.rs` emits `output_winit` / `output_win32` cfg aliases. `build.rs`, `output_engine/{mod,fade,render,mpv_events,types}.rs`.
 - **Hard-cut stop clears to black (GL)** — a no-fade stop now forces overlay alpha 255 after `mpv stop`, so the render loop paints opaque black over the frozen last frame instead of leaving it on screen. `output_engine/mod.rs`.
 

@@ -931,11 +931,19 @@ impl OutputEngine {
     // ── Floating timer (Tauri WebView window) ─────────────────────────────────
 
     /// Show or hide the standalone floating timer window (Tauri WebView).
+    ///
+    /// GTK (Linux) and AppKit (macOS) require window show/hide on the main
+    /// thread, but Tauri command handlers run on a worker thread.  Marshalling
+    /// onto the main thread makes this safe on all three OS — the same
+    /// cross-platform discipline the winit output window follows.
     pub fn set_floating_timer_visible(&self, visible: bool) {
-        use tauri::Manager;
-        if let Some(win) = self.app_handle.get_webview_window("float-timer") {
-            let _ = if visible { win.show() } else { win.hide() };
-        }
+        let app = self.app_handle.clone();
+        let _ = self.app_handle.run_on_main_thread(move || {
+            use tauri::Manager;
+            if let Some(win) = app.get_webview_window("float-timer") {
+                let _ = if visible { win.show() } else { win.hide() };
+            }
+        });
     }
 
     /// Write the current timer text to the floating window.
