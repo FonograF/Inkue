@@ -210,27 +210,16 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let file_opts = cs(&opts_str);
             let cmd       = cs("loadfile");
             let flags     = cs("replace");
-            // Windows mpv (≥ 0.38): loadfile url flags index options
-            // Linux mpv 0.37: loadfile url flags options (no index accepted)
-            #[cfg(target_os = "windows")]
-            let idx = cs("0");
-            let ret;
-            #[cfg(target_os = "windows")]
-            {
-                let args: [*const std::ffi::c_char; 6] = [
-                    cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                    idx.as_ptr(), file_opts.as_ptr(), std::ptr::null(),
-                ];
-                ret = (lib.mpv_command)(ctx, args.as_ptr());
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                let args: [*const std::ffi::c_char; 5] = [
-                    cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                    file_opts.as_ptr(), std::ptr::null(),
-                ];
-                ret = (lib.mpv_command)(ctx, args.as_ptr());
-            }
+            let idx       = cs("0");
+            // mpv loadfile signature is `loadfile <url> <flags> <index> <options>` —
+            // <index> must be present (ignored for "replace") or mpv tries to parse
+            // the options string itself as the index integer and fails. Required on
+            // both Windows (mpv ≥ 0.38) and Linux (tested against mpv 0.41.0).
+            let args: [*const std::ffi::c_char; 6] = [
+                cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
+                idx.as_ptr(), file_opts.as_ptr(), std::ptr::null(),
+            ];
+            let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 { log::warn!("[output] mpv loadfile (image) failed: {ret}"); }
         } else {
             let mut opts: Vec<String> = vec!["audio=no".to_string()];
@@ -264,27 +253,13 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
                 }
             }
 
-            // Windows mpv (≥ 0.38): loadfile url flags index options
-            // Linux mpv 0.37: loadfile url flags options (no index accepted)
-            #[cfg(target_os = "windows")]
             let index_cstr = cs("0");
-            let ret;
-            #[cfg(target_os = "windows")]
-            {
-                let args: [*const std::ffi::c_char; 6] = [
-                    cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-                    index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
-                ];
-                ret = (lib.mpv_command)(ctx, args.as_ptr());
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                let args: [*const std::ffi::c_char; 5] = [
-                    cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-                    opts_cstr.as_ptr(), std::ptr::null(),
-                ];
-                ret = (lib.mpv_command)(ctx, args.as_ptr());
-            }
+            // See loadfile signature note in the image branch above.
+            let args: [*const std::ffi::c_char; 6] = [
+                cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
+                index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
+            ];
+            let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 { log::warn!("[output] mpv loadfile (video) failed: {ret}"); }
             log::info!("[output] loadfile (paused) sent: {} opts=[{opts_str}]", params.path);
         }
