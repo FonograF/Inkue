@@ -274,7 +274,11 @@ impl OutputEngine {
         FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
         TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
         FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
-        FLOAT_TIMER_FONT.get_or_init(|| Mutex::new("Arial".to_owned()));
+        // Empty sentinel (never a real font name) so the first set_timer_style()
+        // call always emits float-timer-font, regardless of what the persisted
+        // preference happens to be — the float-timer window's own React state
+        // has no other way to learn the current font.
+        FLOAT_TIMER_FONT.get_or_init(|| Mutex::new(String::new()));
 
         // Unified GL path (Linux + Windows default): create the winit/GL output
         // window and block until mpv's render context is live, so no `loadfile` can

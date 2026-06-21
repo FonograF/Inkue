@@ -41,7 +41,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   playheadCueId: null,
   workspaceInfo: null,
   generalPrefs: DEFAULT_GENERAL_PREFS,
-  displayPrefs: { ...DEFAULT_DISPLAY_PREFS, output_screen: null, show_output_timer: false, timer_floating: false, timer_count_down: false, timer_font: "Arial", timer_font_size: 120, timer_position: "center" as const, timer_show_ms: false, timer_margin: 50 },
+  displayPrefs: { ...DEFAULT_DISPLAY_PREFS, output_screen: null, show_output_timer: false, timer_floating: false, timer_count_down: false, timer_font: "DSEG7 Classic", timer_font_size: 120, timer_position: "center" as const, timer_show_ms: false, timer_margin: 50 },
 
   refreshCues: async () => {
     try {

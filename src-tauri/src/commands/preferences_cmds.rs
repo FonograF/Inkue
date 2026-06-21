@@ -253,7 +253,11 @@ pub fn preview_output_timer(
 /// On Windows: uses GDI `EnumFontFamiliesExW` so names match exactly what
 /// mpv's `osd-font` property accepts. Vertical-text (`@`-prefixed) families
 /// are excluded.
-/// On macOS / Linux: returns an empty list (Phase B: use platform font APIs).
+/// On macOS / Linux: shells out to fontconfig's `fc-list`, which both mpv
+/// (libass) and WebKit/WebView resolve font names through — so the names
+/// returned are guaranteed to match what `osd-font` and the floating timer's
+/// CSS `font-family` actually render. Returns an empty list if `fc-list`
+/// isn't on PATH (the font field stays free-text in that case).
 #[tauri::command]
 pub fn list_system_fonts() -> Vec<String> {
     #[cfg(target_os = "windows")]
@@ -300,7 +304,21 @@ pub fn list_system_fonts() -> Vec<String> {
         fonts
     }
     #[cfg(not(target_os = "windows"))]
-    Vec::new()
+    {
+        let output = match std::process::Command::new("fc-list").arg(":").arg("family").output() {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        let mut fonts: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .flat_map(|line| line.split(','))
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect();
+        fonts.sort_by_key(|a| a.to_lowercase());
+        fonts.dedup();
+        fonts
+    }
 }
 
 /// Return all available audio output devices for the given backend.

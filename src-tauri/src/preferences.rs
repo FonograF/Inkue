@@ -299,7 +299,7 @@ impl DisplayPreferences {
     fn default_bg_panel()       -> String { "#1e293b".into() }
     fn default_accent()         -> String { "#3b82f6".into() }
     fn default_text_primary()   -> String { "#e2e8f0".into() }
-    fn default_timer_font()      -> String { "Arial".into() }
+    fn default_timer_font()      -> String { crate::bundled_fonts::FONT_FAMILY.into() }
     fn default_timer_font_size() -> u32   { 120 }
     fn default_timer_margin()    -> u32   { 50 }
 }
