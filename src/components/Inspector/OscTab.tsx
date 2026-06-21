@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { OscArg, OscCueData, OscMessage, OscPatch } from "../../lib/types";
 import { listOscPatches, sendOscTest } from "../../lib/commands";
+import { Select } from "../common/Select";
 
 interface Props {
   cue: OscCueData;
@@ -41,7 +42,7 @@ function ArgRow({
 }) {
   return (
     <div style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 4 }}>
-      <select
+      <Select
         style={{ ...selectStyle, width: 60 }}
         value={arg.type}
         onChange={(e) => {
@@ -55,17 +56,17 @@ function ArgRow({
         <option value="float">float</option>
         <option value="str">str</option>
         <option value="bool">bool</option>
-      </select>
+      </Select>
 
       {arg.type === "bool" ? (
-        <select
+        <Select
           style={{ ...selectStyle, flex: 1 }}
           value={String(arg.value)}
           onChange={(e) => onChange({ type: "bool", value: e.target.value === "true" })}
         >
           <option value="true">true</option>
           <option value="false">false</option>
-        </select>
+        </Select>
       ) : (
         <input
           style={{ ...inputStyle, flex: 1 }}
@@ -121,7 +122,7 @@ function MessageRow({
     >
       {/* Row 1: patch + address */}
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
-        <select
+        <Select
           style={{ ...selectStyle, flex: "0 0 110px" }}
           value={msg.patch_id}
           onChange={(e) => onChange({ ...msg, patch_id: e.target.value })}
@@ -130,7 +131,7 @@ function MessageRow({
           {patches.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
-        </select>
+        </Select>
         <input
           style={{ ...inputStyle, flex: 1, minWidth: 0 }}
           placeholder="/address"

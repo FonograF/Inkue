@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { MidiCueData, MidiMessage, MidiMessageType } from "../../lib/types";
 import { listMidiOutputPorts, sendMidiTest } from "../../lib/commands";
+import { Select } from "../common/Select";
 
 interface Props {
   cue: MidiCueData;
@@ -122,7 +123,7 @@ export function MidiTab({ cue, onSave }: Props) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Port</div>
               {ports.length > 0 ? (
-                <select
+                <Select
                   style={{ ...selectStyle, width: "100%" }}
                   value={msg.port_name}
                   onChange={(e) => updateMessage(idx, { port_name: e.target.value })}
@@ -133,7 +134,7 @@ export function MidiTab({ cue, onSave }: Props) {
                   {!ports.includes(msg.port_name) && msg.port_name && (
                     <option value={msg.port_name}>{msg.port_name} (not found)</option>
                   )}
-                </select>
+                </Select>
               ) : (
                 <input
                   style={{ ...inputStyle, width: "100%" }}
@@ -145,7 +146,7 @@ export function MidiTab({ cue, onSave }: Props) {
             </div>
             <div>
               <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Type</div>
-              <select
+              <Select
                 style={selectStyle}
                 value={msg.message_type}
                 onChange={(e) => updateMessage(idx, { message_type: e.target.value as MidiMessageType })}
@@ -153,7 +154,7 @@ export function MidiTab({ cue, onSave }: Props) {
                 {(Object.keys(MESSAGE_TYPE_LABELS) as MidiMessageType[]).map((t) => (
                   <option key={t} value={t}>{MESSAGE_TYPE_LABELS[t]}</option>
                 ))}
-              </select>
+              </Select>
             </div>
           </div>
 

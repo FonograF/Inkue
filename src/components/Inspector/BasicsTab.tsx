@@ -3,6 +3,7 @@ import { Field, inputStyle } from "./Field";
 import { ColorPicker } from "./ColorPicker";
 import { setGroupMode } from "../../lib/commands";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { Select } from "../common/Select";
 
 const listStyle: React.CSSProperties = {
   maxHeight: 110,
@@ -135,7 +136,7 @@ export function BasicsTab({
         </Field>
       )}
       <Field label="Continue">
-        <select
+        <Select
           style={inputStyle}
           value={cue.continue_mode}
           onChange={(e) =>
@@ -147,11 +148,11 @@ export function BasicsTab({
           <option value="do_not_continue">Do Not Continue</option>
           <option value="auto_continue">Auto-Continue</option>
           <option value="auto_follow">Auto-Follow</option>
-        </select>
+        </Select>
       </Field>
       {isGroup && (
         <Field label="Mode">
-          <select
+          <Select
             style={inputStyle}
             value={cue.group_mode ?? "simultaneous"}
             onChange={async (e) => {
@@ -162,7 +163,7 @@ export function BasicsTab({
           >
             <option value="simultaneous">Simultaneous</option>
             <option value="sequential">Sequential</option>
-          </select>
+          </Select>
         </Field>
       )}
       {isFade && (() => {
@@ -226,7 +227,7 @@ export function BasicsTab({
               </Field>
             )}
             <Field label="Curve">
-              <select
+              <Select
                 style={inputStyle}
                 value={cue.fade_curve ?? "s_curve"}
                 onChange={(e) => onSave({ fade_curve: e.target.value })}
@@ -234,7 +235,7 @@ export function BasicsTab({
                 <option value="linear">Linear</option>
                 <option value="s_curve">S-Curve</option>
                 <option value="exponential">Exponential</option>
-              </select>
+              </Select>
             </Field>
             <Field label="Stop at End">
               <input
@@ -273,14 +274,14 @@ export function BasicsTab({
             />
           </Field>
           <Field label="Stop Mode">
-            <select
+            <Select
               style={inputStyle}
               value={cue.hard_stop_mode ? "hard" : "soft"}
               onChange={(e) => onSave({ hard_stop_mode: e.target.value === "hard" })}
             >
               <option value="soft">Soft (fade out)</option>
               <option value="hard">Hard (immediate cut)</option>
-            </select>
+            </Select>
           </Field>
         </>
       )}
