@@ -254,6 +254,27 @@ export interface OscReceiveConfig {
 }
 
 // ---------------------------------------------------------------------------
+// DMX / Lighting
+// ---------------------------------------------------------------------------
+
+export type OutputProtocol = "Sacn" | "ArtNet";
+
+/** One workspace-level universe output mapping (matches `engine::dmx_sink::UniverseOutput`). */
+export interface UniverseOutput {
+  universe: number;
+  protocol: OutputProtocol;
+  /** Destination IP string, or null for the sACN multicast group. */
+  destination: string | null;
+  enabled: boolean;
+}
+
+/** Live output bytes of one universe, pushed via the `dmx-monitor` event. */
+export interface DmxUniverseSnapshot {
+  universe: number;
+  channels: number[];
+}
+
+// ---------------------------------------------------------------------------
 // Preferences
 // ---------------------------------------------------------------------------
 

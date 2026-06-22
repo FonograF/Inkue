@@ -24,7 +24,7 @@ use crate::{
         video_cue::VideoCueFactory,
         wait_cue::WaitCueFactory,
     },
-    engine::{AudioEngine, OscServer, OutputEngine},
+    engine::{AudioEngine, DmxEngine, OscServer, OutputEngine},
     show::{undo_stack::UndoStack, Workspace},
 };
 
@@ -38,6 +38,8 @@ pub struct AppState {
     pub output_engine: Arc<OutputEngine>,
     /// OSC receive server (background UDP listener thread).
     pub osc_server: Arc<OscServer>,
+    /// DMX-over-IP lighting engine (owns its own ~40Hz output thread).
+    pub dmx_engine: Arc<DmxEngine>,
     /// The cue type registry used for workspace de/serialisation.
     pub registry: Arc<Mutex<CueRegistry>>,
     /// Set of cue IDs whose audio files are currently being decoded in the
@@ -59,6 +61,7 @@ impl AppState {
         audio_engine: Arc<AudioEngine>,
         output_engine: Arc<OutputEngine>,
         osc_server: Arc<OscServer>,
+        dmx_engine: Arc<DmxEngine>,
     ) -> Self {
         let workspace = Workspace::new("Untitled");
 
@@ -79,6 +82,7 @@ impl AppState {
             audio_engine,
             output_engine,
             osc_server,
+            dmx_engine,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
             undo_stack: Arc::new(Mutex::new(UndoStack::new())),

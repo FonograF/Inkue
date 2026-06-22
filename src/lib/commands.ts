@@ -13,12 +13,14 @@ import type {
   CueType,
   DeviceInfo,
   DisplayPreferences,
+  DmxUniverseSnapshot,
   GeneralPreferences,
   GroupMode,
   OscPatch,
   OscReceiveConfig,
   OutputPatch,
   ScreenInfo,
+  UniverseOutput,
   VideoCueData,
   WaveformData,
   WorkspaceInfo,
@@ -230,3 +232,15 @@ export const sendMidiTest = (
   data1: number,
   data2: number,
 ) => invoke<void>("send_midi_test", { portName, messageType, channel, data1, data2 });
+
+// ---------------------------------------------------------------------------
+// DMX / Lighting
+// ---------------------------------------------------------------------------
+
+export const dmxSetOutputs = (outputs: UniverseOutput[]) =>
+  invoke<void>("dmx_set_outputs", { outputs });
+export const dmxSetChannel = (universe: number, address: number, value: number) =>
+  invoke<void>("dmx_set_channel", { universe, address, value });
+export const dmxSetBlackout = (on: boolean) => invoke<void>("dmx_set_blackout", { on });
+export const dmxGetBlackout = () => invoke<boolean>("dmx_get_blackout");
+export const dmxGetSnapshot = () => invoke<DmxUniverseSnapshot[]>("dmx_get_snapshot");
