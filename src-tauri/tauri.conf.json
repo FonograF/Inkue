@@ -32,6 +32,7 @@
         "resizable": false,
         "decorations": false,
         "visible": false,
+        "skipTaskbar": true,
         "center": true
       },
       {

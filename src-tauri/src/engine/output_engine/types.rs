@@ -122,11 +122,19 @@ pub(crate) struct FadeAnimState {
 }
 
 impl FadeAnimState {
+    /// Resting state at startup: opaque black, matching the convention used
+    /// everywhere else (overlay stays at alpha=255 until content fades in).
+    /// Also load-bearing on the GL path: the render loop only swaps a buffer
+    /// when there's an mpv frame OR alpha > 0, so an idle alpha of 0 means the
+    /// output window's surface never commits a single frame on Wayland — the
+    /// compositor then refuses to map the window no matter what `set_visible`
+    /// says, which is why toggling it manually used to show nothing until a
+    /// video/image cue forced the first real frame.
     pub fn idle() -> Self {
         Self {
-            current_alpha: 0,
-            target_alpha: 0,
-            start_alpha: 0,
+            current_alpha: 255,
+            target_alpha: 255,
+            start_alpha: 255,
             duration_ms: 0,
             start_time: Instant::now(),
             timer_active: false,
