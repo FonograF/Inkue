@@ -165,6 +165,19 @@ impl Cue for ImageCue {
             return Ok(());
         }
 
+        let has_file = self.file_path.as_ref().is_some_and(|p| !p.as_os_str().is_empty());
+        if !has_file {
+            // No file assigned — nothing to play. Complete instantly (same
+            // pattern as MemoCue) so Auto-Continue/Auto-Follow can advance
+            // past it instead of getting stuck "running" an empty cue.
+            self.state = CueState::Running;
+            self.started_at = Some(Instant::now());
+            context.emit(CueEvent::ActionStarted { cue_id: self.id });
+            self.state = CueState::Completed;
+            context.emit(CueEvent::ActionCompleted { cue_id: self.id });
+            return Ok(());
+        }
+
         self.play_generation = self.play_generation.wrapping_add(1);
         self.auto_continue_fired = false;
         self.state = CueState::Running;
