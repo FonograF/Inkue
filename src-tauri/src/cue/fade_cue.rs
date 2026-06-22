@@ -83,7 +83,7 @@ impl FadeCue {
             name: String::from("Fade"),
             number: None,
             notes: String::new(),
-            color: CueColor::Blue,
+            color: CueColor::Pink,
             state: CueState::Standby,
             continue_mode: ContinueMode::AutoFollow,
             pre_wait: Duration::ZERO,

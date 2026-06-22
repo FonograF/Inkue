@@ -6,6 +6,7 @@ const COLOR_OPTIONS: { value: CueColor; hex: string; label: string }[] = [
   { value: "orange", hex: "#f97316",     label: "Orange" },
   { value: "yellow", hex: "#eab308",     label: "Yellow" },
   { value: "green",  hex: "#22c55e",     label: "Green"  },
+  { value: "cyan",   hex: "#06b6d4",     label: "Cyan"   },
   { value: "blue",   hex: "#3b82f6",     label: "Blue"   },
   { value: "purple", hex: "#a855f7",     label: "Purple" },
   { value: "pink",   hex: "#ec4899",     label: "Pink"   },

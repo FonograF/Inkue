@@ -213,7 +213,7 @@ interface Props {
 export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   const {
     cues, selectedCueId, selectedCueIds, playheadCueId,
-    setSelectedCueId, setSelectedCueIds, setPlayheadCueId, generalPrefs,
+    setSelectedCueId, setSelectedCueIds, setPlayheadCueId, generalPrefs, displayPrefs,
   } = useWorkspaceStore();
 
   const rowHeight = generalPrefs.cue_row_height === "compact" ? 22
@@ -675,6 +675,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
   function startColDrag(e: React.MouseEvent, def: ColumnDef) {
     if (e.button !== 0 || def.fixed) return;
+    e.preventDefault();
     colDragRef.current = {
       id: def.id,
       startX: e.clientX,
@@ -1107,6 +1108,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               gridStyle={gridStyle}
               visibleDefs={visibleDefs}
               rowHeight={rowHeight}
+              cueColorStyle={displayPrefs.cue_color_style}
               depth={depth}
               isGroup={cue.cue_type === "group"}
               isGroupExpanded={expandedGroupIds.has(cue.id)}

@@ -210,6 +210,7 @@ pub fn update_display_preferences(
         ws.preferences.display.timer_font_size     = prefs.timer_font_size;
         ws.preferences.display.timer_position      = prefs.timer_position;
         ws.preferences.display.timer_margin        = prefs.timer_margin;
+        ws.preferences.display.cue_color_style     = prefs.cue_color_style;
         ws.mark_modified();
         (
             ws.preferences.display.timer_font.clone(),

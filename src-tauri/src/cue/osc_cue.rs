@@ -43,7 +43,7 @@ impl OscCue {
             name: String::from("OSC"),
             number: None,
             notes: String::new(),
-            color: CueColor::Blue,
+            color: CueColor::Cyan,
             state: CueState::Standby,
             continue_mode: ContinueMode::DoNotContinue,
             pre_wait: Duration::ZERO,

@@ -128,7 +128,7 @@ impl MidiCue {
             name: String::from("MIDI"),
             number: None,
             notes: String::new(),
-            color: CueColor::Green,
+            color: CueColor::White,
             state: CueState::Standby,
             continue_mode: ContinueMode::DoNotContinue,
             pre_wait: Duration::ZERO,

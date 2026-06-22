@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
-import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, CueColorStyle, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
 import { Select } from "../common/Select";
@@ -35,13 +35,14 @@ import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 // Sidebar categories
 // ---------------------------------------------------------------------------
 
-type Category = "audio" | "general" | "network" | "display";
+type Category = "audio" | "general" | "network" | "display" | "personalization";
 
 const CATEGORIES: { id: Category; icon: string; label: string }[] = [
-  { id: "audio",   icon: "🔊", label: "Audio"   },
-  { id: "general", icon: "⚙️",  label: "General" },
-  { id: "network", icon: "🌐", label: "Network"  },
-  { id: "display", icon: "🖥",  label: "Display"  },
+  { id: "audio",           icon: "🔊", label: "Audio"           },
+  { id: "general",         icon: "⚙️",  label: "General"         },
+  { id: "network",         icon: "🌐", label: "Network"          },
+  { id: "display",         icon: "🖥",  label: "Display"          },
+  { id: "personalization", icon: "🎨", label: "Personalization" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -423,7 +424,6 @@ function DisplayContent({
   timerMargin, onTimerMarginChange,
   timerPreview, onTimerPreviewChange,
   committedTimerStyle,
-  theme, onThemeChange,
 }: {
   outputScreen: number | null;
   onScreenChange: (screen: number | null) => void;
@@ -447,8 +447,6 @@ function DisplayContent({
   onTimerPreviewChange: (v: boolean) => void;
   /** Committed (applied) style, used to restore mpv state on cancel. */
   committedTimerStyle: { font: string; fontSize: number; position: TimerPosition; margin: number };
-  theme: typeof DEFAULT_DISPLAY_PREFS;
-  onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
 }) {
   const [screens, setScreens] = useState<ScreenInfo[]>([]);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
@@ -635,6 +633,40 @@ function DisplayContent({
             </Row>
           </>
         )}
+      </Section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Personalization content
+// ---------------------------------------------------------------------------
+
+const CUE_COLOR_STYLES: { value: CueColorStyle; label: string }[] = [
+  { value: "stripe",   label: "Stripe (left edge only)" },
+  { value: "full_row", label: "Full row"                 },
+];
+
+function PersonalizationContent({
+  theme, onThemeChange,
+}: {
+  theme: typeof DEFAULT_DISPLAY_PREFS;
+  onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
+}) {
+  return (
+    <>
+      <Section title="Cue Appearance">
+        <Row label="Cue Colour Style">
+          <Select
+            style={selectStyle}
+            value={theme.cue_color_style}
+            onChange={(e) => onThemeChange({ ...theme, cue_color_style: e.target.value as CueColorStyle })}
+          >
+            {CUE_COLOR_STYLES.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </Select>
+        </Row>
       </Section>
 
       <Section title="Colour Theme">
@@ -1134,6 +1166,10 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                     timerPreview={timerPreview}
                     onTimerPreviewChange={setTimerPreview}
                     committedTimerStyle={{ font: timerFont, fontSize: timerFontSize, position: timerPosition, margin: timerMargin }}
+                  />
+                )}
+                {category === "personalization" && (
+                  <PersonalizationContent
                     theme={draftTheme}
                     onThemeChange={setDraftTheme}
                   />

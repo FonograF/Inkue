@@ -756,23 +756,15 @@ export default function App() {
           </span>
         </div>
 
-        {/* Toolbar */}
+        {/* Toolbar — ordered most → least frequently used */}
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           <button
-            style={{ ...toolbarBtn, cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: "#3b82f6", cursor: "grab", userSelect: "none" }}
             onClick={handleAddAudio}
             onMouseDown={(e) => dispatchCueDrag("audio", e)}
             title="Add Audio Cue after selection (Ctrl+N) · Drag to insert at position"
           >
             + Audio
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: "#fca5a5", cursor: "grab", userSelect: "none" }}
-            onClick={handleAddStop}
-            onMouseDown={(e) => dispatchCueDrag("stop", e)}
-            title="Add Stop Cue after selection · Drag to insert at position"
-          >
-            + Stop
           </button>
           <button
             style={{ ...toolbarBtn, color: "#a78bfa", cursor: "grab", userSelect: "none" }}
@@ -791,6 +783,22 @@ export default function App() {
             + Image
           </button>
           <button
+            style={{ ...toolbarBtn, color: "#ef4444", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddStop}
+            onMouseDown={(e) => dispatchCueDrag("stop", e)}
+            title="Add Stop Cue after selection · Drag to insert at position"
+          >
+            + Stop
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#ec4899", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddFade}
+            onMouseDown={(e) => dispatchCueDrag("fade", e)}
+            title="Add Fade Cue after selection · Drag to insert at position"
+          >
+            + Fade
+          </button>
+          <button
             style={{ ...toolbarBtn, color: "#fb923c", cursor: "grab", userSelect: "none" }}
             onClick={handleAddWait}
             onMouseDown={(e) => dispatchCueDrag("wait", e)}
@@ -807,28 +815,20 @@ export default function App() {
             + Group
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#67e8f9", cursor: "grab", userSelect: "none" }}
-            onClick={handleAddOsc}
-            onMouseDown={(e) => dispatchCueDrag("osc", e)}
-            title="Add OSC Cue after selection · Drag to insert at position"
-          >
-            + OSC
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: "#93c5fd", cursor: "grab", userSelect: "none" }}
-            onClick={handleAddFade}
-            onMouseDown={(e) => dispatchCueDrag("fade", e)}
-            title="Add Fade Cue after selection · Drag to insert at position"
-          >
-            + Fade
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: "#86efac", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: "#f1f5f9", cursor: "grab", userSelect: "none" }}
             onClick={handleAddMidi}
             onMouseDown={(e) => dispatchCueDrag("midi", e)}
             title="Add MIDI Cue after selection · Drag to insert at position"
           >
             + MIDI
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#06b6d4", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddOsc}
+            onMouseDown={(e) => dispatchCueDrag("osc", e)}
+            title="Add OSC Cue after selection · Drag to insert at position"
+          >
+            + OSC
           </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector

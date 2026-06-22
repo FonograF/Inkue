@@ -82,6 +82,7 @@ pub enum CueColor {
     Orange,
     Yellow,
     Green,
+    Cyan,
     Blue,
     Purple,
     Pink,

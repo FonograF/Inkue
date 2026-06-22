@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { PlayheadIndicator } from "./PlayheadIndicator";
 import type { ColumnDef } from "./columns";
-import type { CueSummary } from "../../lib/types";
+import type { CueColorStyle, CueSummary } from "../../lib/types";
 import { useTimingStore } from "../../stores/timingStore";
 
 function StopButton({ onStop }: { onStop: () => void }) {
@@ -70,12 +70,22 @@ const COLOR_SWATCHES: Record<string, string> = {
   orange: "#f97316",
   yellow: "#eab308",
   green:  "#22c55e",
+  cyan:   "#06b6d4",
   blue:   "#3b82f6",
   purple: "#a855f7",
   pink:   "#ec4899",
   white:  "#f1f5f9",
   black:  "#334155",
 };
+
+/** `#rrggbb` -> `rgba(r, g, b, alpha)`, used to tint the whole row without
+ *  drowning out the text in "full row" cue colour style. */
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -112,6 +122,8 @@ interface Props {
   onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onStop?: (cueId: string) => void;
+  /** How the cue's colour tag is rendered — left-edge stripe, or the whole row tinted. */
+  cueColorStyle?: CueColorStyle;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +151,7 @@ export function CueRow({
   onDoubleClick,
   onContextMenu,
   onStop,
+  cueColorStyle = "stripe",
 }: Props) {
   const timing = useTimingStore((s) => s.timings[cue.id]);
 
@@ -157,13 +170,16 @@ export function CueRow({
       : null;
 
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue("--wc-accent").trim() || "#3b82f6";
-  let bg = "transparent";
+  const colorAccent = COLOR_SWATCHES[cue.color] ?? "transparent";
+  const fullRowTint = cueColorStyle === "full_row" && colorAccent !== "transparent"
+    ? hexToRgba(colorAccent, 0.28)
+    : null;
+
+  let bg = fullRowTint ?? "transparent";
   if (isDragOver)      bg = "#1e3a5f";
   else if (isSelected) bg = accentColor;
   else if (isRunning)  bg = "#14532d";
   else if (isPaused)   bg = "#78350f";
-
-  const colorAccent = COLOR_SWATCHES[cue.color] ?? "transparent";
 
   const rowStyle: React.CSSProperties = {
     ...gridStyle,
@@ -373,7 +389,9 @@ export function CueRow({
       onContextMenu={onContextMenu}
     >
       {/* Color indicator strip — shifts right with nesting depth (4 px per level).
-          z-index 0 keeps it below column content (playhead indicator, etc.). */}
+          z-index 0 keeps it below column content (playhead indicator, etc.).
+          Always drawn — "full row" adds a background tint on top of this, it
+          doesn't replace it. */}
       <div
         style={{
           position: "absolute",
