@@ -522,7 +522,7 @@ pub fn get_waveform_peaks(
 
     // Compute peaks outside the lock.
     let channels = channels as usize;
-    let total_frames = if channels > 0 { samples.len() / channels } else { 0 };
+    let total_frames = samples.len().checked_div(channels).unwrap_or(0);
     let peaks = if bins == 0 || total_frames == 0 {
         vec![]
     } else {

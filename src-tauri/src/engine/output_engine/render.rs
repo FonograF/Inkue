@@ -28,7 +28,11 @@ use std::ffi::{CStr, CString, c_void};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// `Instant` is only used by the winit event-loop window backend (drag / double-click
+// timing); macOS uses the AppKit backend instead and never touches it.
+#[cfg(not(target_os = "macos"))]
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use glow::HasContext;
