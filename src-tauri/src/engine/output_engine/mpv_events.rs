@@ -277,7 +277,7 @@ fn start_video_playback(
             PostMessageW(_parent_hwnd, super::WM_DO_FADE, 0, 0);
         }
         // Unified GL path: wake the render loop so it animates the fade-from-black.
-        #[cfg(output_winit)]
+        #[cfg(output_gl)]
         super::render::wake();
     } else {
         super::fade::set_overlay_alpha(0);

@@ -74,6 +74,15 @@ glutin = { version = "0.32", features = ["wgl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 glutin = { version = "0.32" }
+# AppKit window creation for the unified GL output path (render.rs).  winit cannot
+# be used on macOS here — its EventLoop demands the AppKit main thread, which Tauri's
+# NSApplication already owns — so we create/manage the output NSWindow directly.
+# Versions pinned to match winit 0.30's own objc2 stack (objc2 0.5.2 / objc2-foundation
+# 0.2.2, already in the lock file) so no duplicate objc2 is pulled in. AppKit itself
+# is linked explicitly in build.rs; we drive it via raw `msg_send!` (stable Cocoa
+# selectors) rather than objc2-app-kit's churn-prone typed bindings.
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", features = ["egl", "glx", "x11"] }

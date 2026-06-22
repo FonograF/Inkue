@@ -1,26 +1,26 @@
 //! Unified OpenGL Render API output path.
 //!
 //! Drives mpv with `vo=libmpv` and renders each frame into the default
-//! framebuffer of an OS window via `glutin` (OpenGL 3.3 Core) +
-//! `mpv_render_context`.  A fullscreen black quad handles fade-to-black.
+//! framebuffer of an OS window via `glutin` (OpenGL Core) + `mpv_render_context`.
+//! A fullscreen black quad handles fade-to-black.  The render loop and the GL
+//! fade are identical on every OS — only native window creation differs.
 //!
 //! ## Window creation
 //!
-//! `winit 0.30` creates the OS window on all platforms via a single code path:
-//! - **Windows / Linux** — `winit::window::Window` from a background thread.
-//! - **macOS**           — requires the AppKit main thread; `winit` window is
-//!   created via `AppHandle::run_on_main_thread()` then handed to render thread.
-//!   *(Stage 2 — TODO)*
+//! - **Windows / Linux** — `winit 0.30` creates the `winit::window::Window` from a
+//!   background thread (stored as `Arc<Window>` in `GL_WINDOW`).
+//! - **macOS** — winit cannot be used: its EventLoop demands the AppKit main thread,
+//!   which Tauri's `NSApplication` already owns.  Instead `macos_window.rs` creates
+//!   and drives an `NSWindow` directly via `objc2` (`super::macos_window`).
 //!
-//! The window is stored as `Arc<winit::window::Window>` in `GL_WINDOW` so that
-//! `OutputEngine` methods (show/hide/position/fullscreen) can call winit's
-//! cross-platform API from any thread.
+//! In both cases creation yields a raw window/display handle pair, which the render
+//! thread turns into a `glutin` GL context + `mpv_render_context`.
 //!
 //! ## Thread model
 //!
 //! | Thread                    | Role |
 //! |---------------------------|------|
-//! | `wincue-output-window`    | winit EventLoop + window events (drag, resize, fullscreen) |
+//! | `wincue-output-window`    | (Windows/Linux only) winit EventLoop + window events |
 //! | `wincue-output-render`    | glutin context + mpv RenderContext + render loop |
 //! | `wincue-output-mpv-events`| mpv_wait_event (PLAYBACK_RESTART, EOF, …) |
 
@@ -36,11 +36,20 @@ use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, Version};
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{GlSurface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+// winit-based window backend (Windows + Linux only).
+#[cfg(not(target_os = "macos"))]
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+#[cfg(not(target_os = "macos"))]
 use winit::application::ApplicationHandler;
+#[cfg(not(target_os = "macos"))]
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
+#[cfg(not(target_os = "macos"))]
 use winit::event::{ElementState, MouseButton, WindowEvent};
+#[cfg(not(target_os = "macos"))]
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+#[cfg(not(target_os = "macos"))]
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 
 use crate::engine::mpv_sys::{
@@ -60,12 +69,14 @@ use super::fade;
 /// Wakes the render thread when mpv signals a new frame is available.
 pub(super) static RENDER_SIGNAL: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
 
-/// The output window, shared between the event-loop thread, the render thread,
-/// and `OutputEngine` methods (show/hide/position/fullscreen).
+/// The winit output window, shared between the event-loop thread, the render
+/// thread, and `OutputEngine` methods (show/hide/position/fullscreen).
+/// macOS holds its `NSWindow` inside `macos_window` instead.
+#[cfg(not(target_os = "macos"))]
 pub(super) static GL_WINDOW: OnceLock<Arc<winit::window::Window>> = OnceLock::new();
 
-/// Current window dimensions in physical pixels, written by the event loop on
-/// resize and read by the render thread to call `surface.resize()`.
+/// Current window dimensions in physical pixels, written on resize / screen move
+/// and read by the render thread to call `surface.resize()`.
 static GL_WIDTH:  AtomicU32 = AtomicU32::new(1920);
 static GL_HEIGHT: AtomicU32 = AtomicU32::new(1080);
 
@@ -89,15 +100,32 @@ pub(super) fn wake() {
     }
 }
 
+/// Store new physical window dimensions and wake the render thread so it resizes
+/// the GL surface.  Called by the macOS window backend after a screen move /
+/// fullscreen toggle (the winit path drives this from its own `Resized` event).
+#[cfg(target_os = "macos")]
+pub(super) fn set_surface_size(width: u32, height: u32) {
+    GL_WIDTH.store(width.max(1), Ordering::Relaxed);
+    GL_HEIGHT.store(height.max(1), Ordering::Relaxed);
+    wake();
+}
+
 pub(super) fn show() {
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = GL_WINDOW.get() { w.set_visible(true); }
+    #[cfg(target_os = "macos")]
+    super::macos_window::show();
 }
 
 pub(super) fn hide() {
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = GL_WINDOW.get() { w.set_visible(false); }
+    #[cfg(target_os = "macos")]
+    super::macos_window::hide();
 }
 
 pub(super) fn toggle_fullscreen() {
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = GL_WINDOW.get() {
         if w.fullscreen().is_some() {
             w.set_fullscreen(None);
@@ -105,14 +133,23 @@ pub(super) fn toggle_fullscreen() {
             w.set_fullscreen(Some(Fullscreen::Borderless(w.current_monitor())));
         }
     }
+    #[cfg(target_os = "macos")]
+    super::macos_window::toggle_fullscreen();
 }
 
-/// Move/resize the window to `(x, y, width, height)` in logical pixels.
+/// Move/resize the winit window to `(x, y, width, height)` in logical pixels.
+#[cfg(not(target_os = "macos"))]
 pub(super) fn set_outer_rect(x: i32, y: i32, width: u32, height: u32) {
     if let Some(w) = GL_WINDOW.get() {
         w.set_outer_position(LogicalPosition::new(x, y));
         let _ = w.request_inner_size(LogicalSize::new(width, height));
     }
+}
+
+/// Place the macOS NSWindow fullscreen onto the given screen index.
+#[cfg(target_os = "macos")]
+pub(super) fn position_on_screen(screen_index: u32) {
+    super::macos_window::position_on_screen(screen_index);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +167,8 @@ pub(super) fn init(
 ) -> Result<()> {
     RENDER_SIGNAL.get_or_init(|| Arc::new((Mutex::new(false), Condvar::new())));
     let (rwh, rdh, width, height) = create_native_window(app_handle)?;
+    GL_WIDTH.store(width.max(1), Ordering::Relaxed);
+    GL_HEIGHT.store(height.max(1), Ordering::Relaxed);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
@@ -160,10 +199,22 @@ struct SendableHandles {
 unsafe impl Send for SendableHandles {}
 
 // ---------------------------------------------------------------------------
+// Window creation — macOS (AppKit NSWindow via objc2)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn create_native_window(
+    app_handle: &tauri::AppHandle,
+) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
+    super::macos_window::create(app_handle)
+}
+
+// ---------------------------------------------------------------------------
 // Window creation — winit (Windows + Linux)
 // ---------------------------------------------------------------------------
 
 /// Resize direction from cursor position relative to window size.
+#[cfg(not(target_os = "macos"))]
 fn resize_direction(
     pos:    PhysicalPosition<f64>,
     size:   PhysicalSize<u32>,
@@ -189,6 +240,7 @@ fn resize_direction(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn resize_cursor(dir: Option<winit::window::ResizeDirection>) -> winit::window::CursorIcon {
     use winit::window::{CursorIcon::*, ResizeDirection::*};
     match dir {
@@ -208,6 +260,7 @@ fn resize_cursor(dir: Option<winit::window::ResizeDirection>) -> winit::window::
 // winit ApplicationHandler — output window event loop
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_os = "macos"))]
 struct OutputApp {
     /// One-shot sender: signals create_native_window() when the window is ready.
     tx:         Option<std::sync::mpsc::Sender<Result<SendableHandles>>>,
@@ -216,6 +269,7 @@ struct OutputApp {
     last_click: Option<Instant>,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl ApplicationHandler for OutputApp {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_some() { return; }
@@ -331,15 +385,7 @@ fn build_event_loop() -> Result<EventLoop<()>> {
         .map_err(|e| anyhow!("EventLoop (Linux/X11): {e}"))
 }
 
-/// macOS: EventLoop MUST be on the main thread — create_native_window returns
-/// Err() before this is reached, so this is only here to satisfy the compiler.
-#[cfg(target_os = "macos")]
-fn build_event_loop() -> Result<EventLoop<()>> {
-    EventLoop::new().map_err(|e| anyhow!("EventLoop (macOS): {e}"))
-}
-
-/// Unified window creation for Windows and Linux.
-/// macOS requires the AppKit main thread — implemented in Stage 2.
+/// Unified window creation for Windows and Linux via winit.
 #[cfg(not(target_os = "macos"))]
 fn create_native_window(
     _app_handle: &tauri::AppHandle,
@@ -385,15 +431,6 @@ fn create_native_window(
 
     let h = rx.recv()??;
     Ok((h.rwh, h.rdh, h.width, h.height))
-}
-
-// macOS: AppKit requires the main thread. Stage 2 will dispatch via
-// app_handle.run_on_main_thread() using NSWindow + CGL.
-#[cfg(target_os = "macos")]
-fn create_native_window(
-    _app_handle: &tauri::AppHandle,
-) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
-    Err(anyhow!("macOS GL window creation not yet implemented (Stage 2)"))
 }
 
 // ---------------------------------------------------------------------------
@@ -455,9 +492,15 @@ fn render_thread_main(
             .ok_or_else(|| anyhow!("no compatible GL config found"))
     });
 
-    // ── 3. Context (OpenGL 3.3 Core, not yet current) ────────────────────────
+    // ── 3. Context (OpenGL Core, not yet current) ────────────────────────────
+    // macOS exposes only 3.2 and 4.1 core profiles (no 3.3); request 3.2 there.
+    // Our shaders are `#version 150 core`, which both 3.2 and 3.3 contexts accept.
+    #[cfg(target_os = "macos")]
+    let gl_version = Version::new(3, 2);
+    #[cfg(not(target_os = "macos"))]
+    let gl_version = Version::new(3, 3);
     let ctx_attrs = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
+        .with_context_api(ContextApi::OpenGl(Some(gl_version)))
         .build(Some(handles.rwh));
     let not_current = try_init!(unsafe {
         display.create_context(&config, &ctx_attrs)
@@ -519,7 +562,7 @@ fn render_thread_main(
         let _ = ready_tx.send(Err(anyhow!("mpv_render_context_create: {ret}")));
         return Err(anyhow!("mpv_render_context_create: {ret}"));
     }
-    log::info!("[render] mpv render context created (OpenGL 3.3 Core)");
+    log::info!("[render] mpv render context created (OpenGL {}.{} Core)", gl_version.major, gl_version.minor);
     let _ = ready_tx.send(Ok(()));
 
     // ── 10. Update callback ───────────────────────────────────────────────────
@@ -548,7 +591,7 @@ fn render_thread_main(
             *ready = false;
         }
 
-        // Apply pending resize from the event loop thread.
+        // Apply pending resize from the event loop / window backend.
         let new_w = GL_WIDTH.load(Ordering::Relaxed).max(1);
         let new_h = GL_HEIGHT.load(Ordering::Relaxed).max(1);
         if new_w != w_px || new_h != h_px {
@@ -647,13 +690,16 @@ fn create_display(rdh: RawDisplayHandle, _rwh: RawWindowHandle) -> Result<Displa
 // ---------------------------------------------------------------------------
 
 fn build_fade_shader(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray)> {
+    // `#version 150 core` is the highest GLSL accepted by macOS's 3.2 core profile,
+    // and is a strict subset of what the Windows/Linux 3.3 contexts accept — one
+    // shader for all three. `gl_VertexID` + const array constructors are valid in 150.
     const VERT: &str = r#"
-#version 330 core
+#version 150 core
 const vec2 POS[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
 void main() { gl_Position = vec4(POS[gl_VertexID], 0.0, 1.0); }
 "#;
     const FRAG: &str = r#"
-#version 330 core
+#version 150 core
 uniform float u_alpha;
 out vec4 color;
 void main() { color = vec4(0.0, 0.0, 0.0, u_alpha); }

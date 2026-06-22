@@ -46,7 +46,7 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
 
     // GL path: the render loop self-paces at 16 ms only while animating; wake it so
     // externally-driven alpha changes (Fade Cue at 30 fps) redraw the quad at once.
-    #[cfg(output_winit)]
+    #[cfg(output_gl)]
     super::render::wake();
 }
 
@@ -59,7 +59,7 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
 /// Returns `(current_alpha, did_complete)`.  `did_complete` is `true` exactly
 /// once — on the frame where `current_alpha` first reaches `target_alpha`.
 /// The caller should invoke `execute_pending()` when `did_complete` is `true`.
-#[cfg(output_winit)]
+#[cfg(output_gl)]
 pub(super) fn tick_fade() -> (u8, bool) {
     let Some(fs) = FADE_STATE.get() else {
         return (0, false);
@@ -95,7 +95,7 @@ pub(super) fn tick_fade() -> (u8, bool) {
 ///
 /// Called by the render thread immediately after `tick_fade()` returns
 /// `did_complete = true`.
-#[cfg(output_winit)]
+#[cfg(output_gl)]
 pub(super) fn execute_pending() {
     let pending = FADE_STATE
         .get()
