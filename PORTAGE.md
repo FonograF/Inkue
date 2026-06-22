@@ -1,110 +1,113 @@
-# WinCue — Plan de portage Mac + Linux
+# WinCue — Portage cross-platform (Windows / Linux / macOS)
 
-## Décisions architecturales (révisées 2026-06-17)
+État : **macOS, Linux et Windows partagent le même chemin de sortie GL** depuis le
+portage macOS (branche `macos-port`, 2026-06-22). Ce document décrit l'architecture
+*réalisée* ; l'historique des décisions est conservé en bas.
+
+## Décisions architecturales (réalisées)
 
 | Sujet | Décision |
 |---|---|
-| Cibles | macOS + Linux simultanément |
-| Fenêtre output | OS-native (Win32/AppKit/GTK) par petits helpers `#[cfg]` — PAS Tauri WindowBuilder (requiert feature `unstable` qui importe comctl32 v6 et crashe les tests) |
-| Backend GPU | `vo=libmpv` partout + Render API OpenGL — UNE implémentation commune |
-| Contexte GL | `glutin 0.32` (rwh 0.6) : WGL sur Windows, CGL sur macOS, EGL sur Linux |
-| GL version | OpenGL 3.3 Core (macOS plafonne à 4.1 mais 3.3 suffit) |
-| hwdec | `hwdec=auto-copy` cross-platform (interop GL sûre) |
-| Fade overlay | Quad GL noir dans le compositeur (PAS `overlay-add`, PAS layered window) |
-| OSD timer | `osd-msg1` composite par mpv dans le FBO — inchangé sur les 3 OS |
-| vsync | `glutin` SwapInterval::Wait(1) — remplace `d3d11-sync-interval=0` |
-| Floating timer | Tauri WebView `float-timer` — unifié 3 OS, inchangé |
+| Cibles | Windows + Linux + macOS |
+| Chemin de rendu | `vo=libmpv` + mpv OpenGL Render API — **une seule** implémentation (`render.rs`), partagée par les 3 OS |
+| Création de fenêtre | Par-OS, derrière `#[cfg(target_os)]` : **winit** (Windows/Linux), **AppKit `NSWindow` via objc2** (macOS, `macos_window.rs`). PAS de Tauri `WindowBuilder` (feature `unstable` → comctl32 v6 → crash des tests) |
+| Pourquoi pas winit sur macOS | Son `EventLoop` exige la run loop principale AppKit, que la `NSApplication` de Tauri possède déjà. On ne peut pas avoir deux `[NSApp run]`. winit tourne sur un thread de fond sur Win/Linux (`with_any_thread`), interdit sur macOS |
+| Contexte GL | `glutin 0.32` (rwh 0.6) : WGL (Windows), EGL/GLX (Linux), **CGL** (macOS) |
+| Version GL | OpenGL 3.3 core (Windows/Linux) / **3.2 core (macOS — pas de profil 3.3)** ; shaders en `#version 150 core` (sous-ensemble accepté partout) |
+| hwdec | `hwdec=auto-copy` cross-platform (interop GL sûre), posé par-vidéo dans `fade::execute_load_params` |
+| Fade overlay | Quad GL noir dans le FBO mpv (PAS `overlay-add`, PAS layered window) — `tick_fade()` piloté par le thread render |
+| OSD timer | `osd-msg1` composité par mpv dans le FBO — inchangé sur les 3 OS |
+| vsync | `glutin` `SwapInterval::DontWait` (mpv `video-sync=desync` cadence la lecture) |
+| Floating timer | Tauri WebView `float-timer` — unifié 3 OS |
 | Legacy Windows | Win32+D3D11+wid derrière `#[cfg(feature="legacy-win32-output")]` (éteint) |
-| Audio Mac | CoreAudio via cpal — aucun changement |
-| Audio Linux | ALSA + PipeWire via cpal |
-| libmpv Mac | Bundlé dans le `.app` |
-| libmpv Linux | Dépendance système |
-| CI | GitHub Actions — runners macos-latest + ubuntu-latest |
+| Audio | cpal partout : WASAPI/ASIO (Windows), ALSA/PipeWire (Linux), CoreAudio (macOS) — aucun code par-OS |
+| libmpv Windows | `libmpv-2.dll` bundlé (`vendor/mpv/`) |
+| libmpv macOS | Homebrew en dev (`/opt/homebrew/lib/libmpv.dylib`) ; bundle `.app` = phase ultérieure |
+| libmpv Linux | Dépendance système (`.deb` dépend de `libmpv2 | libmpv1`) |
+| CI | GitHub Actions — `windows-latest` (check+test), `ubuntu-latest` (check), `macos-latest` (clippy+test) |
 
-**Items 5/6/10 (Win32OutputWindow + MpvOutputWindow comme deux impls) : CADUCS.**
-Il n'y a qu'une impl : `render.rs` avec de petits helpers `#[cfg]` pour la création de la fenêtre.
+## Sélection du backend (`build.rs`)
 
----
+`build.rs` émet les `cfg` :
 
-## Séquence d'implémentation
+- **`output_gl`** — le chemin Render API GL est compilé (`render.rs`, render loop, fade
+  quad). Vrai pour : Windows (défaut), Linux, **macOS**.
+- **`output_win32`** — chemin legacy Win32+D3D11 (`win32_window.rs`), Windows + feature
+  `legacy-win32-output` uniquement.
 
-### Phase A — compilable sur toutes les plateformes ✅
+Dans `render.rs`, la création de fenêtre se branche par `target_os` : winit
+(`not(macos)`) vs `super::macos_window` (`macos`). Tout ce qui suit `make_current`
+(contexte glutin, `mpv_render_context`, render loop, fade quad) est **partagé**.
 
-- [x] Ajouter CI GitHub Actions
-- [x] Isoler `windows-sys` derrière `#[cfg(target_os = "windows")]`
-- [x] `gpu-api=auto` + isoler options D3D11
-- [x] `symphonia` en dépendance régulière
-- [x] `mpv_sys::open_dll()` cross-platform
+## Fenêtre output — backends
 
-### Phase B — chemin GL unifié ✅ (Stage 1, 2026-06-17)
+### winit (Windows + Linux)
 
-- [x] **Floating timer → Tauri WebView** (fait en 0.8.1)
-- [x] **mpv_sys.rs** : +6 symboles Render API (`mpv_render_context_create/render/free/…`)
-- [x] **render.rs** (nouveau) : fenêtre Win32 GL + glutin WGL + mpv RenderContext + boucle rendu + fade quad GL
-- [x] **fade.rs** : simplifié — `tick_fade()` + `execute_pending()` driven par le thread render ; legacy derrière feature flag
-- [x] **mod.rs** : `vo=libmpv` uniforme ; `render::init()` dans `OutputEngine::new()` ; show/hide/position via `render::GL_WINDOW` (API winit cross-platform ; était `GL_HWND` Win32 en Stage 1, migré vers winit en 0.9.2)
-- [x] **Cargo.toml** : `glutin 0.32`, `glow 0.13`, `raw-window-handle 0.6`, feature `legacy-win32-output`
-- [ ] **macOS fenêtre GL** : NSWindow via objc2 + `app_handle.run_on_main_thread()` → CGL display
-- [ ] **Linux fenêtre GL** : GDK/GTK via `app_handle.run_on_main_thread()` → EGL display
+`render.rs` crée la fenêtre via **`winit 0.30`** sur un thread de fond
+(`wincue-output-window`) : `with_any_thread(true)` (extensions Windows / X11) lève le
+garde-fou « EventLoop sur le thread principal ». La fenêtre est stockée dans
+`render::GL_WINDOW: OnceLock<Arc<winit::window::Window>>` ; show/hide/position/fullscreen
+appellent l'API winit cross-platform depuis n'importe quel thread.
 
-### Stage 2 (future)
+### AppKit / objc2 (macOS — `macos_window.rs`)
 
-- Pool d'instances mpv pré-rollées (TODO marqué dans render.rs)
-- hwdec sans copie (DXGI/WGL_NV_DX_interop) optionnel
-- Suppression du code legacy Win32 une fois la parité validée
+winit étant inutilisable (voir décisions), macOS crée un **`NSWindow` borderless**
+directement via `objc2` (`msg_send!` brut, sélecteurs Cocoa stables ; AppKit linké par
+`build.rs`). La fenêtre est bâtie **inline sur le thread principal** — `OutputEngine::new`
+tourne dans le `.setup()` de Tauri, qui *est* le thread principal. Son `contentView`
+(un `NSView`) est passé à glutin comme drawable CGL ; le thread render fait ensuite
+exactement comme sur les autres OS.
 
----
+Les helpers de contrôle (`show`/`hide`/`position_on_screen`/`toggle_fullscreen`) sont
+appelés depuis des threads workers (commandes Tauri, event loop) → ils marshalent sur le
+thread principal via `AppHandle::run_on_main_thread`. Le pointeur `*mut NSWindow` est
+conservé (leaké, +1 retain) dans un `AtomicUsize`. Placement écran via `NSScreen`
+(coordonnées AppKit natives, pas de conversion), fullscreen = frame plein écran de
+l'`NSScreen` courant (style « borderless » comme winit).
 
-## Détails par composant
+**À valider sur hardware Apple :** la création du contexte/surface CGL se fait sur le
+thread render (comme Win/Linux). Si glutin exige le thread principal pour CGL, le repli
+est de bâtir la stack GL sur le thread principal pendant `.setup()`.
 
-### Fenêtre output — winit (actuel)
+## Render API mpv (`mpv/render.h`)
 
-Depuis 0.9.2, `render.rs` crée la fenêtre via **`winit 0.30`** (un seul chemin
-cross-platform) au lieu d'appels Win32 bruts :
-- Thread `wincue-output-window` : `winit::event_loop::EventLoop` + gestion des events
-  (drag, resize, double-clic fullscreen). Thread `wincue-output-render` : contexte GL
-  glutin + `mpv_render_context`.
-- Fenêtre stockée dans `render::GL_WINDOW: OnceLock<Arc<winit::window::Window>>` —
-  `OutputEngine` (show/hide/position/fullscreen) appelle l'API winit cross-platform
-  depuis n'importe quel thread.
-- **Windows / Linux** : la fenêtre winit est créée depuis le thread de fond.
-- **macOS** : nécessite le thread principal AppKit → création via
-  `AppHandle::run_on_main_thread()` puis transfert au render thread *(Stage 2 — TODO)*.
+Symboles dans `mpv_sys.rs` : `mpv_render_context_create/render/update/
+set_update_callback/report_swap/free`. Structures `MpvRenderParam`,
+`MpvOpenglInitParams`, `MpvOpenglFbo`. La render loop dit à mpv où dessiner via le champ
+`MpvOpenglFbo.fbo` (`0` = framebuffer fenêtre). *Pour de futures transformations /
+projection mapping : rendre dans un FBO/texture offscreen puis dessiner un quad/mesh
+warpé — purement dans `render.rs`, donc identique sur les 3 OS.*
 
-### Render API mpv (mpv/render.h)
+## Fade GL
 
-Symboles ajoutés dans `mpv_sys.rs` :
-- `mpv_render_context_create(res, mpv_handle, params)` — init avec backend OpenGL
-- `mpv_render_context_render(ctx, params)` — rend video+OSD dans FBO 0 (avec flip_y=1)
-- `mpv_render_context_update(ctx)` — flags (MPV_RENDER_UPDATE_FRAME)
-- `mpv_render_context_set_update_callback(ctx, fn, ctx_ptr)` — réveille le thread render
-- `mpv_render_context_report_swap(ctx)` — signale le swap à mpv
-- `mpv_render_context_free(ctx)` — libération
+Shader GLSL `#version 150 core` dans `render.rs` : vertex fullscreen via `gl_VertexID`
+(VAO dummy, pas de VBO), fragment `vec4(0,0,0,u_alpha)`. Dessiné après
+`mpv_render_context_render`, avant `swap_buffers`. Alpha piloté par `fade::tick_fade()`.
 
-Structures : `MpvRenderParam`, `MpvOpenglInitParams`, `MpvOpenglFbo`
+## Note : `tauri = {unstable}` à éviter
 
-### Fade GL
+La feature `unstable` expose `tauri::window::WindowBuilder` (fenêtre sans WebView) mais
+importe `TaskDialogIndirect` depuis `comctl32.dll v6`. Le binaire de test Rust n'a pas le
+manifest common-controls v6 → `STATUS_ENTRYPOINT_NOT_FOUND` avant le premier test. D'où
+les fenêtres output créées avec les APIs OS directement (winit / objc2).
 
-Shader GLSL 3.30 core dans `render.rs` :
-- Vertex : fullscreen triangle via `gl_VertexID` (pas de VBO, un VAO dummy requis par Core profile)
-- Fragment : `vec4(0, 0, 0, u_alpha)`
-- Dessiné après `mpv_render_context_render`, avant `swap_buffers`
-- Alpha : `FADE_STATE.current_alpha` mis à jour par `fade::tick_fade()` à chaque frame
+## libmpv — chargement dynamique (`mpv_sys::open_dll`)
 
-### Note : `tauri = {unstable}` à éviter
-
-La feature `unstable` expose `tauri::window::WindowBuilder` (fenêtre sans WebView) mais importe `TaskDialogIndirect` depuis `comctl32.dll v6`. Le binaire de test Rust n'a pas le manifest de dépendance common controls v6 qu'ajoute Tauri dans le vrai binaire → STATUS_ENTRYPOINT_NOT_FOUND avant le premier test. Solution retenue : créer les fenêtres output avec les APIs OS directement.
-
-### libmpv — chargement dynamique
-
-| Plateforme | Nom | Source |
+| Plateforme | Nom | Source recherchée |
 |---|---|---|
-| Windows | `libmpv-2.dll` | `vendor/mpv/` (bundlé) |
-| macOS | `libmpv.dylib` | `Contents/Frameworks/` |
-| Linux | `libmpv.so.2` | Dépendance système |
+| Windows | `libmpv-2.dll` | à côté de l'exe, puis `vendor/mpv/` |
+| macOS | `libmpv.dylib` | `Contents/Resources` / `Contents/Frameworks` (bundle), à côté de l'exe, puis Homebrew (`/opt/homebrew/lib`, `/usr/local/lib`) |
+| Linux | `libmpv.so.2` / `.so.1` / `.so` | à côté de l'exe, puis chemin système (`ld.so`) |
 
-### Audio
+---
 
-- **Windows** : WASAPI via cpal ; ASIO via feature `asio-support`
-- **macOS** : CoreAudio via cpal
-- **Linux** : ALSA/PipeWire via cpal
+## Historique (décisions superseded)
+
+- **Stage 1 (0.9.0)** : chemin GL unifié introduit sur Windows/Linux (winit), macOS
+  laissé sur l'ancienne fenêtre mpv cocoa-cb (`vo=gpu`) — fade non fonctionnel sur macOS.
+- **0.8.1** : Mac/Linux output via fenêtre gérée par mpv + propriétés (`hidden`,
+  `fullscreen`, `screen`) ; fade ASS `osd-overlay`. **Caduc** : remplacé par le chemin GL.
+- **Plan initial « NSWindow via run_on_main_thread + transfert au render thread »** :
+  l'hypothèse « créer juste une fenêtre winit sur le thread principal » était fausse (une
+  `winit::Window` exige sa propre `EventLoop` qui tourne). Remplacé par le `NSWindow`
+  objc2 direct ci-dessus.

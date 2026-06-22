@@ -43,4 +43,4 @@ Show control app for Windows (QLab-inspired). Tauri v2 + Rust backend + React/TS
 
 ## Tests
 
-Run `cargo test` from `src-tauri/`. 65 tests pass. Must cover: CueNumber parsing, CueRegistry, AudioCue serialization roundtrip, dB↔linear, FadeSpec curves, CueList operations, audio SR conversion, Stop/Fade specs, OSC types/server/dedup.
+Run `cargo test` from `src-tauri/`. 78 tests pass. Must cover: CueNumber parsing, CueRegistry, AudioCue serialization roundtrip, dB↔linear, FadeSpec curves, CueList operations, audio SR conversion, Stop/Fade specs, OSC types/server/dedup.

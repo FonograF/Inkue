@@ -1,15 +1,16 @@
-# WinCue — Project state as of 2026-06-20
+# WinCue — Project state as of 2026-06-22
 
 ## Current version: 0.9.3
 
 ## cargo build result
 
-**Compiles without errors, zero warnings** — default (winit/GL) **and**
-`--features legacy-win32-output`.
+**Compiles without errors, zero warnings** on all three OS in CI (Windows, Linux,
+macOS) — default (GL) **and** `--features legacy-win32-output` on Windows. The
+macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## cargo test result
 
-**65 tests pass, 0 failures.**
+**78 tests pass, 0 failures.**
 
 ---
 
@@ -50,7 +51,7 @@
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO; SR conversion in `fill_buffer`; infinite loop (`loops_remaining = u32::MAX`) never sends Completed; 5 unit tests |
-| OutputEngine | `engine/output_engine/` | ✅ Complete — unified GL Render API (Stage 1); `vo=libmpv`; winit GL window (Windows; macOS/Linux Stage 2 TODOs); mpv_render_context; GL fade quad; OSD + floating timer; `get_overlay_alpha()`, `set_overlay_alpha_direct()`; legacy Win32+D3D11 behind `legacy-win32-output` feature flag |
+| OutputEngine | `engine/output_engine/` | ✅ Complete — unified GL Render API on all 3 OS; `vo=libmpv`; native GL window — winit (Windows/Linux) or AppKit `NSWindow` via objc2 (macOS, `macos_window.rs`); mpv_render_context; GL fade quad; OSD + floating timer; `get_overlay_alpha()`, `set_overlay_alpha_direct()`; legacy Win32+D3D11 behind `legacy-win32-output` feature flag |
 | OscPatch | `engine/osc_patch.rs` | ✅ Complete |
 | OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, 50ms hash dedup cache |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
@@ -121,6 +122,35 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased — macOS unified GL output port
+
+macOS now joins the unified mpv OpenGL Render API path (`output_gl`, shared with
+Windows/Linux) instead of the previous cocoa-cb mpv-managed window (`vo=gpu`). This
+makes the dip-to-black fade work on macOS (it was a silent no-op before) and renders
+mpv into a framebuffer WinCue controls — the prerequisite for future video transforms /
+projection mapping on all three OS.
+
+- **New `engine/output_engine/macos_window.rs`** — borderless `NSWindow` created on the
+  AppKit main thread via `objc2` raw `msg_send!`; its `contentView` is handed to `glutin`
+  as the CGL drawable, after which the shared render thread + GL fade quad run identically
+  to Windows/Linux. winit cannot be used on macOS (its `EventLoop` must own the AppKit main
+  run loop, which Tauri already does), so the window backend is the one piece that differs.
+- **`render.rs`** — window creation branches by `target_os` (winit on Windows/Linux, AppKit
+  on macOS); fade shaders lowered to `#version 150 core`; GL 3.2 core requested on macOS
+  (no 3.3 core profile there; 150 is accepted by all three).
+- **`mod.rs`** — dropped the cocoa-cb hacks (`vo=gpu`, `force-window`/`window-minimized`,
+  `set_mpv_window_visible`, the `dispatch_sync` deadlock workarounds, mpv `fullscreen`/
+  `screen` properties); macOS uses `vo=libmpv` like every other OS.
+- **`build.rs`** — `output_winit` cfg renamed to `output_gl` (Windows-default + Linux +
+  macOS); AppKit framework linked on macOS. **`Cargo.toml`** — `objc2` 0.5 +
+  `objc2-foundation` 0.2 on macOS, pinned to winit's own objc2 stack (no duplicate).
+  **CI** — the macOS job now runs `clippy` + `test` instead of bare `check`.
+
+**Status:** compile-, clippy- and test-clean on all three OS in CI. **Runtime not yet
+verified on Apple hardware.** For dev/test, libmpv comes from Homebrew (`brew install mpv` →
+`/opt/homebrew/lib/libmpv.dylib`, already searched by `mpv_sys::open_dll`); `.app` dylib
+bundling + signing is a separate phase.
 
 ### 0.9.3 (2026-06-21) — Group Cue fixes + cross-platform polish (Linux/macOS) + UI
 
@@ -274,14 +304,14 @@ fix, not the full investigation.
 | 21. OSC Cue | ✅ Send multiple OSC messages on GO; workspace patches; inspector Messages tab; receive server with allowlist; Preferences OSC tab; activity dot in transport bar |
 | 22. Fade Cue | ✅ Volume fade to target dB, configurable curve (Linear/S-Curve/Exponential), stop-at-end, pause/resume, pre-wait |
 | 23. MIDI Cue | ✅ Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir) |
-| 24. Unified GL output | ✅ winit + mpv Render API default on Windows; macOS/Linux Stage 2 TODO |
+| 24. Unified GL output | ✅ mpv Render API on all 3 OS — winit window (Windows/Linux) + AppKit `NSWindow` via objc2 (macOS); legacy Win32+D3D11 behind a feature flag. macOS runtime pending hardware verification |
 
 ---
 
 ## Next priorities
 
-See `WHATSNEXT.md` for the full roadmap; macOS/Linux porting detail is in `PORTAGE.md`.
+See `WHATSNEXT.md` for the full roadmap; cross-platform detail is in `PORTAGE.md`.
 
-1. **Stage 2 GL output** — macOS (NSWindow/CGL) and Linux (GDK/EGL) window creation for the unified Render API path.
+1. **macOS runtime verification** — the unified GL output port (NSWindow via objc2) compiles clean on CI for all 3 OS; confirm window show/hide, video/image playback, and dip-to-black fades on real Apple hardware. First thing to watch: glutin/CGL surface creation on the render thread (fallback: build the GL stack on the main thread). See the *Unreleased* change-history entry.
 2. **Active A/V resync** (optional) — nudge the video's audio-voice rate to track mpv `time-pos` for drift-free long videos / tight loops (see Known issues).
 3. **ASIO → WASAPI Output Patch validation** — routing is wired; needs a hardware test.

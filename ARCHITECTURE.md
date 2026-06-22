@@ -5,9 +5,13 @@ Companion to `CLAUDE.md`. Read this when modifying the output engine, audio pipe
 ## Output engine (`engine/output_engine/`)
 
 Single persistent native window for all video and image cues, created at startup
-and hidden until the first visual GO. **Default path: winit + mpv OpenGL Render
-API** (`render.rs`): mpv runs with `vo=libmpv` and renders each frame into the
-window's default framebuffer via `glutin` (OpenGL 3.3 Core) + `mpv_render_context`.
+and hidden until the first visual GO. **Unified GL path (`output_gl`, all 3 OS):
+mpv OpenGL Render API** (`render.rs`): mpv runs with `vo=libmpv` and renders each
+frame into the window's default framebuffer via `glutin` (OpenGL 3.3 Core, 3.2 on
+macOS) + `mpv_render_context`. Only **native window creation** differs per OS —
+**winit** on Windows/Linux, **AppKit `NSWindow` via objc2** on macOS
+(`macos_window.rs`), because winit's `EventLoop` cannot coexist with Tauri's AppKit
+main run loop. Everything after `make_current` (render loop, GL fade quad) is shared.
 The legacy Win32 + D3D11 `--wid` path (`win32_window.rs`) compiles only behind the
 `legacy-win32-output` feature flag (off by default) as a regression fallback.
 
@@ -15,12 +19,12 @@ The legacy Win32 + D3D11 `--wid` path (`win32_window.rs`) compiles only behind t
 
 | Thread | Role |
 |---|---|
-| `wincue-output-window` | winit `EventLoop` — window events (drag, resize, double-click fullscreen) |
+| `wincue-output-window` | **(Windows/Linux only)** winit `EventLoop` — window events (drag, resize, double-click fullscreen). macOS has no such thread: the `NSWindow` is built on the main thread during `.setup()` and AppKit handles its events |
 | `wincue-output-render` | glutin GL context + `mpv_render_context` + render loop; draws the fade quad |
 | `wincue-output-mpv-events` | `mpv_wait_event` (`PLAYBACK_RESTART`, EOF, …) |
 
 **Key statics:**
-- `render::GL_WINDOW` — `Arc<winit::window::Window>`, shared so `OutputEngine` show/hide/position/fullscreen call winit's cross-platform API from any thread
+- `render::GL_WINDOW` — `Arc<winit::window::Window>` (**Windows/Linux only**), shared so `OutputEngine` show/hide/position/fullscreen call winit's cross-platform API from any thread. On macOS the `*mut NSWindow` lives in `macos_window::MAC_WINDOW` and control calls marshal onto the main thread via `run_on_main_thread`
 - `render::RENDER_SIGNAL` — condvar woken by mpv's update callback (and `render::wake()` during Fade Cues) so the loop redraws on demand
 - `render::GL_WIDTH` / `GL_HEIGHT` — physical window size, written on resize, read by `surface.resize()`
 - `OUTPUT_MPV_CTX` / `OUTPUT_MPV_LIB` — mpv context shared across threads
