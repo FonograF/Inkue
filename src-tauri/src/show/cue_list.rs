@@ -136,6 +136,26 @@ impl CueList {
         search(&mut self.cues, id).map(|ptr| unsafe { &mut *ptr })
     }
 
+    /// Find a cue by ID (immutable), searching recursively through group
+    /// children.  Used by the inspector / per-cue commands so cues nested in a
+    /// group are reachable, not just top-level ones.
+    pub fn get_recursive(&self, id: &CueId) -> Option<&dyn Cue> {
+        fn search<'a>(cues: &'a [Box<dyn Cue>], id: &CueId) -> Option<&'a dyn Cue> {
+            for cue in cues {
+                if cue.id() == *id {
+                    return Some(cue.as_ref());
+                }
+                if let Some(children) = cue.child_cues() {
+                    if let Some(found) = search(children, id) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        search(&self.cues, id)
+    }
+
     /// Replace a cue by ID in-place, searching recursively through group children.
     ///
     /// Returns `true` if the cue was found and replaced.
@@ -272,6 +292,77 @@ impl CueList {
         let all = std::mem::take(&mut self.cues);
         self.cues = all.into_iter().filter(|c| !ids_set.contains(&c.id())).collect();
         self.playhead_cue_id = new_playhead;
+        self.renumber_all();
+        Ok(())
+    }
+
+    /// Remove a cue by ID from anywhere in the hierarchy (top-level or nested in
+    /// a group).  Top-level removals adjust the Playhead exactly like [`remove`];
+    /// nested removals never touch the Playhead, which only ever holds
+    /// top-level IDs.
+    pub fn remove_anywhere(&mut self, id: &CueId) -> Result<Box<dyn Cue>> {
+        if self.index_of(id).is_some() {
+            return self.remove(id);
+        }
+        let removed = extract_cue_anywhere(&mut self.cues, id)
+            .ok_or_else(|| anyhow!("Cue {:?} not found", id))?;
+        self.renumber_all();
+        Ok(removed)
+    }
+
+    /// Remove multiple cues from anywhere in the hierarchy in one operation.
+    /// Nested cues are removed first (no Playhead impact); the remaining
+    /// top-level cues go through the Playhead-aware [`remove_many`].
+    pub fn remove_many_anywhere(&mut self, ids: &[CueId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for id in ids {
+            if self.get_recursive(id).is_none() {
+                return Err(anyhow!("Cue {:?} not found", id));
+            }
+        }
+        let nested: Vec<CueId> =
+            ids.iter().copied().filter(|id| self.index_of(id).is_none()).collect();
+        let top_level: Vec<CueId> =
+            ids.iter().copied().filter(|id| self.index_of(id).is_some()).collect();
+        for id in &nested {
+            extract_cue_anywhere(&mut self.cues, id);
+        }
+        if top_level.is_empty() {
+            self.renumber_all();
+        } else {
+            self.remove_many(&top_level)?;
+        }
+        Ok(())
+    }
+
+    /// Insert `cue` immediately after `anchor_id`, wherever the anchor lives
+    /// (top-level or inside a group).  Used to place a duplicate right after its
+    /// source so duplicating a group child keeps it in the same group.
+    pub fn insert_after_anywhere(&mut self, anchor_id: &CueId, cue: Box<dyn Cue>) -> Result<()> {
+        fn insert(
+            cues: &mut Vec<Box<dyn Cue>>,
+            anchor: &CueId,
+            cue: Box<dyn Cue>,
+        ) -> std::result::Result<(), Box<dyn Cue>> {
+            if let Some(idx) = cues.iter().position(|c| c.id() == *anchor) {
+                cues.insert(idx + 1, cue);
+                return Ok(());
+            }
+            let mut carry = cue;
+            for c in cues.iter_mut() {
+                if let Some(children) = c.child_cues_mut() {
+                    match insert(children, anchor, carry) {
+                        Ok(()) => return Ok(()),
+                        Err(returned) => carry = returned,
+                    }
+                }
+            }
+            Err(carry)
+        }
+        insert(&mut self.cues, anchor_id, cue)
+            .map_err(|_| anyhow!("Anchor cue {:?} not found", anchor_id))?;
         self.renumber_all();
         Ok(())
     }
@@ -478,14 +569,42 @@ impl CueList {
     }
 
     /// Move the Playhead to a specific cue.
+    ///
+    /// A top-level cue ID parks the Playhead directly on it.  A cue nested in a
+    /// group parks the outer Playhead on that cue's top-level ancestor and, when
+    /// the ancestor is a Sequential group with the cue as a direct child, points
+    /// the group's internal sequence at it so the next GO fires that child.
     pub fn set_playhead(&mut self, id: Option<CueId>) -> Result<()> {
-        if let Some(ref cid) = id {
-            if self.get(cid).is_none() {
-                return Err(anyhow!("Cue {:?} not found", cid));
-            }
+        let Some(cid) = id else {
+            self.playhead_cue_id = None;
+            return Ok(());
+        };
+        if self.index_of(&cid).is_some() {
+            self.playhead_cue_id = Some(cid);
+            return Ok(());
         }
-        self.playhead_cue_id = id;
+        let ancestor = self
+            .top_level_ancestor_of(&cid)
+            .ok_or_else(|| anyhow!("Cue {:?} not found", cid))?;
+        if let Some(group) = self.get_mut(&ancestor) {
+            group.set_active_child(&cid);
+        }
+        self.playhead_cue_id = Some(ancestor);
         Ok(())
+    }
+
+    /// The ID of the top-level cue whose subtree contains `id` (the cue itself
+    /// when it is already top-level).
+    fn top_level_ancestor_of(&self, id: &CueId) -> Option<CueId> {
+        fn contains(cue: &dyn Cue, id: &CueId) -> bool {
+            if cue.id() == *id {
+                return true;
+            }
+            cue.child_cues()
+                .map(|children| children.iter().any(|c| contains(c.as_ref(), id)))
+                .unwrap_or(false)
+        }
+        self.cues.iter().find(|c| contains(c.as_ref(), id)).map(|c| c.id())
     }
 
     // -----------------------------------------------------------------------
@@ -694,5 +813,82 @@ mod tests {
         assert_eq!(restored.name, "Round-trip");
         assert_eq!(restored.cues.len(), 1);
         assert_eq!(restored.cues[0].name(), "A Memo");
+    }
+
+    /// Build a list holding one group whose only child is a memo.
+    /// Returns (list, group_id, child_id).
+    fn list_with_group_child() -> (CueList, CueId, CueId) {
+        let mut list = CueList::new("Test");
+        let mut group = crate::cue::group_cue::GroupCue::new();
+        let child = memo();
+        let child_id = child.id();
+        group.children.push(child);
+        let group_id = group.id;
+        list.push(Box::new(group));
+        (list, group_id, child_id)
+    }
+
+    #[test]
+    fn get_recursive_finds_nested_child() {
+        let (list, _group_id, child_id) = list_with_group_child();
+        // Top-level get cannot see a nested cue …
+        assert!(list.get(&child_id).is_none());
+        // … but the recursive variant can.
+        assert!(list.get_recursive(&child_id).is_some());
+    }
+
+    #[test]
+    fn remove_anywhere_removes_nested_child() {
+        let (mut list, group_id, child_id) = list_with_group_child();
+        list.remove_anywhere(&child_id).unwrap();
+        assert!(list.get_recursive(&child_id).is_none());
+        // The group is still present, now empty.
+        let group = list.get(&group_id).expect("group still present");
+        assert_eq!(group.child_cues().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn remove_many_anywhere_mixes_nested_and_top_level() {
+        let (mut list, _group_id, child_id) = list_with_group_child();
+        let top = memo();
+        let top_id = top.id();
+        list.push(top);
+        list.remove_many_anywhere(&[child_id, top_id]).unwrap();
+        assert!(list.get_recursive(&child_id).is_none());
+        assert!(list.get(&top_id).is_none());
+    }
+
+    #[test]
+    fn insert_after_anywhere_keeps_copy_in_group() {
+        let (mut list, group_id, child_id) = list_with_group_child();
+        let sibling = memo();
+        let sibling_id = sibling.id();
+        list.insert_after_anywhere(&child_id, sibling).unwrap();
+        let group = list.get(&group_id).unwrap();
+        let children = group.child_cues().unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].id(), child_id);
+        assert_eq!(children[1].id(), sibling_id);
+    }
+
+    #[test]
+    fn set_playhead_on_sequential_child_parks_on_group() {
+        use crate::cue::types::GroupMode;
+        let mut list = CueList::new("Test");
+        let mut group = crate::cue::group_cue::GroupCue::new();
+        group.mode = GroupMode::Sequential;
+        let c0 = memo();
+        let c1 = memo();
+        let c1_id = c1.id();
+        group.children.push(c0);
+        group.children.push(c1);
+        let group_id = group.id;
+        list.push(Box::new(group));
+
+        list.set_playhead(Some(c1_id)).unwrap();
+        // Outer playhead parks on the group …
+        assert_eq!(list.playhead_cue_id, Some(group_id));
+        // … and the group's next-to-fire child is the one we picked.
+        assert_eq!(list.get(&group_id).unwrap().active_child_id(), Some(c1_id));
     }
 }

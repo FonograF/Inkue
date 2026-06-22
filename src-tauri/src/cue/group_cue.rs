@@ -165,8 +165,11 @@ impl GroupCue {
                 }
             }
             GroupMode::Sequential => {
-                self.seq_current_id = None;
-                if let Err(e) = self.fire_next_sequential(ctx, None) {
+                // Fire from the inner playhead (set by `set_active_child` when the
+                // user parks the Playhead on a specific child); `None` starts from
+                // the first child.
+                let start_after = self.seq_current_id;
+                if let Err(e) = self.fire_next_sequential(ctx, start_after) {
                     log::warn!("Group sequential: first child failed to start: {e}");
                     self.seq_done = true;
                 }
@@ -306,15 +309,11 @@ impl Cue for GroupCue {
                 let prev_id = self.seq_current_id;
                 return self.fire_next_sequential(ctx, prev_id);
             }
-            // Current child still running → stop it and advance to the next child.
-            // (GO while a sequential child plays acts as "skip to next", matching QLab.)
+            // A child is still running → advance to the next child WITHOUT
+            // stopping the current one, so audio overlaps exactly like firing
+            // cues at the top level.  (Visual cues self-cross-stop inside the
+            // output engine, so only one video/image is ever on screen.)
             if let Some(current_id) = self.seq_current_id {
-                if let Some(idx) = self.children.iter().position(|c| c.id() == current_id) {
-                    if self.children[idx].is_running() || self.children[idx].is_paused() {
-                        let _ = self.children[idx].stop(ctx);
-                        let _ = self.children[idx].reset();
-                    }
-                }
                 self.seq_done = false;
                 return self.fire_next_sequential(ctx, Some(current_id));
             }
@@ -420,36 +419,59 @@ impl Cue for GroupCue {
 
             // ── Sequential ────────────────────────────────────────────────
             GroupMode::Sequential => {
-                // Waiting for post-wait before firing the next child.
+                // Tick every running child so overlapping cues (a manual GO or
+                // Auto-Follow fired the next child while a previous one is still
+                // playing) keep progressing and finish on their own.  Reset any
+                // child that finishes EXCEPT the current sequence driver — its
+                // completion is what advances the sequence (handled below).
+                let current_id_opt = self.seq_current_id;
+                let mut current_done = false;
+                for i in 0..self.children.len() {
+                    if self.children[i].state() == CueState::Running {
+                        let done = self.tick_child_at(i, ctx)?;
+                        if done {
+                            if Some(self.children[i].id()) == current_id_opt {
+                                current_done = true;
+                            } else {
+                                let _ = self.children[i].reset();
+                            }
+                        }
+                    }
+                }
+
+                // Post-wait before firing the next child.
                 if let Some(deadline) = self.seq_post_wait_until {
                     if Instant::now() >= deadline {
                         self.seq_post_wait_until = None;
-                        let prev_id = self.seq_current_id;
-                        self.fire_next_sequential(ctx, prev_id)?;
+                        self.fire_next_sequential(ctx, current_id_opt)?;
                     }
                     return Ok(());
                 }
 
-                let current_id = match self.seq_current_id {
+                let current_id = match current_id_opt {
                     Some(id) => id,
                     None => return Ok(()),
                 };
-
                 let idx = match self.children.iter().position(|c| c.id() == current_id) {
                     Some(i) => i,
                     None => return Ok(()),
                 };
+                // The driver child may have finished in a previous tick before
+                // we got here (state already Completed/Standby).
+                if matches!(self.children[idx].state(), CueState::Completed | CueState::Standby) {
+                    current_done = true;
+                }
 
-                let child_done = self.tick_child_at(idx, ctx)?;
-
-                if child_done {
+                // `seq_done` means the sequence is intentionally paused at this
+                // child (a DoNotContinue boundary, or a manual Playhead placement)
+                // — wait for a GO rather than auto-advancing.
+                if current_done && !self.seq_done {
                     let cm = self.children[idx].continue_mode();
                     let pw = self.children[idx].post_wait();
                     let _ = self.children[idx].reset();
 
                     match cm {
                         ContinueMode::DoNotContinue => {
-                            // Sequence stops here.
                             self.seq_done = true;
                         }
                         ContinueMode::AutoContinue => {
@@ -460,9 +482,8 @@ impl Cue for GroupCue {
                             }
                         }
                         ContinueMode::AutoFollow => {
-                            // Auto-Follow is processed at fire time (see fire_next_sequential).
-                            // If we get here it means the fired child completed — fire the
-                            // cue AFTER the one that Auto-Followed.
+                            // The fired child completed — fire the cue AFTER the
+                            // one that Auto-Followed.
                             self.fire_next_sequential(ctx, Some(current_id))?;
                         }
                     }
@@ -566,52 +587,73 @@ impl Cue for GroupCue {
     }
 
     fn absorbs_go(&self) -> bool {
-        if self.state != CueState::Running
-            || self.mode != GroupMode::Sequential
-            || self.in_pre_wait
-        {
-            return false;
-        }
-        // Sequence paused after a DoNotContinue child → fire next child.
-        if self.seq_done && self.has_next_sequential_child() {
-            return true;
-        }
-        // Current child still running → absorb the GO as a no-op to prevent
-        // the group from being restarted from scratch.
-        if self.seq_current_id.is_some() {
-            return true;
-        }
-        false
+        // Absorb a GO only while there is still another child to fire after the
+        // current one.  Once the last child has been fired, the GO falls through
+        // to the outer list (the Playhead has already been released past us).
+        self.state == CueState::Running
+            && self.mode == GroupMode::Sequential
+            && !self.in_pre_wait
+            && self.has_next_sequential_child()
     }
 
     fn holds_playhead(&self) -> bool {
+        // Keep the outer Playhead while pre-waiting (no child fired yet) or while
+        // there is still a child to fire.  Released as soon as the last child is
+        // fired (see `released_playhead`).
         self.mode == GroupMode::Sequential
+            && self.state == CueState::Running
+            && (self.in_pre_wait || self.has_next_sequential_child())
+    }
+
+    fn released_playhead(&self) -> bool {
+        // The last child has been fired: a child was started, none remain, and we
+        // are past any pre-wait.  The group may still be running (overlapping
+        // children playing out) but the outer Playhead should move on.
+        self.mode == GroupMode::Sequential
+            && self.state == CueState::Running
+            && !self.in_pre_wait
+            && self.seq_current_id.is_some()
+            && !self.has_next_sequential_child()
     }
 
     fn active_child_id(&self) -> Option<CueId> {
         if self.mode != GroupMode::Sequential {
             return None;
         }
-        match self.state {
-            CueState::Running if !self.in_pre_wait => {
-                // A child is currently running — return the NEXT child (what fires on the
-                // following GO), not the current one (visible via its Running state / green row).
-                if let Some(running_idx) = self.children.iter().position(|c| c.state() == CueState::Running) {
-                    return self.children.get(running_idx + 1).map(|c| c.id());
-                }
-                // Sequence paused at a DoNotContinue boundary — show the next child to fire.
-                if self.seq_done {
-                    let next_idx = self.seq_current_id
-                        .and_then(|id| self.children.iter().position(|c| c.id() == id))
-                        .map(|i| i + 1)
-                        .unwrap_or(0);
-                    return self.children.get(next_idx).map(|c| c.id());
-                }
-                None
+        // The next child a GO will fire = the child after the inner playhead.
+        // Works in every state: Standby (None → first child, or a child the user
+        // parked the Playhead on), Running (the child after the current one), and
+        // after the last child has fired (None → the Playhead has left the group).
+        match self.seq_current_id {
+            Some(id) => {
+                let idx = self.children.iter().position(|c| c.id() == id)?;
+                self.children.get(idx + 1).map(|c| c.id())
             }
-            // Not yet fired (Standby) or in pre-wait: first child fires on GO.
-            _ => self.children.first().map(|c| c.id()),
+            None => self.children.first().map(|c| c.id()),
         }
+    }
+
+    fn set_active_child(&mut self, child_id: &CueId) -> bool {
+        if self.mode != GroupMode::Sequential {
+            return false;
+        }
+        let Some(idx) = self.children.iter().position(|c| c.id() == *child_id) else {
+            return false;
+        };
+        // Park the inner playhead on the child BEFORE the target so the next fire
+        // (start_action on a standby group, or an absorbed GO on a running one)
+        // fires the target.  `None` when the target is the first child.
+        self.seq_current_id = if idx == 0 {
+            None
+        } else {
+            Some(self.children[idx - 1].id())
+        };
+        // Pause here: a running sequence waits for the next GO instead of
+        // auto-advancing.  A standby group ignores this — start_action clears
+        // seq_done and fires from seq_current_id.
+        self.seq_done = true;
+        self.seq_post_wait_until = None;
+        true
     }
 
     // ── Serialisation ─────────────────────────────────────────────────────
@@ -654,5 +696,106 @@ impl CueFactory for GroupCueFactory {
     /// deserialised with the registry.
     fn from_json(&self, _value: Value) -> Result<Box<dyn Cue>> {
         Ok(Box::new(GroupCue::new()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — playhead-handling logic (pure, no CueContext required)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cue::memo_cue::MemoCue;
+
+    /// A Sequential group with `n` memo children, marked Running.
+    fn running_seq_group(n: usize) -> GroupCue {
+        let mut g = GroupCue::new();
+        g.mode = GroupMode::Sequential;
+        for _ in 0..n {
+            g.children.push(Box::new(MemoCue::new()));
+        }
+        g.state = CueState::Running;
+        g
+    }
+
+    #[test]
+    fn absorbs_and_holds_while_more_children_remain() {
+        let mut g = running_seq_group(3);
+        // Inner playhead on the first child → another child remains.
+        g.seq_current_id = Some(g.children[0].id());
+        assert!(g.absorbs_go());
+        assert!(g.holds_playhead());
+        assert!(!g.released_playhead());
+    }
+
+    #[test]
+    fn releases_playhead_on_last_child() {
+        let mut g = running_seq_group(3);
+        g.seq_current_id = Some(g.children[2].id()); // last child fired
+        assert!(!g.absorbs_go());
+        assert!(!g.holds_playhead());
+        assert!(g.released_playhead());
+    }
+
+    #[test]
+    fn single_child_group_releases_immediately() {
+        let mut g = running_seq_group(1);
+        g.seq_current_id = Some(g.children[0].id());
+        assert!(!g.holds_playhead());
+        assert!(g.released_playhead());
+        assert!(!g.absorbs_go());
+    }
+
+    #[test]
+    fn holds_playhead_during_pre_wait() {
+        let mut g = running_seq_group(2);
+        g.in_pre_wait = true;
+        g.seq_current_id = None;
+        assert!(g.holds_playhead());
+        assert!(!g.released_playhead());
+        assert!(!g.absorbs_go()); // a GO during pre-wait is not absorbed
+    }
+
+    #[test]
+    fn active_child_id_is_next_after_inner_playhead() {
+        let mut g = running_seq_group(3);
+        g.seq_current_id = Some(g.children[0].id());
+        let expected = g.children[1].id();
+        assert_eq!(g.active_child_id(), Some(expected));
+        g.seq_current_id = Some(g.children[2].id());
+        assert_eq!(g.active_child_id(), None); // no child after the last
+    }
+
+    #[test]
+    fn simultaneous_group_never_holds_playhead() {
+        let mut g = running_seq_group(2);
+        g.mode = GroupMode::Simultaneous;
+        assert!(!g.holds_playhead());
+        assert!(!g.released_playhead());
+        assert!(!g.absorbs_go());
+        assert_eq!(g.active_child_id(), None);
+    }
+
+    #[test]
+    fn set_active_child_parks_inner_playhead() {
+        let mut g = running_seq_group(3);
+        let second = g.children[1].id();
+        assert!(g.set_active_child(&second));
+        assert_eq!(g.active_child_id(), Some(second));
+
+        // Parking on the first child clears the inner playhead.
+        let first = g.children[0].id();
+        assert!(g.set_active_child(&first));
+        assert_eq!(g.seq_current_id, None);
+        assert_eq!(g.active_child_id(), Some(first));
+    }
+
+    #[test]
+    fn set_active_child_rejected_for_simultaneous() {
+        let mut g = running_seq_group(2);
+        g.mode = GroupMode::Simultaneous;
+        let child = g.children[0].id();
+        assert!(!g.set_active_child(&child));
     }
 }

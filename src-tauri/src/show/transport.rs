@@ -72,6 +72,11 @@ impl Transport {
             if let Some(cue) = cue_list.get_mut(&cue_id) {
                 cue.go(&self.context)?;
             }
+            // If that GO fired the group's last child, release the outer Playhead
+            // to the cue after the group so the next GO continues the outer list.
+            if cue_list.get(&cue_id).is_some_and(|c| c.released_playhead()) {
+                cue_list.advance_playhead();
+            }
             return Ok(GoResult { triggered: vec![cue_id], stopped: vec![] });
         }
 

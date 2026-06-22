@@ -98,13 +98,11 @@ function computeInnerPlayheadIds(cues: CueSummary[], outerPlayheadId: string | n
       const isRunning = cue.state === "running";
 
       if (cue.group_mode === "sequential") {
-        if (isRunning && cue.active_child_id) {
-          // Running: active_child_id = the next child to fire on GO.
+        // active_child_id is the child a GO fires next, in every state. Show it
+        // whenever the group is running or parked at the outer playhead, so a
+        // child the user parked the Playhead on is highlighted — not just the first.
+        if ((isRunning || isAtPlayhead) && cue.active_child_id) {
           result.add(cue.active_child_id);
-        } else if (isAtPlayhead && !isRunning) {
-          // At outer playhead but not yet fired: preview the first child.
-          const first = cue.children?.[0];
-          if (first) result.add(first.id);
         }
       } else if (cue.group_mode === "simultaneous") {
         if (isAtPlayhead || isRunning) {
@@ -1150,12 +1148,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 } else {
                   setSelectedCueId(cue.id);
                   setSelectedCueIds([cue.id]);
-                  // For child cues, move the outer playhead to their parent group
-                  // so that Space fires the group (which fires the child).
-                  // For top-level cues, move the playhead directly to the cue.
-                  const playheadTarget = parentGroupId ?? cue.id;
-                  setPlayheadCueId(playheadTarget);
-                  setPlayhead(playheadTarget).catch(console.error);
+                  // Park the Playhead on this exact cue. The backend routes a
+                  // child of a Sequential group to its ancestor group and points
+                  // the group's inner sequence at the child, so GO fires it.
+                  // Optimistically reflect the outer Playhead (the group for a child).
+                  setPlayheadCueId(parentGroupId ?? cue.id);
+                  setPlayhead(cue.id).catch(console.error);
                   anchorCueIdRef.current = cue.id;
                   selectionEndRef.current = cue.id;
                 }
