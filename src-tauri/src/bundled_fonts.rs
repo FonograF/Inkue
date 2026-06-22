@@ -91,6 +91,6 @@ fn register_font(dest: &std::path::Path) {
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     if let Ok(fonts_key) = hkcu.create_subkey(r"Software\Microsoft\Windows NT\CurrentVersion\Fonts").map(|(k, _)| k) {
-        let _ = fonts_key.set_value(&format!("{FONT_FAMILY} (TrueType)"), &FONT_FILE_NAME.to_string());
+        let _ = fonts_key.set_value(format!("{FONT_FAMILY} (TrueType)"), &FONT_FILE_NAME.to_string());
     }
 }

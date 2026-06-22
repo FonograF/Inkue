@@ -31,7 +31,7 @@ The legacy Win32 + D3D11 `--wid` path (`win32_window.rs`) compiles only behind t
 
 **Video audio**: mpv runs with `ao=null` / `audio=no`. A video's audio track is decoded by symphonia and played as a normal `AudioEngine` Voice (gets Output Patch routing, VU, fades). Both video and audio start paused at GO; `MPV_EVENT_PLAYBACK_RESTART` releases both simultaneously from frame 0. A 2.5 s watchdog force-reveals if the event never fires.
 
-**Fade overlay**: a fullscreen black quad (`vec4(0,0,0,alpha)`) drawn in the same GL framebuffer after the mpv render, before `swap_buffers`. Alpha 0 = transparent, 255 = opaque black; animated by `fade::tick_fade()`. Drawing the fade in mpv's own framebuffer is immune to the DWM DirectFlip "frame-black" glitch that affected the old separate layered window. A hard-cut stop forces alpha 255 to paint black over the frozen last frame. *(Legacy path only: a `WS_EX_LAYERED` child window animated via `WM_TIMER`, with `d3d11-flip=no` to avoid that DirectFlip glitch.)*
+**Fade overlay**: a fullscreen black quad (`vec4(0,0,0,alpha)`) drawn in the same GL framebuffer after the mpv render, before `swap_buffers`. Alpha 0 = transparent, 255 = opaque black; animated by `fade::tick_fade()`. Drawing the fade in mpv's own framebuffer is immune to the DWM DirectFlip "frame-black" glitch that affected the old separate layered window. A hard-cut stop forces alpha 255 to paint black over the frozen last frame. The idle alpha also starts at 255, so the GL loop commits at least one buffer even with no content loaded — required for the Wayland compositor to map the window (otherwise F9/View toggles nothing until the first cue). *(Legacy path only: a `WS_EX_LAYERED` child window animated via `WM_TIMER`, with `d3d11-flip=no` to avoid that DirectFlip glitch.)*
 
 **Cross-stop rule**: any `show_content()` call stops the current voice first (applying its stored `fade_out_ms`).
 
@@ -68,12 +68,14 @@ The timer is rendered via mpv's OSD (`osd-msg1` property), not a separate child 
 | `timer_show_ms` | bool | false |
 | `timer_position` | `TimerPosition` | Center |
 | `timer_margin` | u32 | 50 |
-| `timer_font` | String | "Arial" |
+| `timer_font` | String | "DSEG7 Classic" (bundled) |
 | `timer_font_size` | u32 | 120 |
 
 **Preview mode**: `output_engine.set_timer_preview(Some("00:00.000"))` — timer thread shows this placeholder instead of live cue time. Used by the preferences "Preview" checkbox. `set_timer_preview(None)` returns to live mode.
 
-**Font enumeration**: `list_system_fonts` Tauri command → `EnumFontFamiliesExW` (GDI) → sorted list of installed family names. UI renders them in a `<datalist>` for searchable autocomplete.
+**Font enumeration**: `list_system_fonts` Tauri command → `EnumFontFamiliesExW` (GDI) on Windows, `fc-list` (fontconfig — the same backend mpv/libass resolve `osd-font` through) on Linux/macOS → sorted list of installed family names. UI renders them in a `<datalist>` for searchable autocomplete.
+
+**Bundled default font**: `bundled_fonts::ensure_installed()` (called at startup) copies DSEG7 Classic (SIL OFL 1.1, `vendor/fonts/`) into the per-user font dir — `~/.local/share/fonts` + `fc-cache` (Linux), `~/Library/Fonts` (macOS), per-user Fonts dir + registry (Windows). Once installed it resolves by family name for both the mpv OSD and the floating-timer WebView with no separate embedding path. It is the default `timer_font`.
 
 ## Audio pipeline (`engine/audio_engine.rs`, `engine/voice.rs`)
 
@@ -169,7 +171,7 @@ Both use `workspace.try_lock()` — skip the frame rather than block if a comman
 
 ## Preferences system
 
-`AppPreferences` is persisted inside the `.wincue` workspace file under `"preferences"`. Machine-specific audio config (`MachineAudioConfig`) lives separately in `%APPDATA%\WinCue\audio.json`.
+`AppPreferences` is persisted inside the `.wincue` workspace file under `"preferences"`. Machine-specific audio config (`MachineAudioConfig`) lives separately in a per-OS config dir resolved by `machine_config::config_path()`: `%APPDATA%\WinCue\` (Windows), `~/.config/WinCue/` (Linux), `~/Library/Application Support/WinCue/` (macOS).
 
 `update_display_preferences` (Tauri command) persists fields to workspace **and** immediately applies timer style to mpv via `set_timer_style`. It also clears any active preview (`set_timer_preview(None)`).
 

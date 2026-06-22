@@ -1,12 +1,18 @@
 //! [`OutputEngine`] — unified output for both video and image cues.
 //!
-//! Windows: a single persistent `WS_POPUP` Win32 window hosts libmpv via the `wid`
-//! option.  A `WS_EX_LAYERED` overlay window provides dip-to-black transitions.
+//! Windows (default) & Linux: a winit window hosts libmpv via the OpenGL Render
+//! API (`vo=libmpv`, see `render.rs`); the dip-to-black fade is a GL quad drawn
+//! in the same surface.
 //!
-//! Mac / Linux: mpv creates and manages its own native window (`force-window=yes`).
-//! Fades are driven by an `osd-overlay` ASS drawing and a 16 ms background thread.
+//! Windows legacy (`legacy-win32-output` feature): a `WS_POPUP` Win32 window hosts
+//! libmpv via the `wid` option, with a `WS_EX_LAYERED` overlay driving the fade.
 //!
-//! In both cases the floating cue timer is a Tauri WebView window (`float-timer`).
+//! macOS (Stage 2 — TODO): mpv creates and manages its own native window
+//! (`vo=gpu` / Metal); the fade is an `osd-overlay` ASS drawing animated by a
+//! 16 ms background thread.
+//!
+//! On every OS the floating cue timer is a Tauri WebView window (`float-timer`),
+//! and the on-output timer is mpv's OSD (`osd-msg1`).
 
 mod fade;
 mod mpv_events;

@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-20
 
-## Current version: 0.9.2
+## Current version: 0.9.3
 
 ## cargo build result
 
@@ -60,7 +60,8 @@
 | Event loop | `show/event_loop.rs` | ✅ Complete — per-loop progress bar uses `file_duration_ms` modulo |
 | UndoStack | `show/undo_stack.rs` | ✅ Complete |
 | AppState | `state/app_state.rs` | ✅ Complete |
-| Preferences | `preferences.rs` | ✅ Complete |
+| Preferences | `preferences.rs` | ✅ Complete — incl. Personalization (`cue_color_style`) + timer fields |
+| Bundled fonts | `bundled_fonts.rs` | ✅ Installs DSEG7 Classic (default timer font) per-user at startup; cross-platform resolution |
 | Transport commands | `commands/transport_cmds.rs` | ✅ Complete — infinite-loop GO fix: uses `file_duration().is_none()` instead of `duration().is_none()` for loading guard |
 | Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `CueSummary` now includes `notes`, `file_duration_ms` |
 | Cue List commands | `commands/cue_list_cmds.rs` | ✅ Complete |
@@ -98,6 +99,7 @@
 | `components/Osc/OscMonitor.tsx` | ✅ Complete |
 | `components/Preferences/PreferencesModal.tsx` | ✅ Complete |
 | `components/WaveformModal.tsx` | ✅ Complete |
+| `components/common/Select.tsx` | ✅ Themed dropdown replacing native `<select>` (15 call sites; readable dark theme on Linux/WebKitGTK) |
 | `main.tsx` | ✅ Complete |
 
 ---
@@ -119,6 +121,26 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.3 (2026-06-21) — Group Cue fixes + cross-platform polish (Linux/macOS) + UI
+
+**Group Cue:**
+
+- **Edit / delete cues inside a group** — the inspector and delete were top-level only, so a cue nested in a group showed an empty inspector and couldn't be removed. `get_cue`, `remove_cue`/`remove_cues`, `duplicate_cue`/`duplicate_cues`, waveform/normalize/preview now resolve recursively. New `cue_list` helpers `get_recursive`, `remove_anywhere`, `remove_many_anywhere`, `insert_after_anywhere`. `show/cue_list.rs`, `commands/cue_cmds.rs`.
+- **Sequential audio overlaps** — a GO that advances a Sequential group no longer stops the current child, so sounds overlap like top-level cues; the group now ticks **all** running children so overlapping ones finish on their own. `cue/group_cue.rs`.
+- **Playhead leaves the group on the last child** — firing the last child of a Sequential group now releases the outer Playhead to the cue after the group (previously the next GO stopped the group and then moved on). New trait `released_playhead()`; the transport releases on GO, the event loop on Auto-Continue/Follow reaching the last child. `cue/group_cue.rs`, `show/transport.rs`, `show/event_loop.rs`.
+- **Park the Playhead on a specific child** — clicking a child of a Sequential group parks the outer Playhead on the group and points its inner sequence at that child, so GO fires it (Standby starts there, Running fires it next). New trait `set_active_child()`; `set_playhead` routes nested IDs to the top-level ancestor; `active_child_id` is now state-independent. `cue/{traits,group_cue}.rs`, `show/cue_list.rs`, `commands/cue_cmds.rs`, `CueListView.tsx`.
+
+**Cross-platform & UI:**
+
+- **Bundled timer font (DSEG7 Classic)** — `bundled_fonts::ensure_installed()` copies DSEG7 Classic (SIL OFL 1.1) into the per-user font dir at startup (`~/.local/share/fonts` + `fc-cache` on Linux, `~/Library/Fonts` on macOS, per-user Fonts dir + registry on Windows); it then resolves by family name for both the mpv OSD and the floating WebView. New default `timer_font`. `list_system_fonts()` also works on Linux/macOS now via `fc-list` (fontconfig — the backend mpv/libass resolve `osd-font` through). New `bundled_fonts.rs`, `vendor/fonts/`.
+- **mpv `loadfile <index>` on all OS** — the Linux branch omitted the `<index>` arg, so mpv parsed the options string as the index and rejected it → video/image silently failed (Linux libmpv 0.41). Now passed on every OS. `output_engine/`.
+- **Machine-config path per-OS** — `machine_config::config_path()` read Windows-only `%APPDATA%` and fell back to the CWD elsewhere, writing `audio.json` into `src-tauri/` under `tauri dev` (retriggered rebuilds). Now `~/.config` (Linux), `~/Library/Application Support` (macOS), `%APPDATA%` (Windows). `machine_config.rs`.
+- **Wayland: output window now shows** — `FadeAnimState::idle()` started at alpha 0, so the GL loop never committed a buffer while idle → Wayland never mapped the surface (F9/View toggled nothing until a cue forced the first frame). Idle now starts at alpha 255 (opaque black). Also `skipTaskbar` on the hidden `preferences` window. `output_engine/`, `tauri.conf.json`.
+- **Themed custom dropdown** — `components/common/Select.tsx` replaces the native `<select>` (WebKitGTK rendered it as an unreadable white GTK popup under the dark theme on Linux) at all 15 call sites.
+- **Personalization preferences + cue colours** — new Personalization category (Colour Theme moved there) with a Cue Appearance section: `cue_color_style: stripe | full_row`. New **Cyan** (`#06b6d4`); default colours de-collided (Fade Blue→Pink, MIDI Green→White, OSC Blue→Cyan); toolbar swatches match defaults and `+ Cue` buttons reordered by frequency. Fixed `update_display_preferences` silently dropping `cue_color_style`; column-header drag now `preventDefault`s. `preferences.rs`, `commands/preferences_cmds.rs`, `cue/types.rs`, `PreferencesModal.tsx`, `CueRow.tsx`, `ColorPicker.tsx`, `App.tsx`.
+- **No-file video/image cue completes instantly** — a Video/Image cue with no file assigned now goes Running → Completed (like MemoCue) instead of sticking "running", so Auto-Continue/Auto-Follow keeps advancing. `cue/video_cue.rs`, `cue/image_cue.rs`.
+- **New app icon** — replaces the placeholder Tauri default (`.ico` / `.icns` / PNG set). `src-tauri/icons/`.
 
 ### 0.9.2 (2026-06-20)
 

@@ -36,7 +36,7 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 ### Output
 
 - **Unified output window** — single persistent native window (winit + mpv OpenGL Render API) for all video and image cues; no flicker between cues; supports fullscreen on any monitor or draggable floating window. The legacy Win32 + D3D11 path is kept behind the `legacy-win32-output` feature flag as a regression fallback
-- **Output timer** — OSD overlay via mpv; configurable font/size/position/margin/ms display; live preview in Preferences
+- **Output timer** — OSD overlay via mpv; ships with the bundled **DSEG7 Classic** 7-segment font as default; configurable font/size/position/margin/ms display, with system-font autocomplete on Windows, Linux and macOS; live preview in Preferences. An optional always-on-top floating timer window mirrors it on the operator's screen
 - **WASAPI & ASIO** — low-latency audio via [cpal](https://github.com/RustAudio/cpal); ASIO requires the Steinberg SDK
 - **Output Patches** — named mappings to audio devices and channel pairs, shared across cue lists
 
@@ -70,7 +70,8 @@ Configure in **Preferences → Network**. An activity dot in the transport bar f
 - **Undo / redo** — full snapshot-based history
 - **Copy / paste** — serialize cues to clipboard, paste anywhere
 - **Column config** — resizable, reorderable, hideable columns; layout persisted to localStorage
-- **Color tags** — QLab-compatible color labels on cue rows
+- **Color tags** — QLab-compatible color labels on cue rows; render as a left-edge stripe or tint the whole row (Personalization preferences)
+- **Consistent dark theme** — custom dropdowns and a Personalization preferences category keep the look identical across Windows, Linux and macOS
 
 ---
 
