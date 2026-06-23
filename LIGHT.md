@@ -4,8 +4,9 @@ Objectif : faire de WinCue un **contrôleur lumière complet** (pas seulement un
 déclencheur de console externe) — sortie DMX-over-IP directe vers des projecteurs,
 avec un modèle de fixtures et des fades temporisés.
 
-État : **M1 + M2 faits et testés** (cœur moteur + câblage app + panneau de test).
-Le `LightCue` lui-même (M3/M4) n'est pas encore là. Branche : `light-cue`.
+État : **M1 → M4 faits et testés** — moteur DMX, patch de fixtures (workspace),
+et **Light Cue** complet (look = targets + fade, tracking/LTP). Reste M5
+(NIC en machine-config, prefs réseau) + Phase 2. Branche : `light-cue`.
 
 ---
 
@@ -23,7 +24,7 @@ Le `LightCue` lui-même (M3/M4) n'est pas encore là. Branche : `light-cue`.
 ## Architecture (respecte les 3 couches)
 
 ```
-cue/light_cue.rs   (M4)   LightCue : look = [ParamTarget] + FadeSpec ; go() soumet
+cue/light_cue.rs   (M4 ✅)  LightCue : look = [ParamTarget] + FadeSpec ; go() soumet
                           des fades au DmxEngine via CueContext. Trait Cue → aucune
                           modif de transport.rs / cue_list.rs / components/CueList.
         │ submit_fade(universe, channel, width, target, dur, curve)
@@ -36,9 +37,9 @@ engine/dmx_engine.rs (M1/M2 ✅)  DmxEngine : buffers d'univers, interpolation d
 engine/dmx_sink.rs   (M1 ✅)  Encodeurs sACN + Art-Net + sink UDP.
 ```
 
-- **Patch fixtures** (M3) → sérialisé dans le `.wincue`, comme les patches OSC.
-- **`CueContext`** recevra un `dmx_engine: Arc<DmxEngine>` (M4), à côté de `audio_engine` / `output_engine`.
-- **Réutilise** `FadeCurve` (`engine::ring_command`) pour les courbes de fade.
+- **Patch fixtures** (M3 ✅) → `fixtures` + `universe_outputs` sérialisés dans le `.wincue`, comme les patches OSC.
+- **`CueContext`** (M4 ✅) porte `dmx_engine: Arc<DmxEngine>` + `fixtures`, à côté de `audio_engine` / `output_engine`.
+- **Réutilise** `FadeCurve` (`engine::ring_command`) pour les courbes de fade (conversion depuis `cue::types::FadeCurve` au bord, comme `audio_cue`).
 
 ---
 
@@ -53,18 +54,30 @@ struct UniverseOutput { universe: u16, protocol: OutputProtocol,
 enum ChannelWidth { Bit8, Bit16 }          // 16-bit = 2 canaux coarse+fine
 ```
 
-**À venir** (M3, workspace) :
+**Implémenté** (M3, `engine/fixture.rs`, sérialisé dans le workspace) — le
+`FixtureType` est **embarqué** dans chaque `PatchedFixture` (pas de `type_ref` à
+résoudre → workspace auto-suffisant ; les modèles intégrés ne sont qu'un point
+de départ à la création) :
 
 ```rust
-FixtureType { name, parameters: [FixtureParam{ kind: Intensity|Red|Green|Blue|Pan|Tilt|Generic,
-                                               channel_offset, width, default }] }
-PatchedFixture { id, label, type_ref, universe, base_address }
+enum ParamKind { Intensity, Red, Green, Blue, White, Amber, Uv, Pan, Tilt, Generic }
+FixtureParam { kind: ParamKind, name, channel_offset, width: ChannelWidth, default }
+FixtureType  { name, parameters: [FixtureParam] }
+PatchedFixture { id, label, universe, base_address, fixture_type: FixtureType }
 ```
 
-**À venir** (M4, cue) :
+**Implémenté** (M4 + groupes, `cue/light_cue.rs`) — une target vise **soit** un
+paramètre d'une fixture (par index, stable/non ambigu), **soit** un groupe par
+**type-de-param** (résolu vers tous les membres au GO). Enum tagué `kind` ;
+rétro-compat de l'ancien format plat à la désérialisation.
 
 ```rust
-LightCue { …champs de cue…, targets: [ParamTarget{ fixture_id, param, value:0..1 }], fade: FadeSpec }
+FixtureGroup { id, label, fixture_ids: [Uuid] }     // workspace
+enum ParamTarget {
+    Fixture { fixture_id: String, param_index: usize, value: 0..1 },
+    Group   { group_id: String, param_kind: ParamKind, value: 0..1 },
+}
+LightCue { …champs de cue…, targets: [ParamTarget], fade: FadeSpec }
 ```
 
 ---
@@ -89,10 +102,12 @@ LightCue { …champs de cue…, targets: [ParamTarget{ fixture_id, param, value:
 |---|---|---|
 | **M1 — le fil** | ✅ | DmxEngine (buffers + thread 40 Hz) + encodeurs sACN/Art-Net + commande « set channel » + moniteur intégré (event `dmx-monitor`) + panneau DMX dans la transport bar |
 | **M2 — moteur de fade** | ✅ | `DmxState` : interpolation, **LTP** (repart de la valeur courante), **tracking**, **16-bit**, blackout — 7 tests unitaires |
-| **M3 — patch fixtures** | ⬜ | `FixtureType` (intégrés) + `PatchedFixture` + UI patch + test-fixture + warnings de chevauchement d'adresses |
-| **M4 — Light Cue** | ⬜ | `LightCue` + `CueRegistry` + `CueContext.dmx_engine` + inspector `LightTab` + roundtrip sérialisation |
+| **M3 — patch fixtures** | ✅ | `FixtureType` (6 modèles intégrés) + `PatchedFixture` **embarqué** (workspace) + section Fixtures dans le panneau DMX + identify (test-fixture) + warnings de chevauchement d'adresses |
+| **M4 — Light Cue** | ✅ | `LightCue` (`targets: [ParamTarget]` + `FadeSpec`) + `CueContext.dmx_engine`/`fixtures` + inspector `LightTab` + bouton `+ Light` + roundtrip sérialisation |
 | **M5 — finition** | ⬜ | NIC en machine-config (`socket2`), UI préférences réseau, cadence keepalive, validation visuelle |
-| **Phase 2** | ⬜ | Effets (oscillateurs/chases), import bibliothèque de fixtures (OFL / QLC+), fade par-param, groupes/palettes, merge multi-source (HTP/priorité), master dimmer |
+| **Dashboard + Record** | ✅ | Grille live (intensité + color picker par fixture) qui pilote le moteur en direct + **« Capture live state »** dans la Light Cue (workflow QLab : sculpter à l'œil → figer en cue) |
+| **Groupes de fixtures** | ✅ | `FixtureGroup` (workspace) + gestionnaire de groupes (panneau DMX) ; une target peut viser **un groupe par type-de-param** → un color picker / une intensité pilote tous les membres (résolu au GO). Cue compacte : 1 couleur de groupe = 3 targets, pas 3×N |
+| **Phase 2** | ⬜ | Effets (oscillateurs/chases), import bibliothèque de fixtures (OFL / QLC+), fade par-param, palettes, merge multi-source (HTP/priorité), master dimmer, DMX-in (capture depuis console externe) |
 
 ### Détail de ce qui est fait
 
@@ -100,17 +115,27 @@ LightCue { …champs de cue…, targets: [ParamTarget{ fixture_id, param, value:
 - `engine/dmx_sink.rs` — `encode_sacn` / `encode_artnet` (fonctions pures, golden-testées au niveau octet), `DmxSink` (socket UDP), `UniverseOutput`, `sacn_multicast_ip`.
 - `engine/dmx_engine.rs` — `DmxState` (pur, testable) + `DmxEngine` (handle + thread). Commandes : `submit_fade`, `set_channel`, `set_blackout`, `set_outputs`, `snapshot`.
 - `engine/mod.rs` — exporte `DmxEngine`.
-- `state/app_state.rs` — champ `dmx_engine: Arc<DmxEngine>`.
-- `lib.rs` — création au démarrage + thread `wincue-dmx-monitor` qui émet l'event `dmx-monitor` (~20 fps, on-change, jamais de polling).
-- `commands/light_cmds.rs` — `dmx_set_outputs`, `dmx_set_channel`, `dmx_set_blackout`, `dmx_get_blackout`, `dmx_get_snapshot`.
+- `state/app_state.rs` — champ `dmx_engine: Arc<DmxEngine>` + `LightCueFactory` enregistrée.
+- `lib.rs` — création au démarrage + thread `wincue-dmx-monitor` qui émet l'event `dmx-monitor` (~20 fps, on-change, jamais de polling) + `dmx_engine` passé à l'event loop.
+- `engine/fixture.rs` (M3) — `ParamKind`, `FixtureParam`, `FixtureType`, `PatchedFixture` (type **embarqué** → workspace auto-suffisant), `builtin_fixture_types()` (Dimmer, RGB, RGBW, RGBA, PAR Dimmer+RGB, tête mobile 16-bit), `footprint()`, `resolve_channel()` (1-based → 0-based), `find_conflicts()`. 5 tests.
+- `cue/light_cue.rs` (M4) — `LightCue` + `ParamTarget` ; `go()` résout `fixture → (universe, canal, width)` et soumet un fade par target au `DmxEngine` ; `duration()` = temps du fade (progress + auto-continue) ; stop = tracking (ne touche pas aux lumières). `fixture_id` stocké en `String` (placeholder vide toléré → une target non configurée ne casse pas la désérialisation de toute la liste). Factory + roundtrip. 3 tests.
+- `cue/context.rs` (M4) — `dmx_engine: Arc<DmxEngine>` + `fixtures: Arc<Vec<PatchedFixture>>` + `resolve_fixture()`. Câblé dans `transport_cmds` et `event_loop`.
+- `show/workspace.rs` (M3) — `universe_outputs` **et** `fixtures` sérialisés dans le `.wincue` ; `load_workspace`/`new_workspace` repoussent les sorties vers le moteur (source de vérité = workspace, plus localStorage).
+- `commands/light_cmds.rs` — DMX : `dmx_set_outputs` (persiste au workspace), `dmx_get_outputs`, `dmx_set_channel`, `dmx_set_blackout`, `dmx_get_blackout`, `dmx_get_snapshot`. Fixtures : `list_builtin_fixture_types`, `list_fixtures`, `add_fixture`, `update_fixture`, `remove_fixture`, `get_fixture_conflicts`, `dmx_test_fixture` (identify). **Dashboard** : `dmx_set_fixture_param` (set live width-aware), `dmx_clear_fixtures`, `capture_live_targets` (lit le snapshot moteur → renvoie les targets ; ne mute pas la cue — le front applique via `update_cue`).
 
 **Frontend**
-- `lib/types.ts` — `OutputProtocol`, `UniverseOutput`, `DmxUniverseSnapshot`.
-- `lib/commands.ts` — wrappers `dmxSetOutputs` / `dmxSetChannel` / `dmxSetBlackout` / `dmxGetBlackout` / `dmxGetSnapshot`.
-- `components/Lighting/LightingPanel.tsx` — popover : config sorties (protocole + destination, persisté en localStorage), poke de canal (slider), blackout, moniteur live.
+- `lib/types.ts` — `OutputProtocol`, `UniverseOutput`, `DmxUniverseSnapshot`, `ChannelWidth`, `ParamKind`, `FixtureParam`, `FixtureType`, `PatchedFixture`, `FixtureConflict`, `ParamTarget`, `LightCueData`.
+- `lib/commands.ts` — wrappers DMX + fixtures (`dmxGetOutputs`, `listBuiltinFixtureTypes`, `listFixtures`, `addFixture`, `updateFixture`, `removeFixture`, `getFixtureConflicts`, `dmxTestFixture`).
+- `components/Lighting/LightingPanel.tsx` — popover : sorties (workspace-backed), **section Fixtures**, poke de canal, blackout, moniteur live.
+- `components/Lighting/FixturePatch.tsx` — patch des projecteurs : ajouter (modèle + univers + adresse, auto-incrément), éditer label/univers/adresse, identify (◉), retirer, warnings de chevauchement.
+- `components/Lighting/FixtureDashboard.tsx` — **Dashboard live façon QLab** : une ligne par fixture (slider intensité + **color picker** RGB + sliders des autres params) qui pilote le `DmxEngine` en direct ; boutons `↻ Live` (reseed depuis le moteur) / `Clear`. Lit l'état courant via le snapshot `dmx-monitor`, écrit via `dmx_set_fixture_param`.
+- `components/Inspector/LightTab.tsx` — temps + courbe du fade, **bouton « ⏺ Capture live state »** (fige l'état live de toutes les fixtures dans la cue via `capture_live_targets` → `update_cue`, un seul write/undo). **Groupé par fixture** : une carte par projecteur (color picker RGB + slider intensité + sliders des autres params), pas une ligne par canal — N spots = N cartes au lieu de 3N lignes. Ajout/retrait de fixture dans la cue. Helpers couleur partagés : `lib/fixtureColor.ts`. Labels de fixtures uniques par défaut (`RGB 1`, `RGB 2`…).
+- `components/Inspector/InspectorPanel.tsx` — onglet **Light** + icône 💡. `App.tsx` — bouton **+ Light** (+ drag). `CueRow.tsx` — icône 💡.
 - `components/Transport/TransportBar.tsx` — bouton **DMX** qui ouvre le panneau.
 
-**Tests** : 11 nouveaux (4 encodage paquets + 7 moteur d'état). **89 au total**, clippy clean, `tsc --noEmit` clean.
+**Groupes** : `engine/fixture.rs` `FixtureGroup` ; `show/workspace.rs` `fixture_groups` (sérialisé) ; `cue/context.rs` `fixture_groups` + `resolve_group` (câblé transport + event loop) ; `commands/light_cmds.rs` `list/add/update/remove_fixture_group` ; front `components/Lighting/GroupManager.tsx` (créer/éditer/supprimer, membres par chips) + `LightTab` (cartes groupe : color picker + intensité → tous les membres) + `lib/fixtureColor.ts`.
+
+**Tests** : 10 nouveaux (5 fixtures + 5 Light Cue, dont groupe + rétro-compat). **99 au total**, clippy clean, `tsc --noEmit` clean. Lancé via `pnpm tauri dev` (audio WASAPI, libmpv, GL 3.3, OSC OK).
 
 ---
 
@@ -122,6 +147,8 @@ Tout se valide sur une seule machine en loopback :
 2. Bouton **DMX** dans la transport bar → ajouter un univers (sACN multicast, ou Art-Net vers `127.0.0.1`).
 3. Lancer un récepteur : **QLC+** (entrée Art-Net/sACN + moniteur de fixtures), **sACNView**, **OLA** (`ola_dmxmonitor`), ou **Capture** (démo, prévisualisation 3D).
 4. Bouger le slider « Test channel » → la valeur monte dans le récepteur **et** dans le moniteur live du panneau. **Blackout** force tout à zéro.
+5. **Patch + Light Cue** : panneau DMX → section *Fixtures* → ajouter un *PAR Dimmer+RGB* @ U1 adr 1 ; **identify (◉)** doit l'allumer.
+6. **Dashboard + Capture (workflow QLab)** : panneau DMX → section *Dashboard* → règle l'intensité + la couleur de la fixture à l'œil (visible en direct dans le récepteur). Puis **+ Light** → onglet *Light* → **⏺ Capture live state** : la cue mémorise l'état courant. Règle le fade → **GO** : le fade monte vers le look capturé. (Saisie manuelle des targets toujours possible en dessous.)
 
 Le hardware (un node Art-Net USB + un PAR LED) n'est utile que pour la vérif « vrai projecteur » finale — jamais pour développer.
 
@@ -129,5 +156,7 @@ Le hardware (un node Art-Net USB + un PAR LED) n'est utile que pour la vérif «
 
 ## Prochaine étape
 
-**M3 — patch fixtures** : passer du « poke de canal brut » aux projecteurs nommés
-(Dimmer / RGB / RGBW / tête mobile 16-bit), avec l'UI de patch et le test-fixture.
+**M5 — finition** : interface réseau (NIC source) en machine-config via `socket2`
+(comme le device audio), UI préférences réseau, et validation visuelle hardware.
+Ensuite **Phase 2** : effets/chases, import de bibliothèque de fixtures (OFL / QLC+),
+fade par-paramètre, groupes/palettes, master dimmer.

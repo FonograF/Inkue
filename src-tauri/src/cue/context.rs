@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 
-use crate::engine::{device_manager::OutputPatch, osc_patch::OscPatch, output_engine::OutputEngine, AudioEngine};
+use crate::engine::{
+    device_manager::OutputPatch, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch,
+    output_engine::OutputEngine, AudioEngine, DmxEngine,
+};
 
 /// Events emitted by cues to the Show Engine during execution.
 #[derive(Debug, Clone)]
@@ -47,6 +50,14 @@ pub struct CueContext {
     pub output_screen: Option<u32>,
     /// Snapshot of the workspace's OSC Patch table.
     pub osc_patches: Arc<Vec<OscPatch>>,
+    /// The DMX lighting engine, used by [`LightCue`](crate::cue::light_cue::LightCue).
+    pub dmx_engine: Arc<DmxEngine>,
+    /// Snapshot of the workspace's fixture patch.  Light Cues resolve their
+    /// targets' `(universe, channel, width)` here at GO time.
+    pub fixtures: Arc<Vec<PatchedFixture>>,
+    /// Snapshot of the workspace's fixture groups.  Light Cue group targets
+    /// resolve to their member fixtures here at GO time.
+    pub fixture_groups: Arc<Vec<FixtureGroup>>,
 }
 
 impl CueContext {
@@ -61,6 +72,9 @@ impl CueContext {
         default_patch_id: Option<uuid::Uuid>,
         output_screen: Option<u32>,
         osc_patches: Vec<OscPatch>,
+        dmx_engine: Arc<DmxEngine>,
+        fixtures: Vec<PatchedFixture>,
+        fixture_groups: Vec<FixtureGroup>,
     ) -> Self {
         Self {
             audio_engine,
@@ -71,6 +85,9 @@ impl CueContext {
             default_patch_id,
             output_screen,
             osc_patches: Arc::new(osc_patches),
+            dmx_engine,
+            fixtures: Arc::new(fixtures),
+            fixture_groups: Arc::new(fixture_groups),
         }
     }
 
@@ -85,6 +102,18 @@ impl CueContext {
     /// workspace's OSC patch table.
     pub fn resolve_osc_patch(&self, patch_id: uuid::Uuid) -> Option<&OscPatch> {
         self.osc_patches.iter().find(|p| p.id == patch_id)
+    }
+
+    /// Resolve a patched fixture by ID.  Returns `None` if the fixture is not
+    /// in the workspace's patch.
+    pub fn resolve_fixture(&self, fixture_id: uuid::Uuid) -> Option<&PatchedFixture> {
+        self.fixtures.iter().find(|f| f.id == fixture_id)
+    }
+
+    /// Resolve a fixture group by ID.  Returns `None` if the group is not in the
+    /// workspace.
+    pub fn resolve_group(&self, group_id: uuid::Uuid) -> Option<&FixtureGroup> {
+        self.fixture_groups.iter().find(|g| g.id == group_id)
     }
 
     /// Convenience: emit an event through the context without unwrapping.

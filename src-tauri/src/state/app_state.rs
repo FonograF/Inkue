@@ -14,6 +14,7 @@ use crate::{
         audio_cue::AudioCueFactory,
         fade_cue::FadeCueFactory,
         group_cue::GroupCueFactory,
+        light_cue::LightCueFactory,
         midi_cue::MidiCueFactory,
         image_cue::ImageCueFactory,
         memo_cue::MemoCueFactory,
@@ -70,6 +71,7 @@ impl AppState {
         registry.register(CueType::Fade,  Box::new(FadeCueFactory));
         registry.register(CueType::Midi,  Box::new(MidiCueFactory));
         registry.register(CueType::Group, Box::new(GroupCueFactory));
+        registry.register(CueType::Light, Box::new(LightCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
         registry.register(CueType::Osc,   Box::new(OscCueFactory));
         registry.register(CueType::Stop, Box::new(StopCueFactory));

@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-20
+# WinCue — Project state as of 2026-06-22
 
-## Current version: 0.9.3
+## Current version: 0.9.4
 
 ## cargo build result
 
@@ -9,7 +9,7 @@
 
 ## cargo test result
 
-**65 tests pass, 0 failures.**
+**99 tests pass, 0 failures.** (DMX engine + sink, fixtures, groups, Light Cue.)
 
 ---
 
@@ -27,6 +27,7 @@
 | Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues); audio fade (gain interpolation at 30 fps); visual fade for Video/Image (overlay alpha interpolation at 30 fps, `set_overlay_alpha_direct`); configurable curve; optional Stop at End; context-aware inspector (volume dB for audio/video, brightness % for image, both for video) |
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
+| Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
 
 ---
 
@@ -121,6 +122,19 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.4 (2026-06-22) — DMX lighting: fixture patch + Light Cue (M1–M4)
+
+Full design + status in `LIGHT.md`. WinCue is now a direct DMX-over-IP controller,
+not just a console trigger.
+
+- **DMX engine (M1/M2)** — `engine/dmx_sink.rs` (byte-exact sACN E1.31 + Art-Net encoders, UDP sink) and `engine/dmx_engine.rs` (`DmxState`: per-universe buffers, timed fades with **LTP + tracking + 8/16-bit**, blackout; `DmxEngine` handle + `wincue-dmx` thread at ~40 Hz, send-on-change + 800 ms keepalive). Live monitor via the `dmx-monitor` event. `AppState.dmx_engine`.
+- **Fixture patch (M3)** — `engine/fixture.rs`: `ParamKind` / `FixtureParam` / `FixtureType` / `PatchedFixture` (type **embedded** in each fixture → portable, self-contained workspace), `builtin_fixture_types()` (Dimmer, RGB, RGBW, RGBA, PAR Dimmer+RGB, 16-bit moving head), `resolve_channel()` (1-based address → 0-based engine channel), `find_conflicts()` (address-clash detection). Stored in the workspace alongside `universe_outputs` (`show/workspace.rs`); both pushed to the engine on load/new. Commands: `add/update/remove/list_fixtures`, `list_builtin_fixture_types`, `get_fixture_conflicts`, `dmx_test_fixture` (identify), `dmx_get/set_outputs`.
+- **Light Cue (M4)** — `cue/light_cue.rs`: stores only the params it changes (`targets: [ParamTarget]`) + a `FadeSpec`; `go()` resolves each target's `(universe, channel, width)` from the patch and submits a fade to the engine; `duration()` = fade time (progress bar + Auto-Continue/Follow); stop is tracking (lights hold). A target's `fixture_id` is a `String` (an empty placeholder while configuring must not poison the whole list on the `update_cue` round-trip; resolved/parsed at GO). `CueContext` gained `dmx_engine` + `fixtures` (+ `resolve_fixture`), threaded through `transport_cmds` and `event_loop`. Registered in the `CueRegistry`.
+- **Frontend** — `components/Lighting/{LightingPanel,FixturePatch}.tsx` (outputs now workspace-backed; Fixtures section with add/edit/identify/clash warnings), `components/Inspector/LightTab.tsx` (targets + fade), `+ Light` toolbar button (`App.tsx`), 💡 icon (`CueRow.tsx`, `InspectorPanel.tsx`). Types/commands in `lib/{types,commands}.ts`.
+- **Live Dashboard + "Capture live state" (QLab-style look building)** — `components/Lighting/FixtureDashboard.tsx`: one row per fixture (intensity slider + RGB colour picker + per-param sliders) that drives the engine live (`dmx_set_fixture_param`), with `↻ Live` / `Clear`. The Light Cue inspector gains **⏺ Capture live state**, which records the current live state of every fixture into the cue's targets via `capture_live_targets` (pure read — applied through the normal `update_cue` path, single write/undo). So you sculpt the look by eye and freeze it, instead of typing values. `dmx_clear_fixtures` too.
+- **Light Cue inspector grouped by fixture + fixture groups** — the Light tab now shows one card per fixture (colour picker + intensity + extra-param sliders) instead of one row per channel, with unique default fixture labels. **Fixture groups** (`FixtureGroup` in the workspace, `GroupManager.tsx` in the DMX panel) let one cue control drive several fixtures: a target now addresses **either** a fixture parameter **or** a group parameter-*kind* (`ParamTarget` is a tagged enum `Fixture | Group`, with backward-compat for the old flat form), resolved to all members at GO. So "wash to blue" is 3 targets, not 3×N. `CueContext` gained `fixture_groups` + `resolve_group`; group CRUD commands; shared colour helpers in `lib/fixtureColor.ts`.
+- **Tests** — +10 (5 fixtures + 5 Light Cue, incl. group target + legacy-format upgrade) on top of the 4 packet + 7 engine-state tests; **99 total**, clippy clean, `tsc --noEmit` clean. Launches via `pnpm tauri dev` (WASAPI + libmpv + GL 3.3 + OSC all up).
 
 ### 0.9.3 (2026-06-21) — Group Cue fixes + cross-platform polish (Linux/macOS) + UI
 
@@ -275,6 +289,7 @@ fix, not the full investigation.
 | 22. Fade Cue | ✅ Volume fade to target dB, configurable curve (Linear/S-Curve/Exponential), stop-at-end, pause/resume, pre-wait |
 | 23. MIDI Cue | ✅ Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir) |
 | 24. Unified GL output | ✅ winit + mpv Render API default on Windows; macOS/Linux Stage 2 TODO |
+| 25. DMX lighting (Light Cue) | ✅ sACN + Art-Net engine, fixture patch, Light Cue (M1–M4); M5 (NIC machine-config) + effects = next, see `LIGHT.md` |
 
 ---
 

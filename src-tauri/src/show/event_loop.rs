@@ -24,7 +24,7 @@ use crate::{
     engine::{
         output_engine::{OutputEngine, OutputStatus},
         ring_command::AudioStatus,
-        AudioEngine,
+        AudioEngine, DmxEngine,
     },
     show::{transport::Transport, workspace::Workspace},
 };
@@ -39,6 +39,7 @@ pub fn run(
     handle: tauri::AppHandle,
     audio_engine: Arc<AudioEngine>,
     output_engine: Arc<OutputEngine>,
+    dmx_engine: Arc<DmxEngine>,
     workspace: Arc<Mutex<Workspace>>,
 ) {
     // Spawn a dedicated thread that refreshes the OSD timer overlay at ~60 fps.
@@ -70,6 +71,7 @@ pub fn run(
             &handle,
             &audio_engine,
             &output_engine,
+            &dmx_engine,
             &workspace,
             &mut auto_follow_pending,
             &mut prev_group_state,
@@ -84,14 +86,18 @@ pub fn run(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn make_context(
     audio_engine: &Arc<AudioEngine>,
     output_engine: &Arc<OutputEngine>,
+    dmx_engine: &Arc<DmxEngine>,
     stop_fade_ms: u32,
     output_patches: Vec<crate::engine::device_manager::OutputPatch>,
     default_patch_id: Option<uuid::Uuid>,
     output_screen: Option<u32>,
     osc_patches: Vec<crate::engine::osc_patch::OscPatch>,
+    fixtures: Vec<crate::engine::fixture::PatchedFixture>,
+    fixture_groups: Vec<crate::engine::fixture::FixtureGroup>,
 ) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     CueContext::new(
@@ -103,6 +109,9 @@ fn make_context(
         default_patch_id,
         output_screen,
         osc_patches,
+        dmx_engine.clone(),
+        fixtures,
+        fixture_groups,
     )
 }
 
@@ -131,6 +140,7 @@ fn tick(
     handle: &tauri::AppHandle,
     audio_engine: &Arc<AudioEngine>,
     output_engine: &Arc<OutputEngine>,
+    dmx_engine: &Arc<DmxEngine>,
     workspace: &Arc<Mutex<Workspace>>,
     auto_follow_pending: &mut HashMap<CueId, (Instant, uuid::Uuid)>,
     prev_group_state:    &mut HashMap<CueId, (Option<CueId>, bool)>,
@@ -207,13 +217,15 @@ fn tick(
     let ws_default_patch  = ws.default_output_patch_id;
     let ws_output_screen  = ws.preferences.display.output_screen;
     let ws_osc_patches    = ws.osc_patches.clone();
+    let ws_fixtures       = ws.fixtures.clone();
+    let ws_fixture_groups = ws.fixture_groups.clone();
     let active_list_id    = ws.active_cue_list_id;
 
     if ws.cue_lists.is_empty() {
         return;
     }
 
-    let tick_ctx = make_context(audio_engine, output_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone());
+    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone());
 
     // ------------------------------------------------------------------
     // 4. Apply video duration updates — search every cue list.
@@ -406,8 +418,8 @@ fn tick(
     for &list_id in &should_go_lists {
         if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
             let context = make_context(
-                audio_engine, output_engine, stop_fade_ms,
-                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(),
+                audio_engine, output_engine, dmx_engine, stop_fade_ms,
+                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(),
             );
             let mut transport = Transport::new(context);
             if let Ok(result) = transport.go(cl) {

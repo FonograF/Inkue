@@ -26,7 +26,7 @@ use crate::{
 /// is used by [`AudioCue::stop`] when no per-cue fade-out spec is set.
 fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    let (patches, default_patch_id, output_screen, osc_patches) = state
+    let (patches, default_patch_id, output_screen, osc_patches, fixtures, groups) = state
         .workspace
         .try_lock()
         .map(|ws| (
@@ -34,8 +34,10 @@ fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
             ws.default_output_patch_id,
             ws.preferences.display.output_screen,
             ws.osc_patches.clone(),
+            ws.fixtures.clone(),
+            ws.fixture_groups.clone(),
         ))
-        .unwrap_or_else(|_| (Vec::new(), None, None, Vec::new()));
+        .unwrap_or_else(|_| (Vec::new(), None, None, Vec::new(), Vec::new(), Vec::new()));
     CueContext::new(
         state.audio_engine.clone(),
         state.output_engine.clone(),
@@ -45,6 +47,9 @@ fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
         default_patch_id,
         output_screen,
         osc_patches,
+        state.dmx_engine.clone(),
+        fixtures,
+        groups,
     )
 }
 
@@ -92,6 +97,9 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         ws.default_output_patch_id,
         ws.preferences.display.output_screen,
         ws.osc_patches.clone(),
+        state.dmx_engine.clone(),
+        ws.fixtures.clone(),
+        ws.fixture_groups.clone(),
     );
     let mut transport = Transport::new(context);
 

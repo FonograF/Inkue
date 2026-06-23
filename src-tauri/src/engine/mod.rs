@@ -12,6 +12,7 @@ pub mod audio_engine;
 pub mod device_manager;
 pub mod dmx_engine;
 pub mod dmx_sink;
+pub mod fixture;
 pub mod mpv_sys;
 pub mod osc_feedback;
 pub mod osc_patch;

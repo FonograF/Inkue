@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     cue::registry::CueRegistry,
-    engine::{device_manager::OutputPatch, osc_patch::OscPatch},
+    engine::{device_manager::OutputPatch, dmx_sink::UniverseOutput, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch},
     preferences::AppPreferences,
 };
 
@@ -110,6 +110,12 @@ pub struct Workspace {
     pub default_output_patch_id: Option<Uuid>,
     /// OSC send patch table.
     pub osc_patches: Vec<OscPatch>,
+    /// DMX universe → destination mapping (sACN / Art-Net outputs).
+    pub universe_outputs: Vec<UniverseOutput>,
+    /// Lighting fixture patch (named instruments at DMX addresses).
+    pub fixtures: Vec<PatchedFixture>,
+    /// Fixture groups (drive several fixtures from one Light Cue control).
+    pub fixture_groups: Vec<FixtureGroup>,
     /// Application-wide preferences (audio engine, defaults, …).
     pub preferences: AppPreferences,
     /// Path to the .wincue file on disk, if it has been saved.
@@ -130,6 +136,9 @@ impl Workspace {
             output_patches: Vec::new(),
             default_output_patch_id: None,
             osc_patches: Vec::new(),
+            universe_outputs: Vec::new(),
+            fixtures: Vec::new(),
+            fixture_groups: Vec::new(),
             preferences: AppPreferences::default(),
             file_path: None,
             is_modified: false,
@@ -192,6 +201,9 @@ impl Workspace {
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
             "osc_patches": self.osc_patches,
+            "universe_outputs": self.universe_outputs,
+            "fixtures": self.fixtures,
+            "fixture_groups": self.fixture_groups,
             "preferences": self.preferences,
             "cue_lists": cue_lists_json,
             "active_cue_list_id": self.active_cue_list_id,
@@ -239,6 +251,21 @@ impl Workspace {
 
         let osc_patches: Vec<OscPatch> = doc
             .get("osc_patches")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let universe_outputs: Vec<UniverseOutput> = doc
+            .get("universe_outputs")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let fixtures: Vec<PatchedFixture> = doc
+            .get("fixtures")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let fixture_groups: Vec<FixtureGroup> = doc
+            .get("fixture_groups")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
@@ -295,6 +322,9 @@ impl Workspace {
             output_patches,
             default_output_patch_id: default_patch,
             osc_patches,
+            universe_outputs,
+            fixtures,
+            fixture_groups,
             preferences,
             file_path: Some(path),
             is_modified: false,

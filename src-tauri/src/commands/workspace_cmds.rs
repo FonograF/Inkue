@@ -37,8 +37,11 @@ pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     *ws = Workspace::new("Untitled");
     cue_list_cmds::emit_cue_lists_changed(&app_handle, &ws);
+    let outputs = ws.universe_outputs.clone();
     drop(ws);
     state.output_engine.set_floating_timer_visible(false);
+    // A fresh workspace has no DMX outputs — clear any from the previous show.
+    state.dmx_engine.set_outputs(outputs);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
@@ -74,12 +77,15 @@ pub fn load_workspace(
 
     // Store the new workspace and apply display preferences.
     let show_floating = loaded.preferences.display.show_output_timer && loaded.preferences.display.timer_floating;
+    let dmx_outputs = loaded.universe_outputs.clone();
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         *ws = loaded;
         cue_list_cmds::emit_cue_lists_changed(&app_handle, &ws);
     }
     state.output_engine.set_floating_timer_visible(show_floating);
+    // Bind the engine's sinks to the loaded show's universe outputs.
+    state.dmx_engine.set_outputs(dmx_outputs);
     {
         let mut loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
         // Clear any stale entries from a previous workspace.

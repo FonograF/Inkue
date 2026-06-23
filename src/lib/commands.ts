@@ -14,11 +14,16 @@ import type {
   DeviceInfo,
   DisplayPreferences,
   DmxUniverseSnapshot,
+  FixtureConflict,
+  FixtureGroup,
+  FixtureType,
   GeneralPreferences,
   GroupMode,
   OscPatch,
   OscReceiveConfig,
   OutputPatch,
+  ParamTarget,
+  PatchedFixture,
   ScreenInfo,
   UniverseOutput,
   VideoCueData,
@@ -239,8 +244,46 @@ export const sendMidiTest = (
 
 export const dmxSetOutputs = (outputs: UniverseOutput[]) =>
   invoke<void>("dmx_set_outputs", { outputs });
+export const dmxGetOutputs = () => invoke<UniverseOutput[]>("dmx_get_outputs");
 export const dmxSetChannel = (universe: number, address: number, value: number) =>
   invoke<void>("dmx_set_channel", { universe, address, value });
 export const dmxSetBlackout = (on: boolean) => invoke<void>("dmx_set_blackout", { on });
 export const dmxGetBlackout = () => invoke<boolean>("dmx_get_blackout");
 export const dmxGetSnapshot = () => invoke<DmxUniverseSnapshot[]>("dmx_get_snapshot");
+
+// ---------------------------------------------------------------------------
+// DMX / Fixtures
+// ---------------------------------------------------------------------------
+
+export const listBuiltinFixtureTypes = () =>
+  invoke<FixtureType[]>("list_builtin_fixture_types");
+export const listFixtures = () => invoke<PatchedFixture[]>("list_fixtures");
+export const addFixture = (
+  label: string,
+  universe: number,
+  baseAddress: number,
+  fixtureType: FixtureType,
+) => invoke<PatchedFixture>("add_fixture", { label, universe, baseAddress, fixtureType });
+export const updateFixture = (fixture: PatchedFixture) =>
+  invoke<void>("update_fixture", { fixture });
+export const removeFixture = (fixtureId: string) =>
+  invoke<void>("remove_fixture", { fixtureId });
+export const getFixtureConflicts = () =>
+  invoke<FixtureConflict[]>("get_fixture_conflicts");
+export const dmxTestFixture = (fixtureId: string, on: boolean) =>
+  invoke<void>("dmx_test_fixture", { fixtureId, on });
+
+// Live Dashboard
+export const dmxSetFixtureParam = (fixtureId: string, paramIndex: number, value: number) =>
+  invoke<void>("dmx_set_fixture_param", { fixtureId, paramIndex, value });
+export const dmxClearFixtures = () => invoke<void>("dmx_clear_fixtures");
+export const captureLiveTargets = () => invoke<ParamTarget[]>("capture_live_targets");
+
+// Fixture groups
+export const listFixtureGroups = () => invoke<FixtureGroup[]>("list_fixture_groups");
+export const addFixtureGroup = (label: string, fixtureIds: string[]) =>
+  invoke<FixtureGroup>("add_fixture_group", { label, fixtureIds });
+export const updateFixtureGroup = (group: FixtureGroup) =>
+  invoke<void>("update_fixture_group", { group });
+export const removeFixtureGroup = (groupId: string) =>
+  invoke<void>("remove_fixture_group", { groupId });

@@ -25,6 +25,8 @@ pub enum CueType {
     Osc,
     /// Sends one or more MIDI messages when triggered.
     Midi,
+    /// Fades patched DMX fixtures to a target look (DMX-over-IP).
+    Light,
 }
 
 impl std::fmt::Display for CueType {
@@ -40,6 +42,7 @@ impl std::fmt::Display for CueType {
             CueType::Image => write!(f, "image"),
             CueType::Osc   => write!(f, "osc"),
             CueType::Midi  => write!(f, "midi"),
+            CueType::Light => write!(f, "light"),
         }
     }
 }

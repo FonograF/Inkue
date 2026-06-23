@@ -56,6 +56,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   image: "🖼",
   osc: "📡",
   midi: "🎹",
+  light: "💡",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

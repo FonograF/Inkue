@@ -7,38 +7,29 @@ import type { CSSProperties, ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   dmxGetBlackout,
+  dmxGetOutputs,
   dmxSetBlackout,
   dmxSetChannel,
   dmxSetOutputs,
 } from "../../lib/commands";
 import type { DmxUniverseSnapshot, OutputProtocol, UniverseOutput } from "../../lib/types";
-
-const LS_OUTPUTS_KEY = "wincue.dmx.outputs";
-
-function loadOutputs(): UniverseOutput[] {
-  try {
-    const raw = localStorage.getItem(LS_OUTPUTS_KEY);
-    if (raw) return JSON.parse(raw) as UniverseOutput[];
-  } catch {
-    /* ignore corrupt state */
-  }
-  return [{ universe: 1, protocol: "Sacn", destination: null, enabled: true }];
-}
+import { FixturePatch } from "./FixturePatch";
+import { FixtureDashboard } from "./FixtureDashboard";
+import { GroupManager } from "./GroupManager";
 
 export function LightingPanel({ onClose }: { onClose: () => void }) {
-  const [outputs, setOutputs] = useState<UniverseOutput[]>(loadOutputs);
+  const [outputs, setOutputs] = useState<UniverseOutput[]>([]);
   const [blackout, setBlackout] = useState(false);
   const [snapshot, setSnapshot] = useState<DmxUniverseSnapshot[]>([]);
   const [testUniverse, setTestUniverse] = useState(1);
   const [testAddress, setTestAddress] = useState(1);
   const [testValue, setTestValue] = useState(0);
 
-  // Push the persisted outputs to the engine on mount (covers an app reload),
-  // and pull the current blackout state.
+  // Load the workspace's stored outputs (the backend already bound them to the
+  // engine on workspace load), and pull the current blackout state.
   useEffect(() => {
-    dmxSetOutputs(outputs).catch(console.error);
+    dmxGetOutputs().then(setOutputs).catch(console.error);
     dmxGetBlackout().then(setBlackout).catch(console.error);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Live monitor feed.
@@ -50,9 +41,9 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
     return () => unlisten?.();
   }, []);
 
+  // Persist + push outputs through the workspace-backed command.
   const pushOutputs = (next: UniverseOutput[]) => {
     setOutputs(next);
-    localStorage.setItem(LS_OUTPUTS_KEY, JSON.stringify(next));
     dmxSetOutputs(next).catch(console.error);
   };
 
@@ -127,6 +118,21 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
           <button onClick={addOutput} style={addBtn}>+ universe</button>
         </Section>
 
+        {/* Fixtures */}
+        <Section title="Fixtures (patch)">
+          <FixturePatch />
+        </Section>
+
+        {/* Groups */}
+        <Section title="Groups">
+          <GroupManager />
+        </Section>
+
+        {/* Live dashboard */}
+        <Section title="Dashboard (live)">
+          <FixtureDashboard snapshot={snapshot} />
+        </Section>
+
         {/* Test channel */}
         <Section title="Test channel (no fade)">
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -193,7 +199,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 const panelStyle: CSSProperties = {
-  position: "fixed", bottom: 104, right: 16, width: 480, maxHeight: 460,
+  position: "fixed", bottom: 104, right: 16, width: 560, maxHeight: 560,
   background: "#020617", border: "1px solid #334155", borderRadius: 8,
   boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 9999,
   display: "flex", flexDirection: "column", fontFamily: "monospace", fontSize: 12,

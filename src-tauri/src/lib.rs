@@ -26,7 +26,11 @@ use commands::{
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
     light_cmds::{
-        dmx_get_blackout, dmx_get_snapshot, dmx_set_blackout, dmx_set_channel, dmx_set_outputs,
+        add_fixture, add_fixture_group, capture_live_targets, dmx_clear_fixtures, dmx_get_blackout,
+        dmx_get_outputs, dmx_get_snapshot, dmx_set_blackout, dmx_set_channel, dmx_set_fixture_param,
+        dmx_set_outputs, dmx_test_fixture, get_fixture_conflicts, list_fixtures, list_fixture_groups,
+        list_builtin_fixture_types, remove_fixture, remove_fixture_group, update_fixture,
+        update_fixture_group,
     },
     midi_cmds::{list_midi_output_ports, send_midi_test},
     osc_cmds::{
@@ -137,12 +141,13 @@ pub fn run() {
             let handle = app.handle().clone();
             let a_engine = app.state::<AppState>().audio_engine.clone();
             let o_engine = Arc::clone(&output_engine);
+            let d_engine = Arc::clone(&dmx_engine);
             let workspace = app.state::<AppState>().workspace.clone();
 
             std::thread::Builder::new()
                 .name("wincue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, a_engine, o_engine, workspace);
+                    crate::show::event_loop::run(handle, a_engine, o_engine, d_engine, workspace);
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -239,10 +244,25 @@ pub fn run() {
             send_osc_test,
             // DMX / Lighting
             dmx_set_outputs,
+            dmx_get_outputs,
             dmx_set_channel,
             dmx_set_blackout,
             dmx_get_blackout,
             dmx_get_snapshot,
+            dmx_test_fixture,
+            dmx_set_fixture_param,
+            dmx_clear_fixtures,
+            capture_live_targets,
+            list_builtin_fixture_types,
+            list_fixtures,
+            add_fixture,
+            update_fixture,
+            remove_fixture,
+            get_fixture_conflicts,
+            list_fixture_groups,
+            add_fixture_group,
+            update_fixture_group,
+            remove_fixture_group,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinCue");
