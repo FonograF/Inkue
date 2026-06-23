@@ -11,6 +11,7 @@ use crate::{
 /// Return all available audio output devices.
 #[tauri::command]
 pub fn list_output_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
+    #[cfg(target_os = "linux")]
     use crate::engine::device_manager::linux_devices;
 
     // Build ALSA fallback from the engine's cached device list.
@@ -76,6 +77,7 @@ pub fn set_output_patch(
 /// Refresh the cached device list (call after hotplug events).
 #[tauri::command]
 pub fn refresh_devices(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
     use crate::engine::device_manager::linux_devices;
 
     let fallback = {

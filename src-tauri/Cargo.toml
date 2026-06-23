@@ -25,6 +25,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+# Pin iana-time-zone (transitive dep of chrono) to < 0.1.65.
+# Version 0.1.65 pulled windows-core 0.62 which conflicts with
+# cpal 0.18's windows 0.61 dependency on Windows — the two versions of the
+# windows_core::Interface trait cannot coexist in the same build.
+iana-time-zone = "=0.1.64"
 
 # Audio
 cpal = { version = "0.18", features = ["wasm-bindgen"] }
