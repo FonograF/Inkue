@@ -86,10 +86,12 @@ pub fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, Str
     Ok(ws.preferences.clone())
 }
 
-/// Return the machine audio config from disk, normalised for the current platform.
+/// Return the machine audio config from disk, normalised for the current build.
 ///
-/// On Mac / Linux any Windows-specific backend (`wasapi_*`, `asio`) is replaced
-/// with `system_default` so the frontend always receives a valid choice.
+/// - Mac / Linux: any Windows-specific backend (`wasapi_*`, `asio`) → `system_default`.
+/// - Windows without `--features asio-support`: `asio` → `wasapi_shared` so the
+///   preferences UI shows a usable backend.  The file on disk is NOT rewritten, so
+///   switching to `pnpm tauri:dev` (with ASIO) restores the real choice automatically.
 #[tauri::command]
 pub fn get_machine_audio_config() -> MachineAudioConfig {
     #[allow(unused_mut)]
@@ -97,6 +99,10 @@ pub fn get_machine_audio_config() -> MachineAudioConfig {
     #[cfg(not(target_os = "windows"))]
     if !matches!(config.backend, crate::preferences::AudioBackend::SystemDefault) {
         config.backend = crate::preferences::AudioBackend::SystemDefault;
+    }
+    #[cfg(all(windows, not(feature = "asio-support")))]
+    if matches!(config.backend, crate::preferences::AudioBackend::Asio) {
+        config.backend = crate::preferences::AudioBackend::WasapiShared;
     }
     config
 }
