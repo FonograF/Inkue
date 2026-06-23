@@ -26,6 +26,12 @@ use commands::{
     },
     device_cmds::{get_output_patches, list_input_devices, list_output_devices, refresh_devices, set_output_patch},
     input_cmds::{add_input_patch, list_input_patches, remove_input_patch, update_input_patch},
+    timecode_cmds::{
+        get_tc_config, set_tc_config, get_tc_position,
+        list_tc_midi_input_ports,
+        get_cue_tc_trigger, set_cue_tc_trigger,
+        get_cuelist_tc_config, set_cuelist_tc_config,
+    },
     light_cmds::{
         add_fixture, add_fixture_group, capture_live_targets, dmx_clear_fixtures, dmx_get_blackout,
         dmx_get_outputs, dmx_get_snapshot, dmx_set_blackout, dmx_set_channel, dmx_set_fixture_param,
@@ -82,6 +88,14 @@ pub fn run() {
             // ----------------------------------------------------------------
             crate::bundled_fonts::ensure_installed();
             let machine_config = crate::machine_config::load();
+            // Inject the machine's buffer size into the workspace AudioPreferences
+            // so CueContext can pass it to ensure_input_feed for Mic Cues.
+            {
+                // AppState is not yet created; we stash it into a global so the
+                // .setup() callback can read it.  Simpler: just store it and apply
+                // it after app.manage() below.
+            }
+            let startup_buffer_size = machine_config.buffer_size;
             let audio_engine = AudioEngine::new(&machine_config).map_err(|e| {
                 show_fatal_error(&format!("Audio engine failed to start:\n\n{e}"));
                 Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
@@ -106,13 +120,32 @@ pub fn run() {
             // DMX lighting engine — owns its own ~40Hz output thread.
             let dmx_engine = Arc::new(DmxEngine::new());
 
+            // Timecode receiver — start with no config (MTC, default port).
+            // The operator configures it via Preferences.
+            let tc_config = crate::machine_config::load_tc_config();
+            let tc_receiver = if tc_config.enabled {
+                Some(crate::engine::timecode_receiver::TimecodeReceiver::new(
+                    tc_config.receiver_config.clone(),
+                ))
+            } else {
+                None
+            };
+
             let app_state = AppState::new(
                 audio_engine,
                 Arc::clone(&output_engine),
                 Arc::clone(&osc_server),
                 Arc::clone(&dmx_engine),
+                tc_receiver,
             );
             app.manage(app_state);
+            // Inject the machine buffer size into the runtime audio prefs so that
+            // the CueContext can forward it to ensure_input_feed for Mic Cues.
+            {
+                if let Ok(mut ws) = app.state::<AppState>().workspace.lock() {
+                    ws.preferences.audio.audio_buffer_size = startup_buffer_size;
+                }
+            }
 
             // DMX monitor: push live universe values to the UI (event, not poll),
             // ~20 fps and only when the values actually change.
@@ -144,11 +177,15 @@ pub fn run() {
             let o_engine = Arc::clone(&output_engine);
             let d_engine = Arc::clone(&dmx_engine);
             let workspace = app.state::<AppState>().workspace.clone();
+            // Subscribe to TC events for the dispatcher in the event loop.
+            let tc_event_rx = app.state::<AppState>()
+                .tc_receiver.lock().ok()
+                .and_then(|opt| opt.as_ref().map(|r| r.subscribe()));
 
             std::thread::Builder::new()
                 .name("wincue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, a_engine, o_engine, d_engine, workspace);
+                    crate::show::event_loop::run(handle, a_engine, o_engine, d_engine, workspace, tc_event_rx);
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -211,6 +248,15 @@ pub fn run() {
             remove_cue_list,
             rename_cue_list,
             set_active_cue_list,
+            // Timecode
+            get_tc_config,
+            set_tc_config,
+            get_tc_position,
+            list_tc_midi_input_ports,
+            get_cue_tc_trigger,
+            set_cue_tc_trigger,
+            get_cuelist_tc_config,
+            set_cuelist_tc_config,
             // Devices
             list_output_devices,
             list_input_devices,

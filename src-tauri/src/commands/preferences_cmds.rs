@@ -113,8 +113,11 @@ pub fn update_machine_audio_config(
 
     state.audio_engine.restart(&config).map_err(|e| e.to_string())?;
 
+    let new_buffer_size = config.buffer_size;
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        // Keep the runtime buffer-size hint in sync with the new machine config.
+        ws.preferences.audio.audio_buffer_size = new_buffer_size;
         if let Some(cl) = ws.active_cue_list_mut() {
             for cue in cl.cues.iter_mut() {
                 if cue.is_running() || cue.is_paused() {

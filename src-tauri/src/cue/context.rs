@@ -61,6 +61,9 @@ pub struct CueContext {
     /// Snapshot of the workspace's Input Patch table.  Mic Cues resolve their
     /// capture device + channels here at GO time.
     pub input_patches: Arc<Vec<InputPatch>>,
+    /// Output buffer size from machine config — passed to `ensure_input_feed`
+    /// so the input stream uses the same period as the output stream.
+    pub audio_buffer_size: u32,
 }
 
 impl CueContext {
@@ -79,6 +82,7 @@ impl CueContext {
         fixtures: Vec<PatchedFixture>,
         fixture_groups: Vec<FixtureGroup>,
         input_patches: Vec<InputPatch>,
+        audio_buffer_size: u32,
     ) -> Self {
         Self {
             audio_engine,
@@ -93,6 +97,7 @@ impl CueContext {
             fixtures: Arc::new(fixtures),
             fixture_groups: Arc::new(fixture_groups),
             input_patches: Arc::new(input_patches),
+            audio_buffer_size,
         }
     }
 

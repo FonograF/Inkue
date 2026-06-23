@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTransportStore } from "../../stores/transportStore";
 import { OscMonitor } from "../Osc/OscMonitor";
 import { LightingPanel } from "../Lighting/LightingPanel";
+import { TcStatusIndicator } from "../Timecode/TcStatusIndicator";
 
 interface Props {
   onRefresh: () => void;
@@ -425,6 +426,8 @@ export function TransportBar({ onRefresh }: Props) {
           ))
         )}
       </div>
+
+      <TcStatusIndicator />
 
       {/* OSC activity indicator — click to open/close monitor */}
       <button

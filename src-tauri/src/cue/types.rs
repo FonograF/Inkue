@@ -29,6 +29,8 @@ pub enum CueType {
     Light,
     /// Routes a live audio input through the engine (mic / line).
     Mic,
+    /// Generates a SMPTE timecode stream (MTC or LTC).
+    Timecode,
 }
 
 impl std::fmt::Display for CueType {
@@ -45,7 +47,8 @@ impl std::fmt::Display for CueType {
             CueType::Osc   => write!(f, "osc"),
             CueType::Midi  => write!(f, "midi"),
             CueType::Light => write!(f, "light"),
-            CueType::Mic   => write!(f, "mic"),
+            CueType::Mic      => write!(f, "mic"),
+            CueType::Timecode => write!(f, "timecode"),
         }
     }
 }

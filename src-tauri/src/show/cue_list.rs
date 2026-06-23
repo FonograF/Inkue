@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use uuid::Uuid;
 
 use crate::cue::{registry::CueRegistry, traits::Cue, types::CueId};
+use crate::engine::timecode_types::{CueListTcConfig, TcTrigger};
 
 // ---------------------------------------------------------------------------
 // Recursive helpers (free functions to avoid borrow-checker conflicts)
@@ -84,6 +85,15 @@ pub struct CueList {
     /// ID of the cue at the Playhead (next to be triggered by GO).
     /// `None` means the playhead is past the last cue.
     pub playhead_cue_id: Option<CueId>,
+    /// Timecode synchronisation settings for this list.
+    pub tc_config: CueListTcConfig,
+    /// Per-cue TC triggers: cue_id → TcTrigger.  Stored on the list so
+    /// every cue type gains TC triggering without a per-type code change.
+    pub tc_triggers: HashMap<CueId, TcTrigger>,
+    /// Last absolute frame number at which a TC trigger was fired in this
+    /// list (monotone guard — prevents re-firing on the same position).
+    /// `u64::MAX` means nothing has been fired yet.
+    pub tc_last_triggered_frame: u64,
 }
 
 impl CueList {
@@ -94,6 +104,9 @@ impl CueList {
             name: name.into(),
             cues: Vec::new(),
             playhead_cue_id: None,
+            tc_config: CueListTcConfig::default(),
+            tc_triggers: HashMap::new(),
+            tc_last_triggered_frame: u64::MAX,
         }
     }
 
@@ -618,6 +631,10 @@ impl CueList {
             "id": self.id,
             "name": self.name,
             "playhead_cue_id": self.playhead_cue_id,
+            "tc_config": self.tc_config,
+            "tc_triggers": self.tc_triggers.iter().map(|(id, t)| {
+                serde_json::json!({ "cue_id": id, "trigger": t })
+            }).collect::<Vec<_>>(),
             "cues": cues_json,
         })
     }
@@ -667,11 +684,34 @@ impl CueList {
             cue.resolve_fade_targets(&number_to_id);
         }
 
+        let tc_config: CueListTcConfig = value
+            .get("tc_config")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let tc_triggers: HashMap<CueId, TcTrigger> = value
+            .get("tc_triggers")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().filter_map(|item| {
+                    let id: CueId = item.get("cue_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse().ok())?;
+                    let trigger: TcTrigger = serde_json::from_value(
+                        item.get("trigger")?.clone()).ok()?;
+                    Some((id, trigger))
+                }).collect()
+            })
+            .unwrap_or_default();
+
         Ok(Self {
             id,
             name,
             cues,
             playhead_cue_id,
+            tc_config,
+            tc_triggers,
+            tc_last_triggered_frame: u64::MAX,
         })
     }
 }

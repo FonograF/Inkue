@@ -11,6 +11,14 @@
 pub mod audio_engine;
 pub mod audio_input;
 pub mod device_manager;
+pub mod timecode_types;
+pub mod timecode_receiver;
+pub mod timecode_generator;
+pub mod ltc;
+
+pub use timecode_types::{TcPosition, TcRate, TcTrigger, TcEvent,
+                         CueListTcConfig, TcOnStop};
+pub use timecode_receiver::TcSource;
 pub mod dmx_engine;
 pub mod dmx_sink;
 pub mod fixture;

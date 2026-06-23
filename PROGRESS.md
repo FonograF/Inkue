@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-23
 
-## Current version: 0.9.5
+## Current version: 0.9.6
 
 ## cargo build result
 
@@ -10,7 +10,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## cargo test result
 
-**103 tests pass, 0 failures.** (DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue.)
+**130 tests pass, 0 failures.** (DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue; TC types/DF/display/RT, MTC receiver QF+SysEx+flywheel, LTC encoder/decoder, TC generator QF round-trip.)
 
 ---
 
@@ -29,7 +29,8 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
-| Mic   | ✅ **Functional** | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
+| Mic      | ✅ **Functional** | (see 0.9.5) |
+| Timecode | ✅ **Functional** | SMPTE timecode generation (MTC out via `TimecodeCue`) + receive (MTC in via `TimecodeReceiver`); per-cue TC triggers + CueList sync toggle; LTC encoder/decoder (`ltc.rs`); TC status indicator in TransportBar; Triggers inspector tab on every cue; TC Preferences (Network tab). LTC out = planned v2; drop-frame 29.97 fully tested. | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
 
 ---
 
@@ -124,6 +125,25 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.6 (2026-06-23) — Timecode (MTC receive + generate, LTC codec, per-cue triggers)
+
+**Architecture** — trois couches propres, rien dans `transport.rs` / `cue_list.rs` :
+
+- **`engine/timecode_types.rs`** — `TcPosition` / `TcRate` (24/25/29.97/29.97df/30), conversions SMPTE ↔ frames (drop-frame 29.97 inclus), Real-Time (ms) ↔ frames, `TcTrigger`, `TcEvent`, `CueListTcConfig`, `TcOnStop`. 13 tests.
+- **`engine/timecode_receiver.rs`** — `TimecodeReceiver` (thread `wincue-tc-mtc`, `midir::MidiInput`), `MtcAssembler` (quarter-frame state machine + full-frame SysEx), `TcFlywheel` (interpolation + freewheel). 4 tests.
+- **`engine/ltc.rs`** — `LtcEncoder` / `LtcDecoder` biphase-mark : encode `TcPosition → [f32]`, decode `[f32] → TcPosition`. Sync word vérification. 3 tests.
+- **`engine/timecode_generator.rs`** — `MtcGenerator` (thread `wincue-tc-gen` : quarter-frames à 4×fps, full-frame jam-sync au démarrage). 3 tests.
+- **`cue/timecode_cue.rs`** — `TimecodeCue` : génère MTC sur GO (`MtcGenerator`), start/end frame (durée calculée), plusieurs flux simultanés, `CueType::Timecode`, registry. 3 tests.
+- **`show/cue_list.rs`** — `CueList.tc_config: CueListTcConfig` + `tc_triggers: HashMap<CueId, TcTrigger>` + garde monotone `tc_last_triggered_frame`. Sérialisé dans `.wincue`.
+- **Dispatcher** — `event_loop.rs` reçoit `TcEvent` via channel, franchissement monotone + ré-armement sur saut arrière, émet `timecode` event Tauri pour l'UI.
+- **`engine/timecode_receiver.rs`** — `TcReceiverConfig`, `TimecodeReceiver.reconfigure()` (comme `OscServer`). `machine_config.rs` : `TcMachineConfig` + `load/save_tc_config`.
+- **Commands** — `timecode_cmds.rs` : `get/set_tc_config`, `get_tc_position`, `list_tc_midi_input_ports`, `get/set_cue_tc_trigger`, `get/set_cuelist_tc_config`.
+- **Frontend** — `TriggersTab.tsx` (SMPTE ou RealTime, sur chaque cue), `TimecodeTab.tsx` (TimecodeCue inspector), `TcStatusIndicator.tsx` (position live dans TransportBar, flash sur lock), `TcPreferences.tsx` (Network prefs, source + port MIDI), bouton `+ TC`, icône 🕐.
+
+**Caveat** — LTC OUT / LTC IN = v2 (LTC OUT requiert un voice audio dédié ; LTC IN requiert l'encodeur LTC branché sur l'audio input — l'infrastructure existe, mais pas le câblage end-to-end). Les deux sont documentés dans `TIMECODE.md`.
+
+**Tests** — +26 (13 types, 4 receiver, 3 LTC, 3 generator, 3 TimecodeCue) ; **130 total**, clippy clean, `tsc --noEmit` clean.
 
 ### 0.9.5 (2026-06-23) — Input Patches + Mic Cue (live audio input)
 
@@ -334,6 +354,7 @@ not just a console trigger.
 | 23. MIDI Cue | ✅ Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir) |
 | 24. Unified GL output | ✅ mpv Render API on all 3 OS — winit window (Windows/Linux) + AppKit `NSWindow` via objc2 (macOS); legacy Win32+D3D11 behind a feature flag |
 | 25. DMX lighting (Light Cue) | ✅ sACN + Art-Net engine, fixture patch, Light Cue (M1–M4); M5 (NIC machine-config) + effects = next, see `LIGHT.md` |
+| 27. Timecode (MTC/LTC) | ✅ `engine/timecode_types.rs` (SMPTE math, DF 29.97), `timecode_receiver.rs` (MTC QF + SysEx + flywheel), `timecode_generator.rs` (MTC OUT thread), `ltc.rs` (biphase encoder/decoder); `TimecodeCue` (MTC gen, start/end frame, multi-stream); per-cue `TcTrigger` + CueList `tc_config`; dispatcher in event loop; `timecode_cmds.rs`; frontend: TriggersTab, TimecodeTab, TcStatusIndicator, TcPreferences, + TC toolbar, 🕐 icon. LTC OUT/IN = v2. |
 | 26. Input Patches + Mic Cue | ✅ Live audio input: persistent cpal capture, adaptive drift resampler, multichannel Input Patch → live Voice → Output Patch; see `INPUT.md`. Unblocks LTC timecode |
 
 ---

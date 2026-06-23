@@ -119,7 +119,7 @@ impl MicCue {
 
         let feed_id = context
             .audio_engine
-            .ensure_input_feed(Some(&device))
+            .ensure_input_feed(Some(&device), context.audio_buffer_size)
             .map_err(|e| anyhow!("MicCue '{}': {e}", self.name))?;
 
         let in_l = chans.first().copied().unwrap_or(0) as usize;

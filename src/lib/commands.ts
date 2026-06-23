@@ -18,9 +18,13 @@ import type {
   FixtureGroup,
   FixtureType,
   GeneralPreferences,
+  CueListTcConfig,
   GroupMode,
   InputPatch,
   OscPatch,
+  TcMachineConfig,
+  TcPosition,
+  TcTrigger,
   OscReceiveConfig,
   OutputPatch,
   ParamTarget,
@@ -203,6 +207,25 @@ export const setOutputPatch = (
   channels: number[]
 ) => invoke<string>("set_output_patch", { patchId, name, deviceId, channels });
 export const refreshDevices = () => invoke<void>("refresh_devices");
+
+// ---------------------------------------------------------------------------
+// Timecode
+// ---------------------------------------------------------------------------
+
+export const listTcMidiInputPorts = () => invoke<string[]>("list_tc_midi_input_ports");
+export const getTcConfig = () => invoke<TcMachineConfig>("get_tc_config");
+export const setTcConfig = (config: TcMachineConfig) => invoke<void>("set_tc_config", { config });
+export const getTcPosition = () => invoke<TcPosition | null>("get_tc_position");
+export const getCueTcTrigger = (cueId: string) => invoke<TcTrigger | null>("get_cue_tc_trigger", { cueId });
+export const setCueTcTrigger = (
+  cueId: string,
+  positionStr: string | null,
+  rateStr: string | null,
+  realTime: boolean,
+) => invoke<void>("set_cue_tc_trigger", { cueId, positionStr, rateStr, realTime });
+export const getCuelistTcConfig = () => invoke<CueListTcConfig | null>("get_cuelist_tc_config");
+export const setCuelistTcConfig = (config: CueListTcConfig) =>
+  invoke<void>("set_cuelist_tc_config", { config });
 
 // ---------------------------------------------------------------------------
 // Audio inputs + Input Patches (Mic Cues)

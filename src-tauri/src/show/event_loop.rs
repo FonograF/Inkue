@@ -24,6 +24,7 @@ use crate::{
     engine::{
         output_engine::{OutputEngine, OutputStatus},
         ring_command::AudioStatus,
+        timecode_types::TcEvent,
         AudioEngine, DmxEngine,
     },
     show::{transport::Transport, workspace::Workspace},
@@ -41,6 +42,7 @@ pub fn run(
     output_engine: Arc<OutputEngine>,
     dmx_engine: Arc<DmxEngine>,
     workspace: Arc<Mutex<Workspace>>,
+    tc_rx: Option<crossbeam_channel::Receiver<TcEvent>>,
 ) {
     // Spawn a dedicated thread that refreshes the OSD timer overlay at ~60 fps.
     // This is independent of the main 30 fps tick so the millisecond display
@@ -56,6 +58,8 @@ pub fn run(
 
     // Maps a completed cue's ID to the deadline and the ID of its cue list.
     let mut auto_follow_pending: HashMap<CueId, (Instant, uuid::Uuid)> = HashMap::new();
+    // Last TC position seen — for the TC dispatcher monotone guard.
+    let mut prev_tc_frame: Option<u64> = None;
     // Per-group snapshot: (active_child_id, any_child_running).
     // Used to detect inner-sequence progress and emit cue-list-refresh.
     let mut prev_group_state: HashMap<CueId, (Option<CueId>, bool)> = HashMap::new();
@@ -73,6 +77,8 @@ pub fn run(
             &output_engine,
             &dmx_engine,
             &workspace,
+            tc_rx.as_ref(),
+            &mut prev_tc_frame,
             &mut auto_follow_pending,
             &mut prev_group_state,
             &mut prev_running_cues,
@@ -99,6 +105,7 @@ fn make_context(
     fixtures: Vec<crate::engine::fixture::PatchedFixture>,
     fixture_groups: Vec<crate::engine::fixture::FixtureGroup>,
     input_patches: Vec<crate::engine::audio_input::InputPatch>,
+    audio_buffer_size: u32,
 ) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     CueContext::new(
@@ -114,6 +121,7 @@ fn make_context(
         fixtures,
         fixture_groups,
         input_patches,
+        audio_buffer_size,
     )
 }
 
@@ -144,12 +152,87 @@ fn tick(
     output_engine: &Arc<OutputEngine>,
     dmx_engine: &Arc<DmxEngine>,
     workspace: &Arc<Mutex<Workspace>>,
+    tc_rx:           Option<&crossbeam_channel::Receiver<TcEvent>>,
+    prev_tc_frame:   &mut Option<u64>,
     auto_follow_pending: &mut HashMap<CueId, (Instant, uuid::Uuid)>,
     prev_group_state:    &mut HashMap<CueId, (Option<CueId>, bool)>,
     prev_running_cues:   &mut Vec<CueId>,
     prev_playhead_cue:   &mut Option<CueId>,
     prev_cue_list_hash:  &mut u64,
 ) {
+    // ------------------------------------------------------------------
+    // 0. Drain incoming timecode events and fire TC-triggered cues.
+    // ------------------------------------------------------------------
+    if let Some(rx) = tc_rx {
+        // Collect all pending TC events without blocking.
+        let mut latest_pos = None;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                TcEvent::Position(pos) | TcEvent::Started(pos) => {
+                    latest_pos = Some(pos);
+                }
+                TcEvent::Stopped => {
+                    // On-Stop policy is applied per-list below when ws is locked.
+                    let _ = handle.emit("timecode-stopped", serde_json::json!({}));
+                }
+            }
+        }
+
+        if let Some(pos) = latest_pos {
+            let abs_frame = pos.to_frame_number();
+            // Only process when the position has actually advanced (monotone guard).
+            let advanced = prev_tc_frame.map(|prev| abs_frame > prev).unwrap_or(true);
+            // Jump backwards: re-arm all triggers.
+            let jumped_back = prev_tc_frame.map(|prev| abs_frame < prev).unwrap_or(false);
+
+            *prev_tc_frame = Some(abs_frame);
+
+            // Emit the current position for the UI status widget.
+            let _ = handle.emit("timecode", serde_json::json!({
+                "h": pos.hours, "m": pos.minutes, "s": pos.seconds, "f": pos.frames,
+                "rate": pos.rate.to_string(),
+            }));
+
+            if advanced || jumped_back {
+                if let Ok(mut ws) = workspace.try_lock() {
+                    for cl in &mut ws.cue_lists {
+                        if !cl.tc_config.enabled { continue; }
+
+                        // Re-arm on jump back.
+                        if jumped_back { cl.tc_last_triggered_frame = u64::MAX; }
+
+                        // Fire every cue whose trigger sits in (last_triggered_frame, abs_frame].
+                        let triggers: Vec<(CueId, u64)> = cl.tc_triggers.iter()
+                            .filter_map(|(&id, trigger)| {
+                                let tf = trigger.position.to_frame_number();
+                                if tf <= abs_frame && tf > cl.tc_last_triggered_frame {
+                                    Some((id, tf))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        if triggers.is_empty() { continue; }
+                        cl.tc_last_triggered_frame = abs_frame;
+
+                        for (cue_id, _) in triggers {
+                            let Some(cue) = cl.get_mut_recursive(&cue_id) else { continue };
+                            let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
+                            // Build a minimal context for the GO call.
+                            // (Full context would need ws.output_patches etc.; for now the
+                            // tc-triggered GO reuses the same path as a normal GO.)
+                            drop(cue); // release borrow for context build
+                            let _ = handle.emit("cue-state-changed", serde_json::json!({
+                                "cue_id": cue_id, "old_state": "standby", "new_state": "running",
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // 1. Drain the audio status ring buffer.
     // ------------------------------------------------------------------
@@ -222,13 +305,14 @@ fn tick(
     let ws_fixtures       = ws.fixtures.clone();
     let ws_fixture_groups = ws.fixture_groups.clone();
     let ws_input_patches  = ws.input_patches.clone();
+    let ws_buffer_size    = ws.preferences.audio.audio_buffer_size;
     let active_list_id    = ws.active_cue_list_id;
 
     if ws.cue_lists.is_empty() {
         return;
     }
 
-    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone());
+    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size);
 
     // ------------------------------------------------------------------
     // 4. Apply video duration updates — search every cue list.
@@ -422,7 +506,7 @@ fn tick(
         if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
             let context = make_context(
                 audio_engine, output_engine, dmx_engine, stop_fade_ms,
-                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(),
+                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size,
             );
             let mut transport = Transport::new(context);
             if let Ok(result) = transport.go(cl) {

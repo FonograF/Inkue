@@ -113,7 +113,9 @@ const RING_FRAMES: usize = 48_000 / 2;
 /// The input callback only ever calls `try_push` (no allocation, no lock); when
 /// the ring is full it drops the oldest-unconsumed samples by failing the push,
 /// which is harmless because the output side always wants the most recent audio.
-pub fn open_input(device_id: Option<&str>) -> Result<(InputCapture, HeapCons<f32>)> {
+/// Open a persistent input stream.
+/// `buffer_size`: target period in frames (`0` = OS default).
+pub fn open_input(device_id: Option<&str>, buffer_size: u32) -> Result<(InputCapture, HeapCons<f32>)> {
     let host = cpal::default_host();
 
     let device = match device_id.filter(|s| !s.is_empty()) {
@@ -133,7 +135,15 @@ pub fn open_input(device_id: Option<&str>) -> Result<(InputCapture, HeapCons<f32
     let sample_rate = default_config.sample_rate().0;
     let channels = default_config.channels();
     let sample_format = default_config.sample_format();
-    let cfg: cpal::StreamConfig = default_config.into();
+    // Apply the same buffer size as the output stream so both device clocks
+    // fire at the same cadence.  Use Default when buffer_size == 0 (ASIO mode).
+    let buf = if buffer_size > 0 {
+        cpal::BufferSize::Fixed(buffer_size)
+    } else {
+        cpal::BufferSize::Default
+    };
+    let mut cfg: cpal::StreamConfig = default_config.into();
+    cfg.buffer_size = buf;
 
     let capacity = (RING_FRAMES * channels as usize).max(4096);
     let (mut prod, cons) = HeapRb::<f32>::new(capacity).split();

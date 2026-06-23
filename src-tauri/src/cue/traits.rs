@@ -112,6 +112,15 @@ pub trait Cue: Send {
     /// Enable or disable this cue.
     fn set_disabled(&mut self, _disabled: bool) {}
 
+    /// Optional timecode trigger: the SMPTE position at which this cue fires
+    /// when the CueList's TC sync is enabled.  `None` = not TC-triggered.
+    fn tc_trigger(&self) -> Option<&crate::engine::timecode_types::TcTrigger> {
+        None
+    }
+
+    /// Set or clear the TC trigger for this cue.
+    fn set_tc_trigger(&mut self, _trigger: Option<crate::engine::timecode_types::TcTrigger>) {}
+
     /// For media cues (Audio, Video, Image): the file path as stored in the
     /// cue (may be relative to the workspace directory).  Used by the command
     /// layer to detect broken cues without calling `serialize()`.

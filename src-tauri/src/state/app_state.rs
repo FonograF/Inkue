@@ -25,7 +25,10 @@ use crate::{
         video_cue::VideoCueFactory,
         wait_cue::WaitCueFactory,
     },
-    engine::{AudioEngine, DmxEngine, OscServer, OutputEngine},
+    engine::{
+        AudioEngine, DmxEngine, OscServer, OutputEngine,
+        timecode_receiver::{TimecodeReceiver, TcReceiverConfig},
+    },
     show::{undo_stack::UndoStack, Workspace},
 };
 
@@ -54,6 +57,8 @@ pub struct AppState {
     /// Used to enforce `double_go_protection_ms` — any GO within that window
     /// is silently dropped.  Lock-free so it adds zero latency to the hot path.
     pub last_go_at: Arc<AtomicU64>,
+    /// Timecode receiver (MTC / LTC) — `None` until the first `set_tc_config`.
+    pub tc_receiver: Arc<Mutex<Option<Arc<TimecodeReceiver>>>>,
 }
 
 impl AppState {
@@ -63,6 +68,7 @@ impl AppState {
         output_engine: Arc<OutputEngine>,
         osc_server: Arc<OscServer>,
         dmx_engine: Arc<DmxEngine>,
+        tc_receiver: Option<Arc<TimecodeReceiver>>,
     ) -> Self {
         let workspace = Workspace::new("Untitled");
 
@@ -77,7 +83,8 @@ impl AppState {
         registry.register(CueType::Stop, Box::new(StopCueFactory));
         registry.register(CueType::Video, Box::new(VideoCueFactory));
         registry.register(CueType::Image, Box::new(ImageCueFactory));
-        registry.register(CueType::Mic,   Box::new(crate::cue::mic_cue::MicCueFactory));
+        registry.register(CueType::Mic,      Box::new(crate::cue::mic_cue::MicCueFactory));
+        registry.register(CueType::Timecode, Box::new(crate::cue::timecode_cue::TimecodeCueFactory));
         registry.register(CueType::Wait, Box::new(WaitCueFactory));
 
         Self {
@@ -91,6 +98,7 @@ impl AppState {
             undo_stack: Arc::new(Mutex::new(UndoStack::new())),
             clipboard: Arc::new(Mutex::new(None)),
             last_go_at: Arc::new(AtomicU64::new(0)),
+            tc_receiver: Arc::new(Mutex::new(tc_receiver)),
         }
     }
 }

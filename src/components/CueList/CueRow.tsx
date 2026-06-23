@@ -58,6 +58,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   midi: "🎹",
   light: "💡",
   mic: "🎤",
+  timecode: "🕐",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

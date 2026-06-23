@@ -100,6 +100,12 @@ pub struct AudioPreferences {
     /// Default fade curve for newly created cues.
     #[serde(default = "AudioPreferences::default_fade_curve")]
     pub default_fade_curve: FadeCurve,
+
+    /// Runtime-only: the machine's configured audio buffer size, injected at
+    /// startup from `MachineAudioConfig` so `CueContext` can pass it to
+    /// `ensure_input_feed`.  Never serialised into the workspace file.
+    #[serde(skip)]
+    pub audio_buffer_size: u32,
 }
 
 impl AudioPreferences {
@@ -113,6 +119,7 @@ impl Default for AudioPreferences {
             default_volume_db: 0.0,
             default_fade_out_ms: Self::default_fade_out_ms(),
             default_fade_curve: Self::default_fade_curve(),
+            audio_buffer_size: 256,
         }
     }
 }

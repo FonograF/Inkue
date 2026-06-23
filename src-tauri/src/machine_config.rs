@@ -6,7 +6,10 @@
 
 use std::path::PathBuf;
 
-use crate::preferences::{MachineAudioConfig, OscReceiveConfig};
+use crate::{
+    preferences::{MachineAudioConfig, OscReceiveConfig},
+    engine::timecode_receiver::TcReceiverConfig,
+};
 
 /// Per-OS base directory for machine-level config files.
 ///
@@ -83,6 +86,47 @@ pub fn load_osc() -> OscReceiveConfig {
 /// Persist the OSC receive config to disk, creating `%APPDATA%\WinCue\` if needed.
 pub fn save_osc(config: &OscReceiveConfig) -> anyhow::Result<()> {
     let path = osc_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(config)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// TC machine config
+// ---------------------------------------------------------------------------
+
+/// Persisted TC machine config (receiver enabled/disabled + source/port).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TcMachineConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub receiver_config: TcReceiverConfig,
+}
+
+impl Default for TcMachineConfig {
+    fn default() -> Self {
+        Self { enabled: false, receiver_config: TcReceiverConfig::default() }
+    }
+}
+
+fn tc_config_path() -> std::path::PathBuf {
+    config_base_dir().join("WinCue").join("timecode.json")
+}
+
+pub fn load_tc_config() -> TcMachineConfig {
+    let path = tc_config_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_tc_config(config: &TcMachineConfig) -> anyhow::Result<()> {
+    let path = tc_config_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

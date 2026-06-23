@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -363,6 +363,60 @@ export interface LightCueData extends CueSummary {
   notes: string;
   targets: ParamTarget[];
   fade: FadeSpec;
+}
+
+// ---------------------------------------------------------------------------
+// Timecode
+// ---------------------------------------------------------------------------
+
+export type TcRate = "24" | "25" | "29.97" | "29.97df" | "30";
+
+export type TcSource = "mtc" | "ltc";
+
+export interface TcPosition {
+  h: number;
+  m: number;
+  s: number;
+  f: number;
+  rate: TcRate;
+}
+
+export interface TcTrigger {
+  /** SMPTE string HH:MM:SS:FF or HH:MM:SS;FF */
+  position: string;
+  /** true = position was entered as Real Time (ms) */
+  real_time: boolean;
+  rate: TcRate;
+}
+
+export type TcOnStop = "continue" | "pause" | "stop";
+
+export interface CueListTcConfig {
+  enabled: boolean;
+  rate: TcRate;
+  freewheel_ms: number;
+  on_stop: TcOnStop;
+}
+
+export type TcOutputType = "mtc" | "ltc";
+
+export interface TimecodeCueData extends CueSummary {
+  tc_type: TcOutputType;
+  midi_port: string | null;
+  output_patch_id: string | null;
+  rate: TcRate;
+  /** SMPTE string */
+  start_frame: TcPosition;
+  end_frame: TcPosition | null;
+}
+
+export interface TcMachineConfig {
+  enabled: boolean;
+  receiver_config: {
+    source: TcSource;
+    midi_port: string | null;
+    ltc_device_id: string | null;
+  };
 }
 
 // ---------------------------------------------------------------------------

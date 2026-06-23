@@ -26,10 +26,10 @@ const _MAX_VOICES: usize = 64;
 const RING_CAPACITY: usize = 256;
 pub const DEFAULT_FADE_OUT_MS: u32 = 500;
 
-/// Frames of headroom in each input feed's circular staging buffer (~100 ms at
-/// 48 kHz).  The resampler reads ~25 ms behind the write head, leaving slack for
-/// jitter and slow clock drift.
-const STAGING_FRAMES: usize = 4800;
+/// Circular staging buffer per input feed, in frames.  Large enough to absorb
+/// two full input-callback periods at maximum buffer size (2 × 2048 @ 48 kHz ≈
+/// 85 ms) while staying small so the target-lag calculation stays well inside.
+const STAGING_FRAMES: usize = 8192;
 
 // ---------------------------------------------------------------------------
 // Live input feed — one per captured device, drained by the output callback
@@ -97,6 +97,9 @@ pub struct AudioEngine {
     input_feeds: Arc<Mutex<Vec<InputFeed>>>,
     _stream: Mutex<Option<Stream>>,
     sample_rate: std::sync::atomic::AtomicU32,
+    /// Actual output callback period in frames (updated on the first callback).
+    /// Used by `mix_live` to set a tight `target_lag` instead of a fixed 25 ms.
+    output_period: Arc<std::sync::atomic::AtomicU32>,
     /// Total output channel count of the current stream (updated on restart).
     output_channels: std::sync::atomic::AtomicU32,
     master_gain: Arc<std::sync::atomic::AtomicU32>,
@@ -112,12 +115,14 @@ impl AudioEngine {
         let master_gain = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0_f32)));
         let shared_voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
         let input_feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
+        let output_period = Arc::new(std::sync::atomic::AtomicU32::new(256));
 
         let sr = open_stream_inner(
             config,
             Arc::clone(&shared_voices),
             Arc::clone(&input_feeds),
             Arc::clone(&master_gain),
+            Arc::clone(&output_period),
         )?;
 
         Ok(Arc::new(Self {
@@ -130,6 +135,7 @@ impl AudioEngine {
             sample_rate: std::sync::atomic::AtomicU32::new(sr.sample_rate),
             output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
             master_gain,
+            output_period,
         }))
     }
 
@@ -190,7 +196,12 @@ impl AudioEngine {
     /// Idempotent: a device is captured once and shared by all Mic Cues using it.
     /// The feed is released by [`gc_voices`](Self::gc_voices) once no live voice
     /// references it any more (so the OS mic indicator turns off after stop).
-    pub fn ensure_input_feed(&self, device_id: Option<&str>) -> Result<Uuid> {
+    /// Ensure a capture feed exists for `device_id`.
+    ///
+    /// `buffer_size` is passed to the cpal input stream (0 = OS default).
+    /// Pass the same value as the output stream's configured buffer so both
+    /// device clocks fire at the same period, minimising input ↔ output drift.
+    pub fn ensure_input_feed(&self, device_id: Option<&str>, buffer_size: u32) -> Result<Uuid> {
         let key = device_id.unwrap_or_default().to_string();
         {
             let feeds = self.input_feeds.lock().map_err(|_| anyhow!("input_feeds poisoned"))?;
@@ -198,7 +209,7 @@ impl AudioEngine {
                 return Ok(f.id);
             }
         }
-        let (capture, cons) = open_input(device_id)?;
+        let (capture, cons) = open_input(device_id, buffer_size)?;
         let in_channels = capture.channels.max(1) as usize;
         let id = Uuid::new_v4();
         let feed = InputFeed {
@@ -388,6 +399,7 @@ impl AudioEngine {
             Arc::clone(&self.voices),
             Arc::clone(&self.input_feeds),
             Arc::clone(&self.master_gain),
+            Arc::clone(&self.output_period),
         )?;
 
         *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = sr.cmd_prod;
@@ -432,6 +444,7 @@ fn open_stream_inner(
     cb_voices: Arc<Mutex<Vec<Arc<Voice>>>>,
     cb_feeds: Arc<Mutex<Vec<InputFeed>>>,
     cb_mg: Arc<std::sync::atomic::AtomicU32>,
+    cb_period: Arc<std::sync::atomic::AtomicU32>,
 ) -> Result<StreamResult> {
     use crate::preferences::AudioBackend;
 
@@ -472,12 +485,15 @@ fn open_stream_inner(
     let channels = default_config.channels();
     let total_ch = channels as usize;
 
-    // Buffer size: only meaningful for WASAPI Exclusive.
-    // ASIO drivers expose a buffer-size selector in their own control panel.
-    // WASAPI Shared uses the Windows audio engine period (~10 ms); Fixed is ignored.
+    // Buffer size: apply Fixed on all backends except ASIO (which uses its own
+    // control panel) and WASAPI Shared (where Windows owns the engine period and
+    // ignores the hint).  This makes the user-configured buffer_size effective on
+    // macOS (CoreAudio) and Linux (ALSA/PipeWire) — previously they always got
+    // the OS default (typically 256-1024 samples), causing high Mic Cue latency
+    // even when the operator had set 64 samples in Preferences.
     let buf_size = match config.backend {
-        AudioBackend::WasapiExclusive => cpal::BufferSize::Fixed(config.buffer_size),
-        _ => cpal::BufferSize::Default,
+        AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
+        _ => cpal::BufferSize::Fixed(config.buffer_size),
     };
 
     let stream_cfg = StreamConfig {
@@ -496,7 +512,8 @@ fn open_stream_inner(
         cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
             &stream_cfg,
             move |data: &mut [f32], _| {
-                fill_buffer(data, total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg);
+                cb_period.store((data.len() / total_ch) as u32, std::sync::atomic::Ordering::Relaxed);
+                fill_buffer(data, total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
             },
             |err| log::error!("cpal stream error: {err}"),
             None,
@@ -508,8 +525,9 @@ fn open_stream_inner(
                 &stream_cfg,
                 move |data: &mut [f32], _| {
                     let frames = data.len() / total_ch;
+                    cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
                     let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
                     data.fill(0.0);
                     for f in 0..frames {
                         data[f * total_ch + pair_offset]     = scratch[f * 2];
@@ -528,8 +546,9 @@ fn open_stream_inner(
                 &stream_cfg,
                 move |data: &mut [i32], _| {
                     let frames = data.len() / total_ch;
+                    cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
                     let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
                     data.fill(0);
                     for f in 0..frames {
                         data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
@@ -570,6 +589,7 @@ fn fill_buffer(
     cmd_cons: &mut ringbuf::HeapCons<AudioCommand>,
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
     master_gain: &Arc<std::sync::atomic::AtomicU32>,
+    output_period: &Arc<std::sync::atomic::AtomicU32>,
 ) {
     output.fill(0.0);
 
@@ -612,7 +632,7 @@ fn fill_buffer(
         // Live (Mic Cue) voice — resample from its input feed instead of samples.
         if voice.live.is_some() {
             if let Some(feeds) = feeds_guard.as_deref() {
-                mix_live(output, channels, output_sample_rate, voice, feeds, status_prod, &mut peak_l, &mut peak_r);
+                mix_live(output, channels, output_sample_rate, voice, feeds, status_prod, &mut peak_l, &mut peak_r, output_period);
             }
             continue;
         }
@@ -742,6 +762,7 @@ fn mix_live(
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
     peak_l: &mut f32,
     peak_r: &mut f32,
+    output_period: &Arc<std::sync::atomic::AtomicU32>,
 ) {
     let Some(live) = voice.live.as_ref() else { return };
     let Some(feed) = feeds.iter().find(|f| f.id == live.feed_id) else { return };
@@ -751,7 +772,12 @@ fn mix_live(
     }
 
     let frames = output.len() / channels;
-    let target_lag = (STAGING_FRAMES / 4) as f64; // ~25 ms behind the write head
+    // Keep the read cursor 3 output periods behind the write head.  This gives
+    // enough headroom to absorb one missed input callback without underrunning,
+    // while minimising the imposed latency.  With 64-sample buffers at 48kHz
+    // that is 3 × 64 / 48000 ≈ 4 ms — vs. the old fixed 1200 samples (25 ms).
+    let period = output_period.load(std::sync::atomic::Ordering::Relaxed).max(64) as f64;
+    let target_lag = (period * 3.0).max(192.0);
 
     if !live.is_started() {
         live.set_read_frame((feed.write_frame as f64 - target_lag).max(0.0));
@@ -929,9 +955,10 @@ mod tests {
         let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let (_, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
         let (mut status_prod, _) = HeapRb::<AudioStatus>::new(16).split();
-        let master = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let master  = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let period  = Arc::new(std::sync::atomic::AtomicU32::new(output_frames as u32));
         let mut output = vec![0.0f32; output_frames * 2];
-        fill_buffer(&mut output, 2, output_sr, &pool, &feeds, &mut cmd_cons, &mut status_prod, &master);
+        fill_buffer(&mut output, 2, output_sr, &pool, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
         let pos = pool.lock().unwrap().first().map(|v| v.frame_pos.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
         pos
     }
@@ -1032,16 +1059,18 @@ mod tests {
         let (mut status_prod, _) = HeapRb::<AudioStatus>::new(64).split();
         let mut out = vec![0.0_f32; 256 * 2];
         let (mut pl, mut pr) = (0.0_f32, 0.0_f32);
+        let period = Arc::new(std::sync::atomic::AtomicU32::new(256));
 
-        mix_live(&mut out, 2, 48_000, &voice, &feeds, &mut status_prod, &mut pl, &mut pr);
+        mix_live(&mut out, 2, 48_000, &voice, &feeds, &mut status_prod, &mut pl, &mut pr, &period);
 
         // Center pan → both gains = sqrt(0.5) ≈ 0.707; L = 0.5·0.707 ≈ 0.354.
         assert!(out[0] > 0.34 && out[0] < 0.37, "L sample was {}", out[0]);
         assert!(out[1] > 0.16 && out[1] < 0.19, "R sample was {}", out[1]);
 
-        // in_sr == out_sr and lag starts at target → ratio 1.0 → read advances 256.
+        // in_sr == out_sr, target_lag = 3 × period = 768, read advances 256.
         let read = voice.live.as_ref().unwrap().read_frame();
-        let expected = (feeds[0].write_frame as f64 - (STAGING_FRAMES / 4) as f64) + 256.0;
+        let target_lag = 3.0 * 256.0_f64;
+        let expected = (feeds[0].write_frame as f64 - target_lag) + 256.0;
         assert!((read - expected).abs() < 5.0, "read {read} vs expected {expected}");
     }
 }

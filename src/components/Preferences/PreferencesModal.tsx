@@ -31,6 +31,7 @@ import {
 } from "../../lib/commands";
 import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 import { InputPatchesPanel } from "../InputPatches/InputPatchesPanel";
+import { TcPreferences } from "../Timecode/TcPreferences";
 import { listInputDevices } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
@@ -1202,13 +1203,16 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                   />
                 )}
                 {category === "network" && (
-                  <OscContent
-                    config={oscConfig}
-                    onChange={async (c) => {
-                      setOscConfig_(c);
-                      try { await setOscConfig(c); } catch (e) { console.error(e); }
-                    }}
-                  />
+                  <>
+                    <OscContent
+                      config={oscConfig}
+                      onChange={async (c) => {
+                        setOscConfig_(c);
+                        try { await setOscConfig(c); } catch (e) { console.error(e); }
+                      }}
+                    />
+                    <TcPreferences />
+                  </>
                 )}
               </>
             )}

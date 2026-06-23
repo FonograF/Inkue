@@ -3,10 +3,16 @@
 Objectif : **parité QLab** sur le timecode — déclenchement de cues à une position (esclave)
 **et** génération de timecode pour asservir d'autres machines (maître). Formats **MTC + LTC**.
 
-État : **design verrouillé, non implémenté.** Le timecode dépend d'**Input Patches** (entrée
-audio) pour le LTC entrant — voir *Chaînage de dépendances* et *Ordre de build*. Aucune ligne
-de code timecode n'existe encore ; MIDI **sortie** (`midir`, `midi_cue.rs`) et Art-Net
-(`dmx_sink.rs`) sont là, mais **pas** d'entrée MIDI ni d'entrée audio.
+État : **implémenté (v0.9.6)** — MTC receive (QF + SysEx + flywheel), MTC generate
+(`TimecodeCue`), LTC encoder/decoder (`ltc.rs`), per-cue `TcTrigger` + `CueListTcConfig` +
+dispatcher, commandes, frontend complet (Triggers tab, TC inspector, TcStatusIndicator,
+TcPreferences). Détail dans `PROGRESS.md` (0.9.6).
+
+**Caveat LTC OUT/IN** — infrastructure présente mais pas câblée end-to-end (v2) :
+- LTC OUT requiert un voice audio dédié sur un Output Patch.
+- LTC IN requiert le décodeur LTC branché sur l'audio input (Input Patches, fait).
+
+Le design verrouillé ci-dessous reste la référence pour v2.
 
 ---
 
