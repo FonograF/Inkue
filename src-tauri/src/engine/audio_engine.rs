@@ -487,7 +487,19 @@ fn open_stream_inner(
         AudioBackend::WasapiShared | AudioBackend::WasapiExclusive | AudioBackend::SystemDefault => {
             cpal::default_host()
         }
-        AudioBackend::Asio => open_asio_host()?,
+        AudioBackend::Asio => {
+            // Fall back to the default host when ASIO is not compiled in
+            // (e.g. `pnpm tauri dev` without `--features asio-support`).
+            // This lets developers iterate without ASIO while keeping their
+            // saved machine config pointing at ASIO for production builds.
+            match open_asio_host() {
+                Ok(h) => h,
+                Err(e) => {
+                    log::warn!("ASIO unavailable ({e}), falling back to default host");
+                    cpal::default_host()
+                }
+            }
+        }
     };
 
     let device_name = config.device_id.as_deref();
