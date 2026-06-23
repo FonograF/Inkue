@@ -1,6 +1,6 @@
 # WinCue
 
-A professional show-control application for Windows, inspired by QLab (macOS). WinCue manages cue lists for live events — theatre, concerts, corporate shows — with a focus on reliability, low latency, and an extensible cue architecture.
+A professional, cross-platform show-control application (Windows, macOS, Linux), inspired by QLab (macOS). WinCue manages cue lists for live events — theatre, concerts, corporate shows — with a focus on reliability, low latency, and an extensible cue architecture.
 
 Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v2](https://tauri.app/).
 
@@ -100,7 +100,7 @@ src-tauri/src/
 │   └── undo_stack.rs
 ├── commands/       # Tauri IPC handlers (transport, cues, workspace, devices, prefs, osc)
 ├── state/          # AppState — engines, registry, undo, clipboard, last-GO timestamp
-├── machine_config.rs  # %APPDATA%\WinCue\ (audio.json, osc.json)
+├── machine_config.rs  # per-OS config dir (audio.json, osc.json)
 └── preferences.rs  # AppPreferences (audio, general, display, network / OSC)
 
 src/
@@ -120,7 +120,7 @@ src/
 **Key invariants:**
 - The audio callback has zero allocations, zero locks, zero I/O — all comms via lock-free ring buffers.
 - The `Cue` trait is the only interface the transport layer uses. Adding a new cue type never requires touching `transport.rs`, `cue_list.rs`, or the CueList UI.
-- Machine-specific settings (audio device, OSC config) live in `%APPDATA%\WinCue\`; show-specific settings travel in the `.wincue` file.
+- Machine-specific settings (audio device, OSC config) live in the per-OS config dir (`%APPDATA%\WinCue\` on Windows, `~/.config/WinCue` on Linux, `~/Library/Application Support/WinCue` on macOS); show-specific settings travel in the `.wincue` file.
 
 ---
 
@@ -132,7 +132,7 @@ src/
 | State | Zustand |
 | Desktop shell | Tauri v2 |
 | Backend | Rust 2021 |
-| Audio I/O | cpal (WASAPI / ASIO) |
+| Audio I/O | cpal (WASAPI / ASIO on Windows, CoreAudio on macOS, ALSA / PipeWire on Linux) |
 | Audio decoding | Symphonia (WAV, MP3, FLAC, OGG, AAC, M4A) |
 | Video / Image | libmpv (OpenGL Render API, persistent native window via winit + glutin) |
 | OSC | rosc 0.10 |
@@ -146,9 +146,9 @@ src/
 
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) + [pnpm](https://pnpm.io/)
-- Windows 10 / 11
-- `vendor/mpv/libmpv-2.dll` — required for video and image cues (not versioned, ~113 MB)
-- *(Optional)* [Steinberg ASIO SDK](https://www.steinberg.net/developers/) in `vendor/asiosdk/` for ASIO support
+- Windows 10 / 11, macOS, or Linux
+- libmpv — required for video and image cues (not versioned, ~113 MB): `vendor/mpv/libmpv-2.dll` on Windows; `libmpv` via Homebrew on macOS; the `libmpv2` (or `libmpv1`) system package on Linux. Per-OS resolution detail in `PORTAGE.md`.
+- *(Optional, Windows only)* [Steinberg ASIO SDK](https://www.steinberg.net/developers/) in `vendor/asiosdk/` for ASIO support
 
 ### Development
 
@@ -170,7 +170,7 @@ Generates an `.msi` installer and a standalone `.exe` in `src-tauri/target/relea
 ### Tests
 
 ```bash
-cd src-tauri && cargo test   # 65 unit tests (cue registry, OSC types/server/dedup, SR conversion, stop/fade specs, cue list ops)
+cd src-tauri && cargo test   # cue registry, OSC types/server/dedup, SR conversion, stop/fade specs, cue list ops, DMX engine/fixtures/Light Cue
 ```
 
 ---

@@ -258,7 +258,7 @@ not just a console trigger.
 
 ### 0.4.1 (2026-05-28) — Persistent PCM pipe *(superseded by 0.4.2)*
 
-- Single `pcm_pipe_manager` thread + `OUTPUT_PCM_DISCARD` flag fixed "no audio on 2nd+ video". Entirely removed in 0.4.2 in favour of the muted-mpv design above.
+- `pcm_pipe_manager` thread for "no audio on 2nd+ video"; entirely removed in 0.4.2 for the muted-mpv design above.
 
 ### 0.4.0 (2026-05-28) — Unified OutputEngine (Win32 + libmpv)
 
@@ -266,7 +266,7 @@ not just a console trigger.
 
 ### 0.3.2 (2026-04-28) — Unified output surface *(Tauri WebviewWindow era, superseded by 0.4.0)*
 
-- `DisplayPreferences::output_screen`; single fixed `"output-surface"` window; per-cue screen selector removed in favour of a global Display preference.
+- Single fixed output window + global `DisplayPreferences::output_screen` (replaced the per-cue screen selector); the WebviewWindow approach was dropped in 0.4.0.
 
 ### 0.3.1 (2026-04-22) — Image Cue functional
 

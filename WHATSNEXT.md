@@ -1,122 +1,74 @@
 # WinCue — Roadmap
 
-Mise à jour : 2026-06-22
+Backlog des features à venir et de leur architecture *cible*. Pas d'estimation de durée.
 
-## Ce qui est fait
-
-| Feature | Version |
-|---|---|
-| Audio, Video, Image, Group, Wait, Stop, Memo | 0.1–0.4 |
-| OSC Send + Receive server | 0.6.0 |
-| Fade Cue (volume fade sur cue en cours) | 0.6.3 |
-| Cue disable (skip au GO, badge visuel) | 0.6.4 |
-| Broken cue detection (fichier manquant) | 0.6.4 |
-| MIDI Cue (Note On/Off, CC, Program Change) | 0.6.5 |
-| Multiple Cue Lists (tabs, add/rename/delete, playhead indépendant par liste) | 0.7.0 |
-| Cue Warnings (badge ⚠ jaune — no file assigned, durée zéro, groupe vide) | 0.7.1 |
-| Image Display Duration (durée d'affichage optionnelle, auto-complete via mpv) | 0.7.1 |
-| Cue List Notes column + bouton Stop par cue | 0.8.0 |
-| Fade/Stop Cue multi-target UUID + fade visuel (Video/Image) | 0.8.0 |
-| Audio/Video loop fini + infini (∞) | 0.8.0 |
-| Output Mac/Linux + floating timer en WebView Tauri | 0.8.1 |
-| Chemin de sortie unifié GL Render API (winit + mpv), legacy Win32 derrière un flag | 0.9.0–0.9.2 |
-| Bouton Pause/Resume dans la transport bar | 0.9.2 |
-| Group Cue (édition enfants, audio séquentiel, playhead) + polish cross-platform | 0.9.3 |
-| Portage macOS sur le chemin GL unifié (NSWindow objc2 + CGL) — *runtime à valider* | Unreleased |
+- **Ce qui est fait** → `PROGRESS.md` (tables de statut, source de vérité).
+- **Cross-platform** → `PORTAGE.md`.
+- **DMX / Light** (M5 + Phase 2) → `LIGHT.md`.
 
 ---
 
-## Priorité 1 — Fiabilité show (bloquant en production)
-
-### ~~Multiple Cue Lists~~ ✅ v0.7.0
-
-### ~~Cue Warnings~~ ✅ v0.7.1
-
-### ~~Image Display Duration~~ ✅ v0.7.1
-
----
-
-## Priorité 2 — Workflow opérateur
+## Priorité 1 — Workflow opérateur
 
 ### Inline Editing dans la Cue List
-**Pourquoi :** QLab permet d'éditer pre-wait, post-wait, durée directement dans la ligne — sans ouvrir l'inspecteur. Très utile pour les ajustements rapides en répétition.  
-**Effort :** ~1–2 jours  
-**Architecture :** Cellules `pre_wait` / `post_wait` / `duration` dans `CueRow` deviennent des `<input>` en double-clic. `onBlur` appelle `updateCue`. Pas de changement backend.
+**Pourquoi :** QLab édite pre-wait / post-wait / durée directement dans la ligne — sans ouvrir l'inspecteur. Utile pour les ajustements rapides en répétition.
+**Architecture :** les cellules `pre_wait` / `post_wait` / `duration` de `CueRow` deviennent des `<input>` au double-clic. `onBlur` appelle `updateCue`. Pas de changement backend.
 
 ### Cart Mode
-**Pourquoi :** Déclencher n'importe quel cue par clic direct, indépendamment du playhead. Indispensable pour le busking et les sons d'ambiance déclenchés à la demande.  
-**Effort :** ~1 jour  
-**Architecture :** Bouton toggle "Cart" dans la transport bar. Quand actif, le clic sur un cue dans la liste appelle `go_cue(id)` au lieu de déplacer la sélection. `go_cue` = nouveau Tauri command qui trigger directement un cue par ID sans bouger le playhead.
+**Pourquoi :** Déclencher n'importe quel cue par clic direct, indépendamment du playhead. Indispensable pour le busking et les sons d'ambiance déclenchés à la demande.
+**Architecture :** Bouton toggle "Cart" dans la transport bar. Quand actif, le clic sur un cue appelle `go_cue(id)` au lieu de déplacer la sélection. `go_cue` = nouveau Tauri command qui trigger un cue par ID sans bouger le playhead.
 
 ### Active Cues View
-**Pourquoi :** Vue séparée listant tous les cues actuellement en cours. Critique en show complexe avec plusieurs cues parallèles.  
-**Effort :** ~1 jour  
-**Architecture :** Panel flottant ou section dans le layout. Le frontend filtre `cues.filter(c => c.state === "running" || c.state === "paused")`. Affiche nom, durée restante, barre de progression. Bouton stop individuel.
+**Pourquoi :** Vue séparée listant tous les cues en cours. Critique en show complexe avec plusieurs cues parallèles.
+**Architecture :** Panel flottant ou section dans le layout. Le frontend filtre `cues.filter(c => c.state === "running" || c.state === "paused")`. Affiche nom, durée restante, barre de progression, stop individuel.
 
 ### Hotkeys par Cue
-**Pourquoi :** Assigner une touche clavier (F1–F12, chiffres) à un cue spécifique pour le déclencher directement depuis le clavier.  
-**Effort :** ~1 jour  
-**Architecture :** Champ `hotkey: Option<String>` sur chaque cue (sérialisé). `useKeyboardShortcuts.ts` scanne les cues et intercepte les touches correspondantes. Appel `go_cue(id)`.
+**Pourquoi :** Assigner une touche (F1–F12, chiffres) à un cue spécifique pour le déclencher au clavier.
+**Architecture :** Champ `hotkey: Option<String>` sur chaque cue (sérialisé). `useKeyboardShortcuts.ts` scanne les cues et intercepte les touches correspondantes → `go_cue(id)`.
 
 ### Recherche / Filtre de Cues
-**Pourquoi :** Sur une liste de 200+ cues, trouver rapidement un cue par nom ou numéro.  
-**Effort :** ~0.5 jour  
-**Architecture :** Champ de recherche en haut de la CueList. Filtre local sur `cues` en mémoire (pas de requête backend). Les cues cachés conservent leur état (ne disparaissent pas de l'exécution).
+**Pourquoi :** Sur une liste de 200+ cues, trouver rapidement par nom ou numéro.
+**Architecture :** Champ de recherche en haut de la CueList. Filtre local sur `cues` en mémoire (pas de requête backend). Les cues cachés conservent leur état d'exécution.
 
 ---
 
-## Priorité 3 — Fonctionnalités avancées
+## Priorité 2 — Fonctionnalités avancées
 
 ### Input Patches (Mic / Live Audio)
-**Pourquoi :** Router un micro ou une entrée ligne live à travers le moteur audio de WinCue, avec routing vers les Output Patches.  
-**Effort :** ~3–4 jours  
-**Architecture :** `cpal` supporte les entrées audio sur WASAPI et CoreAudio. `InputPatch` struct (miroir de `OutputPatch`). `AudioEngine` ouvre un stream d'entrée supplémentaire et route les samples vers le mix de sortie. Nouveau cue type `MicCue` ou activation via un toggle dans les Preferences.  
-**Attention macOS :** Déjà cross-platform via `cpal`.
+**Pourquoi :** Router un micro ou une entrée ligne live à travers le moteur audio, avec routing vers les Output Patches.
+**Architecture :** `cpal` supporte les entrées (WASAPI / CoreAudio / ALSA). `InputPatch` struct (miroir de `OutputPatch`). `AudioEngine` ouvre un stream d'entrée et route les samples vers le mix de sortie. Nouveau cue type `MicCue` ou toggle dans les Preferences.
+**Cross-platform :** rester sur `cpal` générique (pas d'API WASAPI spécifique) — voir `PORTAGE.md`.
 
 ### Text Cue
-**Pourquoi :** Afficher du texte formaté sur la surface de sortie (titres, surtitres, annonces). Courant dans la conférence et le théâtre.  
-**Effort :** ~1–2 jours  
-**Architecture :** Passer par l'OSD mpv (déjà utilisé pour le timer). `mpv.set_property("osd-msg1", text)` avec le bon `osd-font` et `osd-font-size`. Cross-platform natif. Champs : texte, police, taille, position, couleur, durée.
-
-### Light Cue (DMX via Art-Net / sACN)
-**Pourquoi :** Contrôle DMX vers une console lumière ou directement des luminaires. Concurrent direct de QLab dans les petites productions.  
-**Effort :** ~3–5 jours  
-**Architecture :** UDP Art-Net / sACN — networking pur, 100% cross-platform. Nouveau type `LightCue` avec universes et valeurs DMX. Pas de driver propriétaire — protocole réseau standard.
+**Pourquoi :** Afficher du texte formaté sur la surface de sortie (titres, surtitres, annonces). Courant en conférence et théâtre.
+**Architecture :** Passer par l'OSD mpv (déjà utilisé pour le timer). `mpv.set_property("osd-msg1", text)` avec `osd-font` / `osd-font-size`. Cross-platform natif. Champs : texte, police, taille, position, couleur, durée.
 
 ### MIDI File Cue
-**Pourquoi :** Playback d'un fichier .mid via un port MIDI.  
-**Effort :** ~2 jours  
-**Architecture :** Lire le fichier MIDI avec `midly` ou similaire, reconstruire la timeline d'événements, les envoyer via `midir` dans un thread background avec timing. Le cue a une durée (longueur du fichier MIDI).
+**Pourquoi :** Playback d'un fichier .mid via un port MIDI.
+**Architecture :** Lire le fichier avec `midly`, reconstruire la timeline d'événements, les envoyer via `midir` dans un thread background avec timing. La cue a une durée (longueur du fichier MIDI).
 
 ### Script Cue
-**Pourquoi :** Exécuter une commande shell / script PowerShell au GO.  
-**Effort :** ~1 jour  
+**Pourquoi :** Exécuter une commande shell / script au GO.
 **Architecture :** `std::process::Command`. Champs : commande, arguments, working directory, timeout. Exécution dans un thread background pour ne pas bloquer. Sortie loggée.
 
 ---
 
-## Priorité 4 — Vidéo avancé
+## Priorité 3 — Vidéo avancé
 
 ### Multiple Video Outputs
-**Pourquoi :** Envoyer des vidéos différentes sur deux écrans simultanément.  
-**Effort :** ~3–4 jours  
-**Architecture :** Créer plusieurs instances `OutputEngine`, une par écran. Chaque `VideoCue` cible un output_engine_id. La fenêtre output actuelle (winit sur Win/Linux, `NSWindow` sur macOS) passe de singleton à pool — le shim de création de fenêtre par-OS existe déjà. Complexité principale : la gestion des fades entre cues sur le même output.
+**Pourquoi :** Envoyer des vidéos différentes sur deux écrans simultanément.
+**Architecture :** Plusieurs instances `OutputEngine`, une par écran ; chaque `VideoCue` cible un `output_engine_id`. La fenêtre output passe de singleton à pool — le shim de création par-OS (winit / `NSWindow`) existe déjà. Complexité principale : les fades entre cues sur le même output.
 
 ### Video Transforms
-**Pourquoi :** Redimensionner, positionner, faire pivoter la vidéo sur la surface.  
-**Effort :** ~1–2 jours  
-**Architecture :** Propriétés mpv : `video-zoom`, `video-pan-x`, `video-pan-y`, `video-rotate`. Champs dans `VideoCue` / `ImageCue`. Sliders dans l'inspecteur.
+**Pourquoi :** Redimensionner, positionner, faire pivoter la vidéo sur la surface.
+**Architecture :** Propriétés mpv `video-zoom`, `video-pan-x/y`, `video-rotate`, ou (cible long terme) rendu dans un FBO offscreen + quad warpé dans `render.rs` (cf. note projection mapping de `PORTAGE.md`). Champs dans `VideoCue` / `ImageCue`, sliders dans l'inspecteur.
 
 ---
 
-## Note sur la compatibilité macOS
+## Note cross-platform
 
-Les 3 OS partagent désormais le **chemin GL unifié** (`vo=libmpv` + Render API) : winit
-crée la fenêtre sur Windows/Linux, un `NSWindow` objc2 sur macOS (`macos_window.rs`).
-La frontière par-OS s'arrête à « obtenir un handle de fenêtre » — tout le pipeline vidéo
-(décodage, rendu, **transforms**, **projection mapping**, fades, multi-sortie) est un
-seul corpus GL partagé. Aucune des features ci-dessus n'agrandit le périmètre de portage
-(voir `PORTAGE.md`). Reste à confirmer le **runtime macOS** sur hardware Apple.
-
-Seule exception à surveiller : **Input Patches** — rester sur `cpal` générique (et non
-des API WASAPI spécifiques) les garde cross-platform.
+Les 3 OS partagent le **chemin GL unifié** (`vo=libmpv` + Render API) : winit crée la
+fenêtre sur Windows/Linux, un `NSWindow` objc2 sur macOS. Aucune feature ci-dessus
+n'agrandit le périmètre de portage — tout le pipeline vidéo (décodage, rendu, transforms,
+projection mapping, fades, multi-sortie) est un seul corpus GL partagé. Seul point de
+vigilance : **Input Patches** doit rester sur `cpal` générique. Détail dans `PORTAGE.md`.
