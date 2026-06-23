@@ -5,7 +5,7 @@ Show control app for Windows (QLab-inspired). Tauri v2 + Rust backend + React/TS
 
 ## Stack
 
-- Rust: audio (cpal/WASAPI/ASIO + symphonia), video/image (libmpv Win32 window), show logic
+- Rust: audio (cpal/WASAPI/ASIO + symphonia), video/image (libmpv via OpenGL Render API window; legacy Win32+D3D11 behind `legacy-win32-output` feature), show logic
 - UI: Tauri v2, React, TypeScript, Zustand
 - Build: `pnpm tauri dev` / `cargo test` / `cargo clippy` (from `src-tauri/`)
 - Runtime dep: `vendor/mpv/libmpv-2.dll` (~113 MB, not versioned)
@@ -43,4 +43,4 @@ Show control app for Windows (QLab-inspired). Tauri v2 + Rust backend + React/TS
 
 ## Tests
 
-Run `cargo test` from `src-tauri/`. 31 tests pass. Must cover: CueNumber parsing, CueRegistry, AudioCue serialization roundtrip, dB↔linear, FadeSpec curves, CueList operations.
+Run `cargo test` from `src-tauri/`. 78 tests pass. Must cover: CueNumber parsing, CueRegistry, AudioCue serialization roundtrip, dB↔linear, FadeSpec curves, CueList operations, audio SR conversion, Stop/Fade specs, OSC types/server/dedup.

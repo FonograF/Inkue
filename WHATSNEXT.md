@@ -1,6 +1,6 @@
 # WinCue — Roadmap
 
-Mise à jour : 2026-06-13 (v0.7.1)
+Mise à jour : 2026-06-22
 
 ## Ce qui est fait
 
@@ -15,6 +15,14 @@ Mise à jour : 2026-06-13 (v0.7.1)
 | Multiple Cue Lists (tabs, add/rename/delete, playhead indépendant par liste) | 0.7.0 |
 | Cue Warnings (badge ⚠ jaune — no file assigned, durée zéro, groupe vide) | 0.7.1 |
 | Image Display Duration (durée d'affichage optionnelle, auto-complete via mpv) | 0.7.1 |
+| Cue List Notes column + bouton Stop par cue | 0.8.0 |
+| Fade/Stop Cue multi-target UUID + fade visuel (Video/Image) | 0.8.0 |
+| Audio/Video loop fini + infini (∞) | 0.8.0 |
+| Output Mac/Linux + floating timer en WebView Tauri | 0.8.1 |
+| Chemin de sortie unifié GL Render API (winit + mpv), legacy Win32 derrière un flag | 0.9.0–0.9.2 |
+| Bouton Pause/Resume dans la transport bar | 0.9.2 |
+| Group Cue (édition enfants, audio séquentiel, playhead) + polish cross-platform | 0.9.3 |
+| Portage macOS sur le chemin GL unifié (NSWindow objc2 + CGL) — *runtime à valider* | Unreleased |
 
 ---
 
@@ -92,7 +100,7 @@ Mise à jour : 2026-06-13 (v0.7.1)
 ### Multiple Video Outputs
 **Pourquoi :** Envoyer des vidéos différentes sur deux écrans simultanément.  
 **Effort :** ~3–4 jours  
-**Architecture :** Créer plusieurs instances `OutputEngine`, une par écran. Chaque `VideoCue` cible un output_engine_id. La fenêtre Win32 actuelle passe de singleton à pool. Complexité principale : la gestion des fades entre cues sur le même output.
+**Architecture :** Créer plusieurs instances `OutputEngine`, une par écran. Chaque `VideoCue` cible un output_engine_id. La fenêtre output actuelle (winit sur Win/Linux, `NSWindow` sur macOS) passe de singleton à pool — le shim de création de fenêtre par-OS existe déjà. Complexité principale : la gestion des fades entre cues sur le même output.
 
 ### Video Transforms
 **Pourquoi :** Redimensionner, positionner, faire pivoter la vidéo sur la surface.  
@@ -103,6 +111,12 @@ Mise à jour : 2026-06-13 (v0.7.1)
 
 ## Note sur la compatibilité macOS
 
-La surface de portage macOS est **fixée et connue** — aucune des features ci-dessus n'agrandit le périmètre de portage (voir `ARCHITECTURE.md` pour le détail). Le seul blocage reste `engine/output_engine/` (Win32 → NSView). Toutes les features peuvent être développées sans compromis sur macOS.
+Les 3 OS partagent désormais le **chemin GL unifié** (`vo=libmpv` + Render API) : winit
+crée la fenêtre sur Windows/Linux, un `NSWindow` objc2 sur macOS (`macos_window.rs`).
+La frontière par-OS s'arrête à « obtenir un handle de fenêtre » — tout le pipeline vidéo
+(décodage, rendu, **transforms**, **projection mapping**, fades, multi-sortie) est un
+seul corpus GL partagé. Aucune des features ci-dessus n'agrandit le périmètre de portage
+(voir `PORTAGE.md`). Reste à confirmer le **runtime macOS** sur hardware Apple.
 
-Seule exception à surveiller : **Input Patches** — si on utilise des API WASAPI spécifiques plutôt que `cpal` générique. Rester sur `cpal` les garde cross-platform.
+Seule exception à surveiller : **Input Patches** — rester sur `cpal` générique (et non
+des API WASAPI spécifiques) les garde cross-platform.

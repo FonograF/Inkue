@@ -1,7 +1,8 @@
 {
   "name": "wincue",
-  "version": "0.7.2",
+  "version": "0.9.3",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

@@ -1,3 +1,7 @@
+> **Archived (2026-06-20).** Original generation brief used to bootstrap the project.
+> Some statements are intentionally outdated (e.g. "do not implement Video/MIDI/OSC" —
+> all now shipped). Preserved as a historical record of the founding spec.
+
 # Projet : WinCue — Show Control Application (QLab-like) pour Windows
 
 ## Objectif

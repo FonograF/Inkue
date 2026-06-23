@@ -38,10 +38,10 @@ mod tests {
 
     #[test]
     fn osc_arg_float_roundtrip() {
-        let arg = OscArg::Float(3.14);
+        let arg = OscArg::Float(2.5);
         let json = serde_json::to_string(&arg).unwrap();
         let back: OscArg = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, OscArg::Float(f) if (f - 3.14).abs() < 1e-5));
+        assert!(matches!(back, OscArg::Float(f) if (f - 2.5).abs() < 1e-5));
     }
 
     #[test]

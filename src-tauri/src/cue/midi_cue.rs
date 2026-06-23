@@ -21,19 +21,14 @@ use super::{
 // MIDI message types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MidiMessageType {
+    #[default]
     NoteOn,
     NoteOff,
     ControlChange,
     ProgramChange,
-}
-
-impl Default for MidiMessageType {
-    fn default() -> Self {
-        Self::NoteOn
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +128,7 @@ impl MidiCue {
             name: String::from("MIDI"),
             number: None,
             notes: String::new(),
-            color: CueColor::Green,
+            color: CueColor::White,
             state: CueState::Standby,
             continue_mode: ContinueMode::DoNotContinue,
             pre_wait: Duration::ZERO,

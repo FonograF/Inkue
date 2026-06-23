@@ -126,6 +126,7 @@ fn collect_time_snapshots(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(Cue
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick(
     handle: &tauri::AppHandle,
     audio_engine: &Arc<AudioEngine>,
@@ -264,6 +265,23 @@ fn tick(
                     let _ = cue.tick(&tick_ctx);
                 }
             }
+        }
+
+        // 5b. Release the outer Playhead once a Sequential group has fired its
+        //     last child (overlapping children may still be playing out).  This
+        //     covers Auto-Continue/Follow reaching the last child without a GO;
+        //     the transport handles the manual-GO case synchronously.
+        let release_ph = ws.cue_list_by_id(list_id).and_then(|cl| {
+            cl.playhead_cue_id.filter(|ph| {
+                cl.cues.iter().any(|c| c.id() == *ph && c.released_playhead())
+            })
+        });
+        if release_ph.is_some() {
+            if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+                cl.advance_playhead();
+            }
+            let ph = ws.cue_list_by_id(list_id).and_then(|cl| cl.playhead_cue_id);
+            all_seq_group_playheads.push(ph);
         }
 
         // 6. Detect completions.

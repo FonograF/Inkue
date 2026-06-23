@@ -1,6 +1,66 @@
-import type { AudioCueData, ImageCueData, VideoCueData } from "../../lib/types";
+import type { AudioCueData, FadeCurve, ImageCueData, VideoCueData } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
 import { CurveSelect } from "../common/CurveSelect";
+
+function FadeSection({
+  label,
+  durationMs,
+  curve,
+  idPrefix,
+  onChange,
+}: {
+  label: string;
+  durationMs: number | null;
+  curve: FadeCurve | null;
+  idPrefix: string;
+  onChange: (patch: Record<string, unknown>) => void;
+}) {
+  return (
+    <div
+      style={{
+        marginBottom: 14,
+        paddingBottom: 14,
+        borderBottom: "1px solid #1e293b",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          color: "#64748b",
+          marginBottom: 8,
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+        }}
+      >
+        {label}
+      </div>
+      <Field label="Duration (s)">
+        <input
+          key={`${idPrefix}-dur`}
+          style={inputStyle}
+          type="number"
+          step="0.1"
+          min="0"
+          defaultValue={durationMs != null ? (durationMs / 1000).toFixed(2) : ""}
+          placeholder="none"
+          onBlur={(e) =>
+            onChange({
+              [`${idPrefix}_ms`]: e.target.value
+                ? Math.round(parseFloat(e.target.value) * 1000)
+                : null,
+            })
+          }
+        />
+      </Field>
+      <Field label="Curve">
+        <CurveSelect
+          value={curve ?? "s_curve"}
+          onChange={(v) => onChange({ [`${idPrefix}_curve`]: v })}
+        />
+      </Field>
+    </div>
+  );
+}
 
 export function FadeTab({
   cue,
@@ -9,97 +69,62 @@ export function FadeTab({
   cue: AudioCueData | VideoCueData | ImageCueData;
   onSave: (p: Partial<AudioCueData | VideoCueData | ImageCueData>) => void;
 }) {
+  const isVideo = "video_fade_in_ms" in cue;
+  const vc = isVideo ? (cue as VideoCueData) : null;
+
   return (
     <>
-      {/* Fade In */}
-      <div
-        style={{
-          marginBottom: 14,
-          paddingBottom: 14,
-          borderBottom: "1px solid #1e293b",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 11,
-            color: "#64748b",
-            marginBottom: 8,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-          }}
-        >
-          Fade In
-        </div>
-        <Field label="Duration (s)">
-          <input
-            key={`${cue.id}-fi`}
-            style={inputStyle}
-            type="number"
-            step="0.1"
-            min="0"
-            defaultValue={
-              cue.fade_in_ms != null ? (cue.fade_in_ms / 1000).toFixed(2) : ""
-            }
-            placeholder="none"
-            onBlur={(e) =>
-              onSave({
-                fade_in_ms: e.target.value
-                  ? Math.round(parseFloat(e.target.value) * 1000)
-                  : null,
-              })
-            }
+      {isVideo && (
+        <>
+          <FadeSection
+            label="Image Fade In"
+            durationMs={vc!.video_fade_in_ms}
+            curve={vc!.video_fade_in_curve}
+            idPrefix="video_fade_in"
+            onChange={(p) => onSave(p as Partial<VideoCueData>)}
           />
-        </Field>
-        <Field label="Curve">
-          <CurveSelect
-            value={cue.fade_in_curve ?? "s_curve"}
-            onChange={(v) => onSave({ fade_in_curve: v })}
+          <FadeSection
+            label="Image Fade Out"
+            durationMs={vc!.video_fade_out_ms}
+            curve={vc!.video_fade_out_curve}
+            idPrefix="video_fade_out"
+            onChange={(p) => onSave(p as Partial<VideoCueData>)}
           />
-        </Field>
-      </div>
+          <FadeSection
+            label="Audio Fade In"
+            durationMs={cue.fade_in_ms}
+            curve={cue.fade_in_curve}
+            idPrefix="fade_in"
+            onChange={(p) => onSave(p)}
+          />
+          <FadeSection
+            label="Audio Fade Out"
+            durationMs={cue.fade_out_ms}
+            curve={cue.fade_out_curve}
+            idPrefix="fade_out"
+            onChange={(p) => onSave(p)}
+          />
+        </>
+      )}
 
-      {/* Fade Out */}
-      <div>
-        <div
-          style={{
-            fontSize: 11,
-            color: "#64748b",
-            marginBottom: 8,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-          }}
-        >
-          Fade Out
-        </div>
-        <Field label="Duration (s)">
-          <input
-            key={`${cue.id}-fo`}
-            style={inputStyle}
-            type="number"
-            step="0.1"
-            min="0"
-            defaultValue={
-              cue.fade_out_ms != null
-                ? (cue.fade_out_ms / 1000).toFixed(2)
-                : ""
-            }
-            placeholder="none"
-            onBlur={(e) =>
-              onSave({
-                fade_out_ms: e.target.value
-                  ? Math.round(parseFloat(e.target.value) * 1000)
-                  : null,
-              })
-            }
+      {!isVideo && (
+        <>
+          <FadeSection
+            label="Fade In"
+            durationMs={cue.fade_in_ms}
+            curve={cue.fade_in_curve}
+            idPrefix="fade_in"
+            onChange={(p) => onSave(p)}
           />
-        </Field>
-        <Field label="Curve">
-          <CurveSelect
-            value={cue.fade_out_curve ?? "s_curve"}
-            onChange={(v) => onSave({ fade_out_curve: v })}
+          <FadeSection
+            label="Fade Out"
+            durationMs={cue.fade_out_ms}
+            curve={cue.fade_out_curve}
+            idPrefix="fade_out"
+            onChange={(p) => onSave(p)}
           />
-        </Field>
-      </div>
+        </>
+      )}
     </>
   );
 }

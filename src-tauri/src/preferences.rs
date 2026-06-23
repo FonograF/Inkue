@@ -212,6 +212,17 @@ impl Default for OscReceiveConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkPreferences {}
 
+/// How a cue's colour tag is rendered in the Cue List.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CueColorStyle {
+    /// A 4px tinted strip along the left edge of the row (original look).
+    #[default]
+    Stripe,
+    /// The entire row background tinted with the cue's colour.
+    FullRow,
+}
+
 /// Where on the output window the cue timer is anchored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -291,6 +302,10 @@ pub struct DisplayPreferences {
     /// Primary text colour.
     #[serde(default = "DisplayPreferences::default_text_primary")]
     pub text_primary: String,
+
+    /// How a cue's colour tag is rendered in the Cue List (stripe vs full row).
+    #[serde(default)]
+    pub cue_color_style: CueColorStyle,
 }
 
 impl DisplayPreferences {
@@ -299,7 +314,7 @@ impl DisplayPreferences {
     fn default_bg_panel()       -> String { "#1e293b".into() }
     fn default_accent()         -> String { "#3b82f6".into() }
     fn default_text_primary()   -> String { "#e2e8f0".into() }
-    fn default_timer_font()      -> String { "Arial".into() }
+    fn default_timer_font()      -> String { crate::bundled_fonts::FONT_FAMILY.into() }
     fn default_timer_font_size() -> u32   { 120 }
     fn default_timer_margin()    -> u32   { 50 }
 }
@@ -321,6 +336,7 @@ impl Default for DisplayPreferences {
             accent:               Self::default_accent(),
             text_primary:         Self::default_text_primary(),
             timer_floating:       false,
+            cue_color_style:      CueColorStyle::default(),
         }
     }
 }

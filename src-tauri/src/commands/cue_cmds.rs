@@ -177,7 +177,7 @@ pub fn get_cue(cue_id: String, state: State<'_, AppState>) -> Result<serde_json:
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-    let cue = cue_list.get(&id).ok_or("Cue not found")?;
+    let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
     Ok(cue.serialize())
 }
 
@@ -222,7 +222,7 @@ pub fn remove_cue(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    cue_list.remove(&id).map_err(|e| e.to_string())?;
+    cue_list.remove_anywhere(&id).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
@@ -260,7 +260,7 @@ pub fn remove_cues(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    cue_list.remove_many(&ids).map_err(|e| e.to_string())?;
+    cue_list.remove_many_anywhere(&ids).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
@@ -304,7 +304,7 @@ pub fn duplicate_cue(
 
     let (json, preserved_audio) = {
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-        let cue = cue_list.get(&id).ok_or("Cue not found")?;
+        let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
         let mut j = cue.serialize();
         // Assign a new UUID to the copy.
         j["id"] = serde_json::json!(Uuid::new_v4().to_string());
@@ -323,20 +323,18 @@ pub fn duplicate_cue(
 
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    let src_idx = cue_list
-        .index_of(&id)
-        .ok_or("Cue not found")?;
-    cue_list.insert(src_idx + 1, new_cue);
+    // Insert the copy right after its source, wherever it lives — so duplicating
+    // a cue nested in a group keeps the copy in that same group.
+    cue_list
+        .insert_after_anywhere(&id, new_cue)
+        .map_err(|e| e.to_string())?;
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(new_id)
 }
 
-/// Duplicate multiple cues as a block inserted after the last selected cue.
-///
-/// All copies are inserted in order immediately after the highest-index source
-/// cue, giving [1, 2, 1', 2'] instead of the interleaved [1, 1', 2, 2'] that
-/// sequential single-duplicate calls would produce.
+/// Duplicate multiple cues, inserting each copy immediately after its own
+/// source (so a copy of a cue nested in a group stays in that group).
 #[tauri::command]
 pub fn duplicate_cues(
     ids: Vec<String>,
@@ -355,39 +353,33 @@ pub fn duplicate_cues(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
 
-    // Collect serialised copies and preserved audio for each source cue.
+    // Collect serialised copies (paired with their source ID) and preserved
+    // audio for each source cue.  Recursive lookup so group children duplicate.
     let copies = {
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
         ids.iter()
             .map(|id| {
-                let cue = cue_list.get(id).ok_or_else(|| format!("Cue {id:?} not found"))?;
+                let cue = cue_list.get_recursive(id).ok_or_else(|| format!("Cue {id:?} not found"))?;
                 let mut j = cue.serialize();
                 j["id"] = serde_json::json!(Uuid::new_v4().to_string());
                 let audio = cue.extract_decoded_audio();
-                Ok((j, audio))
+                Ok((*id, j, audio))
             })
             .collect::<Result<Vec<_>, String>>()?
-    };
-
-    // Insertion point: immediately after the last source cue in the list.
-    let insert_after = {
-        let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-        ids.iter()
-            .filter_map(|id| cue_list.index_of(id))
-            .max()
-            .ok_or("No valid cue indices found")?
     };
 
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     let mut new_ids = Vec::with_capacity(copies.len());
-    for (i, (json, audio)) in copies.into_iter().enumerate() {
+    for (src_id, json, audio) in copies {
         let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
         if let Some((samples, channels, sample_rate, duration)) = audio {
             new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
         }
         new_ids.push(new_cue.id().to_string());
-        cue_list.insert(insert_after + 1 + i, new_cue);
+        cue_list
+            .insert_after_anywhere(&src_id, new_cue)
+            .map_err(|e| e.to_string())?;
     }
     drop(registry);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
@@ -466,11 +458,20 @@ pub fn set_playhead(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     cue_list.set_playhead(id).map_err(|e| e.to_string())?;
+    // The resulting outer Playhead may differ from `id` (a group child parks the
+    // Playhead on its ancestor group), so emit the actual outer Playhead.
+    let outer_playhead = cue_list.playhead_cue_id;
 
     let _ = app_handle.emit(
         "playhead-moved",
-        serde_json::json!({ "cue_id": id.map(|u| u.to_string()) }),
+        serde_json::json!({ "cue_id": outer_playhead.map(|u| u.to_string()) }),
     );
+    // Only when the target was a nested cue (resolved to a different outer
+    // Playhead) refresh cues so the group's inner playhead (active_child_id)
+    // updates — top-level clicks don't need the extra round-trip.
+    if id != outer_playhead {
+        let _ = app_handle.emit("cue-list-refresh", serde_json::json!({}));
+    }
     Ok(())
 }
 
@@ -513,7 +514,7 @@ pub fn get_waveform_peaks(
     let (samples, channels, _sample_rate, file_duration) = {
         let ws = state.workspace.lock().map_err(|e| e.to_string())?;
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-        let cue = cue_list.get(&id).ok_or("Cue not found")?;
+        let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
         cue.extract_decoded_audio()
             .ok_or("Audio not loaded yet — assign a file first")?
         // workspace lock dropped here
@@ -521,7 +522,7 @@ pub fn get_waveform_peaks(
 
     // Compute peaks outside the lock.
     let channels = channels as usize;
-    let total_frames = if channels > 0 { samples.len() / channels } else { 0 };
+    let total_frames = samples.len().checked_div(channels).unwrap_or(0);
     let peaks = if bins == 0 || total_frames == 0 {
         vec![]
     } else {
@@ -566,7 +567,7 @@ pub fn get_normalize_db(
     let samples = {
         let ws = state.workspace.lock().map_err(|e| e.to_string())?;
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-        let cue = cue_list.get(&id).ok_or("Cue not found")?;
+        let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
         cue.extract_decoded_audio()
             .ok_or("Audio not loaded yet — open the file first")?
             .0
@@ -719,7 +720,7 @@ pub fn preview_cue(
     let (samples, channels, sample_rate, volume_db, pan) = {
         let ws = state.workspace.lock().map_err(|e| e.to_string())?;
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-        let cue = cue_list.get(&id).ok_or("Cue not found")?;
+        let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
         let (samples, channels, sample_rate, _dur) = cue
             .extract_decoded_audio()
             .ok_or("Audio not loaded yet — assign a file first")?;

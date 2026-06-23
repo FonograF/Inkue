@@ -14,6 +14,7 @@ export type CueColor =
   | "orange"
   | "yellow"
   | "green"
+  | "cyan"
   | "blue"
   | "purple"
   | "pink"
@@ -83,10 +84,18 @@ export interface AudioCueData extends CueSummary {
 export interface VideoCueData extends CueSummary {
   notes: string;
   volume_db: number;
+  /** Audio track fade-in. */
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;
+  /** Audio track fade-out. */
   fade_out_ms: number | null;
   fade_out_curve: FadeCurve | null;
+  /** Visual (GL overlay) fade-in — independent from audio. */
+  video_fade_in_ms: number | null;
+  video_fade_in_curve: FadeCurve | null;
+  /** Visual (GL overlay) fade-out — independent from audio. */
+  video_fade_out_ms: number | null;
+  video_fade_out_curve: FadeCurve | null;
   start_time_ms: number | null;
   end_time_ms: number | null;
   loop_count: number;
@@ -134,8 +143,10 @@ export interface FadeCueData extends CueSummary {
   target_cue_ids: string[];
   /** Display labels kept in sync with target_cue_ids. */
   target_cue_numbers: string[];
-  /** Target volume in dB (-60 = silence/black, 0 = unity/full brightness). */
+  /** Target audio volume in dB (−60 = silence, 0 = unity). */
   target_volume_db: number;
+  /** Target visual brightness in percent (0 = black, 100 = fully visible). Independent from volume. */
+  target_brightness_pct: number;
   /** Fade duration in milliseconds. */
   fade_duration_ms: number;
   /** Fade curve shape. */
@@ -290,6 +301,9 @@ export const DEFAULT_GENERAL_PREFS: GeneralPreferences = {
 
 export type TimerPosition = "center" | "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
+/** How a cue's colour tag is rendered in the Cue List. */
+export type CueColorStyle = "stripe" | "full_row";
+
 export interface DisplayPreferences {
   /** Monitor index for the unified output surface. null = floating window. */
   output_screen: number | null;
@@ -314,14 +328,17 @@ export interface DisplayPreferences {
   bg_panel: string;
   accent: string;
   text_primary: string;
+  /** How a cue's colour tag is rendered in the Cue List. */
+  cue_color_style: CueColorStyle;
 }
 
-export const DEFAULT_DISPLAY_PREFS: Pick<DisplayPreferences, "bg_app" | "bg_surface" | "bg_panel" | "accent" | "text_primary"> = {
+export const DEFAULT_DISPLAY_PREFS: Pick<DisplayPreferences, "bg_app" | "bg_surface" | "bg_panel" | "accent" | "text_primary" | "cue_color_style"> = {
   bg_app:       "#020617",
   bg_surface:   "#0f172a",
   bg_panel:     "#1e293b",
   accent:       "#3b82f6",
   text_primary: "#e2e8f0",
+  cue_color_style: "stripe",
 };
 
 export interface AppPreferences {

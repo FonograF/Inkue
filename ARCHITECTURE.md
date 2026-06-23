@@ -4,29 +4,48 @@ Companion to `CLAUDE.md`. Read this when modifying the output engine, audio pipe
 
 ## Output engine (`engine/output_engine/`)
 
-Single persistent Win32 popup window (`WS_POPUP`) created at startup, always visible (black when idle). libmpv renders both video and images into it via D3D11/gpu.
+Single persistent native window for all video and image cues, created at startup
+and hidden until the first visual GO. **Unified GL path (`output_gl`, all 3 OS):
+mpv OpenGL Render API** (`render.rs`): mpv runs with `vo=libmpv` and renders each
+frame into the window's default framebuffer via `glutin` (OpenGL 3.3 Core, 3.2 on
+macOS) + `mpv_render_context`. Only **native window creation** differs per OS —
+**winit** on Windows/Linux, **AppKit `NSWindow` via objc2** on macOS
+(`macos_window.rs`), because winit's `EventLoop` cannot coexist with Tauri's AppKit
+main run loop. Everything after `make_current` (render loop, GL fade quad) is shared.
+The legacy Win32 + D3D11 `--wid` path (`win32_window.rs`) compiles only behind the
+`legacy-win32-output` feature flag (off by default) as a regression fallback.
 
-**Key statics** (all `OnceLock`):
-- `OUTPUT_PARENT_HWND` — the Win32 window handle
-- `FADE_OVERLAY_HWND` — `WS_EX_LAYERED` child for dip-to-black fades
+**Threads** (GL path):
+
+| Thread | Role |
+|---|---|
+| `wincue-output-window` | **(Windows/Linux only)** winit `EventLoop` — window events (drag, resize, double-click fullscreen). macOS has no such thread: the `NSWindow` is built on the main thread during `.setup()` and AppKit handles its events |
+| `wincue-output-render` | glutin GL context + `mpv_render_context` + render loop; draws the fade quad |
+| `wincue-output-mpv-events` | `mpv_wait_event` (`PLAYBACK_RESTART`, EOF, …) |
+
+**Key statics:**
+- `render::GL_WINDOW` — `Arc<winit::window::Window>` (**Windows/Linux only**), shared so `OutputEngine` show/hide/position/fullscreen call winit's cross-platform API from any thread. On macOS the `*mut NSWindow` lives in `macos_window::MAC_WINDOW` and control calls marshal onto the main thread via `run_on_main_thread`
+- `render::RENDER_SIGNAL` — condvar woken by mpv's update callback (and `render::wake()` during Fade Cues) so the loop redraws on demand
+- `render::GL_WIDTH` / `GL_HEIGHT` — physical window size, written on resize, read by `surface.resize()`
 - `OUTPUT_MPV_CTX` / `OUTPUT_MPV_LIB` — mpv context shared across threads
 - `OUTPUT_CURRENT_AUDIO_VOICE` — UUID of the video's paired audio voice
-- `OUTPUT_PENDING_VIDEO_START` — set when a video loads paused; consumed by first `MPV_EVENT_PLAYBACK_RESTART`
-- `TIMER_PREVIEW` — `Mutex<Option<String>>`: when `Some`, timer thread shows this instead of live cue time
+- `OUTPUT_PENDING_VIDEO_START` — set when a video loads paused; consumed by the first `MPV_EVENT_PLAYBACK_RESTART`
+- `TIMER_PREVIEW` — `Mutex<Option<String>>`: when `Some`, the timer thread shows this instead of live cue time
+- *(legacy path only)* `OUTPUT_PARENT_HWND`, `FADE_OVERLAY_HWND` — Win32 handles, `#[cfg(output_win32)]`
 
 **Video audio**: mpv runs with `ao=null` / `audio=no`. A video's audio track is decoded by symphonia and played as a normal `AudioEngine` Voice (gets Output Patch routing, VU, fades). Both video and audio start paused at GO; `MPV_EVENT_PLAYBACK_RESTART` releases both simultaneously from frame 0. A 2.5 s watchdog force-reveals if the event never fires.
 
-**Fade overlay**: `WS_EX_LAYERED | WS_EX_TRANSPARENT` child window. Alpha 0 = transparent, 255 = opaque black. Animated via 16 ms `WM_TIMER` in the parent window proc. `WM_DO_FADE` (custom message) starts/updates the fade.
+**Fade overlay**: a fullscreen black quad (`vec4(0,0,0,alpha)`) drawn in the same GL framebuffer after the mpv render, before `swap_buffers`. Alpha 0 = transparent, 255 = opaque black; animated by `fade::tick_fade()`. Drawing the fade in mpv's own framebuffer is immune to the DWM DirectFlip "frame-black" glitch that affected the old separate layered window. A hard-cut stop forces alpha 255 to paint black over the frozen last frame. The idle alpha also starts at 255, so the GL loop commits at least one buffer even with no content loaded — required for the Wayland compositor to map the window (otherwise F9/View toggles nothing until the first cue). *(Legacy path only: a `WS_EX_LAYERED` child window animated via `WM_TIMER`, with `d3d11-flip=no` to avoid that DirectFlip glitch.)*
 
 **Cross-stop rule**: any `show_content()` call stops the current voice first (applying its stored `fade_out_ms`).
 
 **Screen positioning**: `position_window(screen_index)` moves the window fullscreen onto the chosen monitor at GO time. `DisplayPreferences::output_screen: Option<u32>` is the global setting.
 
-**F9**: `toggle_output_window` / `get_output_window_visible` Tauri commands.
+**Visibility**: `toggle_output_window` / `get_output_window_visible` Tauri commands (F9). The backend emits an `output-window-visible` event on every show/hide so the View-menu checkmark stays in sync.
 
 ## Output window timer (OSD via mpv)
 
-The timer is rendered via mpv's OSD (`osd-msg1` property), not a Win32 GDI child window. This guarantees it composites above the D3D11 surface regardless of DWM.
+The timer is rendered via mpv's OSD (`osd-msg1` property), not a separate child window. mpv composites the OSD into the same framebuffer it renders the video into, so the timer always sits above the picture regardless of the compositor (DWM on Windows, etc.).
 
 **Thread**: `wincue-timer-refresh` in `show/event_loop.rs`, runs every 16 ms. Does `try_lock` on workspace (skips frame if busy), reads `cue.action_elapsed()` directly (always `Instant::now() - start`, no stale data), formats, calls `output_engine.set_output_timer()`. Independent of the 30 fps main tick.
 
@@ -53,14 +72,14 @@ The timer is rendered via mpv's OSD (`osd-msg1` property), not a Win32 GDI child
 | `timer_show_ms` | bool | false |
 | `timer_position` | `TimerPosition` | Center |
 | `timer_margin` | u32 | 50 |
-| `timer_font` | String | "Arial" |
+| `timer_font` | String | "DSEG7 Classic" (bundled) |
 | `timer_font_size` | u32 | 120 |
 
 **Preview mode**: `output_engine.set_timer_preview(Some("00:00.000"))` — timer thread shows this placeholder instead of live cue time. Used by the preferences "Preview" checkbox. `set_timer_preview(None)` returns to live mode.
 
-**Font enumeration**: `list_system_fonts` Tauri command → `EnumFontFamiliesExW` (GDI) → sorted list of installed family names. UI renders them in a `<datalist>` for searchable autocomplete.
+**Font enumeration**: `list_system_fonts` Tauri command → `EnumFontFamiliesExW` (GDI) on Windows, `fc-list` (fontconfig — the same backend mpv/libass resolve `osd-font` through) on Linux/macOS → sorted list of installed family names. UI renders them in a `<datalist>` for searchable autocomplete.
 
-**Note**: a legacy `WinCueTimerOverlay` Win32 GDI child window still exists in `win32_window.rs` but is unused (GDI is composited away by DWM when mpv owns the D3D11 surface). Remove in a future cleanup.
+**Bundled default font**: `bundled_fonts::ensure_installed()` (called at startup) copies DSEG7 Classic (SIL OFL 1.1, `vendor/fonts/`) into the per-user font dir — `~/.local/share/fonts` + `fc-cache` (Linux), `~/Library/Fonts` (macOS), per-user Fonts dir + registry (Windows). Once installed it resolves by family name for both the mpv OSD and the floating-timer WebView with no separate embedding path. It is the default `timer_font`.
 
 ## Audio pipeline (`engine/audio_engine.rs`, `engine/voice.rs`)
 
@@ -136,12 +155,12 @@ Tolérance ±1 frame : le ratio 44100/48000 n'est pas exactement représentable 
 ## Stop Cue and `stop_specification()`
 
 `StopCue` has two configurable fields:
-- `target_cue_number: Option<String>` — `None` = stop all running cues; `Some(n)` = stop only the cue whose number matches `n`.
+- `target_cue_ids: Vec<CueId>` — empty = stop **all** running cues; non-empty = stop only that subset. (`target_cue_numbers` mirrors the IDs for display; `from_json` migrates the old single `target_cue_id` / `target_cue_number` format and `resolve_stop_target` resolves numbers → UUIDs on load.)
 - `hard_stop_mode: bool` — `false` = soft fade, `true` = immediate cut.
 
-`StopCue::stop_specification()` returns `Some((hard_stop_mode, target_cue_number))`.
+`StopCue::stop_specification()` returns `Some((hard_stop_mode, target_cue_ids))`.
 
-The `Cue` trait has a default `stop_specification() -> Option<(bool, Option<String>)>` returning `None`. Any future cue type that needs to stop other cues as part of its GO action can override it — no transport changes required.
+The `Cue` trait has a default `stop_specification() -> Option<(bool, Vec<CueId>)>` returning `None`. Any future cue type that needs to stop other cues as part of its GO action can override it — no transport changes required.
 
 ## Event loop (`show/event_loop.rs`)
 
@@ -156,7 +175,7 @@ Both use `workspace.try_lock()` — skip the frame rather than block if a comman
 
 ## Preferences system
 
-`AppPreferences` is persisted inside the `.wincue` workspace file under `"preferences"`. Machine-specific audio config (`MachineAudioConfig`) lives separately in `%APPDATA%\WinCue\audio.json`.
+`AppPreferences` is persisted inside the `.wincue` workspace file under `"preferences"`. Machine-specific audio config (`MachineAudioConfig`) lives separately in a per-OS config dir resolved by `machine_config::config_path()`: `%APPDATA%\WinCue\` (Windows), `~/.config/WinCue/` (Linux), `~/Library/Application Support/WinCue/` (macOS).
 
 `update_display_preferences` (Tauri command) persists fields to workspace **and** immediately applies timer style to mpv via `set_timer_style`. It also clears any active preview (`set_timer_preview(None)`).
 

@@ -611,7 +611,7 @@ mod tests {
     /// Build a minimal Voice with `n_frames` of silence at the given sample rate.
     fn make_voice(n_frames: usize, channels: u16, sample_rate: u32, rate: f32) -> Arc<Voice> {
         let samples = Arc::new(vec![0.0f32; n_frames * channels as usize]);
-        let mut v = Voice::new(samples, channels, sample_rate, 1.0, 0.0);
+        let v = Voice::new(samples, channels, sample_rate, 1.0, 0.0);
         v.inner.set_rate(rate);
         v.set_playing();
         Arc::new(v)

@@ -435,6 +435,19 @@ pub trait Cue: Send {
         false
     }
 
+    /// Returns `true` once a cue that held the outer Playhead has fired
+    /// everything it will fire and the Playhead should now move on to the next
+    /// outer cue — even though this cue may still be running (e.g. overlapping
+    /// audio children still playing out).
+    ///
+    /// Only Sequential [`GroupCue`] overrides this: it becomes `true` the moment
+    /// its **last** child is fired, so the next GO continues the outer list
+    /// instead of being absorbed.  The transport (on GO) and the event loop (on
+    /// auto-advance) both consult it to release the Playhead.
+    fn released_playhead(&self) -> bool {
+        false
+    }
+
     /// For a running Sequential [`GroupCue`]: the ID of the child that is
     /// currently active — either running right now, or the next one to fire on
     /// GO (when the sequence is paused at a `DoNotContinue` child).
@@ -443,6 +456,16 @@ pub trait Cue: Send {
     /// frontend derives activity from each child's own `state()` instead).
     fn active_child_id(&self) -> Option<CueId> {
         None
+    }
+
+    /// Point a Sequential [`GroupCue`]'s internal playhead at `child_id` so the
+    /// next GO fires that child (and the sequence continues from there).
+    ///
+    /// Returns `true` if `child_id` is a direct child of a Sequential group.
+    /// Default: `false` (non-Group cues and Simultaneous groups ignore it).
+    fn set_active_child(&mut self, child_id: &CueId) -> bool {
+        let _ = child_id;
+        false
     }
 
     // -----------------------------------------------------------------------

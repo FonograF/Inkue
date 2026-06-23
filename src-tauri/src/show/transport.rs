@@ -72,6 +72,11 @@ impl Transport {
             if let Some(cue) = cue_list.get_mut(&cue_id) {
                 cue.go(&self.context)?;
             }
+            // If that GO fired the group's last child, release the outer Playhead
+            // to the cue after the group so the next GO continues the outer list.
+            if cue_list.get(&cue_id).is_some_and(|c| c.released_playhead()) {
+                cue_list.advance_playhead();
+            }
             return Ok(GoResult { triggered: vec![cue_id], stopped: vec![] });
         }
 
@@ -150,7 +155,9 @@ impl Transport {
             } else {
                 0
             };
-            let visual_target_alpha = ((1.0 - spec.target_gain_linear.clamp(0.0, 1.0)) * 255.0) as u8;
+            let visual_target_alpha = spec.target_visual_alpha.unwrap_or_else(|| {
+                ((1.0 - spec.target_gain_linear.clamp(0.0, 1.0)) * 255.0) as u8
+            });
 
             if let Some(fc) = cue_list.get_mut(&cue_id) {
                 fc.set_fade_voices(voice_infos, has_visual, visual_start_alpha, visual_target_alpha);

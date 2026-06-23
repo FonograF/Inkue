@@ -12,13 +12,15 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 
 | Type | Description |
 |---|---|
-| **Audio** | WAV, MP3, FLAC, OGG, AAC — sample-accurate WASAPI/ASIO playback with fade-in/out, trim, loop, rate, pan, Output Patch routing |
-| **Video** | Fullscreen or floating Win32 window via libmpv; audio decoded as a normal audio voice (shared Output Patch, VU metering, fades) |
-| **Image** | Any image format via libmpv; dip-to-black fades; stops on next GO |
+| **Audio** | WAV, MP3, FLAC, OGG, AAC, M4A — sample-accurate WASAPI/ASIO playback with fade-in/out, trim, loop (finite + infinite), rate, pan, Output Patch routing |
+| **Video** | Fullscreen or floating output window via libmpv (unified GL Render API); audio decoded as a normal audio voice (shared Output Patch, VU metering, fades); loop |
+| **Image** | Any image format via libmpv; dip-to-black fades; optional display duration; stops on next visual GO |
 | **Group** | Sequential or Simultaneous; sequential mode holds the outer playhead and absorbs GO presses to advance the internal sequence |
 | **Wait** | Fixed-duration delay; integrates with Auto-Continue chains |
-| **Stop** | Stops all running cues (soft fade); drag the ■ STOP button or `+ Stop` from the toolbar to insert anywhere |
+| **Stop** | Stops all running cues or a chosen subset (soft fade or hard cut); drag the ■ STOP button or `+ Stop` from the toolbar to insert anywhere |
+| **Fade** | Fades volume (dB) and/or image brightness on any running cue(s) to a target; configurable curve; optional Stop at End |
 | **OSC** | Sends one or more UDP OSC messages on GO; multiple messages per cue; workspace-level named patches |
+| **MIDI** | Sends Note On/Off, Control Change, Program Change on GO; multiple messages per cue; dynamic port enumeration (WinMM/CoreMIDI) |
 | **Memo** | Read-only label; no playback action |
 
 ### Transport & playback
@@ -33,8 +35,8 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 
 ### Output
 
-- **Unified output window** — single persistent Win32 popup for all video and image cues; no flicker between cues; supports fullscreen on any monitor or draggable floating window
-- **Output timer** — OSD overlay via mpv; configurable font/size/position/margin/ms display; live preview in Preferences
+- **Unified output window** — single persistent native window (winit + mpv OpenGL Render API) for all video and image cues; no flicker between cues; supports fullscreen on any monitor or draggable floating window. The legacy Win32 + D3D11 path is kept behind the `legacy-win32-output` feature flag as a regression fallback
+- **Output timer** — OSD overlay via mpv; ships with the bundled **DSEG7 Classic** 7-segment font as default; configurable font/size/position/margin/ms display, with system-font autocomplete on Windows, Linux and macOS; live preview in Preferences. An optional always-on-top floating timer window mirrors it on the operator's screen
 - **WASAPI & ASIO** — low-latency audio via [cpal](https://github.com/RustAudio/cpal); ASIO requires the Steinberg SDK
 - **Output Patches** — named mappings to audio devices and channel pairs, shared across cue lists
 
@@ -68,7 +70,8 @@ Configure in **Preferences → Network**. An activity dot in the transport bar f
 - **Undo / redo** — full snapshot-based history
 - **Copy / paste** — serialize cues to clipboard, paste anywhere
 - **Column config** — resizable, reorderable, hideable columns; layout persisted to localStorage
-- **Color tags** — QLab-compatible color labels on cue rows
+- **Color tags** — QLab-compatible color labels on cue rows; render as a left-edge stripe or tint the whole row (Personalization preferences)
+- **Consistent dark theme** — custom dropdowns and a Personalization preferences category keep the look identical across Windows, Linux and macOS
 
 ---
 
@@ -84,7 +87,7 @@ src-tauri/src/
 │   └── registry.rs # factory registry — add new types without touching transport
 ├── engine/
 │   ├── audio_engine.rs     # cpal real-time thread; zero alloc/lock in callback
-│   ├── output_engine/      # libmpv Win32 window for video + image
+│   ├── output_engine/      # libmpv GL Render API output window for video + image
 │   ├── osc_patch.rs        # OscPatch (named UDP send target)
 │   ├── osc_server.rs       # UDP receive thread + frontend dispatch
 │   └── device_manager.rs   # WASAPI/ASIO device enumeration + Output Patches
@@ -131,7 +134,7 @@ src/
 | Backend | Rust 2021 |
 | Audio I/O | cpal (WASAPI / ASIO) |
 | Audio decoding | Symphonia (WAV, MP3, FLAC, OGG, AAC, M4A) |
-| Video / Image | libmpv (D3D11, persistent Win32 window) |
+| Video / Image | libmpv (OpenGL Render API, persistent native window via winit + glutin) |
 | OSC | rosc 0.10 |
 | Lock-free comms | ringbuf + crossbeam-channel |
 
@@ -167,7 +170,7 @@ Generates an `.msi` installer and a standalone `.exe` in `src-tauri/target/relea
 ### Tests
 
 ```bash
-cd src-tauri && cargo test   # 42 unit tests (OSC types, server, dedup, cue registry)
+cd src-tauri && cargo test   # 65 unit tests (cue registry, OSC types/server/dedup, SR conversion, stop/fade specs, cue list ops)
 ```
 
 ---

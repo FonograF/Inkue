@@ -8,13 +8,37 @@ use std::path::PathBuf;
 
 use crate::preferences::{MachineAudioConfig, OscReceiveConfig};
 
+/// Per-OS base directory for machine-level config files.
+///
+/// Falls back to the current directory only if the platform's expected
+/// environment variable is unset — this must never resolve into the source
+/// tree (`src-tauri/`), or writes during `tauri dev` retrigger its file
+/// watcher and restart the whole app.
+fn config_base_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join("Library/Application Support"))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    }
+}
+
 /// Absolute path to the machine audio config file.
 fn config_path() -> PathBuf {
-    std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("WinCue")
-        .join("audio.json")
+    config_base_dir().join("WinCue").join("audio.json")
 }
 
 /// Load the machine audio config from disk.  Returns [`MachineAudioConfig::default`]
@@ -43,11 +67,7 @@ pub fn save(config: &MachineAudioConfig) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 fn osc_config_path() -> PathBuf {
-    std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("WinCue")
-        .join("osc.json")
+    config_base_dir().join("WinCue").join("osc.json")
 }
 
 /// Load the OSC receive config from disk.  Returns the default config on first

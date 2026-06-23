@@ -2,7 +2,7 @@
 //!
 //! Corresponds to a `.wincue` file on disk.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -169,7 +169,7 @@ impl Workspace {
 
     /// Serialise the workspace to a JSON string, with file paths made relative
     /// to `save_path` so the `.wincue` file is portable.
-    fn to_json(&self, save_path: &PathBuf) -> Result<String> {
+    fn to_json(&self, save_path: &Path) -> Result<String> {
         let base = save_path.parent();
 
         let mut cue_lists_json: Vec<serde_json::Value> = self

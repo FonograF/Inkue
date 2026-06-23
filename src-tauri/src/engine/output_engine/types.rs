@@ -81,11 +81,11 @@ pub(super) struct OutputVoice {
 // Fade overlay state
 // ---------------------------------------------------------------------------
 
-/// Parameters for a pending content load (stored while fading to black).
-#[allow(dead_code)]
+/// Parameters for a pending content load, passed directly to `execute_load_params`.
 pub(crate) struct FadePendingParams {
     pub path: String,
     pub is_image: bool,
+    #[allow(dead_code)]
     pub voice_id: Uuid,
     pub fade_in_ms: u32,
     pub loop_count: u32,
@@ -97,7 +97,6 @@ pub(crate) struct FadePendingParams {
 }
 
 pub(crate) enum FadePending {
-    Load(FadePendingParams),
     Stop,
 }
 
@@ -123,11 +122,19 @@ pub(crate) struct FadeAnimState {
 }
 
 impl FadeAnimState {
+    /// Resting state at startup: opaque black, matching the convention used
+    /// everywhere else (overlay stays at alpha=255 until content fades in).
+    /// Also load-bearing on the GL path: the render loop only swaps a buffer
+    /// when there's an mpv frame OR alpha > 0, so an idle alpha of 0 means the
+    /// output window's surface never commits a single frame on Wayland — the
+    /// compositor then refuses to map the window no matter what `set_visible`
+    /// says, which is why toggling it manually used to show nothing until a
+    /// video/image cue forced the first real frame.
     pub fn idle() -> Self {
         Self {
-            current_alpha: 0,
-            target_alpha: 0,
-            start_alpha: 0,
+            current_alpha: 255,
+            target_alpha: 255,
+            start_alpha: 255,
             duration_ms: 0,
             start_time: Instant::now(),
             timer_active: false,
@@ -140,7 +147,7 @@ impl FadeAnimState {
 // Win32 window state
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "windows")]
+#[cfg(output_win32)]
 pub(crate) struct OutputWndState {
     pub is_fullscreen: bool,
     pub saved_rect: (i32, i32, i32, i32),

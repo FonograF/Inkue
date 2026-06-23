@@ -49,6 +49,62 @@ pub const MPV_END_FILE_REASON_QUIT: i32 = 3;
 pub const MPV_END_FILE_REASON_ERROR: i32 = 4;
 
 // ---------------------------------------------------------------------------
+// mpv_render_context symbols (mpv/render.h + mpv/render_gl.h)
+// ---------------------------------------------------------------------------
+
+/// A single key-value pair passed to `mpv_render_context_create` / `mpv_render_context_render`.
+/// The array must be terminated by an entry with `type_ = 0`.
+#[repr(C)]
+pub struct MpvRenderParam {
+    pub type_: i32,
+    pub data:  *mut c_void,
+}
+
+unsafe impl Send for MpvRenderParam {}
+
+/// Passed as `data` for `MPV_RENDER_PARAM_OPENGL_INIT_PARAMS`.
+#[repr(C)]
+pub struct MpvOpenglInitParams {
+    /// Called by mpv at context creation to resolve every GL function pointer.
+    pub get_proc_address:
+        unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char) -> *mut c_void,
+    /// Opaque pointer forwarded to `get_proc_address` as its first argument.
+    pub get_proc_address_ctx: *mut c_void,
+}
+
+unsafe impl Send for MpvOpenglInitParams {}
+
+/// Passed as `data` for `MPV_RENDER_PARAM_OPENGL_FBO`.
+#[repr(C)]
+pub struct MpvOpenglFbo {
+    /// OpenGL framebuffer object name; 0 = the default framebuffer.
+    pub fbo:             i32,
+    /// Surface width in pixels.
+    pub w:               i32,
+    /// Surface height in pixels.
+    pub h:               i32,
+    /// GL internal format of the FBO colour attachment; 0 = GL_RGBA (mpv default).
+    pub internal_format: i32,
+}
+
+// Render API constants -------------------------------------------------------
+
+/// `MPV_RENDER_PARAM_API_TYPE` — the `data` pointer points to the null-terminated
+/// string `"opengl"` (`MPV_RENDER_API_TYPE_OPENGL`).
+pub const MPV_RENDER_PARAM_API_TYPE:           i32 = 1;
+/// `MPV_RENDER_PARAM_OPENGL_INIT_PARAMS` — data = `*mut MpvOpenglInitParams`.
+pub const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: i32 = 2;
+/// `MPV_RENDER_PARAM_OPENGL_FBO` — data = `*mut MpvOpenglFbo`.
+pub const MPV_RENDER_PARAM_OPENGL_FBO:         i32 = 3;
+/// `MPV_RENDER_PARAM_FLIP_Y` — data = `*mut i32`; non-zero flips the output.
+pub const MPV_RENDER_PARAM_FLIP_Y:             i32 = 4;
+/// `MPV_RENDER_PARAM_ADVANCED_CONTROL` — data = `*mut i32`; enables advanced scheduling.
+pub const MPV_RENDER_PARAM_ADVANCED_CONTROL:   i32 = 10;
+
+/// Flag returned by `mpv_render_context_update` when a new frame is available.
+pub const MPV_RENDER_UPDATE_FRAME: u64 = 1;
+
+// ---------------------------------------------------------------------------
 // C structs matching mpv/client.h
 // ---------------------------------------------------------------------------
 
@@ -112,6 +168,44 @@ pub struct MpvLib {
     /// Free a pointer returned by mpv (e.g. strings from `mpv_get_property` with
     /// `MPV_FORMAT_STRING`).
     pub mpv_free: unsafe extern "C" fn(*mut c_void),
+
+    // ------------------------------------------------------------------
+    // Render API (mpv/render.h)
+    // ------------------------------------------------------------------
+
+    /// Create a render context for the Render API.
+    ///
+    /// `res` is an out-parameter; `mpv` is the raw `mpv_handle*` (our `MpvCtx.0`);
+    /// `params` is a null-terminated `MpvRenderParam` array.
+    pub mpv_render_context_create: unsafe extern "C" fn(
+        res:    *mut *mut c_void,
+        mpv:    *mut c_void,
+        params: *const MpvRenderParam,
+    ) -> i32,
+
+    /// Register an update callback that fires whenever mpv has a new frame ready.
+    /// The callback is called from an mpv-internal thread.
+    pub mpv_render_context_set_update_callback: unsafe extern "C" fn(
+        ctx:          *mut c_void,
+        callback:     Option<unsafe extern "C" fn(*mut c_void)>,
+        callback_ctx: *mut c_void,
+    ),
+
+    /// Query pending update flags (e.g. `MPV_RENDER_UPDATE_FRAME`).
+    /// Does not block.
+    pub mpv_render_context_update: unsafe extern "C" fn(ctx: *mut c_void) -> u64,
+
+    /// Render the next frame into the framebuffer/FBO described by `params`.
+    /// Must be called with the GL context current on the calling thread.
+    pub mpv_render_context_render:
+        unsafe extern "C" fn(ctx: *mut c_void, params: *const MpvRenderParam) -> i32,
+
+    /// Must be called immediately after each `swap_buffers` / frame present.
+    pub mpv_render_context_report_swap: unsafe extern "C" fn(ctx: *mut c_void),
+
+    /// Destroy the render context.
+    pub mpv_render_context_free: unsafe extern "C" fn(ctx: *mut c_void),
+
     // IMPORTANT: `_lib` is last — drops after all fn-pointer fields.
     _lib: Library,
 }
@@ -229,6 +323,21 @@ impl MpvLib {
             mpv_error_string:         sym!("mpv_error_string":         unsafe extern "C" fn(i32) -> *const c_char),
             mpv_request_log_messages: sym!("mpv_request_log_messages": unsafe extern "C" fn(*mut c_void, *const c_char) -> i32),
             mpv_free:                 sym!("mpv_free":                 unsafe extern "C" fn(*mut c_void)),
+
+            // Render API
+            mpv_render_context_create: sym!("mpv_render_context_create":
+                unsafe extern "C" fn(*mut *mut c_void, *mut c_void, *const MpvRenderParam) -> i32),
+            mpv_render_context_set_update_callback: sym!("mpv_render_context_set_update_callback":
+                unsafe extern "C" fn(*mut c_void, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void)),
+            mpv_render_context_update: sym!("mpv_render_context_update":
+                unsafe extern "C" fn(*mut c_void) -> u64),
+            mpv_render_context_render: sym!("mpv_render_context_render":
+                unsafe extern "C" fn(*mut c_void, *const MpvRenderParam) -> i32),
+            mpv_render_context_report_swap: sym!("mpv_render_context_report_swap":
+                unsafe extern "C" fn(*mut c_void)),
+            mpv_render_context_free: sym!("mpv_render_context_free":
+                unsafe extern "C" fn(*mut c_void)),
+
             _lib: lib,
         })
     }

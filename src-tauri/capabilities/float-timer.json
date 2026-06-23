@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
+  "identifier": "float-timer",
+  "description": "Permissions for the WinCue floating cue-timer window (drag + event listen)",
+  "windows": ["float-timer"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ]
+}

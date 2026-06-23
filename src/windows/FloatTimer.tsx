@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 export function FloatTimerWindow() {
     const [text, setText]   = useState("--:--.---");
-    const [font, setFont]   = useState("monospace");
+    const [font, setFont]   = useState("DSEG7 Classic");
 
     useEffect(() => {
         const unlistenText = listen<string>("float-timer-text", (e) => {

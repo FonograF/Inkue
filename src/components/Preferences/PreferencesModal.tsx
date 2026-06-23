@@ -5,9 +5,10 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
-import type { AppPreferences, AudioPreferences, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, CueColorStyle, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
+import { Select } from "../common/Select";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   getAsioOutputPairs,
@@ -34,13 +35,14 @@ import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 // Sidebar categories
 // ---------------------------------------------------------------------------
 
-type Category = "audio" | "general" | "network" | "display";
+type Category = "audio" | "general" | "network" | "display" | "personalization";
 
 const CATEGORIES: { id: Category; icon: string; label: string }[] = [
-  { id: "audio",   icon: "🔊", label: "Audio"   },
-  { id: "general", icon: "⚙️",  label: "General" },
-  { id: "network", icon: "🌐", label: "Network"  },
-  { id: "display", icon: "🖥",  label: "Display"  },
+  { id: "audio",           icon: "🔊", label: "Audio"           },
+  { id: "general",         icon: "⚙️",  label: "General"         },
+  { id: "network",         icon: "🌐", label: "Network"          },
+  { id: "display",         icon: "🖥",  label: "Display"          },
+  { id: "personalization", icon: "🎨", label: "Personalization" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -150,7 +152,7 @@ function AudioContent({
     <>
       <Section title="Audio Engine">
         <Row label="Backend">
-          <select
+          <Select
             style={selectStyle}
             value={machineConfig.backend}
             onChange={(e) =>
@@ -167,7 +169,7 @@ function AudioContent({
                 {id === "asio" && !asioAvailable ? " (install ASIO4ALL or ASIO drivers)" : ""}
               </option>
             ))}
-          </select>
+          </Select>
         </Row>
 
         <Row label="Output Device">
@@ -177,7 +179,7 @@ function AudioContent({
             <span style={{ fontSize: 12, color: "#ef4444" }}>{devicesError}</span>
           ) : (
             <>
-              <select
+              <Select
                 style={selectStyle}
                 value={machineConfig.device_id ?? ""}
                 onChange={(e) =>
@@ -188,7 +190,7 @@ function AudioContent({
                 {devices.map((d) => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
-              </select>
+              </Select>
               <button
                 style={btnStyle}
                 onClick={() => void testAudioDevice(machineConfig.device_id ?? "", machineConfig.backend)}
@@ -202,7 +204,7 @@ function AudioContent({
 
         {isAsio && (
           <Row label="Output Pair">
-            <select
+            <Select
               style={selectStyle}
               value={machineConfig.asio_out_pair}
               onChange={async (e) => {
@@ -219,7 +221,7 @@ function AudioContent({
                   Out {i * 2 + 1}-{i * 2 + 2}
                 </option>
               ))}
-            </select>
+            </Select>
             <span style={{ fontSize: 11, color: "#475569" }}>
               {asioPairs <= 1 ? "Apply first to detect pairs" : `${asioPairs} pair${asioPairs > 1 ? "s" : ""} available`}
             </span>
@@ -227,7 +229,7 @@ function AudioContent({
         )}
 
         <Row label="Buffer Size">
-          <select
+          <Select
             style={{ ...selectStyle, opacity: isShared ? 0.4 : 1 }}
             value={machineConfig.buffer_size}
             disabled={isShared}
@@ -236,7 +238,7 @@ function AudioContent({
             {[64, 128, 256, 512, 1024, 2048].map((s) => (
               <option key={s} value={s}>{s} samples</option>
             ))}
-          </select>
+          </Select>
           {isShared && (
             <span style={{ fontSize: 11, color: "#475569" }}>managed by Windows in Shared mode</span>
           )}
@@ -331,7 +333,7 @@ function GeneralContent({ prefs, onChange }: {
           />
         </Row>
         <Row label="Row Height">
-          <select
+          <Select
             style={selectStyle}
             value={prefs.cue_row_height}
             onChange={(e) => onChange({ ...prefs, cue_row_height: e.target.value as GeneralPreferences["cue_row_height"] })}
@@ -339,7 +341,7 @@ function GeneralContent({ prefs, onChange }: {
             <option value="compact">Compact</option>
             <option value="normal">Normal</option>
             <option value="tall">Tall</option>
-          </select>
+          </Select>
         </Row>
       </Section>
     </>
@@ -422,7 +424,6 @@ function DisplayContent({
   timerMargin, onTimerMarginChange,
   timerPreview, onTimerPreviewChange,
   committedTimerStyle,
-  theme, onThemeChange,
 }: {
   outputScreen: number | null;
   onScreenChange: (screen: number | null) => void;
@@ -446,8 +447,6 @@ function DisplayContent({
   onTimerPreviewChange: (v: boolean) => void;
   /** Committed (applied) style, used to restore mpv state on cancel. */
   committedTimerStyle: { font: string; fontSize: number; position: TimerPosition; margin: number };
-  theme: typeof DEFAULT_DISPLAY_PREFS;
-  onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
 }) {
   const [screens, setScreens] = useState<ScreenInfo[]>([]);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
@@ -484,7 +483,7 @@ function DisplayContent({
     <>
       <Section title="Output Surface">
         <Row label="Output Screen">
-          <select
+          <Select
             style={selectStyle}
             value={outputScreen ?? "floating"}
             onChange={(e) => {
@@ -500,7 +499,7 @@ function DisplayContent({
                   : `Screen ${s.index + 1} (${s.width}×${s.height})`}
               </option>
             ))}
-          </select>
+          </Select>
         </Row>
         <Row label="">
           <span style={{ fontSize: 11, color: "#475569" }}>
@@ -634,6 +633,40 @@ function DisplayContent({
             </Row>
           </>
         )}
+      </Section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Personalization content
+// ---------------------------------------------------------------------------
+
+const CUE_COLOR_STYLES: { value: CueColorStyle; label: string }[] = [
+  { value: "stripe",   label: "Stripe (left edge only)" },
+  { value: "full_row", label: "Full row"                 },
+];
+
+function PersonalizationContent({
+  theme, onThemeChange,
+}: {
+  theme: typeof DEFAULT_DISPLAY_PREFS;
+  onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
+}) {
+  return (
+    <>
+      <Section title="Cue Appearance">
+        <Row label="Cue Colour Style">
+          <Select
+            style={selectStyle}
+            value={theme.cue_color_style}
+            onChange={(e) => onThemeChange({ ...theme, cue_color_style: e.target.value as CueColorStyle })}
+          >
+            {CUE_COLOR_STYLES.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </Select>
+        </Row>
       </Section>
 
       <Section title="Colour Theme">
@@ -816,8 +849,8 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const [draftShowOutputTimer, setDraftShowOutputTimer] = useState(false);
   const [timerCountDown, setTimerCountDown] = useState(false);
   const [draftTimerCountDown, setDraftTimerCountDown] = useState(false);
-  const [timerFont, setTimerFont] = useState("Arial");
-  const [draftTimerFont, setDraftTimerFont] = useState("Arial");
+  const [timerFont, setTimerFont] = useState("DSEG7 Classic");
+  const [draftTimerFont, setDraftTimerFont] = useState("DSEG7 Classic");
   const [timerFontSize, setTimerFontSize] = useState(120);
   const [draftTimerFontSize, setDraftTimerFontSize] = useState(120);
   const [timerPosition, setTimerPosition] = useState<TimerPosition>("center");
@@ -853,7 +886,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       const countDown = p.display.timer_count_down ?? false;
       setTimerCountDown(countDown);
       setDraftTimerCountDown(countDown);
-      const font = p.display.timer_font ?? "Arial";
+      const font = p.display.timer_font ?? "DSEG7 Classic";
       setTimerFont(font);
       setDraftTimerFont(font);
       const fontSize = p.display.timer_font_size ?? 120;
@@ -1133,6 +1166,10 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                     timerPreview={timerPreview}
                     onTimerPreviewChange={setTimerPreview}
                     committedTimerStyle={{ font: timerFont, fontSize: timerFontSize, position: timerPosition, margin: timerMargin }}
+                  />
+                )}
+                {category === "personalization" && (
+                  <PersonalizationContent
                     theme={draftTheme}
                     onThemeChange={setDraftTheme}
                   />

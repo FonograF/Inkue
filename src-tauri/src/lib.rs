@@ -1,5 +1,6 @@
 //! WinCue library root.  All modules are declared here and re-exported as needed.
 
+pub mod bundled_fonts;
 pub mod commands;
 pub mod cue;
 pub mod engine;
@@ -71,6 +72,7 @@ pub fn run() {
             // OutputEngine creates the persistent Win32 window + libmpv context
             // at startup (window is shown immediately — no first-GO freeze).
             // ----------------------------------------------------------------
+            crate::bundled_fonts::ensure_installed();
             let machine_config = crate::machine_config::load();
             let audio_engine = AudioEngine::new(&machine_config).map_err(|e| {
                 show_fatal_error(&format!("Audio engine failed to start:\n\n{e}"));

@@ -43,7 +43,8 @@ jobs:
         run: mkdir -p vendor/mpv && touch vendor/mpv/libmpv.dylib
       - name: Create empty frontend dist for tauri::generate_context!
         run: mkdir -p ../dist
-      - run: cargo check
+      - run: cargo clippy --all-targets
+      - run: cargo test
 
   check-linux:
     runs-on: ubuntu-latest
