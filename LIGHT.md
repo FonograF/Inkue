@@ -107,7 +107,7 @@ LightCue { …champs de cue…, targets: [ParamTarget], fade: FadeSpec }
 | **M5 — finition** | ⬜ | NIC en machine-config (`socket2`), UI préférences réseau, cadence keepalive, validation visuelle |
 | **Dashboard + Record** | ✅ | Grille live (intensité + color picker par fixture) qui pilote le moteur en direct + **« Capture live state »** dans la Light Cue (workflow QLab : sculpter à l'œil → figer en cue) |
 | **Groupes de fixtures** | ✅ | `FixtureGroup` (workspace) + gestionnaire de groupes (panneau DMX) ; une target peut viser **un groupe par type-de-param** → un color picker / une intensité pilote tous les membres (résolu au GO). Cue compacte : 1 couleur de groupe = 3 targets, pas 3×N |
-| **Phase 2** | ⬜ | Effets (oscillateurs/chases), import bibliothèque de fixtures (OFL / QLC+), fade par-param, palettes, merge multi-source (HTP/priorité), master dimmer, DMX-in (capture depuis console externe) |
+| **Phase 2** | ⬜ | **Moteur d'effets (oscillateurs/chases) — design verrouillé, voir §Phase 2 ci-dessous** ; import bibliothèque de fixtures (OFL / QLC+), fade par-param, palettes, merge multi-source (HTP/priorité), master dimmer, DMX-in (capture depuis console externe) |
 
 ### Détail de ce qui est fait
 
@@ -154,9 +154,108 @@ Le hardware (un node Art-Net USB + un PAR LED) n'est utile que pour la vérif «
 
 ---
 
+## Phase 2 — Moteur d'effets (oscillateurs / chases) — design verrouillé
+
+Objectif : variation lumineuse **automatique et continue** (sinus d'intensité, vagues,
+chases, twinkle, ballyhoo) — ce que les Light Cue de QLab ne savent PAS faire (QLab se
+limite aux courbes de fade ondulées + chaînage de cues). C'est là que WinCue dépasse QLab
+plutôt que de le copier.
+
+### Insight central : un effet n'est pas un fade
+
+Un fade est une transition one-shot A→B puis la valeur tracke (écrite dans le buffer base).
+Un effet est une oscillation **continue** : l'écrire dans le buffer empoisonnerait le
+tracking (un Light Cue LTP suivant repartirait d'une valeur qui gigote). Donc un effet est
+une **couche non-destructive composée au render** :
+
+```
+sortie_fil = clamp( base (fades / Light Cues)  +  Σ offsets_effets(t) ,  0, 1 )
+```
+
+`DmxState` gagne `effects: Vec<ActiveEffect>` à côté de `fades`. `tick()` garde la base
+inchangée ; **`rendered()`** superpose les effets actifs à l'instant `t`. **La base n'est
+jamais mutée** → tracking / LTP intacts.
+
+### Décisions verrouillées
+
+| Sujet | Décision |
+|---|---|
+| Modèle de cue | **Les deux** : `EffectCue` autonome **et** `EffectSpec` optionnel sur une target de Light Cue. Un seul type `EffectSpec` partagé. |
+| Horloge | **Globale libre** (alimentée par le thread DMX 40 Hz) + offset/phase par effet. Deux effets de même BPM restent en phase ; ouvre la porte à un master de vitesse + tap-tempo. |
+| Combinaison | **Additive unique** : `out = clamp(base + size·(wave − centre))`. Centre = biais : 0.5 = bipolaire (autour du look), 0 = unipolaire-haut, 1 = unipolaire-bas. L'« absolu » min→max = un look qui pose base=min + effet unipolaire size=max−min. Un seul code path, zéro masquage. |
+| Empilement | **Somme** : tous les effets actifs s'additionnent en offsets, puis clamp. Superposition volontaire possible (swell lent + twinkle rapide). Chaque instance keyée par cue propriétaire → stop de l'un sans toucher l'autre. |
+| Cible | **Réutilise `FixtureGroup` + le modèle `ParamTarget`** (Fixture ou Group + param kind). Le **spread de phase sur les membres du groupe** transforme l'oscillateur en chase / vague. |
+| Démarrage doux | `size` rampe 0→max sur `fade_in` → pas de « pop » même si l'horloge globale est en plein milieu du swing au GO. |
+
+### Modèle de données (`engine/dmx_effect.rs`, nouveau)
+
+```rust
+enum Waveform { Sine, Triangle, SawUp, SawDown, Square, Random }  // Square→duty, Random→twinkle
+enum Direction { Forward, Backward, Bounce }                      // ordre du chase sur les membres
+
+struct EffectSpec {
+    waveform: Waveform,
+    rate_bpm: f64,        // cycles/min, lus sur l'horloge globale
+    size: f64,            // amplitude 0..1 (pleine échelle)
+    center: f64,          // biais 0..1 (0.5 bipolaire, 0 unipolaire-haut, 1 unipolaire-bas)
+    phase_offset: f64,    // 0..1 tours
+    duty: f64,            // carré seulement
+    fade_in: Duration,    // size 0→max au démarrage
+    target: EffectTarget, // Fixture{id,param_index} | Group{group_id,param_kind}
+    spread: f64,          // tours de phase répartis sur les membres (0 = unisson)
+    direction: Direction,
+}
+```
+
+`wave(phase) → [0,1]` (sin = (sin 2πφ + 1)/2, etc.). `offset = size·(wave − center)` →
+centre 0.5 ⇒ ±size/2, centre 0 ⇒ [0,+size], centre 1 ⇒ [−size,0].
+
+### Moteur (`DmxState`)
+
+- `ActiveEffect { owner: CueId, index, channels: Vec<EffChan{universe,channel,width,phase}>, …params…, start, fade_in, release: Option<(t0,dur)> }`.
+- La cue résout fixture/groupe → liste de canaux **au GO** (comme les fades), avec la phase
+  de chaque membre = `phase_offset + spread·(rang/N)` selon `direction`.
+- `rendered(u)` : part du buffer base, puis pour chaque effet touchant `u` :
+  `eff_size = size · ramp_in · ramp_release` ; `Σ offset` par canal ;
+  `clamp(base_norm + Σ, 0, 1)` ré-encodé. Base jamais mutée.
+- API handle : `submit_effect(owner, index, resolved)`, `release_effects(owner, fade)`
+  (soft = size→0), `clear_effects(owner)` (hard).
+
+### Cycle de vie
+
+- `EffectCue.go()` → submit ; `duration() = None` (tourne jusqu'au stop) ; `is_action_started = true`.
+- **Stop Cue** ciblant l'`EffectCue` / le `LightCue` : soft = `release_effects` (size→0 sur
+  `stop_fade_ms`, retour doux à la base) ; hard = `clear_effects`. **Fade Cue** ciblant
+  l'effet : fade de la `size` vers une valeur (stretch).
+- `LightCue` : une target gagne `effect: Option<EffectSpec>`, submit après les fades du look,
+  owner = id du Light Cue.
+
+### UI
+
+- Onglet **Effect** (Effect Cue) : lignes d'`EffectSpec` (cible, forme, BPM + tap, size %,
+  biais, phase, spread °, direction, duty si carré, fade-in) avec **preview live** (submit au
+  moteur en éditant, comme le Dashboard).
+- **Light tab** : bouton « + Effect » par carte fixture → même éditeur (cible héritée).
+- Panneau DMX : section « Effets actifs » (liste + stop) via le monitor existant.
+
+### Défauts tranchés (sans fork)
+
+- Vitesse en **BPM** (sync, tap-tempo sur le champ ; master de vitesse global = fast-follow).
+- Formes v1 : Sine, Triangle, SawUp, SawDown, Square (duty), Random (twinkle).
+- Spread = total en degrés réparti sur les membres dans l'ordre du patch + Forward/Backward/Bounce.
+
+### Tests (cargo test)
+
+Formes d'onde ; math `offset` (centre 0/0.5/1 + clamp) ; somme/empilement ; répartition du
+spread sur N canaux ; rampes fade-in/release ; **`rendered()` superpose sans muter la base**
+(tracking préservé après retrait) ; cohérence de phase deux effets même BPM ; roundtrip serde
+`EffectSpec` (Effect Cue + target Light Cue).
+
+---
+
 ## Prochaine étape
 
 **M5 — finition** : interface réseau (NIC source) en machine-config via `socket2`
 (comme le device audio), UI préférences réseau, et validation visuelle hardware.
-Ensuite **Phase 2** : effets/chases, import de bibliothèque de fixtures (OFL / QLC+),
-fade par-paramètre, groupes/palettes, master dimmer.
+Ensuite **Phase 2** : **moteur d'effets** (design verrouillé ci-dessus), import de
+bibliothèque de fixtures (OFL / QLC+), groupes/palettes, master dimmer.
