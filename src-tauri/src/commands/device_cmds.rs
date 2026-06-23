@@ -11,9 +11,19 @@ use crate::{
 /// Return all available audio output devices.
 #[tauri::command]
 pub fn list_output_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    let engine = &state.audio_engine;
-    let mgr = engine.device_manager.lock().map_err(|e| e.to_string())?;
-    Ok(mgr.devices().to_vec())
+    use crate::engine::device_manager::linux_devices;
+
+    // Build ALSA fallback from the engine's cached device list.
+    let fallback = {
+        let engine = &state.audio_engine;
+        let mgr = engine.device_manager.lock().map_err(|e| e.to_string())?;
+        mgr.devices().to_vec()
+    };
+
+    #[cfg(target_os = "linux")]
+    return Ok(linux_devices(false, fallback));
+    #[cfg(not(target_os = "linux"))]
+    Ok(fallback)
 }
 
 /// Return all available audio **input** devices (for Mic Cues / live capture).
@@ -66,13 +76,23 @@ pub fn set_output_patch(
 /// Refresh the cached device list (call after hotplug events).
 #[tauri::command]
 pub fn refresh_devices(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
-    let mut mgr = state
-        .audio_engine
-        .device_manager
-        .lock()
-        .map_err(|e| e.to_string())?;
-    mgr.refresh_devices().map_err(|e| e.to_string())?;
-    let devices = mgr.devices().to_vec();
+    use crate::engine::device_manager::linux_devices;
+
+    let fallback = {
+        let mut mgr = state
+            .audio_engine
+            .device_manager
+            .lock()
+            .map_err(|e| e.to_string())?;
+        mgr.refresh_devices().map_err(|e| e.to_string())?;
+        mgr.devices().to_vec()
+    };
+
+    #[cfg(target_os = "linux")]
+    let devices = linux_devices(false, fallback);
+    #[cfg(not(target_os = "linux"))]
+    let devices = fallback;
+
     let _ = app_handle.emit("device-changed", serde_json::json!({ "devices": devices }));
     Ok(())
 }

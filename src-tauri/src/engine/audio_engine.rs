@@ -117,15 +117,18 @@ impl AudioEngine {
         let input_feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let output_period = Arc::new(std::sync::atomic::AtomicU32::new(256));
 
+        let stream_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         let sr = open_stream_inner(
             config,
             Arc::clone(&shared_voices),
             Arc::clone(&input_feeds),
             Arc::clone(&master_gain),
             Arc::clone(&output_period),
+            Arc::clone(&stream_failed),
         )?;
 
-        Ok(Arc::new(Self {
+        let engine = Arc::new(Self {
             device_manager: Mutex::new(DeviceManager::new()),
             cmd_prod: Mutex::new(sr.cmd_prod),
             status_cons: Mutex::new(sr.status_cons),
@@ -136,7 +139,33 @@ impl AudioEngine {
             output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
             master_gain,
             output_period,
-        }))
+        });
+
+        // If the configured device starts erroring immediately (e.g. HDMI with no
+        // display, or an unplugged device), fall back to the system default after
+        // 500 ms rather than flooding logs forever.
+        if config.device_id.is_some() {
+            let bad_device = config.device_id.clone().unwrap_or_default();
+            let fallback = MachineAudioConfig { device_id: None, ..config.clone() };
+            let engine2 = Arc::clone(&engine);
+            std::thread::Builder::new()
+                .name("wincue-audio-watchdog".into())
+                .spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    if stream_failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        log::warn!(
+                            "Audio device '{bad_device}' is broken (repeated errors), \
+                             falling back to system default"
+                        );
+                        if let Err(e) = engine2.restart(&fallback) {
+                            log::error!("Audio fallback restart failed: {e}");
+                        }
+                    }
+                })
+                .ok();
+        }
+
+        Ok(engine)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -209,7 +238,11 @@ impl AudioEngine {
                 return Ok(f.id);
             }
         }
-        let (capture, cons) = open_input(device_id, buffer_size)?;
+        log::info!("ensure_input_feed: opening device={device_id:?} buf={buffer_size}");
+        let (capture, cons) = open_input(device_id, buffer_size).map_err(|e| {
+            log::error!("ensure_input_feed failed for {device_id:?}: {e}");
+            e
+        })?;
         let in_channels = capture.channels.max(1) as usize;
         let id = Uuid::new_v4();
         let feed = InputFeed {
@@ -400,6 +433,7 @@ impl AudioEngine {
             Arc::clone(&self.input_feeds),
             Arc::clone(&self.master_gain),
             Arc::clone(&self.output_period),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )?;
 
         *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = sr.cmd_prod;
@@ -445,6 +479,7 @@ fn open_stream_inner(
     cb_feeds: Arc<Mutex<Vec<InputFeed>>>,
     cb_mg: Arc<std::sync::atomic::AtomicU32>,
     cb_period: Arc<std::sync::atomic::AtomicU32>,
+    stream_failed: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<StreamResult> {
     use crate::preferences::AudioBackend;
 
@@ -457,22 +492,38 @@ fn open_stream_inner(
 
     let device_name = config.device_id.as_deref();
 
+    // On Linux, `pw:<node_name>` IDs route through the `pipewire` ALSA device
+    // with PIPEWIRE_NODE set.  The guard keeps the env var live until the
+    // device is fully opened below.
+    #[cfg(target_os = "linux")]
+    let (_pw_guard, effective_name): (Option<crate::engine::device_manager::PwNodeGuard>, Option<&str>) = {
+        use crate::engine::device_manager::pipewire_node_of;
+        match device_name.filter(|s| !s.is_empty()).and_then(pipewire_node_of) {
+            Some(node) => {
+                let guard = crate::engine::device_manager::acquire_pw_node(node);
+                (Some(guard), Some("pipewire"))
+            }
+            None => (None, device_name.filter(|s| !s.is_empty())),
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let effective_name = device_name.filter(|s| !s.is_empty());
+
     let device = if matches!(config.backend, AudioBackend::Asio) {
-        let found = device_name
-            .filter(|s| !s.is_empty())
+        let found = effective_name
             .and_then(|name| {
                 host.output_devices().ok()
-                    .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(name)))
+                    .and_then(|mut it| it.find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false)))
             });
         found
             .or_else(|| host.default_output_device())
             .ok_or_else(|| anyhow!(
                 "No ASIO device found. Make sure the driver is not already in use by another application."
             ))?
-    } else if let Some(name) = device_name.filter(|s| !s.is_empty()) {
+    } else if let Some(name) = effective_name {
         host.output_devices()
             .map_err(|e| anyhow!("Failed to enumerate devices: {e}"))?
-            .find(|d| d.name().ok().as_deref() == Some(name))
+            .find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false))
             .ok_or_else(|| anyhow!("Audio device '{}' not found", name))?
     } else {
         host.default_output_device()
@@ -481,7 +532,7 @@ fn open_stream_inner(
 
     let default_config = device.default_output_config()
         .map_err(|e| anyhow!("Device config error: {e}"))?;
-    let sample_rate = default_config.sample_rate().0;
+    let sample_rate = default_config.sample_rate();
     let channels = default_config.channels();
     let total_ch = channels as usize;
 
@@ -498,7 +549,7 @@ fn open_stream_inner(
 
     let stream_cfg = StreamConfig {
         channels,
-        sample_rate: cpal::SampleRate(sample_rate),
+        sample_rate,
         buffer_size: buf_size,
     };
 
@@ -508,21 +559,53 @@ fn open_stream_inner(
     let (cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
     let (mut status_prod, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
 
+    // Throttled error callback: log at most once per second, signal stream_failed
+    // after 50 rapid errors so the watchdog can switch to a working device.
+    let make_err_fn = {
+        let last_log  = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let err_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        move || {
+            let last_log2  = Arc::clone(&last_log);
+            let err_count2 = Arc::clone(&err_count);
+            let failed2    = Arc::clone(&stream_failed);
+            move |err: cpal::Error| {
+                // Only DeviceNotAvailable is truly fatal (device pulled or
+                // exclusively grabbed).  Other kinds cover recoverable ALSA
+                // errors (e.g. Xrun, POLLERR) that should not trigger the
+                // watchdog restart.
+                if matches!(err.kind(), cpal::ErrorKind::DeviceNotAvailable) {
+                    let n = err_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if n == 50 {
+                        failed2.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let prev = last_log2.swap(now, std::sync::atomic::Ordering::Relaxed);
+                if now > prev {
+                    log::error!("cpal stream error: {err}");
+                }
+            }
+        }
+    };
+
     let stream = match default_config.sample_format() {
         cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
-            &stream_cfg,
+            stream_cfg,
             move |data: &mut [f32], _| {
                 cb_period.store((data.len() / total_ch) as u32, std::sync::atomic::Ordering::Relaxed);
                 fill_buffer(data, total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
             },
-            |err| log::error!("cpal stream error: {err}"),
+            make_err_fn(),
             None,
         )?,
         cpal::SampleFormat::F32 => {
             // Route stereo mix to the selected ASIO pair; zero the rest.
             let mut scratch = vec![0.0f32; 4096 * 2].into_boxed_slice();
             device.build_output_stream(
-                &stream_cfg,
+                stream_cfg,
                 move |data: &mut [f32], _| {
                     let frames = data.len() / total_ch;
                     cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
@@ -534,7 +617,7 @@ fn open_stream_inner(
                         data[f * total_ch + pair_offset + 1] = scratch[f * 2 + 1];
                     }
                 },
-                |err| log::error!("cpal stream error: {err}"),
+                make_err_fn(),
                 None,
             )?
         }
@@ -543,7 +626,7 @@ fn open_stream_inner(
             let scratch_len = (config.buffer_size as usize * 2).max(4096 * 2);
             let mut scratch = vec![0.0f32; scratch_len].into_boxed_slice();
             device.build_output_stream(
-                &stream_cfg,
+                stream_cfg,
                 move |data: &mut [i32], _| {
                     let frames = data.len() / total_ch;
                     cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
@@ -555,7 +638,7 @@ fn open_stream_inner(
                         data[f * total_ch + pair_offset + 1] = (scratch[f * 2 + 1].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
                     }
                 },
-                |err| log::error!("cpal stream error: {err}"),
+                make_err_fn(),
                 None,
             )?
         }

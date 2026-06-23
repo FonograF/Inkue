@@ -353,24 +353,26 @@ pub fn list_audio_devices(
     let mut devices = Vec::new();
     if let Ok(iter) = host.output_devices() {
         for device in iter {
-            let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
+            let name = device.to_string();
             let (channels, sample_rate) = device
                 .default_output_config()
-                .map(|c| (c.channels(), c.sample_rate().0))
+                .map(|c| (c.channels(), c.sample_rate()))
                 .unwrap_or((2, 44100));
-            devices.push(DeviceInfo { id: name.clone(), name, channels, sample_rate });
+            devices.push(DeviceInfo { id, name, channels, sample_rate });
         }
     }
 
     // Fallback: if enumeration returned nothing, use the default device.
     if devices.is_empty() {
         if let Some(device) = host.default_output_device() {
-            let name = device.name().unwrap_or_else(|_| "Default Device".to_string());
+            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
+            let name = device.to_string();
             let (channels, sample_rate) = device
                 .default_output_config()
-                .map(|c| (c.channels(), c.sample_rate().0))
+                .map(|c| (c.channels(), c.sample_rate()))
                 .unwrap_or((2, 44100));
-            devices.push(DeviceInfo { id: name.clone(), name, channels, sample_rate });
+            devices.push(DeviceInfo { id, name, channels, sample_rate });
         }
     }
 
@@ -379,6 +381,9 @@ pub fn list_audio_devices(
         mgr.refresh_devices().ok();
     }
 
+    #[cfg(target_os = "linux")]
+    return Ok(crate::engine::device_manager::linux_devices(false, devices));
+    #[cfg(not(target_os = "linux"))]
     Ok(devices)
 }
 
@@ -433,7 +438,7 @@ fn play_beep_on_device(device_name: Option<String>) {
             Some(name) => host
                 .output_devices()
                 .ok()
-                .and_then(|mut it| it.find(|d| d.name().ok().as_deref() == Some(name.as_str())))
+                .and_then(|mut it| it.find(|d| d.id().ok().map(|id| id.id() == *name).unwrap_or(false)))
                 .or_else(|| host.default_output_device()),
             None => host.default_output_device(),
         };
@@ -441,14 +446,14 @@ fn play_beep_on_device(device_name: Option<String>) {
         let device = match device { Some(d) => d, None => return };
         let config = match device.default_output_config() { Ok(c) => c, Err(_) => return };
 
-        let sample_rate = config.sample_rate().0;
+        let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
         let samples = Arc::new(build_beep(sample_rate, channels));
         let pos = Arc::new(AtomicUsize::new(0));
         let (s_cb, p_cb) = (samples.clone(), pos.clone());
 
         let Ok(stream) = device.build_output_stream(
-            &config.into(),
+            config.into(),
             move |data: &mut [f32], _| {
                 let start = p_cb.fetch_add(data.len(), Ordering::Relaxed);
                 for (i, s) in data.iter_mut().enumerate() {

@@ -7,8 +7,9 @@ multicanal de sources live — **et** prérequis de capture pour le **LTC entran
 État : **implémenté (v0.9.5).** Capture cpal persistante + resampler adaptatif (`engine/audio_input.rs`,
 `engine/audio_engine.rs`), `LiveSource`/`Voice::new_live` (`engine/voice.rs`), `MicCue`
 (`cue/mic_cue.rs`), `input_patches` dans le workspace, commandes CRUD, onglet Mic + panneau
-Input Patches. Détail dans `PROGRESS.md` (0.9.5). Reste en Phase 2 : rack d'effets DSP
-(reverb/EQ) — voir caveat. Le design verrouillé ci-dessous reste la référence.
+Input Patches. Détail dans `PROGRESS.md` (0.9.5). cpal **0.18.1** depuis 0.9.7 (root-fix du
+crash ALSA/PipeWire — voir `PROGRESS.md` 0.9.7 et `PORTAGE.md`). Reste en Phase 2 : rack
+d'effets DSP (reverb/EQ) — voir caveat. Le design verrouillé ci-dessous reste la référence.
 
 Cross-platform impératif : **cpal générique** (WASAPI/ASIO Windows, CoreAudio macOS,
 ALSA/PipeWire Linux) — pas d'API par-OS spécifique (règle `CLAUDE.md` / `PORTAGE.md`).

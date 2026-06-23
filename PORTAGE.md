@@ -20,7 +20,7 @@ portage macOS (branche `macos-port`, 2026-06-22). Ce document décrit l'architec
 | vsync | `glutin` `SwapInterval::DontWait` (mpv `video-sync=desync` cadence la lecture) |
 | Floating timer | Tauri WebView `float-timer` — unifié 3 OS |
 | Legacy Windows | Win32+D3D11+wid derrière `#[cfg(feature="legacy-win32-output")]` (éteint) |
-| Audio | cpal partout : WASAPI/ASIO (Windows), ALSA/PipeWire (Linux), CoreAudio (macOS) — aucun code par-OS |
+| Audio | cpal **0.18** partout : WASAPI/ASIO (Windows), ALSA/PipeWire (Linux), CoreAudio (macOS) — aucun code par-OS |
 | libmpv Windows | `libmpv-2.dll` bundlé (`vendor/mpv/`) |
 | libmpv macOS | Homebrew en dev (`/opt/homebrew/lib/libmpv.dylib`) ; bundle `.app` = phase ultérieure |
 | libmpv Linux | Dépendance système (`.deb` dépend de `libmpv2 | libmpv1`) |
@@ -90,6 +90,23 @@ La feature `unstable` expose `tauri::window::WindowBuilder` (fenêtre sans WebVi
 importe `TaskDialogIndirect` depuis `comctl32.dll v6`. Le binaire de test Rust n'a pas le
 manifest common-controls v6 → `STATUS_ENTRYPOINT_NOT_FOUND` avant le premier test. D'où
 les fenêtres output créées avec les APIs OS directement (winit / objc2).
+
+## cpal : ID stable vs nom d'affichage (piège, 0.9.7)
+
+cpal 0.18 a supprimé `Device::name()` et fait de `Device` un `Display` — `to_string()` renvoie
+le **libellé humain** (ce que montre l'OS dans ses réglages son, ex. `"PipeWire Sound Server"`
+ou, sur Linux, le `node.description` PipeWire de la carte — `"Built-in Audio Analog Stereo"`
+pour le micro intégré, `node.nick` étant l'alias court du codec, ex. `"ALC293 Analog"`). C'est
+**différent** de l'identifiant stable utilisé par le host audio (PCM ALSA `"pipewire"`/`"hw:0,0"`,
+nom de device WASAPI/CoreAudio) — c'est ce dernier qu'on doit stocker dans `OutputPatch`/
+`InputPatch.device_id` et utiliser pour le matching, parce que c'est ce que le host comprend en
+entrée de `build_*_stream`. Confondre les deux casse tous les lookups de device (vu en prod :
+`"Audio device 'pipewire' not found"` au démarrage après l'upgrade 0.18).
+
+**Règle** : `Device::id()` → `Result<DeviceId, Error>`, puis `DeviceId::id() -> &str` est l'ID
+stable — utilisé pour **tout stockage et tout matching** (`device_manager.rs`, `audio_input.rs`,
+`preferences_cmds.rs`). `Device::to_string()` (= `Display`) est réservé au champ `DeviceInfo.name`
+**affiché à l'utilisateur**, jamais comparé ou persisté comme clé.
 
 ## libmpv — chargement dynamique (`mpv_sys::open_dll`)
 

@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-23
 
-## Current version: 0.9.6
+## Current version: 0.9.7
 
 ## cargo build result
 
@@ -125,6 +125,38 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.7 (2026-06-23) — cpal 0.15.3 → 0.18.1 upgrade (Mic Cue crash root-fix)
+
+**Root cause of the Mic Cue "kills all audio" bug (0.9.5/0.9.6 vendor patch)** — cpal 0.15.3's
+ALSA backend had three bugs that compounded into a process-wide SIGABRT: `stream_timestamp()`
+called `panic!()` when `htstamp < trigger_htstamp` (transient state right after XRun recovery
+resets `trigger_htstamp`); `process_input()` underflowed on `callback.sub(delay_duration)` when
+`callback == 0`; and `Stream::drop()` called `join().unwrap()`, so a thread that had already
+panicked double-panicked on drop → SIGABRT → the whole process (audio, video, OSC) restarted,
+not just the audio thread. 0.9.6 carried a vendor-patched `cpal-0.15.3` (`[patch.crates-io]`)
+fixing all three. This release replaces that patch with the upstream fix: **cpal 0.18.1**, which
+resolves the same bug cluster natively (no more vendored fork to maintain).
+
+- **`Cargo.toml`** — `cpal = "0.15"` → `"0.18"`; `midir = "0.10"` → `"0.11"` (0.10 pulls
+  `alsa 0.9`, which conflicts with cpal 0.18's `alsa 0.11` — both `links = "alsa"`, Cargo only
+  allows one). `vendor/cpal-0.15.3/` and the `[patch.crates-io]` block removed.
+- **API migration** (`engine/{audio_engine,audio_input,device_manager}.rs`,
+  `commands/preferences_cmds.rs`): `cpal::StreamError` → `cpal::Error` + `.kind()` /
+  `cpal::ErrorKind` in error callbacks; `build_*_stream(&cfg, …)` → `build_*_stream(cfg, …)`
+  (`StreamConfig` is now `Copy`, passed by value); `cpal::SampleRate(n)` newtype removed —
+  `sample_rate()` now returns a plain `u32`.
+- **Device identity pitfall** — cpal 0.18 removed `Device::name()`. The naive replacement,
+  `Device::to_string()` (now `Display`), returns the **human-readable label** (e.g. `"PipeWire
+  Sound Server"`), not the **stable PCM/host id** (e.g. `"pipewire"`, `"hw:0,0"`) that output
+  patches, input patches, and the `pw:<node>` PipeWire routing in `device_manager.rs` store and
+  match against. Using `to_string()` for matching broke every device lookup (`"Audio device
+  'pipewire' not found"` at startup). Fix: `Device::id()` → `Result<DeviceId, Error>`, and
+  `DeviceId::id()` is the stable identifier — used for all storage/matching;
+  `Device::to_string()` is reserved for the UI-facing `DeviceInfo.name` field only. See
+  `PORTAGE.md` for the general rule.
+- **No regressions** — same three-bug class confirmed fixed upstream (no panic/SIGABRT
+  observed across repeated Mic Cue GO/Stop cycles on Linux/PipeWire); all 130 tests still pass.
 
 ### 0.9.6 (2026-06-23) — Timecode (MTC receive + generate, LTC codec, per-cue triggers)
 

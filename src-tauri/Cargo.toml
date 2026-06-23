@@ -1,6 +1,6 @@
 [package]
 name = "wincue"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2021"
 
 [lib]
@@ -27,7 +27,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Audio
-cpal = { version = "0.15", features = ["wasm-bindgen"] }
+cpal = { version = "0.18", features = ["wasm-bindgen"] }
 
 # Video — libmpv loaded at runtime via libloading (no link-time import library needed)
 libloading = "0.8"
@@ -43,7 +43,7 @@ base64 = "0.22"
 rosc = "0.10"
 
 # MIDI
-midir = "0.10"
+midir = "0.11"
 
 # Logging
 log = "0.4"
@@ -121,3 +121,4 @@ legacy-win32-output = []
 opt-level = 3
 lto = true
 codegen-units = 1
+

@@ -16,6 +16,8 @@
 //! Cross-platform: uses the generic cpal host (WASAPI/CoreAudio/ALSA) — no
 //! per-OS API.
 
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
@@ -61,22 +63,45 @@ impl InputPatch {
 
 /// Enumerate available audio **input** devices.
 ///
-/// Mirrors [`DeviceManager::refresh_devices`](super::device_manager::DeviceManager::refresh_devices)
-/// but for the input side.  Best-effort: devices whose config can't be read are
-/// reported with conservative defaults.
+/// On Linux uses PipeWire node enumeration so the list matches what Ubuntu
+/// Sound Settings shows (`UMC404HD 192k Input 1`, etc.).  Falls back to cpal
+/// ALSA enumeration when PipeWire is unavailable.  On other platforms uses
+/// cpal directly.
 pub fn list_input_devices() -> Vec<DeviceInfo> {
-    let host = cpal::default_host();
-    let mut devices = Vec::new();
-    let Ok(iter) = host.input_devices() else { return devices };
-    for device in iter {
-        let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-        let (channels, sample_rate) = device
-            .default_input_config()
-            .map(|c| (c.channels(), c.sample_rate().0))
-            .unwrap_or((2, 48_000));
-        devices.push(DeviceInfo { id: name.clone(), name, channels, sample_rate });
+    #[cfg(target_os = "linux")]
+    {
+        let host = cpal::default_host();
+        let mut fallback = Vec::new();
+        let Ok(iter) = host.input_devices() else {
+            return super::device_manager::linux_devices(true, fallback);
+        };
+        for device in iter {
+            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
+            let name = device.to_string();
+            let (channels, sample_rate) = device
+                .default_input_config()
+                .map(|c| (c.channels(), c.sample_rate()))
+                .unwrap_or((2, 48_000));
+            fallback.push(DeviceInfo { id, name, channels, sample_rate });
+        }
+        return super::device_manager::linux_devices(true, fallback);
     }
-    devices
+    #[cfg(not(target_os = "linux"))]
+    {
+        let host = cpal::default_host();
+        let mut devices = Vec::new();
+        let Ok(iter) = host.input_devices() else { return devices };
+        for device in iter {
+            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
+            let name = device.to_string();
+            let (channels, sample_rate) = device
+                .default_input_config()
+                .map(|c| (c.channels(), c.sample_rate()))
+                .unwrap_or((2, 48_000));
+            devices.push(DeviceInfo { id, name, channels, sample_rate });
+        }
+        devices
+    }
 }
 
 /// A running input capture: the persistent cpal stream plus the metadata the
@@ -106,24 +131,45 @@ unsafe impl Sync for InputCapture {}
 /// at tap-open is cheap.
 const RING_FRAMES: usize = 48_000 / 2;
 
-/// Open a persistent input stream for `device_id` (or the default input device
-/// when `None`/empty), returning the running [`InputCapture`] and the ring
-/// **consumer** the output callback reads from.
-///
-/// The input callback only ever calls `try_push` (no allocation, no lock); when
-/// the ring is full it drops the oldest-unconsumed samples by failing the push,
-/// which is harmless because the output side always wants the most recent audio.
 /// Open a persistent input stream.
+/// `device_id`: OS device identifier or a `pw:…` PipeWire synthetic ID
+/// (Linux only).  `None`/empty → system default.
 /// `buffer_size`: target period in frames (`0` = OS default).
 pub fn open_input(device_id: Option<&str>, buffer_size: u32) -> Result<(InputCapture, HeapCons<f32>)> {
+    use super::device_manager::pipewire_node_of;
+
+    // On Linux, `pw:<node_name>` IDs are opened via the `pipewire` ALSA PCM
+    // device with PIPEWIRE_NODE pointing PipeWire at the requested source node.
+    // We hold the pw-open mutex for the duration of cpal stream creation so the
+    // env var is never clobbered by a concurrent open on another thread.
+    #[cfg(target_os = "linux")]
+    let (_pw_guard, effective_id): (Option<super::device_manager::PwNodeGuard>, Option<&str>) = {
+        match device_id.filter(|s| !s.is_empty()).and_then(pipewire_node_of) {
+            Some(node) => {
+                let guard = super::device_manager::acquire_pw_node(node);
+                (Some(guard), Some("pipewire"))
+            }
+            None => (None, device_id.filter(|s| !s.is_empty())),
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let effective_id = device_id.filter(|s| !s.is_empty());
+
     let host = cpal::default_host();
 
-    let device = match device_id.filter(|s| !s.is_empty()) {
-        Some(name) => host
-            .input_devices()
-            .map_err(|e| anyhow!("Failed to enumerate input devices: {e}"))?
-            .find(|d| d.name().ok().as_deref() == Some(name))
-            .ok_or_else(|| anyhow!("Audio input device '{}' not found", name))?,
+    let device = match effective_id {
+        Some(name) => {
+            let all: Vec<_> = host
+                .input_devices()
+                .map_err(|e| anyhow!("Failed to enumerate input devices: {e}"))?
+                .map(|d| d.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| d.to_string()))
+                .collect();
+            log::info!("open_input: looking for '{name}' in input devices: {all:?}");
+            host.input_devices()
+                .map_err(|e| anyhow!("Failed to enumerate input devices: {e}"))?
+                .find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false))
+                .ok_or_else(|| anyhow!("Audio input device '{}' not found (available: {:?})", name, all))?
+        }
         None => host
             .default_input_device()
             .ok_or_else(|| anyhow!("No default audio input device found"))?,
@@ -132,27 +178,39 @@ pub fn open_input(device_id: Option<&str>, buffer_size: u32) -> Result<(InputCap
     let default_config = device
         .default_input_config()
         .map_err(|e| anyhow!("Input device config error: {e}"))?;
-    let sample_rate = default_config.sample_rate().0;
+    let sample_rate = default_config.sample_rate();
     let channels = default_config.channels();
     let sample_format = default_config.sample_format();
-    // Apply the same buffer size as the output stream so both device clocks
-    // fire at the same cadence.  Use Default when buffer_size == 0 (ASIO mode).
-    let buf = if buffer_size > 0 {
-        cpal::BufferSize::Fixed(buffer_size)
-    } else {
-        cpal::BufferSize::Default
-    };
+    // Always use the OS-default period for input.  Input latency is absorbed
+    // by the ring buffer + resampler in the output callback, so a small Fixed
+    // size gains nothing for Mic Cue latency.  Worse, requesting Fixed(128) on
+    // PipeWire forces a 2.9 ms quantum for the input node; when the output node
+    // also runs at 128 frames on the same USB device, PipeWire can't sustain
+    // both periods and the output worker enters a persistent XRun spin loop —
+    // the data callback stops firing and all audio goes silent.
+    let _ = buffer_size; // intentionally unused
+    let buf = cpal::BufferSize::Default;
     let mut cfg: cpal::StreamConfig = default_config.into();
     cfg.buffer_size = buf;
 
     let capacity = (RING_FRAMES * channels as usize).max(4096);
     let (mut prod, cons) = HeapRb::<f32>::new(capacity).split();
 
-    let err_fn = |err| log::error!("cpal input stream error: {err}");
+    let last_log  = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let err_fn = move |err: cpal::Error| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let prev = last_log.swap(now, std::sync::atomic::Ordering::Relaxed);
+        if now > prev {
+            log::error!("cpal input stream error: {err}");
+        }
+    };
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_input_stream(
-            &cfg,
+            cfg,
             move |data: &[f32], _| {
                 for &s in data {
                     let _ = prod.try_push(s);
@@ -162,7 +220,7 @@ pub fn open_input(device_id: Option<&str>, buffer_size: u32) -> Result<(InputCap
             None,
         )?,
         cpal::SampleFormat::I16 => device.build_input_stream(
-            &cfg,
+            cfg,
             move |data: &[i16], _| {
                 for &s in data {
                     let _ = prod.try_push(s as f32 / i16::MAX as f32);
@@ -172,7 +230,7 @@ pub fn open_input(device_id: Option<&str>, buffer_size: u32) -> Result<(InputCap
             None,
         )?,
         cpal::SampleFormat::I32 => device.build_input_stream(
-            &cfg,
+            cfg,
             move |data: &[i32], _| {
                 for &s in data {
                     let _ = prod.try_push(s as f32 / i32::MAX as f32);
