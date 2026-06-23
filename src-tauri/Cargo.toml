@@ -83,6 +83,7 @@ glutin = { version = "0.32" }
 # selectors) rather than objc2-app-kit's churn-prone typed bindings.
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
+block2 = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", features = ["egl", "glx", "x11"] }

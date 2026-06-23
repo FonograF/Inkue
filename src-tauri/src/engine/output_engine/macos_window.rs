@@ -35,19 +35,26 @@ use raw_window_handle::{
 };
 
 // AppKit constants (stable ABI values from <AppKit/AppKit.h>).
-const NS_WINDOW_STYLE_MASK_BORDERLESS: usize = 0;
+/// `NSWindowStyleMaskResizable` (1 << 3) — resizable window without a title bar.
+/// Using this alone keeps the window borderless (no auto-show on app activation)
+/// while giving the OS-managed resize grips at the edges.
+const NS_WINDOW_STYLE_MASK_RESIZABLE: usize = 1 << 3;
 const NS_BACKING_STORE_BUFFERED: usize = 2;
-/// `NSFloatingWindowLevel` — above normal windows so the output sits on top of
-/// the control UI when both share a display.
-const NS_FLOATING_WINDOW_LEVEL: isize = 3;
+/// Normal window level (0) — output sits alongside other windows and can go behind them.
+const NS_NORMAL_WINDOW_LEVEL: isize = 0;
+/// Level used when the output window is fullscreen.  Must be above the menu-bar level
+/// (24) so the window truly covers the whole screen including the status bar.
+const NS_FULLSCREEN_WINDOW_LEVEL: isize = 25;
 /// `NSWindowCollectionBehaviorCanJoinAllSpaces` (1 << 0).
 const NS_COLLECTION_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
 /// `NSWindowCollectionBehaviorFullScreenAuxiliary` (1 << 8) — lets the borderless
 /// output coexist over another app's native-fullscreen space.
 const NS_COLLECTION_FULLSCREEN_AUXILIARY: usize = 1 << 8;
+/// `NSEventMaskLeftMouseDown` — used for the double-click fullscreen monitor.
+const NS_EVENT_MASK_LEFT_MOUSE_DOWN: usize = 1 << 1;
 
-const INITIAL_WIDTH: f64 = 1920.0;
-const INITIAL_HEIGHT: f64 = 1080.0;
+const INITIAL_WIDTH: f64 = 960.0;
+const INITIAL_HEIGHT: f64 = 540.0;
 
 /// Raw `*mut NSWindow` (as `usize`), retained for the app's lifetime.  0 = none.
 static MAC_WINDOW: AtomicUsize = AtomicUsize::new(0);
@@ -58,13 +65,15 @@ static MAC_FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static MAC_SAVED_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
 /// App handle used to marshal control calls onto the main thread.
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+/// Retained NSEvent local monitor for double-click → fullscreen.
+static MOUSE_MONITOR: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
 // Public API (called from render.rs / OutputEngine)
 // ---------------------------------------------------------------------------
 
 /// Create the borderless output `NSWindow` and return the raw handles + initial
-/// size (logical pixels) for the render thread's `glutin` surface.
+/// size (physical pixels) for the render thread's `glutin` surface.
 pub(super) fn create(
     app_handle: &tauri::AppHandle,
 ) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
@@ -125,9 +134,14 @@ pub(super) fn position_on_screen(screen_index: u32) {
             return;
         }
         let frame: NSRect = msg_send![screen, frame];
+        // Raise above the menu bar so the window truly covers the full screen.
+        let _: () = msg_send![window, setLevel: NS_FULLSCREEN_WINDOW_LEVEL];
         let _: () = msg_send![window, setFrame: frame, display: true];
         MAC_FULLSCREEN.store(true, Ordering::SeqCst);
-        super::render::set_surface_size(frame.size.width as u32, frame.size.height as u32);
+        // Use physical pixels so the GL surface covers the full screen on Retina.
+        let view: *mut AnyObject = msg_send![window, contentView];
+        let phys: NSSize = msg_send![view, convertSizeToBacking: frame.size];
+        super::render::set_surface_size(phys.width as u32, phys.height as u32);
     });
 }
 
@@ -136,11 +150,21 @@ pub(super) fn position_on_screen(screen_index: u32) {
 pub(super) fn toggle_fullscreen() {
     on_main(|window| unsafe {
         if MAC_FULLSCREEN.load(Ordering::SeqCst) {
-            if let Some((x, y, w, h)) = *MAC_SAVED_FRAME.lock().unwrap() {
-                let rect = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
-                let _: () = msg_send![window, setFrame: rect, display: true];
-                super::render::set_surface_size(w as u32, h as u32);
-            }
+            // Fallback if no saved frame (e.g. window was shown via position_on_screen
+            // without ever being in windowed mode first).
+            let (x, y, w, h) = MAC_SAVED_FRAME
+                .lock()
+                .unwrap()
+                .unwrap_or((100.0, 100.0, 960.0, 540.0));
+            let rect = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+            // Restore normal window level before resizing so the window re-enters
+            // the normal stacking order.
+            let _: () = msg_send![window, setLevel: NS_NORMAL_WINDOW_LEVEL];
+            let _: () = msg_send![window, setFrame: rect, display: true];
+            // Physical pixels for the GL surface.
+            let view: *mut AnyObject = msg_send![window, contentView];
+            let phys: NSSize = msg_send![view, convertSizeToBacking: NSSize::new(w, h)];
+            super::render::set_surface_size(phys.width as u32, phys.height as u32);
             MAC_FULLSCREEN.store(false, Ordering::SeqCst);
         } else {
             let cur: NSRect = msg_send![window, frame];
@@ -152,11 +176,13 @@ pub(super) fn toggle_fullscreen() {
             }
             if !screen.is_null() {
                 let frame: NSRect = msg_send![screen, frame];
+                // Raise above the menu bar for true fullscreen coverage.
+                let _: () = msg_send![window, setLevel: NS_FULLSCREEN_WINDOW_LEVEL];
                 let _: () = msg_send![window, setFrame: frame, display: true];
-                super::render::set_surface_size(
-                    frame.size.width as u32,
-                    frame.size.height as u32,
-                );
+                // Physical pixels for the GL surface.
+                let view: *mut AnyObject = msg_send![window, contentView];
+                let phys: NSSize = msg_send![view, convertSizeToBacking: frame.size];
+                super::render::set_surface_size(phys.width as u32, phys.height as u32);
             }
             MAC_FULLSCREEN.store(true, Ordering::SeqCst);
         }
@@ -168,20 +194,36 @@ pub(super) fn toggle_fullscreen() {
 // ---------------------------------------------------------------------------
 
 /// Build the NSWindow on the current (main) thread; store it and return the
-/// `contentView` pointer + initial size.
+/// `contentView` pointer + initial size in **physical pixels**.
 fn build_window() -> (usize, u32, u32) {
     unsafe {
+        // Center on the main screen (the one with the menu bar).
+        let (win_x, win_y) = {
+            let ms: *mut AnyObject = msg_send![class!(NSScreen), mainScreen];
+            if ms.is_null() {
+                (100.0_f64, 100.0_f64)
+            } else {
+                let sf: NSRect = msg_send![ms, frame];
+                (
+                    sf.origin.x + (sf.size.width  - INITIAL_WIDTH)  / 2.0,
+                    sf.origin.y + (sf.size.height - INITIAL_HEIGHT) / 2.0,
+                )
+            }
+        };
         let rect = NSRect::new(
-            NSPoint::new(0.0, 0.0),
+            NSPoint::new(win_x, win_y),
             NSSize::new(INITIAL_WIDTH, INITIAL_HEIGHT),
         );
         // alloc/init are memory-management-family selectors: objc2 requires
         // `msg_send_id!` (not `msg_send!`) so the +1 retain is tracked.
         let alloc: Allocated<AnyObject> = msg_send_id![class!(NSWindow), alloc];
+        // Borderless-resizable: NSWindowStyleMaskResizable alone (= 8) keeps the window
+        // frameless so AppKit never auto-shows it on app activation (NSWindowStyleMaskTitled
+        // triggers that), while still providing OS-managed resize grips at the edges.
         let window: Retained<AnyObject> = msg_send_id![
             alloc,
             initWithContentRect: rect,
-            styleMask: NS_WINDOW_STYLE_MASK_BORDERLESS,
+            styleMask: NS_WINDOW_STYLE_MASK_RESIZABLE,
             backing: NS_BACKING_STORE_BUFFERED,
             defer: false
         ];
@@ -191,9 +233,10 @@ fn build_window() -> (usize, u32, u32) {
 
         // Keep alive forever; closing must not deallocate it.
         let _: () = msg_send![window_ptr, setReleasedWhenClosed: false];
-        // Drag the borderless window by its background, like the winit path.
+        // Drag the borderless window by its background.
         let _: () = msg_send![window_ptr, setMovableByWindowBackground: true];
-        let _: () = msg_send![window_ptr, setLevel: NS_FLOATING_WINDOW_LEVEL];
+        // Normal level in windowed mode; raised above the menu bar when fullscreen.
+        let _: () = msg_send![window_ptr, setLevel: NS_NORMAL_WINDOW_LEVEL];
         let behavior: usize =
             NS_COLLECTION_CAN_JOIN_ALL_SPACES | NS_COLLECTION_FULLSCREEN_AUXILIARY;
         let _: () = msg_send![window_ptr, setCollectionBehavior: behavior];
@@ -206,11 +249,110 @@ fn build_window() -> (usize, u32, u32) {
 
         let view: *mut AnyObject = msg_send![window_ptr, contentView];
 
+        // Physical pixel size — critical for Retina displays.  CGL/glutin work in
+        // physical pixels, so passing logical size would render content in only the
+        // bottom-left fraction of the framebuffer.
+        let phys: NSSize = msg_send![view, convertSizeToBacking: NSSize::new(INITIAL_WIDTH, INITIAL_HEIGHT)];
+        let phys_w = (phys.width as u32).max(1);
+        let phys_h = (phys.height as u32).max(1);
+
         MAC_WINDOW.store(window_ptr as usize, Ordering::SeqCst);
         std::mem::forget(window);
-        log::info!("[macos-window] NSWindow created (borderless, {INITIAL_WIDTH}x{INITIAL_HEIGHT})");
 
-        (view as usize, INITIAL_WIDTH as u32, INITIAL_HEIGHT as u32)
+        // Output window starts hidden; shown on first GO or by F9 / View menu.
+        let nil: *mut AnyObject = std::ptr::null_mut();
+        let _: () = msg_send![window_ptr, orderOut: nil];
+
+        // Keep GL surface size in sync when the user drags the window border.
+        register_resize_observer(window_ptr);
+
+        // Double-click anywhere in the output window → toggle fullscreen.
+        register_dblclick_monitor(window_ptr);
+
+        log::info!(
+            "[macos-window] NSWindow created (resizable, \
+             {INITIAL_WIDTH}x{INITIAL_HEIGHT} logical at ({win_x},{win_y}), \
+             {phys_w}x{phys_h} physical)"
+        );
+
+        (view as usize, phys_w, phys_h)
+    }
+}
+
+/// Update `GL_WIDTH`/`GL_HEIGHT` from the current window's physical pixel size.
+/// Called from `windowDidResize:` (main thread).
+fn update_physical_size() {
+    let ptr = MAC_WINDOW.load(Ordering::SeqCst);
+    if ptr == 0 {
+        return;
+    }
+    unsafe {
+        let window = ptr as *mut AnyObject;
+        let view: *mut AnyObject = msg_send![window, contentView];
+        let bounds: NSRect = msg_send![view, bounds];
+        let phys: NSSize = msg_send![view, convertSizeToBacking: bounds.size];
+        let w = (phys.width as u32).max(1);
+        let h = (phys.height as u32).max(1);
+        super::render::set_surface_size(w, h);
+    }
+}
+
+/// Register an `NSNotificationCenter` observer so that when the user resizes the
+/// window by dragging its edge, the GL surface is immediately updated.
+fn register_resize_observer(window_ptr: *mut AnyObject) {
+    use block2::RcBlock;
+    unsafe {
+        let name: *mut AnyObject = msg_send![
+            class!(NSString),
+            stringWithUTF8String: c"NSWindowDidResizeNotification".as_ptr()
+        ];
+        // queue: nil → block runs on the thread that posts the notification (main).
+        let block = RcBlock::new(|_notif: *mut AnyObject| {
+            update_physical_size();
+        });
+        let nc: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+        let nil: *mut AnyObject = std::ptr::null_mut();
+        let _obs: *mut AnyObject = msg_send![
+            nc,
+            addObserverForName: name,
+            object: window_ptr,
+            queue: nil,
+            usingBlock: &*block
+        ];
+        // NSNotificationCenter copies the block; we abandon our Rc without
+        // dropping so the block stays alive for the app's lifetime.
+        std::mem::forget(block);
+    }
+}
+
+/// Register a local `NSEvent` monitor: double-click inside the output window
+/// toggles fullscreen, matching the winit double-click behaviour on Windows/Linux.
+fn register_dblclick_monitor(_window_ptr: *mut AnyObject) {
+    use block2::RcBlock;
+    unsafe {
+        // Use MAC_WINDOW instead of capturing window_ptr (raw pointer is !Send).
+        let block = RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
+            let click_count: isize = msg_send![event, clickCount];
+            if click_count == 2 {
+                let event_window: *mut AnyObject = msg_send![event, window];
+                let our_window = MAC_WINDOW.load(Ordering::SeqCst) as *mut AnyObject;
+                if event_window == our_window {
+                    toggle_fullscreen();
+                }
+            }
+            event
+        });
+        let monitor: *mut AnyObject = msg_send![
+            class!(NSEvent),
+            addLocalMonitorForEventsMatchingMask: NS_EVENT_MASK_LEFT_MOUSE_DOWN,
+            handler: &*block
+        ];
+        if !monitor.is_null() {
+            // Retain the monitor so it is never deallocated (app-lifetime singleton).
+            let _: *mut AnyObject = msg_send![monitor, retain];
+            MOUSE_MONITOR.store(monitor as usize, Ordering::SeqCst);
+        }
+        std::mem::forget(block);
     }
 }
 

@@ -181,6 +181,23 @@ pub(super) fn init(
         lib, mpv_ctx, ready_tx,
     )?;
 
+    // On macOS, Tauri's NSApplication event loop hasn't started yet when setup()
+    // runs. If glutin/CGL needs the run loop during context creation, blocking
+    // here deadlocks: setup() waits for the render thread, the render thread
+    // waits for the run loop, the run loop waits for setup() to return.
+    // Solution: let the render thread initialise after the event loop starts and
+    // watch for errors on a background watcher thread.
+    #[cfg(target_os = "macos")]
+    std::thread::Builder::new()
+        .name("wincue-render-watcher".into())
+        .spawn(move || match ready_rx.recv() {
+            Ok(Ok(())) => log::info!("[render] macOS GL context ready"),
+            Ok(Err(e)) => log::error!("[render] macOS GL init failed: {e}"),
+            Err(_) => log::error!("[render] macOS render thread closed before ready"),
+        })
+        .ok();
+
+    #[cfg(not(target_os = "macos"))]
     ready_rx
         .recv()
         .map_err(|_| anyhow!("render thread exited before signalling ready"))??;
