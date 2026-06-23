@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -251,6 +251,94 @@ export interface OscReceiveConfig {
   feedback_enabled: boolean;
   feedback_host: string;
   feedback_port: number;
+}
+
+// ---------------------------------------------------------------------------
+// DMX / Lighting
+// ---------------------------------------------------------------------------
+
+export type OutputProtocol = "Sacn" | "ArtNet";
+
+/** One workspace-level universe output mapping (matches `engine::dmx_sink::UniverseOutput`). */
+export interface UniverseOutput {
+  universe: number;
+  protocol: OutputProtocol;
+  /** Destination IP string, or null for the sACN multicast group. */
+  destination: string | null;
+  enabled: boolean;
+}
+
+/** Live output bytes of one universe, pushed via the `dmx-monitor` event. */
+export interface DmxUniverseSnapshot {
+  universe: number;
+  channels: number[];
+}
+
+/** Resolution of one fixture parameter on the wire (matches `engine::dmx_engine::ChannelWidth`). */
+export type ChannelWidth = "Bit8" | "Bit16";
+
+/** What a fixture parameter controls. */
+export type ParamKind =
+  | "intensity"
+  | "red"
+  | "green"
+  | "blue"
+  | "white"
+  | "amber"
+  | "uv"
+  | "pan"
+  | "tilt"
+  | "generic";
+
+/** One controllable parameter of a fixture, offset from its base address. */
+export interface FixtureParam {
+  kind: ParamKind;
+  name: string;
+  channel_offset: number;
+  width: ChannelWidth;
+  default: number;
+}
+
+/** The channel layout of a kind of lighting instrument. */
+export interface FixtureType {
+  name: string;
+  parameters: FixtureParam[];
+}
+
+/** A fixture placed at a DMX address in the workspace patch. */
+export interface PatchedFixture {
+  id: string;
+  label: string;
+  universe: number;
+  base_address: number;
+  fixture_type: FixtureType;
+}
+
+/** A detected address clash between two patched fixtures. */
+export interface FixtureConflict {
+  fixture_a: string;
+  fixture_b: string;
+  universe: number;
+  message: string;
+}
+
+/** A named set of fixtures driven together by one Light Cue control. */
+export interface FixtureGroup {
+  id: string;
+  label: string;
+  fixture_ids: string[];
+}
+
+/** One thing a Light Cue drives: a fixture parameter, or a group parameter-kind. */
+export type ParamTarget =
+  | { kind: "fixture"; fixture_id: string; param_index: number; value: number }
+  | { kind: "group"; group_id: string; param_kind: ParamKind; value: number };
+
+/** Full cue data returned by get_cue for a Light Cue. */
+export interface LightCueData extends CueSummary {
+  notes: string;
+  targets: ParamTarget[];
+  fade: FadeSpec;
 }
 
 // ---------------------------------------------------------------------------

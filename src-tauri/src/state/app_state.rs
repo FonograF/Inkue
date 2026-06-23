@@ -14,6 +14,7 @@ use crate::{
         audio_cue::AudioCueFactory,
         fade_cue::FadeCueFactory,
         group_cue::GroupCueFactory,
+        light_cue::LightCueFactory,
         midi_cue::MidiCueFactory,
         image_cue::ImageCueFactory,
         memo_cue::MemoCueFactory,
@@ -24,7 +25,7 @@ use crate::{
         video_cue::VideoCueFactory,
         wait_cue::WaitCueFactory,
     },
-    engine::{AudioEngine, OscServer, OutputEngine},
+    engine::{AudioEngine, DmxEngine, OscServer, OutputEngine},
     show::{undo_stack::UndoStack, Workspace},
 };
 
@@ -38,6 +39,8 @@ pub struct AppState {
     pub output_engine: Arc<OutputEngine>,
     /// OSC receive server (background UDP listener thread).
     pub osc_server: Arc<OscServer>,
+    /// DMX-over-IP lighting engine (owns its own ~40Hz output thread).
+    pub dmx_engine: Arc<DmxEngine>,
     /// The cue type registry used for workspace de/serialisation.
     pub registry: Arc<Mutex<CueRegistry>>,
     /// Set of cue IDs whose audio files are currently being decoded in the
@@ -59,6 +62,7 @@ impl AppState {
         audio_engine: Arc<AudioEngine>,
         output_engine: Arc<OutputEngine>,
         osc_server: Arc<OscServer>,
+        dmx_engine: Arc<DmxEngine>,
     ) -> Self {
         let workspace = Workspace::new("Untitled");
 
@@ -67,6 +71,7 @@ impl AppState {
         registry.register(CueType::Fade,  Box::new(FadeCueFactory));
         registry.register(CueType::Midi,  Box::new(MidiCueFactory));
         registry.register(CueType::Group, Box::new(GroupCueFactory));
+        registry.register(CueType::Light, Box::new(LightCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
         registry.register(CueType::Osc,   Box::new(OscCueFactory));
         registry.register(CueType::Stop, Box::new(StopCueFactory));
@@ -79,6 +84,7 @@ impl AppState {
             audio_engine,
             output_engine,
             osc_server,
+            dmx_engine,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
             undo_stack: Arc::new(Mutex::new(UndoStack::new())),

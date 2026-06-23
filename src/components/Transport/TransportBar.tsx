@@ -5,6 +5,7 @@ import { go, stopAll, pauseCue, resumeCue, setMasterVolume, getPreferences } fro
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTransportStore } from "../../stores/transportStore";
 import { OscMonitor } from "../Osc/OscMonitor";
+import { LightingPanel } from "../Lighting/LightingPanel";
 
 interface Props {
   onRefresh: () => void;
@@ -203,6 +204,7 @@ export function TransportBar({ onRefresh }: Props) {
   const [volumeDb, setVolumeDb] = useState(0);
   const [oscActive, setOscActive] = useState(false);
   const [oscMonitorOpen, setOscMonitorOpen] = useState(false);
+  const [lightingOpen, setLightingOpen] = useState(false);
 
   // ---- VU meter animation state (rendered via rAF) ----
   const [meterL, setMeterL] = useState({ fill: 0, hold: 0 });
@@ -441,6 +443,27 @@ export function TransportBar({ onRefresh }: Props) {
         }}
       />
       {oscMonitorOpen && <OscMonitor onClose={() => setOscMonitorOpen(false)} />}
+
+      {/* DMX lighting panel toggle */}
+      <button
+        title="DMX lighting (sACN / Art-Net)"
+        onClick={() => setLightingOpen((v) => !v)}
+        style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: 0.5,
+          padding: "2px 7px",
+          borderRadius: 4,
+          background: lightingOpen ? "#a855f7" : "#1e293b",
+          border: `1px solid ${lightingOpen ? "#a855f7" : "#334155"}`,
+          color: lightingOpen ? "#0b0118" : "#94a3b8",
+          flexShrink: 0,
+          cursor: "pointer",
+        }}
+      >
+        DMX
+      </button>
+      {lightingOpen && <LightingPanel onClose={() => setLightingOpen(false)} />}
 
       {/* Meter + slider block */}
       <div

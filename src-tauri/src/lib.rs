@@ -25,6 +25,13 @@ use commands::{
         add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list, set_active_cue_list,
     },
     device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
+    light_cmds::{
+        add_fixture, add_fixture_group, capture_live_targets, dmx_clear_fixtures, dmx_get_blackout,
+        dmx_get_outputs, dmx_get_snapshot, dmx_set_blackout, dmx_set_channel, dmx_set_fixture_param,
+        dmx_set_outputs, dmx_test_fixture, get_fixture_conflicts, list_fixtures, list_fixture_groups,
+        list_builtin_fixture_types, remove_fixture, remove_fixture_group, update_fixture,
+        update_fixture_group,
+    },
     midi_cmds::{list_midi_output_ports, send_midi_test},
     osc_cmds::{
         add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
@@ -43,7 +50,7 @@ use commands::{
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
-use engine::{AudioEngine, OscServer, OutputEngine};
+use engine::{AudioEngine, DmxEngine, OscServer, OutputEngine};
 use state::AppState;
 use tauri::Manager;
 
@@ -95,8 +102,38 @@ pub fn run() {
             let app_handle_osc = app.handle().clone();
             let osc_server = Arc::new(OscServer::start(osc_config, app_handle_osc));
 
-            let app_state = AppState::new(audio_engine, Arc::clone(&output_engine), Arc::clone(&osc_server));
+            // DMX lighting engine — owns its own ~40Hz output thread.
+            let dmx_engine = Arc::new(DmxEngine::new());
+
+            let app_state = AppState::new(
+                audio_engine,
+                Arc::clone(&output_engine),
+                Arc::clone(&osc_server),
+                Arc::clone(&dmx_engine),
+            );
             app.manage(app_state);
+
+            // DMX monitor: push live universe values to the UI (event, not poll),
+            // ~20 fps and only when the values actually change.
+            {
+                let monitor_handle = app.handle().clone();
+                let dmx = Arc::clone(&dmx_engine);
+                std::thread::Builder::new()
+                    .name("wincue-dmx-monitor".to_string())
+                    .spawn(move || {
+                        use tauri::Emitter;
+                        let mut last: Vec<commands::light_cmds::DmxUniverseSnapshot> = Vec::new();
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            let snap = commands::light_cmds::snapshot_dto(&dmx);
+                            if snap != last {
+                                let _ = monitor_handle.emit("dmx-monitor", &snap);
+                                last = snap;
+                            }
+                        }
+                    })
+                    .expect("Failed to spawn DMX monitor thread");
+            }
 
             // ----------------------------------------------------------------
             // Start the 30 fps event loop on a dedicated thread.
@@ -104,12 +141,13 @@ pub fn run() {
             let handle = app.handle().clone();
             let a_engine = app.state::<AppState>().audio_engine.clone();
             let o_engine = Arc::clone(&output_engine);
+            let d_engine = Arc::clone(&dmx_engine);
             let workspace = app.state::<AppState>().workspace.clone();
 
             std::thread::Builder::new()
                 .name("wincue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, a_engine, o_engine, workspace);
+                    crate::show::event_loop::run(handle, a_engine, o_engine, d_engine, workspace);
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -204,6 +242,27 @@ pub fn run() {
             get_osc_config,
             set_osc_config,
             send_osc_test,
+            // DMX / Lighting
+            dmx_set_outputs,
+            dmx_get_outputs,
+            dmx_set_channel,
+            dmx_set_blackout,
+            dmx_get_blackout,
+            dmx_get_snapshot,
+            dmx_test_fixture,
+            dmx_set_fixture_param,
+            dmx_clear_fixtures,
+            capture_live_targets,
+            list_builtin_fixture_types,
+            list_fixtures,
+            add_fixture,
+            update_fixture,
+            remove_fixture,
+            get_fixture_conflicts,
+            list_fixture_groups,
+            add_fixture_group,
+            update_fixture_group,
+            remove_fixture_group,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinCue");

@@ -10,6 +10,9 @@
 
 pub mod audio_engine;
 pub mod device_manager;
+pub mod dmx_engine;
+pub mod dmx_sink;
+pub mod fixture;
 pub mod mpv_sys;
 pub mod osc_feedback;
 pub mod osc_patch;
@@ -19,6 +22,7 @@ pub mod ring_command;
 pub mod voice;
 
 pub use audio_engine::AudioEngine;
+pub use dmx_engine::DmxEngine;
 pub use osc_patch::OscPatch;
 pub use osc_server::OscServer;
 pub use output_engine::OutputEngine;
