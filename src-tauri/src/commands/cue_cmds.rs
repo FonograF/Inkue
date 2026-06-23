@@ -437,7 +437,14 @@ pub fn update_cue(
         new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
     }
     new_cue.restore_runtime_state(runtime);
+    // Push live level/pan changes to the cue's currently-playing voice so an
+    // inspector edit (volume, pan) takes effect immediately without restarting.
+    let live = new_cue.live_audio_params();
     cue_list.replace_cue_recursive(&id, new_cue);
+    if let Some(p) = live {
+        let _ = state.audio_engine.set_voice_gain(p.voice_id, p.gain);
+        let _ = state.audio_engine.set_voice_pan(p.voice_id, p.pan);
+    }
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())

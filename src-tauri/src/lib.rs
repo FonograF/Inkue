@@ -24,7 +24,8 @@ use commands::{
     cue_list_cmds::{
         add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list, set_active_cue_list,
     },
-    device_cmds::{get_output_patches, list_output_devices, refresh_devices, set_output_patch},
+    device_cmds::{get_output_patches, list_input_devices, list_output_devices, refresh_devices, set_output_patch},
+    input_cmds::{add_input_patch, list_input_patches, remove_input_patch, update_input_patch},
     light_cmds::{
         add_fixture, add_fixture_group, capture_live_targets, dmx_clear_fixtures, dmx_get_blackout,
         dmx_get_outputs, dmx_get_snapshot, dmx_set_blackout, dmx_set_channel, dmx_set_fixture_param,
@@ -212,6 +213,11 @@ pub fn run() {
             set_active_cue_list,
             // Devices
             list_output_devices,
+            list_input_devices,
+            list_input_patches,
+            add_input_patch,
+            update_input_patch,
+            remove_input_patch,
             get_output_patches,
             set_output_patch,
             refresh_devices,

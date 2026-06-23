@@ -32,6 +32,19 @@ pub struct RuntimeState {
     pub action_started_at: Option<Instant>,
 }
 
+/// Live audio parameters to re-apply to a cue's currently-playing voice after an
+/// inspector edit, so volume/pan changes take effect without restarting
+/// playback.  Returned by [`Cue::live_audio_params`].
+#[derive(Debug, Clone, Copy)]
+pub struct LiveAudioParams {
+    /// The engine voice id to update.
+    pub voice_id: CueId,
+    /// Linear gain to apply (already converted from dB).
+    pub gain: f32,
+    /// Stereo pan (-1.0 .. 1.0).
+    pub pan: f32,
+}
+
 // ---------------------------------------------------------------------------
 // CueFactory trait
 // ---------------------------------------------------------------------------
@@ -363,6 +376,13 @@ pub trait Cue: Send {
     /// Called by `update_cue` after rebuilding so a running cue continues
     /// uninterrupted.  Default is a no-op.
     fn restore_runtime_state(&mut self, _snap: RuntimeState) {}
+
+    /// Live audio parameters to push to the cue's currently-playing voice after
+    /// an inspector edit (volume / pan), so changes apply without restarting.
+    /// Returns `None` when the cue has no live voice.  Default is `None`.
+    fn live_audio_params(&self) -> Option<LiveAudioParams> {
+        None
+    }
 
     // -----------------------------------------------------------------------
     // Group support

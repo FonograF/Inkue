@@ -19,6 +19,7 @@ import type {
   FixtureType,
   GeneralPreferences,
   GroupMode,
+  InputPatch,
   OscPatch,
   OscReceiveConfig,
   OutputPatch,
@@ -202,6 +203,19 @@ export const setOutputPatch = (
   channels: number[]
 ) => invoke<string>("set_output_patch", { patchId, name, deviceId, channels });
 export const refreshDevices = () => invoke<void>("refresh_devices");
+
+// ---------------------------------------------------------------------------
+// Audio inputs + Input Patches (Mic Cues)
+// ---------------------------------------------------------------------------
+
+export const listInputDevices = () => invoke<DeviceInfo[]>("list_input_devices");
+export const listInputPatches = () => invoke<InputPatch[]>("list_input_patches");
+export const addInputPatch = (name: string, deviceId: string, channels: number[]) =>
+  invoke<InputPatch>("add_input_patch", { name, deviceId, channels });
+export const updateInputPatch = (patch: InputPatch) =>
+  invoke<void>("update_input_patch", { patch });
+export const removeInputPatch = (patchId: string) =>
+  invoke<void>("remove_input_patch", { patchId });
 
 // ---------------------------------------------------------------------------
 // OSC Patches

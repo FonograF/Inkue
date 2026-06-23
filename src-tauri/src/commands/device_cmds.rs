@@ -4,7 +4,7 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::{
-    engine::device_manager::{DeviceInfo, OutputPatch},
+    engine::{audio_input, device_manager::{DeviceInfo, OutputPatch}},
     state::AppState,
 };
 
@@ -14,6 +14,12 @@ pub fn list_output_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>
     let engine = &state.audio_engine;
     let mgr = engine.device_manager.lock().map_err(|e| e.to_string())?;
     Ok(mgr.devices().to_vec())
+}
+
+/// Return all available audio **input** devices (for Mic Cues / live capture).
+#[tauri::command]
+pub fn list_input_devices() -> Result<Vec<DeviceInfo>, String> {
+    Ok(audio_input::list_input_devices())
 }
 
 /// Return all configured Output Patches.

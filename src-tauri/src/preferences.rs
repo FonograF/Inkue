@@ -48,6 +48,12 @@ pub struct MachineAudioConfig {
     #[serde(default)]
     pub device_id: Option<String>,
 
+    /// Identifier of the selected audio **input** device for Mic Cues / live
+    /// capture.  `None` = system default input.  Machine-specific, like
+    /// `device_id`.
+    #[serde(default)]
+    pub input_device_id: Option<String>,
+
     /// Output buffer size in samples.
     /// Only applied for WASAPI Exclusive; ignored in Shared mode (Windows
     /// controls the period) and ASIO mode (driver controls its own buffer).
@@ -69,6 +75,7 @@ impl Default for MachineAudioConfig {
         Self {
             backend: AudioBackend::default(),
             device_id: None,
+            input_device_id: None,
             buffer_size: Self::default_buffer_size(),
             asio_out_pair: 0,
         }

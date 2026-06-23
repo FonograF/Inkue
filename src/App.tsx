@@ -655,7 +655,14 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light", e: React.MouseEvent) => {
+  const handleAddMic = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("mic", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("wincue:cue-drag-start", {
@@ -844,6 +851,14 @@ export default function App() {
             title="Add Light Cue after selection · Drag to insert at position"
           >
             + Light
+          </button>
+          <button
+            style={{ ...toolbarBtn, color: "#86efac", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddMic}
+            onMouseDown={(e) => dispatchCueDrag("mic", e)}
+            title="Add Mic Cue after selection · Drag to insert at position"
+          >
+            + Mic
           </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector

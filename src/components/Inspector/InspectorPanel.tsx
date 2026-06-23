@@ -2,7 +2,7 @@
 // Shows cue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useState } from "react";
-import type { AudioCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MidiCueData, OscCueData, StopCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import type { AudioCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
 import { WaveformModal } from "../WaveformModal";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -13,6 +13,7 @@ import { FadeTab } from "./FadeTab";
 import { MidiTab } from "./MidiTab";
 import { OscTab } from "./OscTab";
 import { LightTab } from "./LightTab";
+import { MicTab } from "./MicTab";
 
 interface Props {
   selectedCue: CueSummary | null;
@@ -20,10 +21,10 @@ interface Props {
   onRefresh: () => void;
 }
 
-type Tab = "basics" | "time" | "levels" | "fade" | "messages" | "light";
+type Tab = "basics" | "time" | "levels" | "fade" | "messages" | "light" | "mic";
 
 export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props) {
-  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData | MidiCueData | OscCueData | StopCueData | LightCueData | null>(null);
+  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData | MidiCueData | OscCueData | StopCueData | LightCueData | MicCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
 
@@ -38,8 +39,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     const hasFade = selectedCue.cue_type === "audio" || selectedCue.cue_type === "image";
     const hasMessages = selectedCue.cue_type === "osc" || selectedCue.cue_type === "midi";
     const hasLight = selectedCue.cue_type === "light";
+    const hasMic = selectedCue.cue_type === "mic";
     setActiveTab((prev) => {
-      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages) || (prev === "light" && !hasLight)) return "basics";
+      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages) || (prev === "light" && !hasLight) || (prev === "mic" && !hasMic)) return "basics";
       return prev;
     });
     getCue(selectedCue.id)
@@ -76,6 +78,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
   const isOsc   = selectedCue.cue_type === "osc";
   const isStop  = selectedCue.cue_type === "stop";
   const isLight = selectedCue.cue_type === "light";
+  const isMic   = selectedCue.cue_type === "mic";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
@@ -172,7 +175,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
           background: "#020617",
         }}
       >
-        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : isMic ? "🎤" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
@@ -201,6 +204,11 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         {isLight && (
           <button style={tabStyle("light")} onClick={() => setActiveTab("light")}>
             Light
+          </button>
+        )}
+        {isMic && (
+          <button style={tabStyle("mic")} onClick={() => setActiveTab("mic")}>
+            Mic
           </button>
         )}
       </div>
@@ -250,6 +258,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         )}
         {activeTab === "light" && isLight && (
           <LightTab cue={cueData as LightCueData} onSave={save} />
+        )}
+        {activeTab === "mic" && isMic && (
+          <MicTab cue={cueData as MicCueData} onSave={save} />
         )}
       </div>
 

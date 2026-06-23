@@ -4,9 +4,11 @@ Objectif : **entrée audio live** façon QLab Mic Cue — renfort micro, paging/
 multicanal de sources live — **et** prérequis de capture pour le **LTC entrant** du timecode
 (voir `TIMECODE.md`).
 
-État : **design verrouillé, non implémenté.** WinCue a la **sortie** audio (cpal, Output
-Patches, voices, fades, pan, VU) mais **aucune entrée** (pas de stream cpal input). C'est le
-seul vrai code neuf ; tout le reste se réutilise.
+État : **implémenté (v0.9.5).** Capture cpal persistante + resampler adaptatif (`engine/audio_input.rs`,
+`engine/audio_engine.rs`), `LiveSource`/`Voice::new_live` (`engine/voice.rs`), `MicCue`
+(`cue/mic_cue.rs`), `input_patches` dans le workspace, commandes CRUD, onglet Mic + panneau
+Input Patches. Détail dans `PROGRESS.md` (0.9.5). Reste en Phase 2 : rack d'effets DSP
+(reverb/EQ) — voir caveat. Le design verrouillé ci-dessous reste la référence.
 
 Cross-platform impératif : **cpal générique** (WASAPI/ASIO Windows, CoreAudio macOS,
 ALSA/PipeWire Linux) — pas d'API par-OS spécifique (règle `CLAUDE.md` / `PORTAGE.md`).
@@ -33,7 +35,7 @@ cueing, routing et fades que les Audio Cues ».
 | Sujet | Décision |
 |---|---|
 | Devices in/out | **Séparés autorisés** (in et out sur des devices/horloges différents) + **resampler adaptatif** qui compense le drift. Le « même device » est le cas dégénéré ratio≈1 → resampler transparent, latence plancher. Un seul chemin de code. |
-| Cycle du stream | **Persistant** : le stream d'entrée tourne dès qu'un Input Patch existe → entrée toujours « chaude », **GO instantané**, zéro glitch de démarrage. La Mic Cue ne fait qu'ouvrir/fermer le robinet vers le mix. |
+| Cycle du stream | **Ouvert au GO, fermé quand inutilisé** : `ensure_input_feed` ouvre le device au GO (partagé entre Mic Cues du même device) ; `gc_voices` ferme le feed dès qu'aucune voix live ne le référence plus → l'OS **relâche le micro** (indicateur éteint) à l'arrêt du cue. *(Révise le choix initial « persistant pour toujours » : laisser le device ouvert en permanence laissait le micro capturé pour la vie de l'app, sans moyen de le fermer.)* |
 | Latence | **Buffer configurable** (machine-config par-OS) + **backends bas-latence** (ASIO Windows / CoreAudio macOS / PipeWire ou JACK Linux ; WASAPI shared en repli). Latence round-trip **mesurée et affichée**. |
 | Canaux | **Multicanal arbitraire** : l'Input Patch expose tous les canaux du device ; une Mic Cue choisit N canaux (mono / paire / multi) → routés via la **matrice Output Patch existante**. |
 | Chemin audio | L'entrée passe par une **`Voice`** → mix → Output Patch → hérite **gratuitement** des fades, du pan, du VU et du routing. |

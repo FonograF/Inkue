@@ -98,6 +98,7 @@ fn make_context(
     osc_patches: Vec<crate::engine::osc_patch::OscPatch>,
     fixtures: Vec<crate::engine::fixture::PatchedFixture>,
     fixture_groups: Vec<crate::engine::fixture::FixtureGroup>,
+    input_patches: Vec<crate::engine::audio_input::InputPatch>,
 ) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     CueContext::new(
@@ -112,6 +113,7 @@ fn make_context(
         dmx_engine.clone(),
         fixtures,
         fixture_groups,
+        input_patches,
     )
 }
 
@@ -219,13 +221,14 @@ fn tick(
     let ws_osc_patches    = ws.osc_patches.clone();
     let ws_fixtures       = ws.fixtures.clone();
     let ws_fixture_groups = ws.fixture_groups.clone();
+    let ws_input_patches  = ws.input_patches.clone();
     let active_list_id    = ws.active_cue_list_id;
 
     if ws.cue_lists.is_empty() {
         return;
     }
 
-    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone());
+    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone());
 
     // ------------------------------------------------------------------
     // 4. Apply video duration updates — search every cue list.
@@ -419,7 +422,7 @@ fn tick(
         if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
             let context = make_context(
                 audio_engine, output_engine, dmx_engine, stop_fade_ms,
-                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(),
+                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(),
             );
             let mut transport = Transport::new(context);
             if let Ok(result) = transport.go(cl) {

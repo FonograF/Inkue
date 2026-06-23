@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -197,6 +197,30 @@ export interface OutputPatch {
   channels: number[];
 }
 
+/** A named live-audio input mapping (Mic Cues). Mirror of OutputPatch, stored in the workspace. */
+export interface InputPatch {
+  id: string;
+  name: string;
+  device_id: string;
+  /** Zero-based input device channel indices this patch exposes. */
+  channels: number[];
+}
+
+/** Full cue data returned by get_cue for a Mic Cue. */
+export interface MicCueData extends CueSummary {
+  notes: string;
+  input_patch_id: string | null;
+  /** Device channel indices to take (empty = use the patch's own channels). */
+  input_channels: number[];
+  output_patch_id: string | null;
+  volume_db: number;
+  pan: number;
+  fade_in_ms: number | null;
+  fade_in_curve: FadeCurve | null;
+  fade_out_ms: number | null;
+  fade_out_curve: FadeCurve | null;
+}
+
 export interface CueListSummary {
   id: string;
   name: string;
@@ -351,6 +375,8 @@ export type AudioBackend = "wasapi_shared" | "wasapi_exclusive" | "asio";
 export interface MachineAudioConfig {
   backend: AudioBackend;
   device_id: string | null;
+  /** Selected audio input device for Mic Cues. null = system default input. */
+  input_device_id: string | null;
   /** Samples. Only applied for WASAPI Exclusive. */
   buffer_size: number;
   /** ASIO output pair index (0 = Out 1-2, 1 = Out 3-4, …). */
@@ -360,6 +386,7 @@ export interface MachineAudioConfig {
 export const DEFAULT_MACHINE_AUDIO_CONFIG: MachineAudioConfig = {
   backend: "wasapi_shared",
   device_id: null,
+  input_device_id: null,
   buffer_size: 256,
   asio_out_pair: 0,
 };

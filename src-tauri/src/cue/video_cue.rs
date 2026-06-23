@@ -531,6 +531,15 @@ impl Cue for VideoCue {
         self.in_pre_wait = snap.state == CueState::Running && snap.action_started_at.is_none();
     }
 
+    fn live_audio_params(&self) -> Option<crate::cue::traits::LiveAudioParams> {
+        let voice_id = self.active_voice_id?;
+        Some(crate::cue::traits::LiveAudioParams {
+            voice_id,
+            gain: db_to_linear(self.volume_db) as f32,
+            pan: 0.0,
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Serialisation
     // -----------------------------------------------------------------------

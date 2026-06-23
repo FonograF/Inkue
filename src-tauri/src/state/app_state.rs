@@ -77,6 +77,7 @@ impl AppState {
         registry.register(CueType::Stop, Box::new(StopCueFactory));
         registry.register(CueType::Video, Box::new(VideoCueFactory));
         registry.register(CueType::Image, Box::new(ImageCueFactory));
+        registry.register(CueType::Mic,   Box::new(crate::cue::mic_cue::MicCueFactory));
         registry.register(CueType::Wait, Box::new(WaitCueFactory));
 
         Self {

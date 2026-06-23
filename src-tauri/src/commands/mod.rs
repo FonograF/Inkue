@@ -3,6 +3,7 @@
 pub mod cue_cmds;
 pub mod cue_list_cmds;
 pub mod device_cmds;
+pub mod input_cmds;
 pub mod light_cmds;
 pub mod midi_cmds;
 pub mod osc_cmds;

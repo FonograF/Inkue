@@ -30,6 +30,8 @@ import {
   updateMachineAudioConfig,
 } from "../../lib/commands";
 import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
+import { InputPatchesPanel } from "../InputPatches/InputPatchesPanel";
+import { listInputDevices } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
 // Sidebar categories
@@ -115,6 +117,7 @@ function AudioContent({
   onImmediateApplyMachine?: (c: MachineAudioConfig) => Promise<void>;
 }) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [inputDevices, setInputDevices] = useState<DeviceInfo[]>([]);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [asioPairs, setAsioPairs] = useState<number>(1);
@@ -142,6 +145,10 @@ function AudioContent({
       getAsioOutputPairs().then(setAsioPairs).catch(() => setAsioPairs(1));
     }
   }, [machineConfig.backend, loadDevices]);
+
+  useEffect(() => {
+    listInputDevices().then(setInputDevices).catch(console.error);
+  }, []);
 
   const currentDevice = devices.find((d) => d.id === machineConfig.device_id) ?? devices[0] ?? null;
   const latencyMs = !isShared && currentDevice && machineConfig.buffer_size
@@ -261,6 +268,26 @@ function AudioContent({
             </span>
           </Row>
         )}
+      </Section>
+
+      <Section title="Audio Input">
+        <Row label="Default Input Device">
+          <Select
+            style={selectStyle}
+            value={machineConfig.input_device_id ?? ""}
+            onChange={(e) =>
+              onMachineConfigChange({ ...machineConfig, input_device_id: e.target.value || null })
+            }
+          >
+            <option value="">— System Default —</option>
+            {inputDevices.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </Select>
+        </Row>
+        <div style={{ marginTop: 8 }}>
+          <InputPatchesPanel />
+        </div>
       </Section>
 
       <Section title="Defaults">

@@ -27,6 +27,8 @@ pub enum CueType {
     Midi,
     /// Fades patched DMX fixtures to a target look (DMX-over-IP).
     Light,
+    /// Routes a live audio input through the engine (mic / line).
+    Mic,
 }
 
 impl std::fmt::Display for CueType {
@@ -43,6 +45,7 @@ impl std::fmt::Display for CueType {
             CueType::Osc   => write!(f, "osc"),
             CueType::Midi  => write!(f, "midi"),
             CueType::Light => write!(f, "light"),
+            CueType::Mic   => write!(f, "mic"),
         }
     }
 }

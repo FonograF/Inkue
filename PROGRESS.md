@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-22
+# WinCue — Project state as of 2026-06-23
 
-## Current version: 0.9.4
+## Current version: 0.9.5
 
 ## cargo build result
 
@@ -10,7 +10,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## cargo test result
 
-**99 tests pass, 0 failures.** (DMX engine + sink, fixtures, groups, Light Cue.)
+**103 tests pass, 0 failures.** (DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue.)
 
 ---
 
@@ -29,6 +29,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
+| Mic   | ✅ **Functional** | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
 
 ---
 
@@ -123,6 +124,20 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.5 (2026-06-23) — Input Patches + Mic Cue (live audio input)
+
+WinCue can now route a **live audio input** through the engine — QLab's Mic Cue.
+Full design in `INPUT.md`.
+
+- **Live input capture** — `engine/audio_input.rs`: `InputPatch` (named device + channels, workspace-stored, mirror of `OutputPatch`), input-device enumeration, and a **persistent** cpal input stream per device (F32/I16/I32) → lock-free ring. The stream stays open so a Mic Cue GO is instant (no cold-start).
+- **Adaptive resampler** — `engine/audio_engine.rs`: `InputFeed` (ring + circular staging drained each output block) and `mix_live` — resamples the input device clock to the output clock with drift compensation (read cursor held ~25 ms behind the write head, ratio nudged ±2 %, resync on gross lag). Separate in/out devices supported; same device = unity no-op. `ensure_input_feed` (one feed per device, shared), `play_mic_voice`.
+- **Live Voice** — `engine/voice.rs`: `LiveSource` + `Voice::new_live` — a live voice reads the ring instead of a sample buffer and inherits gain/pan/fade/VU/Output-Patch routing for free.
+- **MicCue** — `cue/mic_cue.rs`: input patch + channels + output patch + volume/pan/fade; `go()` ensures the feed and submits the live voice; `duration()` = None (runs until stopped); soft-fade stop. Registered in `CueRegistry`; `CueType::Mic`; `CueContext.input_patches` + `resolve_input_patch`; `input_patches` serialized in the workspace; `MachineAudioConfig.input_device_id`.
+- **Commands** — `list_input_devices`, `list_input_patches`, `add/update/remove_input_patch`.
+- **Frontend** — `lib/{types,commands}.ts` (`InputPatch`, `MicCueData`), inspector **Mic tab** (`MicTab.tsx`), **+ Mic** toolbar button (+ drag), 🎤 row/inspector icon, **Input Patches panel** + default-input selector in Preferences → Audio (`InputPatchesPanel.tsx`).
+- **Caveat** — routing + level + fade + pan only; no reverb/EQ (no audio FX rack yet). Unblocks LTC timecode input (`TIMECODE.md`).
+- **Tests** — +4 (resampler drain/interp, `mix_live` unity routing, MicCue serde); **103 total**, clippy clean, `tsc --noEmit` clean.
 
 ### 0.9.4 (2026-06-23) — macOS GL output port + DMX lighting (Light Cue M1–M4)
 
@@ -319,6 +334,7 @@ not just a console trigger.
 | 23. MIDI Cue | ✅ Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir) |
 | 24. Unified GL output | ✅ mpv Render API on all 3 OS — winit window (Windows/Linux) + AppKit `NSWindow` via objc2 (macOS); legacy Win32+D3D11 behind a feature flag |
 | 25. DMX lighting (Light Cue) | ✅ sACN + Art-Net engine, fixture patch, Light Cue (M1–M4); M5 (NIC machine-config) + effects = next, see `LIGHT.md` |
+| 26. Input Patches + Mic Cue | ✅ Live audio input: persistent cpal capture, adaptive drift resampler, multichannel Input Patch → live Voice → Output Patch; see `INPUT.md`. Unblocks LTC timecode |
 
 ---
 

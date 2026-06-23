@@ -7,7 +7,7 @@
 //! callback).
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use uuid::Uuid;
@@ -151,6 +151,67 @@ impl VoiceInner {
 }
 
 // ---------------------------------------------------------------------------
+// LiveSource — live audio input read state (Mic Cue)
+// ---------------------------------------------------------------------------
+
+/// Read state for a voice fed by a live audio **input** instead of a fixed
+/// sample buffer.
+///
+/// A live voice has no `samples`; it reads from the shared input feed identified
+/// by `feed_id` (owned by the [`AudioEngine`](super::audio_engine::AudioEngine)),
+/// resampling the input device clock to the output clock with adaptive drift
+/// compensation.  The read cursor is mutated **only inside the audio callback**.
+pub struct LiveSource {
+    /// The input feed this voice reads from.
+    pub feed_id: Uuid,
+    /// Device input channel feeding the Left output (0-based).
+    pub in_l: usize,
+    /// Device input channel feeding the Right output (`== in_l` for a mono source).
+    pub in_r: usize,
+    /// Input device sample rate (Hz) — numerator of the base resample ratio.
+    pub src_rate: u32,
+    /// Absolute fractional read cursor, in input frames.  Callback-only.
+    read_frame: UnsafeCell<f64>,
+    /// `false` until the first callback initialises the read cursor.
+    started: AtomicBool,
+}
+
+// SAFETY: `read_frame` is only ever written from the single RT callback thread.
+unsafe impl Sync for LiveSource {}
+unsafe impl Send for LiveSource {}
+
+impl LiveSource {
+    /// Create a live source bound to `feed_id`, taking input channels `in_l` /
+    /// `in_r` (equal for mono) from a device running at `src_rate`.
+    pub fn new(feed_id: Uuid, in_l: usize, in_r: usize, src_rate: u32) -> Self {
+        Self {
+            feed_id,
+            in_l,
+            in_r,
+            src_rate,
+            read_frame: UnsafeCell::new(0.0),
+            started: AtomicBool::new(false),
+        }
+    }
+    /// Current read cursor. SAFETY: only called from the audio callback.
+    pub fn read_frame(&self) -> f64 {
+        unsafe { *self.read_frame.get() }
+    }
+    /// Set the read cursor. SAFETY: only called from the audio callback.
+    pub fn set_read_frame(&self, v: f64) {
+        unsafe {
+            *self.read_frame.get() = v;
+        }
+    }
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+    pub fn mark_started(&self) {
+        self.started.store(true, Ordering::Relaxed);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Voice
 // ---------------------------------------------------------------------------
 
@@ -182,6 +243,10 @@ pub struct Voice {
     /// Zero-based index of the output channel that receives the Right mix.
     /// Defaults to 1.  Set from the cue's Output Patch before submitting.
     pub out_r: usize,
+
+    /// When `Some`, this is a live (Mic Cue) voice that reads from an input feed
+    /// instead of `samples`.  `None` for ordinary file/decoded voices.
+    pub live: Option<Arc<LiveSource>>,
 }
 
 // AtomicU64 is not in std for 32-bit targets, but for our Windows x64 target it is fine.
@@ -213,6 +278,33 @@ impl Voice {
             }),
             out_l: 0,
             out_r: 1,
+            live: None,
+        }
+    }
+
+    /// Create a live (Mic Cue) voice that reads from an input feed instead of a
+    /// fixed sample buffer.  `sample_rate` is the **output** rate so soft-fade
+    /// durations (computed in [`crate::engine::audio_engine`]) land in
+    /// wall-clock milliseconds.
+    pub fn new_live(live: LiveSource, sample_rate: u32, gain: f32, pan: f32) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            samples: Arc::new(Vec::new()),
+            channels: 2,
+            sample_rate,
+            frame_pos: AtomicU64::new(0),
+            state: AtomicU8::new(VoiceState::Idle as u8),
+            inner: Arc::new(VoiceInner {
+                gain_bits: AtomicU32::new(f32::to_bits(gain)),
+                pan_bits: AtomicU32::new(f32::to_bits(pan)),
+                loops_remaining: AtomicU32::new(0),
+                rate_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
+                fade: UnsafeCell::new(None),
+                end_frame: UnsafeCell::new(None),
+            }),
+            out_l: 0,
+            out_r: 1,
+            live: Some(Arc::new(live)),
         }
     }
 

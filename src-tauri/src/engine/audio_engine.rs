@@ -9,20 +9,81 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
+use uuid::Uuid;
 
 use crate::preferences::MachineAudioConfig;
 
 use super::{
+    audio_input::{open_input, InputCapture},
     device_manager::DeviceManager,
     ring_command::{AudioCommand, AudioStatus, FadeCurve, VoiceId},
-    voice::{FadeDirection, FadeState, Voice, VoiceState},
+    voice::{FadeDirection, FadeState, LiveSource, Voice, VoiceState},
 };
 
 const _MAX_VOICES: usize = 64;
 const RING_CAPACITY: usize = 256;
 pub const DEFAULT_FADE_OUT_MS: u32 = 500;
+
+/// Frames of headroom in each input feed's circular staging buffer (~100 ms at
+/// 48 kHz).  The resampler reads ~25 ms behind the write head, leaving slack for
+/// jitter and slow clock drift.
+const STAGING_FRAMES: usize = 4800;
+
+// ---------------------------------------------------------------------------
+// Live input feed — one per captured device, drained by the output callback
+// ---------------------------------------------------------------------------
+
+/// One live input device's capture: its ring consumer plus a circular staging
+/// buffer the output callback keeps current and live voices resample from.
+///
+/// Drained every output block (`drain`) so the input stays "warm" and bounded
+/// even when no Mic Cue is playing — a GO is then instant with no cold-start.
+struct InputFeed {
+    /// Stable id referenced by a [`LiveSource`].
+    id: Uuid,
+    /// OS device id this feed captures from (one feed per device).
+    device_id: String,
+    /// Interleaved channel count of the staging frames.
+    in_channels: usize,
+    /// Input device sample rate (Hz).
+    sample_rate: u32,
+    /// Ring consumer fed by the cpal input callback.
+    cons: ringbuf::HeapCons<f32>,
+    /// Circular interleaved staging, `STAGING_FRAMES * in_channels` long.
+    staging: Box<[f32]>,
+    /// Monotonic count of frames written into `staging`.
+    write_frame: u64,
+    /// Keeps the cpal input stream alive (`None` only in unit tests).
+    _capture: Option<InputCapture>,
+}
+
+impl InputFeed {
+    /// Pop every available frame from the ring into the circular staging buffer.
+    /// RT-safe: bounded by what the input callback produced, no allocation.
+    fn drain(&mut self) {
+        let ch = self.in_channels;
+        while self.cons.occupied_len() >= ch {
+            let slot = (self.write_frame as usize % STAGING_FRAMES) * ch;
+            for c in 0..ch {
+                if let Some(s) = self.cons.try_pop() {
+                    self.staging[slot + c] = s;
+                }
+            }
+            self.write_frame += 1;
+        }
+    }
+
+    /// Linear-interpolated sample for input channel `ch` at fractional frame `pos`.
+    fn sample(&self, ch: usize, pos: f64) -> f32 {
+        let i0 = pos.floor() as u64;
+        let frac = (pos - i0 as f64) as f32;
+        let a = self.staging[(i0 as usize % STAGING_FRAMES) * self.in_channels + ch];
+        let b = self.staging[((i0 + 1) as usize % STAGING_FRAMES) * self.in_channels + ch];
+        a + (b - a) * frac
+    }
+}
 
 
 /// The audio engine.
@@ -31,6 +92,9 @@ pub struct AudioEngine {
     cmd_prod: Mutex<ringbuf::HeapProd<AudioCommand>>,
     status_cons: Mutex<ringbuf::HeapCons<AudioStatus>>,
     voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    /// Live input feeds (one per captured device), shared with the output
+    /// callback which drains them each block.
+    input_feeds: Arc<Mutex<Vec<InputFeed>>>,
     _stream: Mutex<Option<Stream>>,
     sample_rate: std::sync::atomic::AtomicU32,
     /// Total output channel count of the current stream (updated on restart).
@@ -47,14 +111,21 @@ impl AudioEngine {
     pub fn new(config: &MachineAudioConfig) -> Result<Arc<Self>> {
         let master_gain = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0_f32)));
         let shared_voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
+        let input_feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let sr = open_stream_inner(config, Arc::clone(&shared_voices), Arc::clone(&master_gain))?;
+        let sr = open_stream_inner(
+            config,
+            Arc::clone(&shared_voices),
+            Arc::clone(&input_feeds),
+            Arc::clone(&master_gain),
+        )?;
 
         Ok(Arc::new(Self {
             device_manager: Mutex::new(DeviceManager::new()),
             cmd_prod: Mutex::new(sr.cmd_prod),
             status_cons: Mutex::new(sr.status_cons),
             voices: shared_voices,
+            input_feeds,
             _stream: Mutex::new(Some(sr.stream)),
             sample_rate: std::sync::atomic::AtomicU32::new(sr.sample_rate),
             output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
@@ -113,6 +184,99 @@ impl AudioEngine {
         Ok(id)
     }
 
+    /// Ensure an input capture exists for `device_id` (or the default input when
+    /// `None`/empty), returning the feed id to bind a Mic Cue to.
+    ///
+    /// Idempotent: a device is captured once and shared by all Mic Cues using it.
+    /// The feed is released by [`gc_voices`](Self::gc_voices) once no live voice
+    /// references it any more (so the OS mic indicator turns off after stop).
+    pub fn ensure_input_feed(&self, device_id: Option<&str>) -> Result<Uuid> {
+        let key = device_id.unwrap_or_default().to_string();
+        {
+            let feeds = self.input_feeds.lock().map_err(|_| anyhow!("input_feeds poisoned"))?;
+            if let Some(f) = feeds.iter().find(|f| f.device_id == key) {
+                return Ok(f.id);
+            }
+        }
+        let (capture, cons) = open_input(device_id)?;
+        let in_channels = capture.channels.max(1) as usize;
+        let id = Uuid::new_v4();
+        let feed = InputFeed {
+            id,
+            device_id: key,
+            in_channels,
+            sample_rate: capture.sample_rate,
+            cons,
+            staging: vec![0.0_f32; STAGING_FRAMES * in_channels].into_boxed_slice(),
+            write_frame: 0,
+            _capture: Some(capture),
+        };
+        self.input_feeds
+            .lock()
+            .map_err(|_| anyhow!("input_feeds poisoned"))?
+            .push(feed);
+        Ok(id)
+    }
+
+    /// Channel count and sample rate of an existing input feed.
+    fn feed_info(&self, feed_id: Uuid) -> Option<(usize, u32)> {
+        self.input_feeds
+            .lock()
+            .ok()
+            .and_then(|f| f.iter().find(|f| f.id == feed_id).map(|f| (f.in_channels, f.sample_rate)))
+    }
+
+    /// Start a live (Mic Cue) voice reading input channels `in_l`/`in_r` (equal
+    /// for mono) from `feed_id`, routed to output channels `out_l`/`out_r`, with
+    /// optional fade-in.  Returns the voice id (use [`stop_voice`] to stop it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_mic_voice(
+        &self,
+        feed_id: Uuid,
+        in_l: usize,
+        in_r: usize,
+        out_l: usize,
+        out_r: usize,
+        gain: f32,
+        pan: f32,
+        fade_in_ms: u32,
+        fade_curve: FadeCurve,
+    ) -> Result<VoiceId> {
+        let (in_ch, src_rate) = self
+            .feed_info(feed_id)
+            .ok_or_else(|| anyhow!("input feed {feed_id:?} not found"))?;
+        // Clamp requested channels to what the device offers.
+        let in_l = in_l.min(in_ch.saturating_sub(1));
+        let in_r = in_r.min(in_ch.saturating_sub(1));
+
+        let live = LiveSource::new(feed_id, in_l, in_r, src_rate);
+        let mut voice = Voice::new_live(live, self.sample_rate(), gain, pan);
+        voice.out_l = out_l;
+        voice.out_r = out_r;
+        if fade_in_ms > 0 {
+            let total = fade_in_ms as u64 * self.sample_rate() as u64 / 1000;
+            // SAFETY: written once before the voice is shared with the callback.
+            unsafe {
+                *voice.inner.fade.get() = Some(FadeState {
+                    direction: FadeDirection::In,
+                    total_samples: total,
+                    elapsed_samples: 0,
+                    curve: fade_curve,
+                });
+            }
+        }
+
+        let id = voice.id;
+        let arc = Arc::new(voice);
+        arc.set_playing();
+        self.voices
+            .lock()
+            .map_err(|_| anyhow!("voices mutex poisoned"))?
+            .push(Arc::clone(&arc));
+        self.send_command(AudioCommand::Play { voice_id: id })?;
+        Ok(id)
+    }
+
     pub fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32, fade_curve: FadeCurve) -> Result<()> {
         self.send_command(AudioCommand::Stop { voice_id, fade_ms, fade_curve })
     }
@@ -127,6 +291,10 @@ impl AudioEngine {
 
     pub fn set_voice_gain(&self, voice_id: VoiceId, gain: f32) -> Result<()> {
         self.send_command(AudioCommand::SetGain { voice_id, gain })
+    }
+
+    pub fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()> {
+        self.send_command(AudioCommand::SetPan { voice_id, pan })
     }
 
     /// Seek a voice to the given decoded-audio frame position.
@@ -176,12 +344,26 @@ impl AudioEngine {
         out
     }
 
-    /// Remove fully-stopped voices from the pool.
+    /// Remove fully-stopped voices from the pool, and close any input capture
+    /// device that no live voice still references (so the OS releases the mic
+    /// once its Mic Cue stops — the device indicator turns off).
+    ///
+    /// Locks `voices` then `input_feeds`, matching the RT callback's order so the
+    /// two never deadlock.
     pub fn gc_voices(&self) {
-        if let Ok(mut voices) = self.voices.lock() {
-            voices.retain(|v| {
-                !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle)
-            });
+        let Ok(mut voices) = self.voices.lock() else { return };
+        voices.retain(|v| !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle));
+
+        // Feed ids still referenced by a surviving live voice.
+        let in_use: std::collections::HashSet<Uuid> = voices
+            .iter()
+            .filter_map(|v| v.live.as_ref().map(|l| l.feed_id))
+            .collect();
+
+        // Drop unreferenced feeds — dropping an InputFeed drops its cpal input
+        // stream, releasing the device.
+        if let Ok(mut feeds) = self.input_feeds.lock() {
+            feeds.retain(|f| in_use.contains(&f.id));
         }
     }
 
@@ -201,7 +383,12 @@ impl AudioEngine {
             *sg = None;
         }
 
-        let sr = open_stream_inner(config, Arc::clone(&self.voices), Arc::clone(&self.master_gain))?;
+        let sr = open_stream_inner(
+            config,
+            Arc::clone(&self.voices),
+            Arc::clone(&self.input_feeds),
+            Arc::clone(&self.master_gain),
+        )?;
 
         *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = sr.cmd_prod;
         *self.status_cons.lock().map_err(|_| anyhow!("status_cons poisoned"))? = sr.status_cons;
@@ -243,6 +430,7 @@ struct StreamResult {
 fn open_stream_inner(
     config: &MachineAudioConfig,
     cb_voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    cb_feeds: Arc<Mutex<Vec<InputFeed>>>,
     cb_mg: Arc<std::sync::atomic::AtomicU32>,
 ) -> Result<StreamResult> {
     use crate::preferences::AudioBackend;
@@ -308,7 +496,7 @@ fn open_stream_inner(
         cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
             &stream_cfg,
             move |data: &mut [f32], _| {
-                fill_buffer(data, total_ch, sample_rate, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                fill_buffer(data, total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg);
             },
             |err| log::error!("cpal stream error: {err}"),
             None,
@@ -321,7 +509,7 @@ fn open_stream_inner(
                 move |data: &mut [f32], _| {
                     let frames = data.len() / total_ch;
                     let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg);
                     data.fill(0.0);
                     for f in 0..frames {
                         data[f * total_ch + pair_offset]     = scratch[f * 2];
@@ -341,7 +529,7 @@ fn open_stream_inner(
                 move |data: &mut [i32], _| {
                     let frames = data.len() / total_ch;
                     let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &mut cmd_cons, &mut status_prod, &cb_mg);
+                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg);
                     data.fill(0);
                     for f in 0..frames {
                         data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
@@ -372,11 +560,13 @@ fn open_stream_inner(
 // Audio callback — real-time safe
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn fill_buffer(
     output: &mut [f32],
     channels: usize,
     output_sample_rate: u32,
     voices: &Arc<Mutex<Vec<Arc<Voice>>>>,
+    input_feeds: &Arc<Mutex<Vec<InputFeed>>>,
     cmd_cons: &mut ringbuf::HeapCons<AudioCommand>,
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
     master_gain: &Arc<std::sync::atomic::AtomicU32>,
@@ -395,6 +585,16 @@ fn fill_buffer(
         apply_command(&voices_guard, cmd, status_prod);
     }
 
+    // Keep live input feeds current: drain each device's ring into its staging
+    // buffer (cheap, bounded) so live voices have fresh audio and the input
+    // stays "warm" even with no Mic Cue playing.  Held for the voice loop.
+    let mut feeds_guard = input_feeds.try_lock().ok();
+    if let Some(feeds) = feeds_guard.as_deref_mut() {
+        for feed in feeds.iter_mut() {
+            feed.drain();
+        }
+    }
+
     let master = f32::from_bits(
         master_gain.load(std::sync::atomic::Ordering::Relaxed),
     );
@@ -406,6 +606,14 @@ fn fill_buffer(
     for voice in voices_guard.iter() {
         let state = voice.voice_state();
         if state != VoiceState::Playing && state != VoiceState::FadingOut {
+            continue;
+        }
+
+        // Live (Mic Cue) voice — resample from its input feed instead of samples.
+        if voice.live.is_some() {
+            if let Some(feeds) = feeds_guard.as_deref() {
+                mix_live(output, channels, output_sample_rate, voice, feeds, status_prod, &mut peak_l, &mut peak_r);
+            }
             continue;
         }
 
@@ -516,6 +724,103 @@ fn fill_buffer(
     });
 }
 
+/// Mix one live (Mic Cue) voice from its input feed into `output`.
+///
+/// Resamples the input device clock to the output clock with adaptive drift
+/// compensation: the read cursor is kept ~25 ms behind the feed's write head,
+/// and the resample ratio is nudged ±2 % to hold that lag, so slow clock drift
+/// between the input and output devices never under/overruns.  Applies the
+/// voice's pan/gain, soft fade, and Output-Patch channel routing exactly like
+/// the file path.
+#[allow(clippy::too_many_arguments)]
+fn mix_live(
+    output: &mut [f32],
+    channels: usize,
+    output_sample_rate: u32,
+    voice: &Arc<Voice>,
+    feeds: &[InputFeed],
+    status_prod: &mut ringbuf::HeapProd<AudioStatus>,
+    peak_l: &mut f32,
+    peak_r: &mut f32,
+) {
+    let Some(live) = voice.live.as_ref() else { return };
+    let Some(feed) = feeds.iter().find(|f| f.id == live.feed_id) else { return };
+    // Need at least a couple of frames captured before we can interpolate.
+    if feed.write_frame < 2 {
+        return;
+    }
+
+    let frames = output.len() / channels;
+    let target_lag = (STAGING_FRAMES / 4) as f64; // ~25 ms behind the write head
+
+    if !live.is_started() {
+        live.set_read_frame((feed.write_frame as f64 - target_lag).max(0.0));
+        live.mark_started();
+    }
+
+    let base_ratio = live.src_rate as f64 / output_sample_rate as f64;
+    let mut read = live.read_frame();
+    // Resync on a gross lag (resume after pause, glitch, or runaway drift):
+    // jump the cursor back to `target_lag` behind the write head.
+    if !(0.0..=STAGING_FRAMES as f64).contains(&(feed.write_frame as f64 - read)) {
+        read = (feed.write_frame as f64 - target_lag).max(0.0);
+    }
+    // Adaptive: nudge the ratio to hold the read cursor near `target_lag`.
+    let lag = feed.write_frame as f64 - read;
+    let correction = ((lag - target_lag) / target_lag).clamp(-0.02, 0.02);
+    let ratio = base_ratio * (1.0 + correction);
+
+    let (gain_l, gain_r) = voice.pan_gains();
+    // SAFETY: `fade` is only mutated from this callback thread.
+    let fade_ptr = voice.inner.fade.get();
+    // Oldest frame still resident in the circular staging buffer.
+    let oldest = feed.write_frame as f64 - (STAGING_FRAMES as f64 - 2.0);
+
+    for frame in 0..frames {
+        let fade_gain: f32 = if let Some(fade) = unsafe { &mut *fade_ptr } {
+            let g = fade.gain();
+            let done = fade.advance(1);
+            if done {
+                if fade.direction == FadeDirection::Out {
+                    voice.set_stopped();
+                    let _ = status_prod.try_push(AudioStatus::Completed { voice_id: voice.id });
+                    unsafe { *fade_ptr = None };
+                    break;
+                } else {
+                    unsafe { *fade_ptr = None };
+                }
+            }
+            g
+        } else {
+            1.0
+        };
+
+        if read < oldest {
+            read = oldest.max(0.0);
+        }
+        // Underrun: not enough fresh audio yet — stop here, resume next block.
+        if read + 1.0 >= feed.write_frame as f64 {
+            break;
+        }
+
+        let s_l = feed.sample(live.in_l, read);
+        let s_r = if live.in_r == live.in_l { s_l } else { feed.sample(live.in_r, read) };
+        let out_l = s_l * gain_l * fade_gain;
+        let out_r = s_r * gain_r * fade_gain;
+
+        let base = frame * channels;
+        if voice.out_l < channels { output[base + voice.out_l] += out_l; }
+        if voice.out_r < channels { output[base + voice.out_r] += out_r; }
+
+        *peak_l = (*peak_l).max(out_l.abs());
+        *peak_r = (*peak_r).max(out_r.abs());
+
+        read += ratio;
+    }
+
+    live.set_read_frame(read);
+}
+
 fn apply_command(
     voices: &[Arc<Voice>],
     cmd: AudioCommand,
@@ -606,7 +911,7 @@ fn open_asio_host() -> Result<cpal::Host> {
 mod tests {
     use super::*;
     use ringbuf::HeapRb;
-    use ringbuf::traits::Split;
+    use ringbuf::traits::{Producer, Split};
 
     /// Build a minimal Voice with `n_frames` of silence at the given sample rate.
     fn make_voice(n_frames: usize, channels: u16, sample_rate: u32, rate: f32) -> Arc<Voice> {
@@ -621,11 +926,12 @@ mod tests {
     /// resulting frame_pos stored in the voice.
     fn run_fill(voice: Arc<Voice>, output_frames: usize, output_sr: u32) -> u64 {
         let pool: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(vec![voice]));
+        let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let (_, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
         let (mut status_prod, _) = HeapRb::<AudioStatus>::new(16).split();
         let master = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
         let mut output = vec![0.0f32; output_frames * 2];
-        fill_buffer(&mut output, 2, output_sr, &pool, &mut cmd_cons, &mut status_prod, &master);
+        fill_buffer(&mut output, 2, output_sr, &pool, &feeds, &mut cmd_cons, &mut status_prod, &master);
         let pos = pool.lock().unwrap().first().map(|v| v.frame_pos.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
         pos
     }
@@ -678,5 +984,64 @@ mod tests {
         let voice = make_voice(192_000, 2, 96_000, 1.0);
         let pos = run_fill(voice, 48_000, 48_000);
         assert_frame_pos(pos, 96_000, "96 kHz file on 48 kHz output: 1 s = 96 000 source frames");
+    }
+
+    // ── Live input feed / resampler ────────────────────────────────────────
+
+    /// Build a test feed (no real device) plus its ring producer.
+    fn make_feed(in_channels: usize) -> (InputFeed, ringbuf::HeapProd<f32>) {
+        let (prod, cons) = HeapRb::<f32>::new(STAGING_FRAMES * in_channels).split();
+        let feed = InputFeed {
+            id: Uuid::new_v4(),
+            device_id: "test".into(),
+            in_channels,
+            sample_rate: 48_000,
+            cons,
+            staging: vec![0.0_f32; STAGING_FRAMES * in_channels].into_boxed_slice(),
+            write_frame: 0,
+            _capture: None,
+        };
+        (feed, prod)
+    }
+
+    #[test]
+    fn feed_drain_advances_write_and_interpolates() {
+        let (mut feed, mut prod) = make_feed(1);
+        for i in 0..4 {
+            let _ = prod.try_push(i as f32); // ramp 0,1,2,3
+        }
+        feed.drain();
+        assert_eq!(feed.write_frame, 4);
+        assert_eq!(feed.sample(0, 0.0), 0.0);
+        assert_eq!(feed.sample(0, 2.0), 2.0);
+        assert!((feed.sample(0, 1.5) - 1.5).abs() < 1e-6, "linear interp between frames");
+    }
+
+    #[test]
+    fn mix_live_unity_ratio_routes_input() {
+        let (mut feed, mut prod) = make_feed(2);
+        for _ in 0..2000 {
+            let _ = prod.try_push(0.5); // L
+            let _ = prod.try_push(0.25); // R
+        }
+        feed.drain();
+        let feeds = vec![feed];
+
+        let live = LiveSource::new(feeds[0].id, 0, 1, 48_000);
+        let voice = Arc::new(Voice::new_live(live, 48_000, 1.0, 0.0)); // unity gain, center pan
+        let (mut status_prod, _) = HeapRb::<AudioStatus>::new(64).split();
+        let mut out = vec![0.0_f32; 256 * 2];
+        let (mut pl, mut pr) = (0.0_f32, 0.0_f32);
+
+        mix_live(&mut out, 2, 48_000, &voice, &feeds, &mut status_prod, &mut pl, &mut pr);
+
+        // Center pan → both gains = sqrt(0.5) ≈ 0.707; L = 0.5·0.707 ≈ 0.354.
+        assert!(out[0] > 0.34 && out[0] < 0.37, "L sample was {}", out[0]);
+        assert!(out[1] > 0.16 && out[1] < 0.19, "R sample was {}", out[1]);
+
+        // in_sr == out_sr and lag starts at target → ratio 1.0 → read advances 256.
+        let read = voice.live.as_ref().unwrap().read_frame();
+        let expected = (feeds[0].write_frame as f64 - (STAGING_FRAMES / 4) as f64) + 256.0;
+        assert!((read - expected).abs() < 5.0, "read {read} vs expected {expected}");
     }
 }

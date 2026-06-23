@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     cue::registry::CueRegistry,
-    engine::{device_manager::OutputPatch, dmx_sink::UniverseOutput, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch},
+    engine::{audio_input::InputPatch, device_manager::OutputPatch, dmx_sink::UniverseOutput, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch},
     preferences::AppPreferences,
 };
 
@@ -110,6 +110,8 @@ pub struct Workspace {
     pub default_output_patch_id: Option<Uuid>,
     /// OSC send patch table.
     pub osc_patches: Vec<OscPatch>,
+    /// Live audio input patch table (Mic Cues).
+    pub input_patches: Vec<InputPatch>,
     /// DMX universe → destination mapping (sACN / Art-Net outputs).
     pub universe_outputs: Vec<UniverseOutput>,
     /// Lighting fixture patch (named instruments at DMX addresses).
@@ -136,6 +138,7 @@ impl Workspace {
             output_patches: Vec::new(),
             default_output_patch_id: None,
             osc_patches: Vec::new(),
+            input_patches: Vec::new(),
             universe_outputs: Vec::new(),
             fixtures: Vec::new(),
             fixture_groups: Vec::new(),
@@ -201,6 +204,7 @@ impl Workspace {
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
             "osc_patches": self.osc_patches,
+            "input_patches": self.input_patches,
             "universe_outputs": self.universe_outputs,
             "fixtures": self.fixtures,
             "fixture_groups": self.fixture_groups,
@@ -251,6 +255,11 @@ impl Workspace {
 
         let osc_patches: Vec<OscPatch> = doc
             .get("osc_patches")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let input_patches: Vec<InputPatch> = doc
+            .get("input_patches")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
@@ -322,6 +331,7 @@ impl Workspace {
             output_patches,
             default_output_patch_id: default_patch,
             osc_patches,
+            input_patches,
             universe_outputs,
             fixtures,
             fixture_groups,

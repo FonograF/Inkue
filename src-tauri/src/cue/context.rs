@@ -7,8 +7,8 @@ use std::sync::Arc;
 use crossbeam_channel::Sender;
 
 use crate::engine::{
-    device_manager::OutputPatch, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch,
-    output_engine::OutputEngine, AudioEngine, DmxEngine,
+    audio_input::InputPatch, device_manager::OutputPatch, fixture::{FixtureGroup, PatchedFixture},
+    osc_patch::OscPatch, output_engine::OutputEngine, AudioEngine, DmxEngine,
 };
 
 /// Events emitted by cues to the Show Engine during execution.
@@ -58,6 +58,9 @@ pub struct CueContext {
     /// Snapshot of the workspace's fixture groups.  Light Cue group targets
     /// resolve to their member fixtures here at GO time.
     pub fixture_groups: Arc<Vec<FixtureGroup>>,
+    /// Snapshot of the workspace's Input Patch table.  Mic Cues resolve their
+    /// capture device + channels here at GO time.
+    pub input_patches: Arc<Vec<InputPatch>>,
 }
 
 impl CueContext {
@@ -75,6 +78,7 @@ impl CueContext {
         dmx_engine: Arc<DmxEngine>,
         fixtures: Vec<PatchedFixture>,
         fixture_groups: Vec<FixtureGroup>,
+        input_patches: Vec<InputPatch>,
     ) -> Self {
         Self {
             audio_engine,
@@ -88,6 +92,7 @@ impl CueContext {
             dmx_engine,
             fixtures: Arc::new(fixtures),
             fixture_groups: Arc::new(fixture_groups),
+            input_patches: Arc::new(input_patches),
         }
     }
 
@@ -114,6 +119,13 @@ impl CueContext {
     /// workspace.
     pub fn resolve_group(&self, group_id: uuid::Uuid) -> Option<&FixtureGroup> {
         self.fixture_groups.iter().find(|g| g.id == group_id)
+    }
+
+    /// Resolve an Input Patch by ID.  Returns `None` if the patch is not in the
+    /// workspace's Input Patch table.
+    pub fn resolve_input_patch(&self, patch_id: Option<uuid::Uuid>) -> Option<&InputPatch> {
+        let id = patch_id?;
+        self.input_patches.iter().find(|p| p.id == id)
     }
 
     /// Convenience: emit an event through the context without unwrapping.
