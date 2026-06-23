@@ -126,7 +126,7 @@ impl TcPosition {
     }
 
     /// Reconstruct a `TcPosition` from an absolute frame number + rate.
-    pub fn from_frame_number(mut frame: u64, rate: TcRate) -> Self {
+    pub fn from_frame_number(frame: u64, rate: TcRate) -> Self {
         let fps = rate.fps() as u64;
 
         let (h, m, s, f) = if rate.is_drop_frame() {

@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::engine::{
-    ring_command::{FadeCurve as EngineFadeCurve, VoiceId},
+    ring_command::VoiceId,
     timecode_generator::MtcGenerator,
     timecode_types::{TcPosition, TcRate},
 };

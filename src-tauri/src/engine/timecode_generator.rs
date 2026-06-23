@@ -40,7 +40,7 @@ pub fn mtc_quarter_frames(pos: TcPosition) -> [u8; 8] {
         _                => 3,
     };
     [
-        (0 << 4) | (f & 0x0F),
+        (f & 0x0F),
         (1 << 4) | ((f >> 4) & 0x01),
         (2 << 4) | (s & 0x0F),
         (3 << 4) | ((s >> 4) & 0x03),

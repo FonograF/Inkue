@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     engine::{
-        timecode_receiver::{TimecodeReceiver, TcReceiverConfig, list_midi_input_ports},
+        timecode_receiver::{TimecodeReceiver, list_midi_input_ports},
         timecode_types::{CueListTcConfig, TcPosition, TcRate, TcTrigger},
     },
     machine_config::{self, TcMachineConfig},

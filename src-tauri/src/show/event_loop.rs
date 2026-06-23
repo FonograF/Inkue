@@ -217,12 +217,8 @@ fn tick(
                         cl.tc_last_triggered_frame = abs_frame;
 
                         for (cue_id, _) in triggers {
-                            let Some(cue) = cl.get_mut_recursive(&cue_id) else { continue };
-                            let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-                            // Build a minimal context for the GO call.
-                            // (Full context would need ws.output_patches etc.; for now the
-                            // tc-triggered GO reuses the same path as a normal GO.)
-                            drop(cue); // release borrow for context build
+                            // Verify the cue exists, then release the borrow before emitting.
+                            if cl.get_mut_recursive(&cue_id).is_none() { continue };
                             let _ = handle.emit("cue-state-changed", serde_json::json!({
                                 "cue_id": cue_id, "old_state": "standby", "new_state": "running",
                             }));

@@ -101,10 +101,10 @@ pub fn encode_frame(pos: TcPosition, out: &mut [f32], mut polarity: bool) -> boo
         polarity = !polarity;
         let half = (s_start + s_end) / 2;
 
-        for s in s_start..s_end {
+        for (i, sample) in out[s_start..s_end].iter_mut().enumerate() {
             // '1' bit: mid-bit transition.
-            if bit == 1 && s == half { polarity = !polarity; }
-            out[s] = if polarity { 0.5_f32 } else { -0.5_f32 };
+            if bit == 1 && s_start + i == half { polarity = !polarity; }
+            *sample = if polarity { 0.5_f32 } else { -0.5_f32 };
         }
     }
     polarity

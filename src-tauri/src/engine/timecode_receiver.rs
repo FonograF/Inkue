@@ -74,8 +74,6 @@ impl Default for TcReceiverConfig {
 pub(crate) struct MtcAssembler {
     nibbles: [u8; 8],
     count:   u8,
-    /// Whether the last full-frame we assembled was moving forwards.
-    forward: bool,
 }
 
 impl MtcAssembler {
@@ -182,6 +180,7 @@ impl TcFlywheel {
 
     pub fn is_running(&self) -> bool { self.running }
 
+    #[allow(dead_code)]
     pub fn set_freewheel(&mut self, ms: u32) {
         self.freewheel = Duration::from_millis(ms as u64);
     }
@@ -310,7 +309,7 @@ fn mtc_thread(
     shutdown:  Arc<AtomicBool>,
     flywheel:  Arc<Mutex<TcFlywheel>>,
 ) {
-    let mut assembler = MtcAssembler::default();
+    let assembler = MtcAssembler::default();
 
     let Ok(midi_in) = midir::MidiInput::new("WinCue-tc") else {
         log::error!("TC: failed to create MIDI input");

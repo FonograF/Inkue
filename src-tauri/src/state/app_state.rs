@@ -27,7 +27,7 @@ use crate::{
     },
     engine::{
         AudioEngine, DmxEngine, OscServer, OutputEngine,
-        timecode_receiver::{TimecodeReceiver, TcReceiverConfig},
+        timecode_receiver::TimecodeReceiver,
     },
     show::{undo_stack::UndoStack, Workspace},
 };

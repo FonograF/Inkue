@@ -100,6 +100,7 @@ pub fn save_osc(config: &OscReceiveConfig) -> anyhow::Result<()> {
 
 /// Persisted TC machine config (receiver enabled/disabled + source/port).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct TcMachineConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -107,11 +108,6 @@ pub struct TcMachineConfig {
     pub receiver_config: TcReceiverConfig,
 }
 
-impl Default for TcMachineConfig {
-    fn default() -> Self {
-        Self { enabled: false, receiver_config: TcReceiverConfig::default() }
-    }
-}
 
 fn tc_config_path() -> std::path::PathBuf {
     config_base_dir().join("WinCue").join("timecode.json")
