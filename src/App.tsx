@@ -85,15 +85,15 @@ function CloseConfirmDialog({
     >
       <div
         style={{
-          background: "#1e293b", border: "1px solid #334155",
+          background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
           borderRadius: 10, padding: "28px 32px", width: 360,
           boxShadow: "0 16px 48px rgba(0,0,0,0.8)",
         }}
       >
-        <div style={{ fontSize: 15, fontWeight: 600, color: "#f1f5f9", marginBottom: 8 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--wc-text-bright)", marginBottom: 8 }}>
           Unsaved Changes
         </div>
-        <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 24 }}>
+        <div style={{ fontSize: 13, color: "var(--wc-text-secondary)", marginBottom: 24 }}>
           Do you want to save your workspace before quitting?
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -113,18 +113,19 @@ function DialogBtn({
 }) {
   const [hov, setHov] = useState(false);
   const bg = primary
-    ? hov ? "#2563eb" : "#1d4ed8"
+    ? hov ? "var(--wc-accent-hover)" : "var(--wc-accent)"
     : danger
       ? hov ? "#dc2626" : "#b91c1c"
-      : hov ? "#334155" : "#1e293b";
+      : hov ? "var(--wc-bg-hover)" : "var(--wc-bg-surface)";
+  const color = primary ? "var(--wc-accent-fg)" : danger ? "#fff" : "var(--wc-text)";
   return (
     <button
       onClick={onClick}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
-        padding: "6px 16px", border: "1px solid #334155", borderRadius: 6,
-        background: bg, color: "#e2e8f0", fontSize: 13, cursor: "pointer",
+        padding: "6px 16px", border: "1px solid var(--wc-border-strong)", borderRadius: 6,
+        background: bg, color, fontSize: 13, cursor: "pointer",
       }}
     >
       {label}
@@ -177,13 +178,13 @@ function GotoDialog({
     >
       <div
         style={{
-          background: "#1e293b", border: "1px solid #475569",
+          background: "var(--wc-bg-surface)", border: "1px solid var(--wc-text-faint)",
           borderRadius: 8, padding: "16px 20px", width: 280,
           boxShadow: "0 12px 40px rgba(0,0,0,0.8)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: "var(--wc-text-secondary)", marginBottom: 8 }}>
           Go to cue number
         </div>
         <input
@@ -194,12 +195,12 @@ function GotoDialog({
           placeholder="e.g. 1, 1.5, Intro"
           style={{
             width: "100%", boxSizing: "border-box",
-            background: "#0f172a", border: "1px solid #334155",
-            borderRadius: 5, color: "#f1f5f9", fontSize: 14,
+            background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)",
+            borderRadius: 5, color: "var(--wc-text-bright)", fontSize: 14,
             padding: "7px 10px", outline: "none",
           }}
         />
-        <div style={{ fontSize: 11, color: "#475569", marginTop: 8 }}>
+        <div style={{ fontSize: 11, color: "var(--wc-text-faint)", marginTop: 8 }}>
           Enter to confirm · Escape to cancel
         </div>
       </div>
@@ -259,8 +260,8 @@ function FileMenu({
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         style={{
-          background: open ? "#1e293b" : "transparent",
-          border: "none", color: "#cbd5e1", cursor: "pointer",
+          background: open ? "var(--wc-bg-surface)" : "transparent",
+          border: "none", color: "var(--wc-text)", cursor: "pointer",
           fontSize: 12, padding: "3px 8px", borderRadius: 4, userSelect: "none",
         }}
       >
@@ -270,14 +271,14 @@ function FileMenu({
         <div
           style={{
             position: "absolute", left: 0, top: "100%", marginTop: 2,
-            background: "#1e293b", border: "1px solid #334155", borderRadius: 6,
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)", borderRadius: 6,
             padding: "4px 0", minWidth: 220,
             boxShadow: "0 8px 24px rgba(0,0,0,0.7)", zIndex: 9999,
           }}
         >
           {menuItems.map((item, i) =>
             item.type === "separator" ? (
-              <div key={i} style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+              <div key={i} style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
             ) : (
               <button
                 key={item.label}
@@ -287,14 +288,14 @@ function FileMenu({
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   width: "100%", padding: "6px 14px",
-                  background: hovered === item.label ? "#334155" : "transparent",
-                  border: "none", color: "#e2e8f0", fontSize: 13,
+                  background: hovered === item.label ? "var(--wc-bg-hover)" : "transparent",
+                  border: "none", color: "var(--wc-text)", fontSize: 13,
                   cursor: "pointer", textAlign: "left", gap: 24,
                 }}
               >
                 <span>{item.label}</span>
                 {item.shortcut && (
-                  <span style={{ color: "#64748b", fontSize: 11 }}>{item.shortcut}</span>
+                  <span style={{ color: "var(--wc-text-muted)", fontSize: 11 }}>{item.shortcut}</span>
                 )}
               </button>
             )
@@ -329,8 +330,8 @@ function ViewMenu({ items }: { items: ViewMenuItem[] }) {
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         style={{
-          background: open ? "#1e293b" : "transparent",
-          border: "none", color: "#cbd5e1", cursor: "pointer",
+          background: open ? "var(--wc-bg-surface)" : "transparent",
+          border: "none", color: "var(--wc-text)", cursor: "pointer",
           fontSize: 12, padding: "3px 8px", borderRadius: 4, userSelect: "none",
         }}
       >
@@ -340,7 +341,7 @@ function ViewMenu({ items }: { items: ViewMenuItem[] }) {
         <div
           style={{
             position: "absolute", left: 0, top: "100%", marginTop: 2,
-            background: "#1e293b", border: "1px solid #334155", borderRadius: 6,
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)", borderRadius: 6,
             padding: "4px 0", minWidth: 200,
             boxShadow: "0 8px 24px rgba(0,0,0,0.7)", zIndex: 9999,
           }}
@@ -354,12 +355,12 @@ function ViewMenu({ items }: { items: ViewMenuItem[] }) {
               style={{
                 display: "flex", alignItems: "center", gap: 8,
                 width: "100%", padding: "6px 14px",
-                background: hovered === item.label ? "#334155" : "transparent",
-                border: "none", color: "#e2e8f0", fontSize: 13,
+                background: hovered === item.label ? "var(--wc-bg-hover)" : "transparent",
+                border: "none", color: "var(--wc-text)", fontSize: 13,
                 cursor: "pointer", textAlign: "left",
               }}
             >
-              <span style={{ width: 14, textAlign: "center", color: "#94a3b8" }}>
+              <span style={{ width: 14, textAlign: "center", color: "var(--wc-text-secondary)" }}>
                 {item.checked ? "✓" : ""}
               </span>
               <span>{item.label}</span>
@@ -438,15 +439,27 @@ export default function App() {
     saveUiLayout({ showCueListTabs, inspectorOpen });
   }, [showCueListTabs, inspectorOpen]);
 
-  // Apply theme CSS variables whenever display prefs change
+  // Apply data-theme whenever display prefs change
   useEffect(() => {
     const root = document.documentElement;
-    root.style.setProperty("--wc-bg-app",     displayPrefs.bg_app);
-    root.style.setProperty("--wc-bg-surface", displayPrefs.bg_surface);
-    root.style.setProperty("--wc-bg-panel",   displayPrefs.bg_panel);
-    root.style.setProperty("--wc-accent",     displayPrefs.accent);
-    root.style.setProperty("--wc-text",       displayPrefs.text_primary);
-  }, [displayPrefs]);
+    const theme = displayPrefs.theme ?? "system";
+
+    const apply = (dark: boolean) => {
+      const effective = dark ? "dark" : "light";
+      root.setAttribute("data-theme", effective);
+      try { localStorage.setItem("wc_theme", effective); } catch { /* ignore */ }
+    };
+
+    if (theme === "system") {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      apply(mq.matches);
+      const handler = (e: MediaQueryListEvent) => apply(e.matches);
+      mq.addEventListener("change", handler);
+      return () => mq.removeEventListener("change", handler);
+    } else {
+      apply(theme === "dark");
+    }
+  }, [displayPrefs.theme]);
 
   // Bootstrap
   useEffect(() => {
@@ -686,7 +699,7 @@ export default function App() {
     <div
       style={{
         display: "flex", flexDirection: "column", height: "100vh",
-        background: "var(--wc-bg-app, #020617)", color: "var(--wc-text, #e2e8f0)",
+        background: "var(--wc-bg-app)", color: "var(--wc-text)",
         fontFamily: "'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
         overflow: "hidden",
       }}
@@ -738,7 +751,7 @@ export default function App() {
       <div
         style={{
           display: "flex", alignItems: "center", height: 36, padding: "0 12px",
-          background: "var(--wc-bg-surface, #0f172a)", borderBottom: "1px solid #1e293b",
+          background: "var(--wc-bg-surface)", borderBottom: "1px solid var(--wc-border)",
           flexShrink: 0, gap: 12, userSelect: "none", WebkitUserSelect: "none",
         }}
       >
@@ -765,13 +778,13 @@ export default function App() {
         >
           <span
             data-tauri-drag-region
-            style={{ fontWeight: 700, fontSize: 13, color: "#f1f5f9", flexShrink: 0 }}
+            style={{ fontWeight: 700, fontSize: 13, color: "var(--wc-text-bright)", flexShrink: 0 }}
           >
             WinCue
           </span>
           <span
             data-tauri-drag-region
-            style={{ fontSize: 12, color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            style={{ fontSize: 12, color: "var(--wc-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
           >
             {titleBarName}
           </span>
@@ -780,7 +793,7 @@ export default function App() {
         {/* Toolbar — ordered most → least frequently used */}
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           <button
-            style={{ ...toolbarBtn, color: "#3b82f6", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: "var(--wc-accent)", cursor: "grab", userSelect: "none" }}
             onClick={handleAddAudio}
             onMouseDown={(e) => dispatchCueDrag("audio", e)}
             title="Add Audio Cue after selection (Ctrl+N) · Drag to insert at position"
@@ -836,7 +849,7 @@ export default function App() {
             + Group
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#f1f5f9", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: "var(--wc-text-bright)", cursor: "grab", userSelect: "none" }}
             onClick={handleAddMidi}
             onMouseDown={(e) => dispatchCueDrag("midi", e)}
             title="Add MIDI Cue after selection · Drag to insert at position"
@@ -896,7 +909,7 @@ export default function App() {
         {inspectorOpen && (
           <div
             style={{
-              width: 300, borderLeft: "1px solid #1e293b",
+              width: 300, borderLeft: "1px solid var(--wc-border)",
               overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
             }}
           >
@@ -911,6 +924,6 @@ export default function App() {
 }
 
 const toolbarBtn: React.CSSProperties = {
-  padding: "3px 10px", background: "#1e293b", border: "1px solid #334155",
-  borderRadius: 4, color: "#cbd5e1", cursor: "pointer", fontSize: 12,
+  padding: "3px 10px", background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+  borderRadius: 4, color: "var(--wc-text)", cursor: "pointer", fontSize: 12,
 };

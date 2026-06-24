@@ -37,12 +37,12 @@ export function CurveSvg({ curve, w, h }: { curve: FadeCurve; w: number; h: numb
 
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block", flexShrink: 0 }}>
-      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="#334155" strokeWidth="1" />
-      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="#334155" strokeWidth="1" />
+      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="var(--wc-border-strong)" strokeWidth="1" />
+      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="var(--wc-border-strong)" strokeWidth="1" />
       <polyline
         points={points}
         fill="none"
-        stroke="#38bdf8"
+        stroke="var(--wc-accent)"
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -81,14 +81,14 @@ export function CurveSelect({
           gap: 8,
           cursor: "pointer",
           textAlign: "left",
-          background: open ? "#334155" : (baseStyle?.background ?? "#1e293b"),
+          background: open ? "var(--wc-bg-hover)" : (baseStyle?.background ?? "var(--wc-bg-surface)"),
           width: "100%",
           boxSizing: "border-box",
         }}
       >
         <CurveSvg curve={current.value} w={44} h={26} />
         <span style={{ flex: 1 }}>{current.label}</span>
-        <span style={{ color: "#64748b", fontSize: 10 }}>▾</span>
+        <span style={{ color: "var(--wc-text-muted)", fontSize: 10 }}>▾</span>
       </button>
 
       {open && (
@@ -99,8 +99,8 @@ export function CurveSelect({
             left: 0,
             right: 0,
             zIndex: 101,
-            background: "#1e293b",
-            border: "1px solid #334155",
+            background: "var(--wc-bg-surface)",
+            border: "1px solid var(--wc-border-strong)",
             borderRadius: 5,
             overflow: "hidden",
             boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
@@ -116,14 +116,14 @@ export function CurveSelect({
                 gap: 10,
                 width: "100%",
                 padding: "6px 10px",
-                background: c.value === value ? "#334155" : "transparent",
+                background: c.value === value ? "var(--wc-bg-hover)" : "transparent",
                 border: "none",
                 cursor: "pointer",
                 textAlign: "left",
               }}
             >
               <CurveSvg curve={c.value} w={56} h={32} />
-              <span style={{ color: "#e2e8f0", fontSize: 13 }}>{c.label}</span>
+              <span style={{ color: "var(--wc-text)", fontSize: 13 }}>{c.label}</span>
             </button>
           ))}
         </div>

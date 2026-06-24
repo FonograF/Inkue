@@ -20,13 +20,13 @@ function FadeSection({
       style={{
         marginBottom: 14,
         paddingBottom: 14,
-        borderBottom: "1px solid #1e293b",
+        borderBottom: "1px solid var(--wc-border)",
       }}
     >
       <div
         style={{
           fontSize: 11,
-          color: "#64748b",
+          color: "var(--wc-text-muted)",
           marginBottom: 8,
           textTransform: "uppercase",
           letterSpacing: "0.05em",

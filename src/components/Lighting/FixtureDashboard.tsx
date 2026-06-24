@@ -67,7 +67,7 @@ export function FixtureDashboard({ snapshot }: { snapshot: DmxUniverseSnapshot[]
   };
 
   if (fixtures.length === 0) {
-    return <div style={{ color: "#334155", fontSize: 12 }}>Patch a fixture to sculpt it here.</div>;
+    return <div style={{ color: "var(--wc-text-faint)", fontSize: 12 }}>Patch a fixture to sculpt it here.</div>;
   }
 
   return (
@@ -90,7 +90,7 @@ export function FixtureDashboard({ snapshot }: { snapshot: DmxUniverseSnapshot[]
         return (
           <div key={f.id} style={rowStyle}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span style={{ color: "var(--wc-text)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {f.label}
               </span>
               {hasRgb && (
@@ -103,7 +103,7 @@ export function FixtureDashboard({ snapshot }: { snapshot: DmxUniverseSnapshot[]
                     setParam(f.id, gIdx, g);
                     setParam(f.id, bIdx, b);
                   }}
-                  style={{ width: 28, height: 22, padding: 0, border: "1px solid #334155", borderRadius: 4, background: "none", cursor: "pointer" }}
+                  style={{ width: 28, height: 22, padding: 0, border: "1px solid var(--wc-border-strong)", borderRadius: 4, background: "none", cursor: "pointer" }}
                   title="Colour"
                 />
               )}
@@ -138,17 +138,17 @@ export function FixtureDashboard({ snapshot }: { snapshot: DmxUniverseSnapshot[]
 function Slider({ label, pct, onPct }: { label: string; pct: number; onPct: (p: number) => void }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ color: "#64748b", fontSize: 10, width: 52, flexShrink: 0 }}>{label}</span>
+      <span style={{ color: "var(--wc-text-muted)", fontSize: 10, width: 52, flexShrink: 0 }}>{label}</span>
       <input type="range" min={0} max={100} value={pct} style={{ flex: 1 }} onChange={(e) => onPct(Number(e.target.value))} />
-      <span style={{ color: "#cbd5e1", width: 34, textAlign: "right", fontSize: 11 }}>{pct}%</span>
+      <span style={{ color: "var(--wc-text)", width: 34, textAlign: "right", fontSize: 11 }}>{pct}%</span>
     </div>
   );
 }
 
 const rowStyle: CSSProperties = {
   display: "flex", flexDirection: "column", gap: 4,
-  border: "1px solid #1e293b", borderRadius: 4, padding: "5px 7px",
+  border: "1px solid var(--wc-border)", borderRadius: 4, padding: "5px 7px",
 };
 const smallBtn: CSSProperties = {
-  background: "none", border: "1px solid #334155", borderRadius: 4, color: "#94a3b8", fontSize: 11, padding: "2px 8px", cursor: "pointer",
+  background: "none", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text-secondary)", fontSize: 11, padding: "2px 8px", cursor: "pointer",
 };

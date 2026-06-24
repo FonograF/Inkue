@@ -113,10 +113,10 @@ export function TimeTab({
                 }
               />
             ) : (
-              <span style={{ color: "#64748b", fontSize: 12 }}>∞ hold</span>
+              <span style={{ color: "var(--wc-text-muted)", fontSize: 12 }}>∞ hold</span>
             )}
             {cue.display_duration_ms != null && (
-              <span style={{ color: "#64748b", fontSize: 12 }}>s</span>
+              <span style={{ color: "var(--wc-text-muted)", fontSize: 12 }}>s</span>
             )}
           </div>
         </Field>
@@ -233,10 +233,10 @@ export function TimeTab({
                     })
                   }
                   style={{
-                    background: cue.loop_count === LOOP_INFINITE ? "#3b82f6" : "transparent",
-                    border: "1px solid #3b82f6",
+                    background: cue.loop_count === LOOP_INFINITE ? "var(--wc-accent)" : "transparent",
+                    border: "1px solid var(--wc-accent)",
                     borderRadius: 4,
-                    color: cue.loop_count === LOOP_INFINITE ? "#fff" : "#3b82f6",
+                    color: cue.loop_count === LOOP_INFINITE ? "var(--wc-accent-fg)" : "var(--wc-accent)",
                     cursor: "pointer",
                     fontSize: 13,
                     padding: "1px 6px",

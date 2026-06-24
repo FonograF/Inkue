@@ -8,7 +8,7 @@ import { Select } from "../common/Select";
 const listStyle: React.CSSProperties = {
   maxHeight: 110,
   overflowY: "auto",
-  border: "1px solid #334155",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
   padding: "2px 0",
 };
@@ -26,7 +26,7 @@ function CueCheckboxList({
 }) {
   const candidates = allCues.filter((c) => c.id !== selfId);
   if (candidates.length === 0) {
-    return <span style={{ color: "#64748b", fontSize: 12 }}>No other cues</span>;
+    return <span style={{ color: "var(--wc-text-muted)", fontSize: 12 }}>No other cues</span>;
   }
   return (
     <div style={listStyle}>
@@ -45,7 +45,7 @@ function CueCheckboxList({
               onChange(next);
             }}
           />
-          <span style={{ fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 12, color: "var(--wc-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {c.number ? `${c.number} — ` : ""}{c.name}
           </span>
         </label>
@@ -120,10 +120,10 @@ export function BasicsTab({
             <button
               style={{
                 padding: "3px 10px",
-                background: "#334155",
+                background: "var(--wc-bg-hover)",
                 border: "none",
                 borderRadius: 4,
-                color: "#e2e8f0",
+                color: "var(--wc-text)",
                 cursor: "pointer",
                 fontSize: 12,
                 flexShrink: 0,
@@ -252,7 +252,7 @@ export function BasicsTab({
         <>
           <Field label="Target">
             <div style={{ marginBottom: 4 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, color: "#e2e8f0" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, color: "var(--wc-text)" }}>
                 <input
                   type="radio"
                   checked={(cue.target_cue_ids ?? []).length === 0}

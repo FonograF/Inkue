@@ -11,10 +11,10 @@ interface Props {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "3px 6px",
 };
@@ -23,10 +23,10 @@ const selectStyle: React.CSSProperties = { ...inputStyle, cursor: "pointer" };
 
 const btnStyle: React.CSSProperties = {
   padding: "2px 8px",
-  background: "#1e293b",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-surface)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#94a3b8",
+  color: "var(--wc-text-secondary)",
   fontSize: 11,
   cursor: "pointer",
 };
@@ -113,8 +113,8 @@ function MessageRow({
   return (
     <div
       style={{
-        background: "#0f172a",
-        border: "1px solid #1e293b",
+        background: "var(--wc-bg-app)",
+        border: "1px solid var(--wc-border)",
         borderRadius: 6,
         padding: 8,
         marginBottom: 8,
@@ -208,7 +208,7 @@ export function OscTab({ cue, onSave }: Props) {
   return (
     <div>
       {messages.length === 0 && (
-        <p style={{ color: "#475569", fontSize: 12, marginBottom: 8 }}>
+        <p style={{ color: "var(--wc-text-faint)", fontSize: 12, marginBottom: 8 }}>
           No messages — add one below.
         </p>
       )}
@@ -240,7 +240,7 @@ export function OscTab({ cue, onSave }: Props) {
       </button>
 
       {patches.length === 0 && (
-        <p style={{ color: "#475569", fontSize: 11, marginTop: 8 }}>
+        <p style={{ color: "var(--wc-text-faint)", fontSize: 11, marginTop: 8 }}>
           No OSC patches defined. Add them in Preferences → Network → OSC Patches.
         </p>
       )}

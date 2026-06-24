@@ -7,20 +7,20 @@ import { getTcConfig, setTcConfig, listTcMidiInputPorts } from "../../lib/comman
 import { Select } from "../common/Select";
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "4px 8px",
   width: "100%",
 };
 
 const labelStyle: React.CSSProperties = {
-  fontSize: 10, fontWeight: 600, color: "#64748b",
+  fontSize: 10, fontWeight: 600, color: "var(--wc-text-muted)",
   textTransform: "uppercase", letterSpacing: "0.07em",
   marginBottom: 10, paddingBottom: 5,
-  borderBottom: "1px solid #1e293b",
+  borderBottom: "1px solid var(--wc-border)",
 };
 
 export function TcPreferences() {
@@ -51,7 +51,7 @@ export function TcPreferences() {
             type="checkbox"
             checked={config.enabled}
             onChange={(e) => apply({ ...config, enabled: e.target.checked })}
-            style={{ accentColor: "#3b82f6", width: 14, height: 14 }}
+            style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
           />
           Enable TC receive
         </label>
@@ -61,7 +61,7 @@ export function TcPreferences() {
         <>
           {/* Source */}
           <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Source</div>
+            <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Source</div>
             <Select
               style={{ ...inputStyle, cursor: "pointer" }}
               value={config.receiver_config.source}
@@ -78,7 +78,7 @@ export function TcPreferences() {
           {/* MIDI port (MTC) */}
           {config.receiver_config.source === "mtc" && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>MIDI Input Port</div>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>MIDI Input Port</div>
               <Select
                 style={{ ...inputStyle, cursor: "pointer" }}
                 value={config.receiver_config.midi_port ?? ""}
@@ -98,14 +98,14 @@ export function TcPreferences() {
                 )}
               </Select>
               {ports.length === 0 && (
-                <div style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+                <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
                   No MIDI input ports detected. Connect a MIDI device.
                 </div>
               )}
             </div>
           )}
 
-          <div style={{ fontSize: 11, color: "#475569" }}>
+          <div style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
             The TC position indicator appears in the Transport Bar when a signal is received.
             Assign trigger times to cues via the <em>Triggers</em> tab in the Inspector.
           </div>

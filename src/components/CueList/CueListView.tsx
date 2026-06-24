@@ -126,8 +126,8 @@ function CtxItem({ label, danger, onClick }: { label: string; danger?: boolean; 
     <button
       style={{
         display: "block", width: "100%", padding: "6px 16px",
-        background: hov ? "#334155" : "transparent", border: "none",
-        textAlign: "left", color: danger ? "#ef4444" : "#e2e8f0",
+        background: hov ? "var(--wc-bg-hover)" : "transparent", border: "none",
+        textAlign: "left", color: danger ? "#ef4444" : "var(--wc-text)",
         fontSize: 13, cursor: "pointer", whiteSpace: "nowrap",
       }}
       onMouseEnter={() => setHov(true)}
@@ -168,12 +168,12 @@ function ColumnMenu({
       <div
         style={{
           position: "fixed", left, top,
-          background: "#1e293b", border: "1px solid #334155",
+          background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
           borderRadius: 6, padding: "6px 0", zIndex: 9999,
           minWidth: menuW, boxShadow: "0 4px 16px rgba(0,0,0,0.6)",
         }}
       >
-        <div style={{ padding: "2px 12px 6px", fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        <div style={{ padding: "2px 12px 6px", fontSize: 10, color: "var(--wc-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
           Columns
         </div>
         {items.map((d) => (
@@ -182,14 +182,14 @@ function ColumnMenu({
             style={{
               display: "flex", alignItems: "center", gap: 8,
               padding: "5px 12px", cursor: "pointer",
-              fontSize: 12, color: "#e2e8f0", userSelect: "none",
+              fontSize: 12, color: "var(--wc-text)", userSelect: "none",
             }}
           >
             <input
               type="checkbox"
               checked={!config.hidden[d.id]}
               onChange={(e) => onToggle(d.id, e.target.checked)}
-              style={{ accentColor: "#3b82f6" }}
+              style={{ accentColor: "var(--wc-accent)" }}
             />
             {d.label || d.id.replace(/_/g, " ")}
           </label>
@@ -977,8 +977,8 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           overflowX: "scroll",
           overflowY: "hidden",
           flexShrink: 0,
-          background: "#0f172a",
-          borderBottom: "2px solid #334155",
+          background: "var(--wc-bg-app)",
+          borderBottom: "2px solid var(--wc-border-strong)",
         }}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -993,7 +993,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
             height: 28,
             alignItems: "center",
             fontSize: 11,
-            color: "#64748b",
+            color: "var(--wc-text-muted)",
             textTransform: "uppercase",
             letterSpacing: "0.05em",
             userSelect: "none",
@@ -1014,7 +1014,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 cursor: def.fixed ? "default" : "grab",
                 transition: "opacity 0.1s",
                 borderRight: i < visibleDefs.length - 1
-                  ? `1px solid ${hoveredResizeId === def.id ? "#475569" : "#1e293b"}`
+                  ? `1px solid ${hoveredResizeId === def.id ? "var(--wc-text-faint)" : "var(--wc-border)"}`
                   : undefined,
               }}
               onMouseDown={(e) => startColDrag(e, def)}
@@ -1079,7 +1079,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         }}
       >
         {cues.length === 0 && (
-          <div style={{ padding: 32, textAlign: "center", color: "#475569", fontSize: 14 }}>
+          <div style={{ padding: 32, textAlign: "center", color: "var(--wc-text-faint)", fontSize: 14 }}>
             No cues. Press Ctrl+N or drag an audio file here.
           </div>
         )}
@@ -1088,11 +1088,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           <Fragment key={cue.id}>
             {/* Drop-target indicator ABOVE (file insert, cue reorder, new-cue drag) */}
             {isDragging && fileDragInsertIdx === flatIndex && (
-              <div style={{ height: 2, background: "#3b82f6", margin: `0 ${8 + depth * 20}px`, borderRadius: 1, pointerEvents: "none" }} />
+              <div style={{ height: 2, background: "var(--wc-accent)", margin: `0 ${8 + depth * 20}px`, borderRadius: 1, pointerEvents: "none" }} />
             )}
             {draggingCueId !== null && dropInsertIndex === flatIndex && (
               <div style={{
-                height: 2, background: "#3b82f6",
+                height: 2, background: "var(--wc-accent)",
                 margin: `0 ${8 + depth * 20}px`,
                 borderRadius: 1, pointerEvents: "none",
               }} />
@@ -1171,10 +1171,10 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
         {/* Drop-target indicators AFTER the last row */}
         {isDragging && fileDragInsertIdx === flatItems.length && (
-          <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
+          <div style={{ height: 2, background: "var(--wc-accent)", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
         )}
         {draggingCueId !== null && dropInsertIndex === flatItems.length && (
-          <div style={{ height: 2, background: "#3b82f6", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
+          <div style={{ height: 2, background: "var(--wc-accent)", margin: "0 8px", borderRadius: 1, pointerEvents: "none" }} />
         )}
         {/* Drop-target indicator line AFTER the last row (new-cue drag from toolbar) */}
         {newCueDragType !== null && newCueDragInsertIdx === cues.length && (
@@ -1193,11 +1193,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           <div
             style={{
               margin: "8px 16px",
-              border: "2px dashed #3b82f6",
+              border: "2px dashed var(--wc-accent)",
               borderRadius: 6,
               padding: 16,
               textAlign: "center",
-              color: "#3b82f6",
+              color: "var(--wc-accent)",
               fontSize: 13,
               pointerEvents: "none",
             }}
@@ -1232,8 +1232,8 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               position: "fixed",
               left: contextMenu.x,
               top: contextMenu.y,
-              background: "#1e293b",
-              border: "1px solid #334155",
+              background: "var(--wc-bg-surface)",
+              border: "1px solid var(--wc-border-strong)",
               borderRadius: 6,
               padding: "4px 0",
               zIndex: 9999,
@@ -1248,7 +1248,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                   <>
                     <CtxItem label="Add Audio Cue Above" onClick={ctxAddAbove} />
                     <CtxItem label="Add Audio Cue Below" onClick={ctxAddBelow} />
-                    <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                    <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                   </>
                 )}
                 <CtxItem label="Duplicate" onClick={ctxDuplicate} />
@@ -1261,7 +1261,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                   const label = ids.length > 1 ? `Group ${ids.length} Cues` : "Group Cue";
                   return ids.length > 0 ? (
                     <>
-                      <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                      <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                       <CtxItem
                         label={label}
                         onClick={async () => {
@@ -1286,7 +1286,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                     <>
                       {isGroup && (
                         <>
-                          <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                          <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                           <CtxItem
                             label="Ungroup"
                             onClick={async () => {
@@ -1300,7 +1300,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                       )}
                       {inGroup && (
                         <>
-                          <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                          <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                           <CtxItem
                             label="Remove from Group"
                             onClick={async () => {
@@ -1329,7 +1329,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 })()}
                 {!contextMenu.parentGroupId && (
                   <>
-                    <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+                    <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                     <CtxItem label="Assign Audio File…" onClick={ctxAssignFile} />
                   </>
                 )}

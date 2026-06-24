@@ -32,8 +32,8 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
         right: 16,
         width: 460,
         maxHeight: 320,
-        background: "#020617",
-        border: "1px solid #334155",
+        background: "var(--wc-bg-deepest)",
+        border: "1px solid var(--wc-border-strong)",
         borderRadius: 8,
         boxShadow: "0 8px 32px rgba(0,0,0,0.7)",
         zIndex: 9999,
@@ -50,20 +50,20 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
           display: "flex",
           alignItems: "center",
           padding: "6px 10px",
-          borderBottom: "1px solid #1e293b",
+          borderBottom: "1px solid var(--wc-border)",
           gap: 8,
           flexShrink: 0,
         }}
       >
         <span style={{ color: "#4ade80", fontSize: 10 }}>●</span>
-        <span style={{ color: "#94a3b8", fontWeight: 600, fontSize: 12, flex: 1 }}>
+        <span style={{ color: "var(--wc-text-secondary)", fontWeight: 600, fontSize: 12, flex: 1 }}>
           OSC Monitor
         </span>
         <button
           onClick={clearOscLog}
           style={{
-            background: "none", border: "1px solid #334155", borderRadius: 4,
-            color: "#64748b", fontSize: 11, padding: "1px 8px", cursor: "pointer",
+            background: "none", border: "1px solid var(--wc-border-strong)", borderRadius: 4,
+            color: "var(--wc-text-muted)", fontSize: 11, padding: "1px 8px", cursor: "pointer",
           }}
         >
           Clear
@@ -72,7 +72,7 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
           onClick={onClose}
           style={{
             background: "none", border: "none",
-            color: "#64748b", fontSize: 16, cursor: "pointer", lineHeight: 1, padding: "0 2px",
+            color: "var(--wc-text-muted)", fontSize: 16, cursor: "pointer", lineHeight: 1, padding: "0 2px",
           }}
         >
           ✕
@@ -82,7 +82,7 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
       {/* Log */}
       <div style={{ overflowY: "auto", flex: 1, padding: "4px 0" }}>
         {oscLog.length === 0 ? (
-          <div style={{ color: "#334155", padding: "12px 14px", fontSize: 12 }}>
+          <div style={{ color: "var(--wc-text-faint)", padding: "12px 14px", fontSize: 12 }}>
             Waiting for OSC packets…
           </div>
         ) : (
@@ -96,11 +96,11 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
                   gridTemplateColumns: "88px 1fr",
                   gap: 8,
                   padding: "2px 12px",
-                  borderBottom: "1px solid #0f172a",
+                  borderBottom: "1px solid var(--wc-bg-app)",
                 }}
               >
                 {/* Timestamp */}
-                <span style={{ color: "#475569", fontSize: 11, paddingTop: 1 }}>
+                <span style={{ color: "var(--wc-text-faint)", fontSize: 11, paddingTop: 1 }}>
                   {entry.ts}
                 </span>
                 {/* Address + args */}
@@ -114,7 +114,7 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
                     {entry.addr}
                   </span>
                   {entry.args.length > 0 && (
-                    <span style={{ color: "#64748b", marginLeft: 8 }}>
+                    <span style={{ color: "var(--wc-text-muted)", marginLeft: 8 }}>
                       {entry.args.join("  ")}
                     </span>
                   )}
@@ -134,9 +134,9 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
       {/* Footer hint */}
       <div style={{
         padding: "4px 12px",
-        borderTop: "1px solid #1e293b",
+        borderTop: "1px solid var(--wc-border)",
         fontSize: 10,
-        color: "#334155",
+        color: "var(--wc-text-faint)",
         flexShrink: 0,
       }}>
         <span style={{ color: "#4ade80" }}>■</span> matched &nbsp;

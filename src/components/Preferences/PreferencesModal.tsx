@@ -56,10 +56,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{
-        fontSize: 11, fontWeight: 600, color: "#64748b",
+        fontSize: 11, fontWeight: 600, color: "var(--wc-text-muted)",
         textTransform: "uppercase", letterSpacing: "0.07em",
         marginBottom: 10, paddingBottom: 5,
-        borderBottom: "1px solid #1e293b",
+        borderBottom: "1px solid var(--wc-border)",
       }}>
         {title}
       </div>
@@ -71,7 +71,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, minHeight: 28 }}>
-      <label style={{ width: 170, fontSize: 12, color: "#94a3b8", flexShrink: 0, textAlign: "right" }}>
+      <label style={{ width: 170, fontSize: 12, color: "var(--wc-text-secondary)", flexShrink: 0, textAlign: "right" }}>
         {label}
       </label>
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
@@ -82,13 +82,13 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a", border: "1px solid #334155", borderRadius: 4,
-  color: "#e2e8f0", fontSize: 12, padding: "3px 7px", width: "100%",
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)", borderRadius: 4,
+  color: "var(--wc-text)", fontSize: 12, padding: "3px 7px", width: "100%",
 };
 const selectStyle: React.CSSProperties = { ...inputStyle, cursor: "pointer" };
 const btnStyle: React.CSSProperties = {
-  padding: "3px 10px", background: "#1e293b", border: "1px solid #334155",
-  borderRadius: 4, color: "#cbd5e1", fontSize: 11, cursor: "pointer",
+  padding: "3px 10px", background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+  borderRadius: 4, color: "var(--wc-text)", fontSize: 11, cursor: "pointer",
 };
 
 const BACKEND_LABELS: Record<string, string> = {
@@ -182,7 +182,7 @@ function AudioContent({
 
         <Row label="Output Device">
           {devicesLoading ? (
-            <span style={{ fontSize: 12, color: "#64748b" }}>Loading…</span>
+            <span style={{ fontSize: 12, color: "var(--wc-text-muted)" }}>Loading…</span>
           ) : devicesError ? (
             <span style={{ fontSize: 12, color: "#ef4444" }}>{devicesError}</span>
           ) : (
@@ -230,7 +230,7 @@ function AudioContent({
                 </option>
               ))}
             </Select>
-            <span style={{ fontSize: 11, color: "#475569" }}>
+            <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
               {asioPairs <= 1 ? "Apply first to detect pairs" : `${asioPairs} pair${asioPairs > 1 ? "s" : ""} available`}
             </span>
           </Row>
@@ -248,17 +248,17 @@ function AudioContent({
             ))}
           </Select>
           {isShared && (
-            <span style={{ fontSize: 11, color: "#475569" }}>managed by Windows in Shared mode</span>
+            <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>managed by Windows in Shared mode</span>
           )}
           {isAsio && (
-            <span style={{ fontSize: 11, color: "#475569" }}>set in ASIO driver control panel</span>
+            <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>set in ASIO driver control panel</span>
           )}
         </Row>
 
         <Row label="Sample Rate">
-          <span style={{ fontSize: 12, color: "#94a3b8" }}>
+          <span style={{ fontSize: 12, color: "var(--wc-text-secondary)" }}>
             {currentDevice?.sample_rate ?? "—"} Hz
-            <span style={{ fontSize: 11, color: "#475569", marginLeft: 8 }}>(set by device)</span>
+            <span style={{ fontSize: 11, color: "var(--wc-text-faint)", marginLeft: 8 }}>(set by device)</span>
           </span>
         </Row>
 
@@ -298,7 +298,7 @@ function AudioContent({
             value={audioPrefs.default_volume_db} style={{ flex: 1 }}
             onChange={(e) => onAudioPrefsChange({ ...audioPrefs, default_volume_db: Number(e.target.value) })}
           />
-          <span style={{ width: 52, textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "#94a3b8" }}>
+          <span style={{ width: 52, textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "var(--wc-text-secondary)" }}>
             {audioPrefs.default_volume_db.toFixed(1)} dB
           </span>
         </Row>
@@ -340,7 +340,7 @@ function GeneralContent({ prefs, onChange }: {
             value={prefs.double_go_protection_ms}
             onChange={(e) => onChange({ ...prefs, double_go_protection_ms: Number(e.target.value) })}
           />
-          <span style={{ fontSize: 11, color: "#475569" }}>ms (0 = disabled)</span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>ms (0 = disabled)</span>
         </Row>
       </Section>
       <Section title="Cue List">
@@ -349,7 +349,7 @@ function GeneralContent({ prefs, onChange }: {
             type="checkbox"
             checked={prefs.confirm_before_delete}
             onChange={(e) => onChange({ ...prefs, confirm_before_delete: e.target.checked })}
-            style={{ accentColor: "#3b82f6", width: 14, height: 14 }}
+            style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
           />
         </Row>
         <Row label="Auto-Scroll to Playhead">
@@ -357,7 +357,7 @@ function GeneralContent({ prefs, onChange }: {
             type="checkbox"
             checked={prefs.auto_scroll_to_playhead}
             onChange={(e) => onChange({ ...prefs, auto_scroll_to_playhead: e.target.checked })}
-            style={{ accentColor: "#3b82f6", width: 14, height: 14 }}
+            style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
           />
         </Row>
         <Row label="Row Height">
@@ -380,14 +380,6 @@ function GeneralContent({ prefs, onChange }: {
 // Display content
 // ---------------------------------------------------------------------------
 
-const THEME_COLORS: { key: keyof typeof DEFAULT_DISPLAY_PREFS; label: string; hint: string }[] = [
-  { key: "bg_app",       label: "App Background", hint: "Main window background" },
-  { key: "bg_surface",   label: "Surface",        hint: "Title bar, modals, inputs" },
-  { key: "bg_panel",     label: "Panel",          hint: "Sidebars, buttons, menus" },
-  { key: "accent",       label: "Accent",         hint: "Selection, playhead, active states" },
-  { key: "text_primary", label: "Primary Text",   hint: "Main text colour" },
-];
-
 // ---------------------------------------------------------------------------
 // Timer position picker — 3×3 grid with only the 5 valid positions active
 // ---------------------------------------------------------------------------
@@ -408,8 +400,8 @@ function TimerPositionPicker({ value, onChange }: { value: TimerPosition; onChan
         gridTemplateColumns: "repeat(3, 32px)",
         gridTemplateRows: "repeat(3, 32px)",
         gap: 3,
-        background: "#0f172a",
-        border: "1px solid #334155",
+        background: "var(--wc-bg-app)",
+        border: "1px solid var(--wc-border-strong)",
         borderRadius: 5,
         padding: 4,
       }}
@@ -422,10 +414,10 @@ function TimerPositionPicker({ value, onChange }: { value: TimerPosition; onChan
           style={{
             gridArea,
             width: 32, height: 32,
-            border: value === pos ? "2px solid #3b82f6" : "1px solid #334155",
+            border: value === pos ? "2px solid var(--wc-accent)" : "1px solid var(--wc-border-strong)",
             borderRadius: 4,
-            background: value === pos ? "#1d4ed8" : "#1e293b",
-            color: value === pos ? "#fff" : "#94a3b8",
+            background: value === pos ? "var(--wc-accent)" : "var(--wc-bg-surface)",
+            color: value === pos ? "var(--wc-accent-fg)" : "var(--wc-text-secondary)",
             fontSize: 16,
             cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
@@ -530,7 +522,7 @@ function DisplayContent({
           </Select>
         </Row>
         <Row label="">
-          <span style={{ fontSize: 11, color: "#475569" }}>
+          <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
             Applies to all Video and Image cues. Takes effect on the next GO.
           </span>
         </Row>
@@ -542,7 +534,7 @@ function DisplayContent({
               onChange={(e) => onTimerChange(e.target.checked)}
               style={{ width: 14, height: 14, cursor: "pointer" }}
             />
-            <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+            <span style={{ fontSize: 13, color: "var(--wc-text)" }}>
               Show cue timer on output window
             </span>
           </label>
@@ -557,7 +549,7 @@ function DisplayContent({
                   onChange={(e) => onTimerFloatingChange(e.target.checked)}
                   style={{ width: 14, height: 14, cursor: "pointer" }}
                 />
-                <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+                <span style={{ fontSize: 13, color: "var(--wc-text)" }}>
                   Floating window (replaces output overlay)
                 </span>
               </label>
@@ -571,7 +563,7 @@ function DisplayContent({
                     onChange={() => onTimerModeChange(false)}
                     style={{ cursor: "pointer" }}
                   />
-                  <span style={{ fontSize: 13, color: "#cbd5e1" }}>Elapsed (count up)</span>
+                  <span style={{ fontSize: 13, color: "var(--wc-text)" }}>Elapsed (count up)</span>
                 </label>
                 <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
                   <input
@@ -580,7 +572,7 @@ function DisplayContent({
                     onChange={() => onTimerModeChange(true)}
                     style={{ cursor: "pointer" }}
                   />
-                  <span style={{ fontSize: 13, color: "#cbd5e1" }}>Remaining (countdown)</span>
+                  <span style={{ fontSize: 13, color: "var(--wc-text)" }}>Remaining (countdown)</span>
                 </label>
               </div>
             </Row>
@@ -592,7 +584,7 @@ function DisplayContent({
                   onChange={(e) => onTimerShowMsChange(e.target.checked)}
                   style={{ width: 14, height: 14, cursor: "pointer" }}
                 />
-                <span style={{ fontSize: 13, color: "#cbd5e1" }}>Show milliseconds (1:23.456)</span>
+                <span style={{ fontSize: 13, color: "var(--wc-text)" }}>Show milliseconds (1:23.456)</span>
               </label>
             </Row>
             <Row label="Position">
@@ -600,7 +592,7 @@ function DisplayContent({
                 <TimerPositionPicker value={timerPosition} onChange={onTimerPositionChange} />
               </div>
               {timerFloating && (
-                <span style={{ fontSize: 11, color: "#475569", marginLeft: 8 }}>
+                <span style={{ fontSize: 11, color: "var(--wc-text-faint)", marginLeft: 8 }}>
                   n/a — window is freely positioned
                 </span>
               )}
@@ -612,7 +604,7 @@ function DisplayContent({
                   value={timerMargin} style={{ flex: 1 }}
                   onChange={(e) => onTimerMarginChange(Number(e.target.value))}
                 />
-                <span style={{ width: 40, textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "#94a3b8" }}>
+                <span style={{ width: 40, textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "var(--wc-text-secondary)" }}>
                   {timerMargin}px
                 </span>
               </Row>
@@ -625,7 +617,7 @@ function DisplayContent({
                   onChange={(e) => handlePreviewToggle(e.target.checked)}
                   style={{ width: 14, height: 14, cursor: "pointer" }}
                 />
-                <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+                <span style={{ fontSize: 13, color: "var(--wc-text)" }}>
                   Show on output window while configuring
                 </span>
               </label>
@@ -655,7 +647,7 @@ function DisplayContent({
                 onChange={(e) => onTimerFontSizeChange(Number(e.target.value))}
                 style={{ ...inputStyle, width: 80 }}
               />
-              <span style={{ fontSize: 11, color: "#475569" }}>
+              <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
                 pt — 120 center, 60–80 corner
               </span>
             </Row>
@@ -678,8 +670,8 @@ const CUE_COLOR_STYLES: { value: CueColorStyle; label: string }[] = [
 function PersonalizationContent({
   theme, onThemeChange,
 }: {
-  theme: typeof DEFAULT_DISPLAY_PREFS;
-  onThemeChange: (t: typeof DEFAULT_DISPLAY_PREFS) => void;
+  theme: Pick<DisplayPreferences, "theme" | "cue_color_style">;
+  onThemeChange: (t: Pick<DisplayPreferences, "theme" | "cue_color_style">) => void;
 }) {
   return (
     <>
@@ -697,39 +689,25 @@ function PersonalizationContent({
         </Row>
       </Section>
 
-      <Section title="Colour Theme">
-        {THEME_COLORS.map(({ key, label, hint }) => (
-          <Row key={key} label={label}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
-              <input
-                type="color"
-                value={theme[key]}
-                onChange={(e) => onThemeChange({ ...theme, [key]: e.target.value })}
+      <Section title="Appearance">
+        <Row label="Theme">
+          <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid var(--wc-border-strong)" }}>
+            {(["dark", "light", "system"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => onThemeChange({ ...theme, theme: t })}
                 style={{
-                  width: 36, height: 26, padding: 2, cursor: "pointer",
-                  background: "#1e293b", border: "1px solid #334155", borderRadius: 4,
+                  flex: 1, padding: "5px 0", border: "none",
+                  background: theme.theme === t ? "var(--wc-accent)" : "var(--wc-bg-surface)",
+                  color: theme.theme === t ? "var(--wc-accent-fg)" : "var(--wc-text-secondary)",
+                  cursor: "pointer", fontSize: 12, fontWeight: theme.theme === t ? 600 : 400,
+                  textTransform: "capitalize",
                 }}
-              />
-              <input
-                type="text"
-                value={theme[key]}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (/^#[0-9a-fA-F]{0,6}$/.test(v)) onThemeChange({ ...theme, [key]: v });
-                }}
-                style={{ ...inputStyle, width: 90, fontFamily: "monospace" }}
-              />
-              <span style={{ fontSize: 11, color: "#475569" }}>{hint}</span>
-            </div>
-          </Row>
-        ))}
-        <Row label="">
-          <button
-            onClick={() => onThemeChange({ ...DEFAULT_DISPLAY_PREFS })}
-            style={{ ...btnStyle, padding: "4px 14px", fontSize: 11 }}
-          >
-            Reset to defaults
-          </button>
+              >
+                {t === "system" ? "System" : t === "dark" ? "Dark" : "Light"}
+              </button>
+            ))}
+          </div>
         </Row>
       </Section>
     </>
@@ -758,7 +736,7 @@ function OscContent({
               onChange={(e) => onChange({ ...config, enabled: e.target.checked })}
               style={{ width: 14, height: 14, cursor: "pointer" }}
             />
-            <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+            <span style={{ fontSize: 13, color: "var(--wc-text)" }}>
               Listen for OSC commands
             </span>
           </label>
@@ -772,7 +750,7 @@ function OscContent({
             onChange={(e) => onChange({ ...config, port: Number(e.target.value) })}
             style={{ ...inputStyle, width: 100 }}
           />
-          <span style={{ fontSize: 11, color: "#475569" }}>default 53001</span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>default 53001</span>
         </Row>
         <Row label="IP Allowlist">
           <div style={{ flex: 1 }}>
@@ -786,13 +764,13 @@ function OscContent({
               }}
               style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "monospace" }}
             />
-            <span style={{ fontSize: 11, color: "#475569", display: "block", marginTop: 2 }}>
+            <span style={{ fontSize: 11, color: "var(--wc-text-faint)", display: "block", marginTop: 2 }}>
               Empty = accept all. One IP per line.
             </span>
           </div>
         </Row>
         <Row label="Address reference">
-          <div style={{ flex: 1, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
+          <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", lineHeight: 1.6 }}>
             <code style={{ fontFamily: "monospace" }}>/wincue/go</code> · <code>/wincue/stop</code> · <code>/wincue/hardstop</code><br />
             <code>/wincue/pause</code> · <code>/wincue/resume</code><br />
             <code>/wincue/cue/&#123;n&#125;/go</code> · <code>/wincue/cue/&#123;n&#125;/select</code> · <code>/wincue/cue/&#123;n&#125;/stop</code>
@@ -811,7 +789,7 @@ function OscContent({
               onChange={(e) => onChange({ ...config, feedback_enabled: e.target.checked })}
               style={{ width: 14, height: 14, cursor: "pointer" }}
             />
-            <span style={{ fontSize: 13, color: "#cbd5e1" }}>
+            <span style={{ fontSize: 13, color: "var(--wc-text)" }}>
               Broadcast active cue info via OSC
             </span>
           </label>
@@ -826,7 +804,7 @@ function OscContent({
                 placeholder="127.0.0.1"
                 style={{ ...inputStyle, flex: 1 }}
               />
-              <span style={{ fontSize: 12, color: "#64748b" }}>:</span>
+              <span style={{ fontSize: 12, color: "var(--wc-text-muted)" }}>:</span>
               <input
                 type="number"
                 min={1024}
@@ -837,11 +815,11 @@ function OscContent({
               />
             </Row>
             <Row label="Messages sent">
-              <div style={{ flex: 1, fontSize: 11, color: "#64748b", lineHeight: 1.7 }}>
+              <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", lineHeight: 1.7 }}>
                 <code style={{ fontFamily: "monospace" }}>/wincue/cue/number</code> — cue number (string)<br />
                 <code style={{ fontFamily: "monospace" }}>/wincue/cue/name</code> &nbsp;&nbsp;&nbsp;— cue name (string)<br />
                 <code style={{ fontFamily: "monospace" }}>/wincue/cue/active</code> &nbsp;— 1 running / 0 stopped (int)<br />
-                <span style={{ color: "#475569" }}>Sent on every active-cue change (GO, stop, auto-follow).</span>
+                <span style={{ color: "var(--wc-text-faint)" }}>Sent on every active-cue change (GO, stop, auto-follow).</span>
               </div>
             </Row>
           </>
@@ -938,6 +916,24 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
     getOutputScreen().then((s) => { setOutputScreen_(s); setDraftOutputScreen(s); }).catch(console.error);
     getOscConfig().then(setOscConfig_).catch(console.error);
   }, []);
+
+  // In standalone mode: apply theme preview to this window's document as the
+  // user clicks Dark / Light / System so the preferences panel itself repaints.
+  useEffect(() => {
+    if (!standalone) return;
+    const root = document.documentElement;
+    const t = draftTheme.theme ?? "system";
+    const apply = (dark: boolean) => root.setAttribute("data-theme", dark ? "dark" : "light");
+    if (t === "system") {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      apply(mq.matches);
+      const h = (e: MediaQueryListEvent) => apply(e.matches);
+      mq.addEventListener("change", h);
+      return () => mq.removeEventListener("change", h);
+    } else {
+      apply(t === "dark");
+    }
+  }, [standalone, draftTheme.theme]);
 
   // Escape closes without applying
   useEffect(() => {
@@ -1072,14 +1068,14 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   };
 
   const modalStyle: React.CSSProperties = standalone
-    ? { position: "fixed", inset: 0, background: "#0f172a", display: "flex", flexDirection: "column", overflow: "hidden" }
+    ? { position: "fixed", inset: 0, background: "var(--wc-bg-app)", display: "flex", flexDirection: "column", overflow: "hidden" }
     : {
         position: "fixed",
         left: pos.x, top: pos.y,
         width: MODAL_W, height: MODAL_H,
         zIndex: 50000,
-        background: "#0f172a",
-        border: "1px solid #334155",
+        background: "var(--wc-bg-app)",
+        border: "1px solid var(--wc-border-strong)",
         borderRadius: 8,
         boxShadow: "0 24px 64px rgba(0,0,0,0.8)",
         display: "flex", flexDirection: "column",
@@ -1106,18 +1102,18 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
           style={{
             height: 40, display: "flex", alignItems: "center",
             padding: "0 14px", flexShrink: 0,
-            background: "#0f172a", borderBottom: "1px solid #1e293b",
+            background: "var(--wc-bg-app)", borderBottom: "1px solid var(--wc-border)",
             cursor: "grab", userSelect: "none",
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#f1f5f9" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--wc-text-bright)" }}>
             Preferences
           </span>
           <button
             onClick={handleCancel}
             style={{
               marginLeft: "auto", background: "transparent", border: "none",
-              color: "#64748b", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 4,
+              color: "var(--wc-text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 4,
             }}
           >
             ✕
@@ -1127,7 +1123,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
         {/* Body */}
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           {/* Sidebar */}
-          <div style={{ width: 150, background: "#020617", borderRight: "1px solid #1e293b", padding: "8px 0", flexShrink: 0 }}>
+          <div style={{ width: 150, background: "var(--wc-bg-deepest)", borderRight: "1px solid var(--wc-border)", padding: "8px 0", flexShrink: 0 }}>
             {CATEGORIES.map((cat) => (
               <button
                 key={cat.id}
@@ -1135,9 +1131,9 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                 style={{
                   display: "flex", alignItems: "center", gap: 8,
                   width: "100%", padding: "7px 14px",
-                  background: category === cat.id ? "#1d4ed8" : "transparent",
+                  background: category === cat.id ? "var(--wc-accent)" : "transparent",
                   border: "none",
-                  color: category === cat.id ? "#fff" : "#94a3b8",
+                  color: category === cat.id ? "var(--wc-accent-fg)" : "var(--wc-text-secondary)",
                   fontSize: 12, cursor: "pointer", textAlign: "left",
                 }}
               >
@@ -1150,7 +1146,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
           {/* Content */}
           <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
             {draft === null ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#64748b", fontSize: 13 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--wc-text-muted)", fontSize: 13 }}>
                 Loading…
               </div>
             ) : (
@@ -1223,8 +1219,8 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
         <div style={{
           height: applyError ? "auto" : 46, display: "flex", flexDirection: "column",
           justifyContent: "center",
-          borderTop: "1px solid #1e293b", flexShrink: 0,
-          background: "#0f172a",
+          borderTop: "1px solid var(--wc-border)", flexShrink: 0,
+          background: "var(--wc-bg-app)",
         }}>
           {applyError && (
             <div style={{ padding: "6px 16px 0", fontSize: 11, color: "#ef4444" }}>
@@ -1238,7 +1234,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
             <button
               onClick={() => void handleApply()}
               disabled={draft === null}
-              style={{ ...btnStyle, padding: "5px 16px", fontSize: 12, background: "#1d4ed8", border: "1px solid #2563eb", color: "#fff", opacity: draft === null ? 0.5 : 1 }}
+              style={{ ...btnStyle, padding: "5px 16px", fontSize: 12, background: "var(--wc-accent)", border: "1px solid var(--wc-accent-hover)", color: "var(--wc-accent-fg)", opacity: draft === null ? 0.5 : 1 }}
             >
               Apply
             </button>

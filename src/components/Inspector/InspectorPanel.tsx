@@ -61,7 +61,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
       <div
         style={{
           padding: 24,
-          color: "#475569",
+          color: "var(--wc-text-faint)",
           textAlign: "center",
           fontSize: 13,
         }}
@@ -151,11 +151,11 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     padding: "6px 14px",
     cursor: "pointer",
     fontSize: 12,
-    background: activeTab === tab ? "#1e293b" : "transparent",
-    color: activeTab === tab ? "#e2e8f0" : "#64748b",
+    background: activeTab === tab ? "var(--wc-bg-surface)" : "transparent",
+    color: activeTab === tab ? "var(--wc-text)" : "var(--wc-text-muted)",
     border: "none",
     borderBottom:
-      activeTab === tab ? "2px solid #3b82f6" : "2px solid transparent",
+      activeTab === tab ? "2px solid var(--wc-accent)" : "2px solid transparent",
     outline: "none",
   });
 
@@ -165,8 +165,8 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        background: "#0f172a",
-        color: "#e2e8f0",
+        background: "var(--wc-bg-app)",
+        color: "var(--wc-text)",
         fontSize: 13,
       }}
     >
@@ -175,15 +175,15 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         style={{
           padding: "8px 12px",
           fontWeight: 600,
-          borderBottom: "1px solid #1e293b",
-          background: "#020617",
+          borderBottom: "1px solid var(--wc-border)",
+          background: "var(--wc-bg-deepest)",
         }}
       >
         {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : isMic ? "🎤" : isTimecode ? "🕐" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", borderBottom: "1px solid #1e293b" }}>
+      <div style={{ display: "flex", borderBottom: "1px solid var(--wc-border)" }}>
         <button style={tabStyle("basics")} onClick={() => setActiveTab("basics")}>
           Basics
         </button>

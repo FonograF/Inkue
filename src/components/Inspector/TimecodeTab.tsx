@@ -12,16 +12,16 @@ interface Props {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "3px 6px",
 };
 
 const selectStyle: React.CSSProperties = { ...inputStyle, cursor: "pointer", width: "100%" };
-const labelStyle: React.CSSProperties = { fontSize: 10, color: "#64748b", marginBottom: 2 };
+const labelStyle: React.CSSProperties = { fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 };
 const fieldStyle: React.CSSProperties = { marginBottom: 12 };
 
 const TC_RATES: TcRate[] = ["24", "25", "29.97", "29.97df", "30"];
@@ -94,7 +94,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
             )}
           </Select>
           {midiPorts.length === 0 && (
-            <div style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
               No MIDI output ports detected.
             </div>
           )}
@@ -115,7 +115,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </Select>
-          <div style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+          <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
             LTC output is planned — currently logs a warning only.
           </div>
         </div>
@@ -154,7 +154,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
         </div>
       </div>
 
-      <div style={{ marginTop: 10, fontSize: 11, color: "#64748b" }}>
+      <div style={{ marginTop: 10, fontSize: 11, color: "var(--wc-text-muted)" }}>
         Generates a continuous timecode stream. Multiple Timecode Cues can run simultaneously.
         Stop the cue to end the stream.
       </div>

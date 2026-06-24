@@ -492,21 +492,14 @@ export interface DisplayPreferences {
   timer_margin: number;
   /** When true (and show_output_timer is true), show timer as floating Win32 window instead of OSD overlay. */
   timer_floating: boolean;
-  bg_app: string;
-  bg_surface: string;
-  bg_panel: string;
-  accent: string;
-  text_primary: string;
+  /** UI colour theme: "dark", "light", or "system". */
+  theme: "dark" | "light" | "system";
   /** How a cue's colour tag is rendered in the Cue List. */
   cue_color_style: CueColorStyle;
 }
 
-export const DEFAULT_DISPLAY_PREFS: Pick<DisplayPreferences, "bg_app" | "bg_surface" | "bg_panel" | "accent" | "text_primary" | "cue_color_style"> = {
-  bg_app:       "#020617",
-  bg_surface:   "#0f172a",
-  bg_panel:     "#1e293b",
-  accent:       "#3b82f6",
-  text_primary: "#e2e8f0",
+export const DEFAULT_DISPLAY_PREFS: Pick<DisplayPreferences, "theme" | "cue_color_style"> = {
+  theme: "system",
   cue_color_style: "stripe",
 };
 

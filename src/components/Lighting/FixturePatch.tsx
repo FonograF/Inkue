@@ -91,7 +91,7 @@ export function FixturePatch() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {fixtures.length === 0 && (
-        <div style={{ color: "#334155", fontSize: 12 }}>No fixtures patched yet — add one below.</div>
+        <div style={{ color: "var(--wc-text-faint)", fontSize: 12 }}>No fixtures patched yet — add one below.</div>
       )}
 
       {fixtures.map((f) => {
@@ -101,7 +101,7 @@ export function FixturePatch() {
         return (
           <div
             key={f.id}
-            style={{ ...rowStyle, borderColor: conflict ? "#b45309" : "#1e293b" }}
+            style={{ ...rowStyle, borderColor: conflict ? "#b45309" : "var(--wc-border)" }}
           >
             <input
               style={{ ...txtStyle, flex: 1, minWidth: 0 }}
@@ -109,7 +109,7 @@ export function FixturePatch() {
               onChange={(e) => commit(f, { label: e.target.value })}
               title="Fixture label"
             />
-            <span style={{ color: "#64748b", fontSize: 10, flexShrink: 0 }}>{f.fixture_type.name}</span>
+            <span style={{ color: "var(--wc-text-muted)", fontSize: 10, flexShrink: 0 }}>{f.fixture_type.name}</span>
             <label style={lblStyle}>U</label>
             <input
               style={{ ...numStyle, width: 42 }}
@@ -124,7 +124,7 @@ export function FixturePatch() {
               onChange={(e) => commit(f, { base_address: Number(e.target.value) })}
               title="DMX start address"
             />
-            <span style={{ color: "#475569", fontSize: 10, width: 52, flexShrink: 0 }}>
+            <span style={{ color: "var(--wc-text-faint)", fontSize: 10, width: 52, flexShrink: 0 }}>
               →{last} ({fp}ch)
             </span>
             <button
@@ -148,7 +148,7 @@ export function FixturePatch() {
       )}
 
       {/* Add fixture */}
-      <div style={{ ...rowStyle, marginTop: 4, background: "#0b1220" }}>
+      <div style={{ ...rowStyle, marginTop: 4, background: "var(--wc-bg-app)" }}>
         <Select
           style={{ ...selStyle, flex: 1, minWidth: 0 }}
           value={newTypeIdx}
@@ -178,16 +178,16 @@ export function FixturePatch() {
 
 const rowStyle: CSSProperties = {
   display: "flex", gap: 6, alignItems: "center",
-  border: "1px solid #1e293b", borderRadius: 4, padding: "3px 5px",
+  border: "1px solid var(--wc-border)", borderRadius: 4, padding: "3px 5px",
 };
-const lblStyle: CSSProperties = { color: "#64748b", fontSize: 11, flexShrink: 0 };
+const lblStyle: CSSProperties = { color: "var(--wc-text-muted)", fontSize: 11, flexShrink: 0 };
 const numStyle: CSSProperties = {
-  background: "#0f172a", border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0", padding: "2px 4px", fontSize: 12,
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text)", padding: "2px 4px", fontSize: 12,
 };
 const txtStyle: CSSProperties = { ...numStyle };
 const selStyle: CSSProperties = { ...numStyle, cursor: "pointer" };
 const smallBtn: CSSProperties = {
-  background: "none", border: "1px solid #334155", borderRadius: 4, color: "#64748b", fontSize: 11, padding: "1px 6px", cursor: "pointer", flexShrink: 0,
+  background: "none", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text-muted)", fontSize: 11, padding: "1px 6px", cursor: "pointer", flexShrink: 0,
 };
 const identifyOnBtn: CSSProperties = {
   ...smallBtn, color: "#fde047", borderColor: "#a16207", background: "#422006",

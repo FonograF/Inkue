@@ -89,7 +89,7 @@ export function ScrubBar({ cueId, durationMs, cueState, loopDurationMs }: Props)
         style={{
           position: "relative",
           height: 6,
-          background: "#1e293b",
+          background: "var(--wc-bg-surface)",
           borderRadius: 3,
           cursor: isInteractive ? "pointer" : "default",
           marginBottom: 5,
@@ -102,7 +102,7 @@ export function ScrubBar({ cueId, durationMs, cueState, loopDurationMs }: Props)
             position: "absolute",
             inset: 0,
             width: `${pct}%`,
-            background: isInteractive ? "#3b82f6" : "#334155",
+            background: isInteractive ? "var(--wc-accent)" : "var(--wc-border-strong)",
             borderRadius: 3,
             transition: isDragging ? "none" : "width 80ms linear",
           }}
@@ -118,8 +118,8 @@ export function ScrubBar({ cueId, durationMs, cueState, loopDurationMs }: Props)
               width: 12,
               height: 12,
               borderRadius: "50%",
-              background: "#3b82f6",
-              boxShadow: "0 0 0 2px #0f172a",
+              background: "var(--wc-accent)",
+              boxShadow: "0 0 0 2px var(--wc-bg-app)",
               pointerEvents: "none",
               transition: isDragging ? "none" : "left 80ms linear",
             }}
@@ -133,7 +133,7 @@ export function ScrubBar({ cueId, durationMs, cueState, loopDurationMs }: Props)
           display: "flex",
           justifyContent: "space-between",
           fontSize: 10,
-          color: "#64748b",
+          color: "var(--wc-text-muted)",
           fontVariantNumeric: "tabular-nums",
         }}
       >

@@ -63,7 +63,7 @@ export function Select({ value, onChange, style, disabled, children }: SelectPro
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {current?.label ?? String(value)}
         </span>
-        <span style={{ color: "#64748b", fontSize: 10, flexShrink: 0 }}>▾</span>
+        <span style={{ color: "var(--wc-text-muted)", fontSize: 10, flexShrink: 0 }}>▾</span>
       </button>
 
       {open && (
@@ -74,8 +74,8 @@ export function Select({ value, onChange, style, disabled, children }: SelectPro
             left: 0,
             right: 0,
             zIndex: 101,
-            background: "#1e293b",
-            border: "1px solid #334155",
+            background: "var(--wc-bg-surface)",
+            border: "1px solid var(--wc-border-strong)",
             borderRadius: 5,
             overflow: "auto",
             maxHeight: 240,
@@ -99,8 +99,8 @@ export function Select({ value, onChange, style, disabled, children }: SelectPro
                 fontSize: 12,
                 textAlign: "left",
                 border: "none",
-                background: o.value === String(value) ? "#334155" : "transparent",
-                color: o.disabled ? "#64748b" : "#e2e8f0",
+                background: o.value === String(value) ? "var(--wc-bg-hover)" : "transparent",
+                color: o.disabled ? "var(--wc-text-muted)" : "var(--wc-text)",
                 cursor: o.disabled ? "default" : "pointer",
                 overflow: "hidden",
                 textOverflow: "ellipsis",

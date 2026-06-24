@@ -32,12 +32,12 @@ export function ColorPicker({
             width: 20,
             height: 20,
             borderRadius: 4,
-            border: v === value ? "2px solid #f1f5f9" : "2px solid #475569",
-            background: hex === "transparent" ? "#1e293b" : hex,
+            border: v === value ? "2px solid var(--wc-text-bright)" : "2px solid var(--wc-text-faint)",
+            background: hex === "transparent" ? "var(--wc-bg-surface)" : hex,
             cursor: "pointer",
             padding: 0,
             flexShrink: 0,
-            outline: v === value ? "1px solid #94a3b8" : "none",
+            outline: v === value ? "1px solid var(--wc-text-secondary)" : "none",
             outlineOffset: 1,
           }}
         />

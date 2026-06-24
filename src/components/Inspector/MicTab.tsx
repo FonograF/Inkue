@@ -11,16 +11,16 @@ interface Props {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "3px 6px",
 };
 
 const selectStyle: React.CSSProperties = { ...inputStyle, cursor: "pointer", width: "100%" };
-const labelStyle: React.CSSProperties = { fontSize: 10, color: "#64748b", marginBottom: 2 };
+const labelStyle: React.CSSProperties = { fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 };
 const fieldStyle: React.CSSProperties = { marginBottom: 12 };
 
 const CURVES: FadeCurve[] = ["linear", "s_curve", "exponential"];
@@ -61,7 +61,7 @@ export function MicTab({ cue, onSave }: Props) {
           )}
         </Select>
         {inputPatches.length === 0 && (
-          <div style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+          <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
             No Input Patches yet — add one in the Audio Inputs panel.
           </div>
         )}
@@ -144,7 +144,7 @@ export function MicTab({ cue, onSave }: Props) {
         onChange={(ms, curve) => onSave({ fade_out_ms: ms, fade_out_curve: curve })}
       />
 
-      <div style={{ marginTop: 10, fontSize: 11, color: "#64748b" }}>
+      <div style={{ marginTop: 10, fontSize: 11, color: "var(--wc-text-muted)" }}>
         Live input runs until the cue is stopped; the capture device is released when it stops.
       </div>
     </div>

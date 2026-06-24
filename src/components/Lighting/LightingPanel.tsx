@@ -73,7 +73,7 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
       {/* Header */}
       <div style={headerStyle}>
         <span style={{ color: blackout ? "#ef4444" : "#a855f7", fontSize: 10 }}>●</span>
-        <span style={{ color: "#94a3b8", fontWeight: 600, fontSize: 12, flex: 1 }}>Lighting (DMX)</span>
+        <span style={{ color: "var(--wc-text-secondary)", fontWeight: 600, fontSize: 12, flex: 1 }}>Lighting (DMX)</span>
         <button onClick={toggleBlackout} style={blackout ? blackoutOnBtn : blackoutOffBtn}>
           {blackout ? "BLACKOUT ON" : "Blackout"}
         </button>
@@ -147,14 +147,14 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
             <input type="range" min={0} max={255} value={testValue}
               onChange={(e) => poke(testUniverse, testAddress, Number(e.target.value))}
               style={{ flex: 1 }} />
-            <span style={{ color: "#cbd5e1", width: 30, textAlign: "right" }}>{testValue}</span>
+            <span style={{ color: "var(--wc-text)", width: 30, textAlign: "right" }}>{testValue}</span>
           </div>
         </Section>
 
         {/* Monitor */}
         <Section title="Live output">
           {snapshot.length === 0 ? (
-            <div style={{ color: "#334155", fontSize: 12 }}>No active universe yet — set a channel.</div>
+            <div style={{ color: "var(--wc-text-faint)", fontSize: 12 }}>No active universe yet — set a channel.</div>
           ) : (
             snapshot.map((u) => {
               const active = u.channels
@@ -164,13 +164,13 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
                 <div key={u.universe} style={{ marginBottom: 4 }}>
                   <span style={{ color: "#a855f7", fontWeight: 600 }}>U{u.universe}</span>
                   {active.length === 0 ? (
-                    <span style={{ color: "#475569", marginLeft: 8 }}>all zero</span>
+                    <span style={{ color: "var(--wc-text-faint)", marginLeft: 8 }}>all zero</span>
                   ) : (
                     <span style={{ marginLeft: 8, display: "inline-flex", flexWrap: "wrap", gap: 6 }}>
                       {active.map((c) => (
                         <span key={c.addr} style={chipStyle}>
-                          <span style={{ color: "#64748b" }}>{c.addr}</span>:
-                          <span style={{ color: "#e2e8f0" }}>{c.v}</span>
+                          <span style={{ color: "var(--wc-text-muted)" }}>{c.addr}</span>:
+                          <span style={{ color: "var(--wc-text)" }}>{c.v}</span>
                         </span>
                       ))}
                     </span>
@@ -192,7 +192,7 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div style={{ color: "#64748b", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>{title}</div>
+      <div style={{ color: "var(--wc-text-muted)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>{title}</div>
       {children}
     </div>
   );
@@ -200,35 +200,35 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 const panelStyle: CSSProperties = {
   position: "fixed", bottom: 104, right: 16, width: 560, maxHeight: 560,
-  background: "#020617", border: "1px solid #334155", borderRadius: 8,
+  background: "var(--wc-bg-deepest)", border: "1px solid var(--wc-border-strong)", borderRadius: 8,
   boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 9999,
   display: "flex", flexDirection: "column", fontFamily: "monospace", fontSize: 12,
 };
 const headerStyle: CSSProperties = {
   display: "flex", alignItems: "center", padding: "6px 10px",
-  borderBottom: "1px solid #1e293b", gap: 8, flexShrink: 0,
+  borderBottom: "1px solid var(--wc-border)", gap: 8, flexShrink: 0,
 };
 const footerStyle: CSSProperties = {
-  padding: "4px 12px", borderTop: "1px solid #1e293b", fontSize: 10, color: "#334155", flexShrink: 0,
+  padding: "4px 12px", borderTop: "1px solid var(--wc-border)", fontSize: 10, color: "var(--wc-text-faint)", flexShrink: 0,
 };
-const lblStyle: CSSProperties = { color: "#64748b", fontSize: 11 };
+const lblStyle: CSSProperties = { color: "var(--wc-text-muted)", fontSize: 11 };
 const numStyle: CSSProperties = {
-  background: "#0f172a", border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0", padding: "2px 4px", fontSize: 12,
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text)", padding: "2px 4px", fontSize: 12,
 };
 const txtStyle: CSSProperties = { ...numStyle };
 const selStyle: CSSProperties = { ...numStyle, cursor: "pointer" };
 const chipStyle: CSSProperties = {
-  background: "#0f172a", border: "1px solid #1e293b", borderRadius: 4, padding: "0 5px", fontSize: 11,
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border)", borderRadius: 4, padding: "0 5px", fontSize: 11,
 };
 const smallBtn: CSSProperties = {
-  background: "none", border: "1px solid #334155", borderRadius: 4, color: "#64748b", fontSize: 11, padding: "1px 6px", cursor: "pointer",
+  background: "none", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text-muted)", fontSize: 11, padding: "1px 6px", cursor: "pointer",
 };
 const addBtn: CSSProperties = { ...smallBtn, alignSelf: "flex-start", color: "#a855f7" };
 const closeBtn: CSSProperties = {
-  background: "none", border: "none", color: "#64748b", fontSize: 16, cursor: "pointer", lineHeight: 1, padding: "0 2px",
+  background: "none", border: "none", color: "var(--wc-text-muted)", fontSize: 16, cursor: "pointer", lineHeight: 1, padding: "0 2px",
 };
 const blackoutOffBtn: CSSProperties = {
-  background: "none", border: "1px solid #334155", borderRadius: 4, color: "#94a3b8", fontSize: 11, padding: "1px 8px", cursor: "pointer",
+  background: "none", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text-secondary)", fontSize: 11, padding: "1px 8px", cursor: "pointer",
 };
 const blackoutOnBtn: CSSProperties = {
   background: "#7f1d1d", border: "1px solid #ef4444", borderRadius: 4, color: "#fecaca", fontSize: 11, padding: "1px 8px", cursor: "pointer", fontWeight: 700,

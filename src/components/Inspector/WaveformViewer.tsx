@@ -177,7 +177,7 @@ export function WaveformViewer({
           alignItems: "center",
           fontSize: 11,
           marginBottom: 4,
-          color: "#94a3b8",
+          color: "var(--wc-text-secondary)",
         }}
       >
         <span style={{ color: "#60a5fa" }}>▶ {fmtS(startMs)}s</span>
@@ -187,10 +187,10 @@ export function WaveformViewer({
           onClick={onExpand}
           title="Open waveform editor"
           style={{
-            background: "#1e293b",
-            border: "1px solid #334155",
+            background: "var(--wc-bg-surface)",
+            border: "1px solid var(--wc-border-strong)",
             borderRadius: 3,
-            color: "#94a3b8",
+            color: "var(--wc-text-secondary)",
             cursor: "pointer",
             fontSize: 11,
             padding: "1px 5px",
@@ -217,7 +217,7 @@ export function WaveformViewer({
       <div
         style={{
           fontSize: 10,
-          color: "#475569",
+          color: "var(--wc-text-faint)",
           marginTop: 3,
           textAlign: "center",
         }}

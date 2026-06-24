@@ -1,10 +1,10 @@
 // Shared label/field wrapper and input style used across all Inspector tabs.
 
 export const inputStyle: React.CSSProperties = {
-  background: "#1e293b",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-surface)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   padding: "3px 8px",
   fontSize: 13,
   width: "100%",
@@ -27,7 +27,7 @@ export function Field({
         gap: 8,
       }}
     >
-      <label style={{ width: 100, color: "#94a3b8", flexShrink: 0 }}>
+      <label style={{ width: 100, color: "var(--wc-text-secondary)", flexShrink: 0 }}>
         {label}
       </label>
       <div style={{ flex: 1 }}>{children}</div>

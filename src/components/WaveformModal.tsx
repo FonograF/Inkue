@@ -330,8 +330,8 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
     >
       <div
         style={{
-          background: "#0f172a",
-          border: "1px solid #334155",
+          background: "var(--wc-bg-app)",
+          border: "1px solid var(--wc-border-strong)",
           borderRadius: 8,
           width: "min(920px, 94vw)",
           padding: 20,
@@ -343,10 +343,10 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
       >
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontWeight: 600, fontSize: 14, color: "#f1f5f9", flex: 1 }}>
+          <span style={{ fontWeight: 600, fontSize: 14, color: "var(--wc-text-bright)", flex: 1 }}>
             Waveform — {cue.name}
           </span>
-          <span style={{ fontSize: 11, color: "#475569" }}>
+          <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
             Space = preview · Esc = close
           </span>
           <button onClick={handleClose} style={closeBtnStyle} title="Close (Esc)">
@@ -362,7 +362,7 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
             height: 200,
             display: "block",
             borderRadius: 4,
-            border: "1px solid #1e293b",
+            border: "1px solid var(--wc-border)",
             cursor: dragging ? "ew-resize" : "crosshair",
           }}
           onMouseDown={handleMouseDown}
@@ -377,7 +377,7 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
             display: "flex",
             justifyContent: "space-between",
             fontSize: 11,
-            color: "#94a3b8",
+            color: "var(--wc-text-secondary)",
             marginTop: -6,
           }}
         >
@@ -423,7 +423,7 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
           </label>
 
           {/* Duration badge */}
-          <span style={{ fontSize: 11, color: "#64748b", flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: "var(--wc-text-muted)", flexShrink: 0 }}>
             Duration: {fmtTime(effectiveEndMs - startMs)}
           </span>
 
@@ -442,7 +442,7 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
           </button>
 
           <button
-            style={{ ...actionBtnStyle, background: "#334155" }}
+            style={{ ...actionBtnStyle, background: "var(--wc-bg-hover)" }}
             onClick={handleClose}
           >
             Cancel
@@ -481,7 +481,7 @@ export function WaveformModal({ cue, onClose, onSave }: Props) {
 const closeBtnStyle: React.CSSProperties = {
   background: "transparent",
   border: "none",
-  color: "#64748b",
+  color: "var(--wc-text-muted)",
   cursor: "pointer",
   fontSize: 16,
   padding: "2px 6px",
@@ -497,10 +497,10 @@ const labelStyle: React.CSSProperties = {
 };
 
 const numInputStyle: React.CSSProperties = {
-  background: "#1e293b",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-surface)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   padding: "3px 7px",
   fontSize: 12,
   width: 90,
@@ -510,7 +510,7 @@ const actionBtnStyle: React.CSSProperties = {
   padding: "6px 16px",
   border: "none",
   borderRadius: 4,
-  color: "#f1f5f9",
+  color: "var(--wc-text-bright)",
   cursor: "pointer",
   fontSize: 12,
   fontWeight: 500,

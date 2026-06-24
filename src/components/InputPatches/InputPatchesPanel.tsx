@@ -13,10 +13,10 @@ import {
 import { Select } from "../common/Select";
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "4px 8px",
   width: "100%",
@@ -24,10 +24,10 @@ const inputStyle: React.CSSProperties = {
 
 const btnStyle: React.CSSProperties = {
   padding: "4px 10px",
-  background: "#1e293b",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-surface)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#94a3b8",
+  color: "var(--wc-text-secondary)",
   fontSize: 12,
   cursor: "pointer",
 };
@@ -102,16 +102,16 @@ export function InputPatchesPanel() {
   return (
     <div>
       <div style={{
-        fontSize: 11, fontWeight: 600, color: "#64748b",
+        fontSize: 11, fontWeight: 600, color: "var(--wc-text-muted)",
         textTransform: "uppercase", letterSpacing: "0.07em",
         marginBottom: 10, paddingBottom: 5,
-        borderBottom: "1px solid #1e293b",
+        borderBottom: "1px solid var(--wc-border)",
       }}>
         Input Patches (Mic Cues)
       </div>
 
       {patches.length === 0 && (
-        <p style={{ color: "#475569", fontSize: 12, marginBottom: 8 }}>
+        <p style={{ color: "var(--wc-text-faint)", fontSize: 12, marginBottom: 8 }}>
           No input patches. Add one to route a live mic / line into a Mic Cue.
         </p>
       )}

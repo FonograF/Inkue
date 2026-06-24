@@ -206,11 +206,7 @@ pub fn update_display_preferences(
     let (font, font_size, position, margin, show_floating) = {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         // Preserve output_screen (managed by set_output_screen).
-        ws.preferences.display.bg_app              = prefs.bg_app;
-        ws.preferences.display.bg_surface          = prefs.bg_surface;
-        ws.preferences.display.bg_panel            = prefs.bg_panel;
-        ws.preferences.display.accent              = prefs.accent;
-        ws.preferences.display.text_primary        = prefs.text_primary;
+        ws.preferences.display.theme             = prefs.theme;
         ws.preferences.display.show_output_timer = prefs.show_output_timer;
         ws.preferences.display.timer_floating    = prefs.timer_floating;
         ws.preferences.display.timer_count_down    = prefs.timer_count_down;

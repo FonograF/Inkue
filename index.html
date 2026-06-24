@@ -6,21 +6,90 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WinCue</title>
     <style>
+      /* ── Theme tokens ─────────────────────────────────────────────────────── */
+      :root, :root[data-theme="dark"] {
+        --wc-bg-deepest:   #0d0b0a;
+        --wc-bg-app:       #181614;
+        --wc-bg-surface:   #221f1c;
+        --wc-bg-input:     #131210;
+        --wc-bg-hover:     #2d2926;
+        --wc-bg-selected:  rgba(245, 158, 11, 0.15);
+        --wc-bg-running:   #132010;
+        --wc-bg-paused:    #231505;
+        --wc-bg-group:     #0f0d0b;
+        --wc-bg-drag-over: #1a2211;
+        --wc-border:        #2a2622;
+        --wc-border-strong: #3d3936;
+        --wc-text-bright:    #ede8e3;
+        --wc-text:           #e0d8d0;
+        --wc-text-secondary: #8a8480;
+        --wc-text-muted:     #6a6460;
+        --wc-text-faint:     #504c48;
+        --wc-accent:       #f59e0b;
+        --wc-accent-hover: #d97706;
+        --wc-accent-fg:    #1a0f00;
+        --wc-accent-dim:   rgba(245, 158, 11, 0.15);
+        color-scheme: dark;
+      }
+      :root[data-theme="light"] {
+        --wc-bg-deepest:   #d8d2cb;
+        --wc-bg-app:       #e8e2db;
+        --wc-bg-surface:   #f0ebe4;
+        --wc-bg-input:     #f5f0ea;
+        --wc-bg-hover:     #cec8c1;
+        --wc-bg-selected:  rgba(185, 100, 0, 0.14);
+        --wc-bg-running:   #c8e0cc;
+        --wc-bg-paused:    #f0d8a8;
+        --wc-bg-group:     #dedad3;
+        --wc-bg-drag-over: #c8e0c8;
+        --wc-border:        #b8b2aa;
+        --wc-border-strong: #a09890;
+        --wc-text-bright:    #100d0a;
+        --wc-text:           #1e1a16;
+        --wc-text-secondary: #484038;
+        --wc-text-muted:     #706860;
+        --wc-text-faint:     #988880;
+        --wc-accent:       #b86000;
+        --wc-accent-hover: #904800;
+        --wc-accent-fg:    #ffffff;
+        --wc-accent-dim:   rgba(184, 96, 0, 0.16);
+        color-scheme: light;
+      }
+
+      /* ── Base reset ───────────────────────────────────────────────────────── */
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html, body, #root { width: 100%; height: 100%; overflow: hidden; }
-      body { background: #020617; }
-      /* Hide scrollbar while keeping scrollability (used for synced header) */
+      body { background: var(--wc-bg-app); }
+      input[type="range"], input[type="checkbox"] { accent-color: var(--wc-accent); }
+
+      /* ── Scrollbars ───────────────────────────────────────────────────────── */
       .no-scrollbar { scrollbar-width: none; }
       .no-scrollbar::-webkit-scrollbar { display: none; }
-
-      /* Global scrollbar styling — blends into the dark theme */
-      * { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+      * { scrollbar-width: thin; scrollbar-color: var(--wc-border-strong) transparent; }
       *::-webkit-scrollbar { width: 6px; height: 6px; }
       *::-webkit-scrollbar-track { background: transparent; }
-      *::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-      *::-webkit-scrollbar-thumb:hover { background: #475569; }
+      *::-webkit-scrollbar-thumb { background: var(--wc-border-strong); border-radius: 3px; }
+      *::-webkit-scrollbar-thumb:hover { background: var(--wc-text-faint); }
       *::-webkit-scrollbar-corner { background: transparent; }
     </style>
+    <!-- Apply saved theme before first paint to avoid flash -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("wc_theme");
+          if (t === "dark" || t === "light") {
+            document.documentElement.setAttribute("data-theme", t);
+          } else {
+            document.documentElement.setAttribute(
+              "data-theme",
+              window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+            );
+          }
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -60,7 +60,7 @@ export function GroupManager() {
   };
 
   if (fixtures.length === 0) {
-    return <div style={{ color: "#334155", fontSize: 12 }}>Patch fixtures first, then group them here.</div>;
+    return <div style={{ color: "var(--wc-text-faint)", fontSize: 12 }}>Patch fixtures first, then group them here.</div>;
   }
 
   return (
@@ -73,7 +73,7 @@ export function GroupManager() {
               value={g.label}
               onChange={(e) => commit(g, { label: e.target.value })}
             />
-            <span style={{ color: "#64748b", fontSize: 10 }}>{g.fixture_ids.length} fix.</span>
+            <span style={{ color: "var(--wc-text-muted)", fontSize: 10 }}>{g.fixture_ids.length} fix.</span>
             <button style={smallBtn} onClick={async () => { await removeFixtureGroup(g.id).catch(console.error); await refresh(); }} title="Delete group">✕</button>
           </div>
           <div style={chipWrap}>
@@ -85,7 +85,7 @@ export function GroupManager() {
       ))}
 
       {/* New group */}
-      <div style={{ ...cardStyle, background: "#0b1220" }}>
+      <div style={{ ...cardStyle, background: "var(--wc-bg-app)" }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <input
             style={{ ...txtStyle, flex: 1, minWidth: 0 }}
@@ -107,18 +107,18 @@ export function GroupManager() {
 
 const cardStyle: CSSProperties = {
   display: "flex", flexDirection: "column", gap: 6,
-  border: "1px solid #1e293b", borderRadius: 4, padding: "5px 7px",
+  border: "1px solid var(--wc-border)", borderRadius: 4, padding: "5px 7px",
 };
 const chipWrap: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 4 };
 const txtStyle: CSSProperties = {
-  background: "#0f172a", border: "1px solid #334155", borderRadius: 4, color: "#e2e8f0", padding: "2px 4px", fontSize: 12,
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text)", padding: "2px 4px", fontSize: 12,
 };
 const smallBtn: CSSProperties = {
-  background: "none", border: "1px solid #334155", borderRadius: 4, color: "#64748b", fontSize: 11, padding: "1px 6px", cursor: "pointer",
+  background: "none", border: "1px solid var(--wc-border-strong)", borderRadius: 4, color: "var(--wc-text-muted)", fontSize: 11, padding: "1px 6px", cursor: "pointer",
 };
 const chipOff: CSSProperties = {
-  background: "#0f172a", border: "1px solid #334155", borderRadius: 10, color: "#94a3b8", fontSize: 10, padding: "1px 8px", cursor: "pointer",
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)", borderRadius: 10, color: "var(--wc-text-secondary)", fontSize: 10, padding: "1px 8px", cursor: "pointer",
 };
 const chipOn: CSSProperties = {
-  background: "#1e3a8a", border: "1px solid #3b82f6", borderRadius: 10, color: "#bfdbfe", fontSize: 10, padding: "1px 8px", cursor: "pointer",
+  background: "var(--wc-accent-dim)", border: "1px solid var(--wc-accent)", borderRadius: 10, color: "var(--wc-text)", fontSize: 10, padding: "1px 8px", cursor: "pointer",
 };

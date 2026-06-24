@@ -11,10 +11,10 @@ interface Props {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "3px 6px",
 };
@@ -23,10 +23,10 @@ const selectStyle: React.CSSProperties = { ...inputStyle, cursor: "pointer" };
 
 const btnStyle: React.CSSProperties = {
   padding: "2px 8px",
-  background: "#1e293b",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-surface)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#94a3b8",
+  color: "var(--wc-text-secondary)",
   fontSize: 11,
   cursor: "pointer",
 };
@@ -102,7 +102,7 @@ export function MidiTab({ cue, onSave }: Props) {
   return (
     <div>
       {messages.length === 0 && (
-        <div style={{ color: "#475569", fontSize: 12, marginBottom: 12 }}>
+        <div style={{ color: "var(--wc-text-faint)", fontSize: 12, marginBottom: 12 }}>
           No messages. Click + Add to configure.
         </div>
       )}
@@ -111,17 +111,17 @@ export function MidiTab({ cue, onSave }: Props) {
         <div
           key={idx}
           style={{
-            border: "1px solid #1e293b",
+            border: "1px solid var(--wc-border)",
             borderRadius: 6,
             padding: 10,
             marginBottom: 8,
-            background: "#0a0f1a",
+            background: "var(--wc-bg-app)",
           }}
         >
           {/* Row 1: Port + Type */}
           <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Port</div>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Port</div>
               {ports.length > 0 ? (
                 <Select
                   style={{ ...selectStyle, width: "100%" }}
@@ -145,7 +145,7 @@ export function MidiTab({ cue, onSave }: Props) {
               )}
             </div>
             <div>
-              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Type</div>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Type</div>
               <Select
                 style={selectStyle}
                 value={msg.message_type}
@@ -161,7 +161,7 @@ export function MidiTab({ cue, onSave }: Props) {
           {/* Row 2: Channel + Data1 + Data2 */}
           <div style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 6 }}>
             <div>
-              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Ch</div>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Ch</div>
               <input
                 style={{ ...inputStyle, width: 44 }}
                 type="number"
@@ -172,7 +172,7 @@ export function MidiTab({ cue, onSave }: Props) {
               />
             </div>
             <div>
-              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>{data1Label(msg.message_type)}</div>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>{data1Label(msg.message_type)}</div>
               <input
                 style={{ ...inputStyle, width: 52 }}
                 type="number"
@@ -184,7 +184,7 @@ export function MidiTab({ cue, onSave }: Props) {
             </div>
             {hasData2(msg.message_type) && (
               <div>
-                <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>
+                <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>
                   {msg.message_type === "control_change" ? "Value" : "Vel"}
                 </div>
                 <input
@@ -223,7 +223,7 @@ export function MidiTab({ cue, onSave }: Props) {
       </button>
 
       {ports.length === 0 && (
-        <div style={{ marginTop: 10, fontSize: 11, color: "#64748b" }}>
+        <div style={{ marginTop: 10, fontSize: 11, color: "var(--wc-text-muted)" }}>
           No MIDI output ports detected. Connect a MIDI device or install a virtual MIDI driver.
         </div>
       )}

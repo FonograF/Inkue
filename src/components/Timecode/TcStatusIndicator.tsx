@@ -42,8 +42,8 @@ export function TcStatusIndicator() {
         alignItems: "center",
         gap: 5,
         padding: "2px 8px",
-        background: flash ? "#1e3a5f" : "#0f172a",
-        border: "1px solid #1e293b",
+        background: flash ? "var(--wc-accent-dim)" : "var(--wc-bg-app)",
+        border: "1px solid var(--wc-border)",
         borderRadius: 4,
         transition: "background 80ms",
         userSelect: "none",
@@ -54,15 +54,15 @@ export function TcStatusIndicator() {
         style={{
           width: 7, height: 7,
           borderRadius: "50%",
-          background: running ? "#22c55e" : "#475569",
+          background: running ? "#22c55e" : "var(--wc-text-faint)",
           flexShrink: 0,
           transition: "background 0.3s",
         }}
       />
-      <span style={{ fontFamily: "monospace", fontSize: 11, color: running ? "#e2e8f0" : "#64748b" }}>
+      <span style={{ fontFamily: "monospace", fontSize: 11, color: running ? "var(--wc-text)" : "var(--wc-text-muted)" }}>
         {formatTc(pos)}
       </span>
-      <span style={{ fontSize: 10, color: "#475569" }}>{pos.rate}</span>
+      <span style={{ fontSize: 10, color: "var(--wc-text-faint)" }}>{pos.rate}</span>
     </div>
   );
 }

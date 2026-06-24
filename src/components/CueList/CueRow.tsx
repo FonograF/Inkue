@@ -172,17 +172,16 @@ export function CueRow({
       ? Math.min(100, ((timing.action_elapsed_ms % loopPeriodMs) / loopPeriodMs) * 100)
       : null;
 
-  const accentColor = getComputedStyle(document.documentElement).getPropertyValue("--wc-accent").trim() || "#3b82f6";
   const colorAccent = COLOR_SWATCHES[cue.color] ?? "transparent";
   const fullRowTint = cueColorStyle === "full_row" && colorAccent !== "transparent"
     ? hexToRgba(colorAccent, 0.28)
     : null;
 
   let bg = fullRowTint ?? "transparent";
-  if (isDragOver)      bg = "#1e3a5f";
-  else if (isSelected) bg = accentColor;
-  else if (isRunning)  bg = "#14532d";
-  else if (isPaused)   bg = "#78350f";
+  if (isDragOver)      bg = "var(--wc-bg-drag-over)";
+  else if (isSelected) bg = "var(--wc-accent-dim)";
+  else if (isRunning)  bg = "var(--wc-bg-running)";
+  else if (isPaused)   bg = "var(--wc-bg-paused)";
 
   const rowStyle: React.CSSProperties = {
     ...gridStyle,
@@ -193,15 +192,15 @@ export function CueRow({
     paddingLeft: depth > 0 ? `${8 + depth * 20}px` : undefined,
     cursor: isDragSource ? "grabbing" : "grab",
     userSelect: "none",
-    background: isGroup && !isSelected ? (bg === "transparent" ? "#0d1b2a" : bg) : bg,
-    borderBottom: isDragOver ? "1px solid #3b82f6" : "1px solid #1e293b",
+    background: isGroup && !isSelected ? (bg === "transparent" ? "var(--wc-bg-group)" : bg) : bg,
+    borderBottom: isDragOver ? "1px solid var(--wc-accent)" : "1px solid var(--wc-border)",
     boxShadow: isGroupDropTarget
       ? "inset 0 0 0 2px #22d3ee"
       : isDragOver
-      ? "inset 0 0 0 1px #3b82f6"
+      ? "inset 0 0 0 1px var(--wc-accent)"
       : "none",
     fontSize: 13,
-    color: isDisabled ? "#475569" : "#e2e8f0",
+    color: isDisabled ? "var(--wc-text-faint)" : "var(--wc-text)",
     minHeight: rowHeight,
     opacity: isDragSource ? 0.4 : isDisabled ? 0.55 : 1,
     transition: "opacity 0.1s",
@@ -221,7 +220,7 @@ export function CueRow({
               <button
                 style={{
                   background: "none", border: "none", cursor: "pointer",
-                  color: "#64748b", fontSize: 10, padding: "0 4px",
+                  color: "var(--wc-text-muted)", fontSize: 10, padding: "0 4px",
                   lineHeight: 1, display: "flex", alignItems: "center",
                   flexShrink: 0,
                 }}
@@ -241,7 +240,7 @@ export function CueRow({
 
       case "number":
         return (
-          <span style={{ fontFamily: "monospace", color: "#94a3b8" }}>
+          <span style={{ fontFamily: "monospace", color: "var(--wc-text-secondary)" }}>
             {cue.number ?? ""}
           </span>
         );
@@ -280,7 +279,7 @@ export function CueRow({
                 <span title={cue.warning_message ?? "Warning"} style={{ color: "#eab308", flexShrink: 0, fontSize: 11, fontWeight: 700 }}>⚠</span>
               )}
               {isDisabled && (
-                <span title="Disabled" style={{ color: "#475569", flexShrink: 0, fontSize: 10 }}>off</span>
+                <span title="Disabled" style={{ color: "var(--wc-text-faint)", flexShrink: 0, fontSize: 10 }}>off</span>
               )}
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: isDisabled ? "line-through" : "none" }}>
                 {cue.name}
@@ -297,7 +296,7 @@ export function CueRow({
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              color: "#64748b",
+              color: "var(--wc-text-muted)",
               fontSize: 12,
               paddingLeft: 5,
             }}
@@ -315,14 +314,14 @@ export function CueRow({
 
       case "pre_wait":
         return (
-          <span style={{ display: "block", textAlign: "right", color: "#94a3b8", fontSize: 12, paddingRight: 8 }}>
+          <span style={{ display: "block", textAlign: "right", color: "var(--wc-text-secondary)", fontSize: 12, paddingRight: 8 }}>
             {cue.pre_wait_ms ? `${(cue.pre_wait_ms / 1000).toFixed(1)}s` : ""}
           </span>
         );
 
       case "duration":
         return (
-          <span style={{ display: "block", textAlign: "right", color: cue.is_loading ? "#f59e0b" : "#94a3b8", fontSize: 12, paddingRight: 8 }}>
+          <span style={{ display: "block", textAlign: "right", color: cue.is_loading ? "#f59e0b" : "var(--wc-text-secondary)", fontSize: 12, paddingRight: 8 }}>
             {cue.is_loading
               ? "Loading…"
               : cue.duration_ms != null
@@ -333,14 +332,14 @@ export function CueRow({
 
       case "post_wait":
         return (
-          <span style={{ display: "block", textAlign: "right", color: "#94a3b8", fontSize: 12, paddingRight: 8 }}>
+          <span style={{ display: "block", textAlign: "right", color: "var(--wc-text-secondary)", fontSize: 12, paddingRight: 8 }}>
             {cue.post_wait_ms ? `${(cue.post_wait_ms / 1000).toFixed(1)}s` : ""}
           </span>
         );
 
       case "continue":
         return (
-          <span style={{ display: "block", textAlign: "center", color: "#64748b" }}>
+          <span style={{ display: "block", textAlign: "center", color: "var(--wc-text-muted)" }}>
             {CONTINUE_LABELS[cue.continue_mode] ?? ""}
           </span>
         );
@@ -354,7 +353,7 @@ export function CueRow({
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              color: "#64748b",
+              color: "var(--wc-text-muted)",
               fontSize: 12,
               fontStyle: cue.notes ? "normal" : "italic",
               paddingLeft: 5,

@@ -11,10 +11,10 @@ interface Props {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "3px 6px",
 };
@@ -73,7 +73,7 @@ export function TriggersTab({ cue, onSave }: Props) {
     } catch (e) { console.error(e); }
   };
 
-  if (loading) return <div style={{ color: "#475569", fontSize: 12 }}>Loading…</div>;
+  if (loading) return <div style={{ color: "var(--wc-text-faint)", fontSize: 12 }}>Loading…</div>;
 
   const enabled = trigger != null;
 
@@ -85,21 +85,21 @@ export function TriggersTab({ cue, onSave }: Props) {
             type="checkbox"
             checked={enabled}
             onChange={(e) => handleEnable(e.target.checked)}
-            style={{ accentColor: "#3b82f6", width: 14, height: 14 }}
+            style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
           />
-          <span style={{ color: enabled ? "#e2e8f0" : "#64748b" }}>Timecode trigger</span>
+          <span style={{ color: enabled ? "var(--wc-text)" : "var(--wc-text-muted)" }}>Timecode trigger</span>
         </label>
       </div>
 
       {enabled && (
         <div style={{ paddingLeft: 4 }}>
           <div style={{ marginBottom: 10 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#94a3b8", marginBottom: 6 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--wc-text-secondary)", marginBottom: 6 }}>
               <input
                 type="checkbox"
                 checked={realTime}
                 onChange={(e) => setRealTime(e.target.checked)}
-                style={{ accentColor: "#3b82f6" }}
+                style={{ accentColor: "var(--wc-accent)" }}
               />
               Real Time (milliseconds)
             </label>
@@ -107,7 +107,7 @@ export function TriggersTab({ cue, onSave }: Props) {
 
           <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-end" }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>
                 {realTime ? "Offset (ms)" : "Timecode (HH:MM:SS:FF)"}
               </div>
               <input
@@ -120,7 +120,7 @@ export function TriggersTab({ cue, onSave }: Props) {
             </div>
             {!realTime && (
               <div>
-                <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>Rate</div>
+                <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Rate</div>
                 <Select
                   style={{ ...inputStyle, cursor: "pointer" }}
                   value={rate}
@@ -143,10 +143,10 @@ export function TriggersTab({ cue, onSave }: Props) {
           <button
             style={{
               padding: "4px 12px",
-              background: "#1e3a5f",
-              border: "1px solid #3b82f6",
+              background: "var(--wc-accent-dim)",
+              border: "1px solid var(--wc-accent)",
               borderRadius: 4,
-              color: "#93c5fd",
+              color: "var(--wc-text)",
               fontSize: 12,
               cursor: "pointer",
             }}
@@ -158,7 +158,7 @@ export function TriggersTab({ cue, onSave }: Props) {
       )}
 
       {!enabled && (
-        <p style={{ fontSize: 12, color: "#475569", marginTop: 4 }}>
+        <p style={{ fontSize: 12, color: "var(--wc-text-faint)", marginTop: 4 }}>
           Enable to fire this cue at a specific timecode position when TC sync is active for this Cue List.
         </p>
       )}

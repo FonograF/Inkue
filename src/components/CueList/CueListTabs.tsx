@@ -10,6 +10,7 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
   const [renamingId, setRenamingId]   = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [addBtnHovered, setAddBtnHovered] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -69,8 +70,8 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
     <div
       style={{
         display: "flex", alignItems: "center", height: 30,
-        background: "var(--wc-bg-surface, #0f172a)",
-        borderBottom: "1px solid #1e293b",
+        background: "var(--wc-bg-app)",
+        borderBottom: "1px solid var(--wc-border)",
         flexShrink: 0, gap: 1, paddingLeft: 4, paddingRight: 4,
         overflowX: "auto", overflowY: "hidden",
       }}
@@ -93,9 +94,9 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
               display: "flex", alignItems: "center",
               padding: "0 10px", height: 26, borderRadius: 4,
               cursor: "pointer", flexShrink: 0, userSelect: "none",
-              background: isActive ? "var(--wc-bg-panel, #1e293b)" : "transparent",
-              color: isActive ? "var(--wc-text, #e2e8f0)" : "#64748b",
-              border: isActive ? "1px solid #334155" : "1px solid transparent",
+              background: isActive ? "var(--wc-bg-surface)" : "transparent",
+              color: isActive ? "var(--wc-text)" : "var(--wc-text-muted)",
+              border: isActive ? "1px solid var(--wc-border-strong)" : "1px solid transparent",
               fontSize: 12, fontWeight: isActive ? 600 : 400,
               minWidth: 80,
             }}
@@ -128,13 +129,14 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
         onClick={() => void handleAddList()}
         title="Add Cue List"
         style={{
-          background: "transparent", border: "none", color: "#475569",
+          background: "transparent", border: "none",
+          color: addBtnHovered ? "var(--wc-text-secondary)" : "var(--wc-text-faint)",
           cursor: "pointer", fontSize: 16, lineHeight: 1,
           padding: "0 6px", height: 26, borderRadius: 4, flexShrink: 0,
           display: "flex", alignItems: "center",
         }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#94a3b8"; }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#475569"; }}
+        onMouseEnter={() => setAddBtnHovered(true)}
+        onMouseLeave={() => setAddBtnHovered(false)}
       >
         +
       </button>
@@ -144,7 +146,7 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
         <div
           style={{
             position: "fixed", left: contextMenu.x, top: contextMenu.y,
-            background: "#1e293b", border: "1px solid #334155", borderRadius: 6,
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)", borderRadius: 6,
             padding: "4px 0", zIndex: 9999, minWidth: 160,
             boxShadow: "0 8px 24px rgba(0,0,0,0.7)",
           }}
@@ -157,7 +159,7 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
               if (list) startRename(list.id, list.name);
             }}
           />
-          <div style={{ height: 1, background: "#334155", margin: "4px 0" }} />
+          <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
           <ContextMenuItem
             label="Delete Cue List"
             danger
@@ -186,9 +188,9 @@ function ContextMenuItem({
       onClick={() => { if (!disabled) onClick(); }}
       style={{
         display: "block", width: "100%", padding: "6px 14px",
-        background: hov && !disabled ? "#334155" : "transparent",
+        background: hov && !disabled ? "var(--wc-bg-hover)" : "transparent",
         border: "none", textAlign: "left", fontSize: 13, cursor: disabled ? "default" : "pointer",
-        color: disabled ? "#475569" : danger ? "#f87171" : "#e2e8f0",
+        color: disabled ? "var(--wc-text-faint)" : danger ? "#f87171" : "var(--wc-text)",
       }}
     >
       {label}

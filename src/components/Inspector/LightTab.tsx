@@ -18,23 +18,23 @@ interface Props {
 }
 
 const btnStyle: React.CSSProperties = {
-  padding: "3px 8px", background: "#1e293b", border: "1px solid #334155",
-  borderRadius: 4, color: "#94a3b8", fontSize: 11, cursor: "pointer",
+  padding: "3px 8px", background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+  borderRadius: 4, color: "var(--wc-text-secondary)", fontSize: 11, cursor: "pointer",
 };
 const cardStyle: React.CSSProperties = {
-  background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6,
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border)", borderRadius: 6,
   padding: 8, marginBottom: 8, display: "flex", flexDirection: "column", gap: 4,
 };
 const swatchStyle: React.CSSProperties = {
-  width: 28, height: 22, padding: 0, border: "1px solid #334155", borderRadius: 4, background: "none", cursor: "pointer",
+  width: 28, height: 22, padding: 0, border: "1px solid var(--wc-border-strong)", borderRadius: 4, background: "none", cursor: "pointer",
 };
 
 function Slider({ label, pct, onPct }: { label: string; pct: number; onPct: (p: number) => void }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ color: "#64748b", fontSize: 10, width: 52, flexShrink: 0 }}>{label}</span>
+      <span style={{ color: "var(--wc-text-muted)", fontSize: 10, width: 52, flexShrink: 0 }}>{label}</span>
       <input type="range" min={0} max={100} value={pct} style={{ flex: 1 }} onChange={(e) => onPct(Number(e.target.value))} />
-      <span style={{ color: "#cbd5e1", width: 34, textAlign: "right", fontSize: 11 }}>{pct}%</span>
+      <span style={{ color: "var(--wc-text)", width: 34, textAlign: "right", fontSize: 11 }}>{pct}%</span>
     </div>
   );
 }
@@ -68,7 +68,7 @@ function FixtureCard({
   return (
     <div style={cardStyle}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <span style={{ color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fixture.label}</span>
+        <span style={{ color: "var(--wc-text)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fixture.label}</span>
         {hasRgb && (
           <input
             type="color"
@@ -106,10 +106,10 @@ function GroupCard({
   const hasRgb = kinds.has("red") && kinds.has("green") && kinds.has("blue");
 
   return (
-    <div style={{ ...cardStyle, borderColor: "#3b82f6" }}>
+    <div style={{ ...cardStyle, borderColor: "var(--wc-accent)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <span style={{ color: "#bfdbfe", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          👥 {group.label} <span style={{ color: "#64748b", fontSize: 10 }}>({group.fixture_ids.length})</span>
+        <span style={{ color: "var(--wc-text)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          👥 {group.label} <span style={{ color: "var(--wc-text-muted)", fontSize: 10 }}>({group.fixture_ids.length})</span>
         </span>
         {hasRgb && (
           <input
@@ -228,7 +228,7 @@ export function LightTab({ cue, onSave }: Props) {
       </Field>
 
       <div style={{ display: "flex", alignItems: "center", margin: "14px 0 8px" }}>
-        <div style={{ flex: 1, fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>Targets</div>
+        <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Targets</div>
         <button
           style={{ ...btnStyle, color: "#fbbf24", borderColor: "#a16207" }}
           onClick={handleCapture}
@@ -239,7 +239,7 @@ export function LightTab({ cue, onSave }: Props) {
       </div>
 
       {isEmpty && (
-        <p style={{ color: "#475569", fontSize: 12, marginBottom: 8 }}>
+        <p style={{ color: "var(--wc-text-faint)", fontSize: 12, marginBottom: 8 }}>
           No targets — add a group or fixture below, or sculpt them in the DMX Dashboard and Capture.
         </p>
       )}
@@ -313,7 +313,7 @@ export function LightTab({ cue, onSave }: Props) {
       </div>
 
       {fixtures.length === 0 && (
-        <p style={{ color: "#475569", fontSize: 11, marginTop: 8 }}>No fixtures patched. Add them in the DMX panel → Fixtures.</p>
+        <p style={{ color: "var(--wc-text-faint)", fontSize: 11, marginTop: 8 }}>No fixtures patched. Add them in the DMX panel → Fixtures.</p>
       )}
     </div>
   );

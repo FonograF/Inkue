@@ -297,25 +297,9 @@ pub struct DisplayPreferences {
     #[serde(default)]
     pub timer_floating: bool,
 
-    /// Main window background colour (CSS hex, e.g. `"#020617"`).
-    #[serde(default = "DisplayPreferences::default_bg_app")]
-    pub bg_app: String,
-
-    /// Title-bar and modal-surface background colour.
-    #[serde(default = "DisplayPreferences::default_bg_surface")]
-    pub bg_surface: String,
-
-    /// Panel, button, and sidebar background colour.
-    #[serde(default = "DisplayPreferences::default_bg_panel")]
-    pub bg_panel: String,
-
-    /// Accent colour used for selection highlights and the playhead indicator.
-    #[serde(default = "DisplayPreferences::default_accent")]
-    pub accent: String,
-
-    /// Primary text colour.
-    #[serde(default = "DisplayPreferences::default_text_primary")]
-    pub text_primary: String,
+    /// UI colour theme: `"dark"`, `"light"`, or `"system"` (follows OS setting).
+    #[serde(default = "DisplayPreferences::default_theme")]
+    pub theme: String,
 
     /// How a cue's colour tag is rendered in the Cue List (stripe vs full row).
     #[serde(default)]
@@ -323,11 +307,7 @@ pub struct DisplayPreferences {
 }
 
 impl DisplayPreferences {
-    fn default_bg_app()         -> String { "#020617".into() }
-    fn default_bg_surface()     -> String { "#0f172a".into() }
-    fn default_bg_panel()       -> String { "#1e293b".into() }
-    fn default_accent()         -> String { "#3b82f6".into() }
-    fn default_text_primary()   -> String { "#e2e8f0".into() }
+    fn default_theme()           -> String { "system".into() }
     fn default_timer_font()      -> String { crate::bundled_fonts::FONT_FAMILY.into() }
     fn default_timer_font_size() -> u32   { 120 }
     fn default_timer_margin()    -> u32   { 50 }
@@ -344,13 +324,9 @@ impl Default for DisplayPreferences {
             timer_position:     TimerPosition::default(),
             timer_show_ms:      false,
             timer_margin:       Self::default_timer_margin(),
-            bg_app:               Self::default_bg_app(),
-            bg_surface:           Self::default_bg_surface(),
-            bg_panel:             Self::default_bg_panel(),
-            accent:               Self::default_accent(),
-            text_primary:         Self::default_text_primary(),
-            timer_floating:       false,
-            cue_color_style:      CueColorStyle::default(),
+            timer_floating:     false,
+            theme:              Self::default_theme(),
+            cue_color_style:    CueColorStyle::default(),
         }
     }
 }

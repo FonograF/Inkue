@@ -75,7 +75,7 @@ function MeterRow({ label, fillPct, holdPct }: MeterRowProps) {
         style={{
           width: LABEL_W,
           fontSize: 9,
-          color: "#475569",
+          color: "var(--wc-text-faint)",
           textAlign: "right",
           flexShrink: 0,
         }}
@@ -86,9 +86,9 @@ function MeterRow({ label, fillPct, holdPct }: MeterRowProps) {
         style={{
           width: BAR_W,
           height: BAR_H,
-          background: "#0f172a",
+          background: "var(--wc-bg-app)",
           borderRadius: 2,
-          border: "1px solid #1e293b",
+          border: "1px solid var(--wc-border)",
           position: "relative",
           overflow: "hidden",
           flexShrink: 0,
@@ -141,8 +141,8 @@ function TickRow() {
               gap: 1,
             }}
           >
-            <span style={{ fontSize: 9, color: "#475569", lineHeight: 1 }}>{db}</span>
-            <div style={{ width: 1, height: 3, background: "#334155" }} />
+            <span style={{ fontSize: 9, color: "var(--wc-text-faint)", lineHeight: 1 }}>{db}</span>
+            <div style={{ width: 1, height: 3, background: "var(--wc-border-strong)" }} />
           </div>
         ))}
       </div>
@@ -173,13 +173,13 @@ function VolumeRow({
           padding: 0,
           flexShrink: 0,
           cursor: "pointer",
-          accentColor: "#475569",
+          accentColor: "var(--wc-text-faint)",
         }}
       />
       <span
         style={{
           fontSize: 10,
-          color: "#64748b",
+          color: "var(--wc-text-muted)",
           fontFamily: "monospace",
           width: 58,
           flexShrink: 0,
@@ -324,8 +324,8 @@ export function TransportBar({ onRefresh }: Props) {
         alignItems: "center",
         gap: 12,
         padding: "0 16px",
-        background: "#020617",
-        borderTop: "2px solid #1e293b",
+        background: "var(--wc-bg-deepest)",
+        borderTop: "2px solid var(--wc-border)",
         height: 96,
         flexShrink: 0,
       }}
@@ -389,8 +389,8 @@ export function TransportBar({ onRefresh }: Props) {
           padding: "14px 22px",
           fontSize: 18,
           fontWeight: 600,
-          background: pauseDisabled ? "#1e293b" : "#38bdf8",
-          color: pauseDisabled ? "#475569" : "white",
+          background: pauseDisabled ? "var(--wc-bg-surface)" : "#38bdf8",
+          color: pauseDisabled ? "var(--wc-text-faint)" : "white",
           border: "none",
           borderRadius: 8,
           cursor: pauseDisabled ? "default" : "pointer",
@@ -405,7 +405,7 @@ export function TransportBar({ onRefresh }: Props) {
       {/* Running cue info */}
       <div style={{ flex: 1, overflow: "hidden" }}>
         {runningCues.length === 0 ? (
-          <span style={{ color: "#334155", fontSize: 18, fontWeight: 600 }}>Idle</span>
+          <span style={{ color: "var(--wc-border-strong)", fontSize: 18, fontWeight: 600 }}>Idle</span>
         ) : (
           runningCues.slice(0, 3).map((c) => (
             <div
@@ -437,8 +437,8 @@ export function TransportBar({ onRefresh }: Props) {
           width: 14,
           height: 14,
           borderRadius: "50%",
-          background: oscMonitorOpen ? "#3b82f6" : oscActive ? "#4ade80" : "#1e293b",
-          border: `1px solid ${oscMonitorOpen ? "#3b82f6" : "#334155"}`,
+          background: oscMonitorOpen ? "var(--wc-accent)" : oscActive ? "#4ade80" : "var(--wc-bg-surface)",
+          border: `1px solid ${oscMonitorOpen ? "var(--wc-accent)" : "var(--wc-border-strong)"}`,
           flexShrink: 0,
           transition: "background 0.1s",
           cursor: "pointer",
@@ -457,9 +457,9 @@ export function TransportBar({ onRefresh }: Props) {
           letterSpacing: 0.5,
           padding: "2px 7px",
           borderRadius: 4,
-          background: lightingOpen ? "#a855f7" : "#1e293b",
-          border: `1px solid ${lightingOpen ? "#a855f7" : "#334155"}`,
-          color: lightingOpen ? "#0b0118" : "#94a3b8",
+          background: lightingOpen ? "#a855f7" : "var(--wc-bg-surface)",
+          border: `1px solid ${lightingOpen ? "#a855f7" : "var(--wc-border-strong)"}`,
+          color: lightingOpen ? "#0b0118" : "var(--wc-text-secondary)",
           flexShrink: 0,
           cursor: "pointer",
         }}

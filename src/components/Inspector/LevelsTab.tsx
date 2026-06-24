@@ -82,10 +82,10 @@ export function LevelsTab({
               onClick={() => void handleNormalize()}
               disabled={normalizing}
               style={{
-                background: normalizing ? "#1e293b" : "#0f172a",
-                border: "1px solid #334155",
+                background: normalizing ? "var(--wc-bg-surface)" : "var(--wc-bg-app)",
+                border: "1px solid var(--wc-border-strong)",
                 borderRadius: 4,
-                color: normalizing ? "#475569" : "#94a3b8",
+                color: normalizing ? "var(--wc-text-faint)" : "var(--wc-text-secondary)",
                 cursor: normalizing ? "default" : "pointer",
                 fontSize: 12,
                 padding: "4px 10px",
@@ -93,11 +93,11 @@ export function LevelsTab({
               }}
               onMouseEnter={(e) => {
                 if (!normalizing)
-                  (e.currentTarget as HTMLButtonElement).style.color = "#e2e8f0";
+                  (e.currentTarget as HTMLButtonElement).style.color = "var(--wc-text)";
               }}
               onMouseLeave={(e) => {
                 if (!normalizing)
-                  (e.currentTarget as HTMLButtonElement).style.color = "#94a3b8";
+                  (e.currentTarget as HTMLButtonElement).style.color = "var(--wc-text-secondary)";
               }}
             >
               {normalizing ? "Analyzing…" : "Normalize to 0 dBFS"}
@@ -111,7 +111,7 @@ export function LevelsTab({
       {isAudio && (
         <Field label="Pan">
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={{ color: "#94a3b8", fontSize: 11, flexShrink: 0 }}>L</span>
+            <span style={{ color: "var(--wc-text-secondary)", fontSize: 11, flexShrink: 0 }}>L</span>
             <input
               style={{ ...inputStyle, flex: 1, padding: "2px 4px" }}
               type="range"
@@ -122,7 +122,7 @@ export function LevelsTab({
               onChange={(e) => setPan(parseFloat(e.target.value))}
               onMouseUp={() => commitPan(pan)}
             />
-            <span style={{ color: "#94a3b8", fontSize: 11, flexShrink: 0 }}>R</span>
+            <span style={{ color: "var(--wc-text-secondary)", fontSize: 11, flexShrink: 0 }}>R</span>
             <input
               style={{ ...inputStyle, width: 60 }}
               type="number"

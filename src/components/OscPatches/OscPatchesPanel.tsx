@@ -6,10 +6,10 @@ import type { OscPatch } from "../../lib/types";
 import { listOscPatches, addOscPatch, updateOscPatch, removeOscPatch } from "../../lib/commands";
 
 const inputStyle: React.CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-app)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#e2e8f0",
+  color: "var(--wc-text)",
   fontSize: 12,
   padding: "4px 8px",
   width: "100%",
@@ -17,10 +17,10 @@ const inputStyle: React.CSSProperties = {
 
 const btnStyle: React.CSSProperties = {
   padding: "4px 10px",
-  background: "#1e293b",
-  border: "1px solid #334155",
+  background: "var(--wc-bg-surface)",
+  border: "1px solid var(--wc-border-strong)",
   borderRadius: 4,
-  color: "#94a3b8",
+  color: "var(--wc-text-secondary)",
   fontSize: 12,
   cursor: "pointer",
 };
@@ -69,16 +69,16 @@ export function OscPatchesPanel() {
   return (
     <div>
       <div style={{
-        fontSize: 11, fontWeight: 600, color: "#64748b",
+        fontSize: 11, fontWeight: 600, color: "var(--wc-text-muted)",
         textTransform: "uppercase", letterSpacing: "0.07em",
         marginBottom: 10, paddingBottom: 5,
-        borderBottom: "1px solid #1e293b",
+        borderBottom: "1px solid var(--wc-border)",
       }}>
         OSC Patches
       </div>
 
       {patches.length === 0 && (
-        <p style={{ color: "#475569", fontSize: 12, marginBottom: 8 }}>
+        <p style={{ color: "var(--wc-text-faint)", fontSize: 12, marginBottom: 8 }}>
           No patches defined.
         </p>
       )}
@@ -86,9 +86,9 @@ export function OscPatchesPanel() {
       {/* Header row */}
       {patches.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 80px 28px", gap: 6, marginBottom: 4 }}>
-          <span style={{ fontSize: 11, color: "#64748b" }}>Name</span>
-          <span style={{ fontSize: 11, color: "#64748b" }}>IP</span>
-          <span style={{ fontSize: 11, color: "#64748b" }}>Port</span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-muted)" }}>Name</span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-muted)" }}>IP</span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-muted)" }}>Port</span>
           <span />
         </div>
       )}
