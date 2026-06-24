@@ -217,10 +217,12 @@ export function CueRow({
     paddingTop: 2,
     paddingBottom: 2,
     paddingLeft: depth > 0 ? `${8 + depth * 20}px` : undefined,
-    cursor: isDragSource ? "grabbing" : "grab",
+    cursor: isDragSource ? "none" : "grab",
     userSelect: "none",
-    background: isGroup && !isSelected ? (bg === "transparent" ? "var(--wc-bg-group)" : bg) : bg,
-    borderBottom: isDragOver ? "1px solid var(--wc-accent)" : "1px solid var(--wc-border)",
+    background: isDragSource ? "transparent"
+      : isGroup && !isSelected ? (bg === "transparent" ? "var(--wc-bg-group)" : bg) : bg,
+    borderBottom: isDragSource ? "1px dashed var(--wc-border)"
+      : isDragOver ? "1px solid var(--wc-accent)" : "1px solid var(--wc-border)",
     boxShadow: isGroupDropTarget
       ? "inset 0 0 0 2px #22d3ee"
       : isDragOver
@@ -229,8 +231,8 @@ export function CueRow({
     fontSize: 13,
     color: isDisabled ? "var(--wc-text-faint)" : "var(--wc-text)",
     minHeight: rowHeight,
-    opacity: isDragSource ? 0.4 : isDisabled ? 0.55 : 1,
-    transition: "opacity 0.1s",
+    opacity: isDragSource ? 0.15 : isDisabled ? 0.55 : 1,
+    transition: "opacity 0.15s",
   };
 
   const filename = cue.file_path

@@ -200,6 +200,63 @@ function ColumnMenu({
 }
 
 // ---------------------------------------------------------------------------
+// RowGhost — floating row card that follows the cursor during cue reorder
+// ---------------------------------------------------------------------------
+
+const ROW_GHOST_COLORS: Record<string, string> = {
+  none: "transparent", red: "#ef4444", orange: "#f97316", yellow: "#eab308",
+  green: "#22c55e", cyan: "#06b6d4", blue: "#3b82f6",
+  purple: "#a855f7", pink: "#ec4899", white: "#f1f5f9", black: "#334155",
+};
+
+const ROW_GHOST_ICONS: Record<string, string> = {
+  audio: "🔊", memo: "📝", wait: "⏱", group: "📁", fade: "📉",
+  stop: "⬛", video: "🎬", image: "🖼", osc: "📡", midi: "🎹",
+  light: "💡", mic: "🎤", timecode: "🕐",
+};
+
+function RowGhost({ cue, x, y, rotation }: { cue: CueSummary; x: number; y: number; rotation: number }) {
+  const accent = ROW_GHOST_COLORS[cue.color] ?? "transparent";
+  const hasColor = accent !== "transparent";
+  return (
+    <div
+      className="wc-drag-ghost"
+      style={{
+        position: "fixed", left: x, top: y,
+        width: 320, height: 36,
+        transform: `translate(-40px, -50%) rotate(${rotation.toFixed(2)}deg) scale(1.04)`,
+        pointerEvents: "none", zIndex: 99999,
+        background: "var(--wc-bg-surface)",
+        border: "1px solid var(--wc-border-strong)",
+        borderRadius: 6,
+        display: "flex", alignItems: "center",
+        overflow: "hidden",
+        boxShadow: "0 16px 40px rgba(0,0,0,0.6), 0 4px 12px rgba(0,0,0,0.4)",
+      }}
+    >
+      {hasColor && (
+        <div style={{ width: 4, alignSelf: "stretch", background: accent, flexShrink: 0 }} />
+      )}
+      <span style={{
+        fontSize: 10, color: "var(--wc-text-faint)", fontFamily: "monospace",
+        padding: "0 8px", flexShrink: 0, minWidth: 36, textAlign: "right",
+      }}>
+        {cue.number ?? "–"}
+      </span>
+      <span style={{ fontSize: 11, flexShrink: 0, marginRight: 6 }}>
+        {ROW_GHOST_ICONS[cue.cue_type] ?? ""}
+      </span>
+      <span style={{
+        fontSize: 13, fontWeight: 600, color: "var(--wc-text)",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
+      }}>
+        {cue.name || "(untitled)"}
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -289,6 +346,9 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   const [draggingCueId,     setDraggingCueId]     = useState<string | null>(null);
   const [dropInsertIndex,   setDropInsertIndex]    = useState<number | null>(null);
   const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
+  const [ghostState, setGhostState] = useState<{ x: number; y: number; rotation: number } | null>(null);
+  const prevMouseXRef  = useRef<number | null>(null);
+  const smoothedVelRef = useRef(0);
 
   // ---------- New-cue drag state (toolbar buttons dragged into list) ----------
   // Driven by a CustomEvent "wincue:cue-drag-start" dispatched by external buttons.
@@ -493,7 +553,9 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         if (!drag.active) {
           if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 5) return;
           drag.active = true;
-          document.body.style.cursor = "grabbing";
+          document.body.style.cursor = "none";
+          prevMouseXRef.current = e.clientX;
+          smoothedVelRef.current = 0;
           setDraggingCueId(drag.id);
         }
         const { insertIdx, groupId, atEnd } = calcDropTarget(e.clientY);
@@ -503,18 +565,21 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         drag.dropGroupId = resolvedGroupId;
         drag.dropGroupAtEnd = atEnd;
         if (resolvedGroupId && atEnd) {
-          // Drop onto group header at end → highlight group, no insert line.
           setDropTargetGroupId(resolvedGroupId);
           setDropInsertIndex(null);
         } else if (resolvedGroupId && !atEnd) {
-          // Insert between group children → highlight group + show insert line.
-          // No flickering: calcDropTarget always returns the same groupId for child rows.
           setDropTargetGroupId(resolvedGroupId);
           setDropInsertIndex(insertIdx);
         } else {
           setDropTargetGroupId(null);
           setDropInsertIndex(insertIdx);
         }
+        // Inertia tilt for the floating ghost
+        const dx = e.clientX - (prevMouseXRef.current ?? e.clientX);
+        prevMouseXRef.current = e.clientX;
+        smoothedVelRef.current = smoothedVelRef.current * 0.78 + dx * 0.22;
+        const rotation = Math.max(-6, Math.min(6, smoothedVelRef.current * 0.45));
+        setGhostState({ x: e.clientX, y: e.clientY, rotation });
         return;
       }
     };
@@ -608,9 +673,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         }
         cueDragRef.current = null;
         document.body.style.cursor = "";
+        smoothedVelRef.current = 0;
+        prevMouseXRef.current = null;
         setDraggingCueId(null);
         setDropInsertIndex(null);
         setDropTargetGroupId(null);
+        setGhostState(null);
         return;
       }
     };
@@ -627,9 +695,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         if (cueDragRef.current?.active) {
           cueDragRef.current = null;
           document.body.style.cursor = "";
+          smoothedVelRef.current = 0;
+          prevMouseXRef.current = null;
           setDraggingCueId(null);
           setDropInsertIndex(null);
           setDropTargetGroupId(null);
+          setGhostState(null);
         }
         if (newCueDragRef.current?.active) {
           newCueDragRef.current = null;
@@ -1210,6 +1281,15 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           </div>
         )}
       </div>
+
+      {/* ── Row drag ghost ───────────────────────────────────────────────── */}
+      {draggingCueId !== null && ghostState !== null && (() => {
+        const cue = cues.find(c => c.id === draggingCueId)
+          ?? flatItems.find(fi => fi.cue.id === draggingCueId)?.cue;
+        return cue
+          ? <RowGhost cue={cue} x={ghostState.x} y={ghostState.y} rotation={ghostState.rotation} />
+          : null;
+      })()}
 
       {/* ── Column visibility menu ────────────────────────────────────────── */}
       {colMenuPos && (
