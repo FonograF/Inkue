@@ -55,7 +55,7 @@ use commands::{
         go, hard_stop_all, pause_cue, resume_cue, seek_cue, set_master_volume, stop_all, stop_cue,
     },
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
-    workspace_cmds::{get_workspace_info, load_workspace, new_workspace, save_workspace},
+    workspace_cmds::{collect_and_save_workspace, get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
 use engine::{AudioEngine, DmxEngine, OscServer, OutputEngine};
 use state::AppState;
@@ -242,6 +242,7 @@ pub fn run() {
             save_workspace,
             load_workspace,
             get_workspace_info,
+            collect_and_save_workspace,
             // Cue Lists
             get_cue_lists,
             add_cue_list,

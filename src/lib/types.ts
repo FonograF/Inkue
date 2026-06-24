@@ -232,6 +232,13 @@ export interface WorkspaceInfo {
   file_path: string | null;
 }
 
+export interface CollectReport {
+  workspace_path: string;
+  files_copied: number;
+  files_skipped: number;
+  files_missing: string[];
+}
+
 export interface WaveformData {
   peaks: number[];
   file_duration_s: number;

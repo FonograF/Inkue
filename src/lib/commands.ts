@@ -6,6 +6,7 @@ import type {
   AppPreferences,
   AudioCueData,
   AudioPreferences,
+  CollectReport,
   MachineAudioConfig,
   CueId,
   CueListSummary,
@@ -142,6 +143,8 @@ export const saveWorkspace = (path: string) =>
 export const loadWorkspace = (path: string) =>
   invoke<void>("load_workspace", { path });
 export const getWorkspaceInfo = () => invoke<WorkspaceInfo>("get_workspace_info");
+export const collectAndSave = (targetDir: string) =>
+  invoke<CollectReport>("collect_and_save_workspace", { targetDir });
 
 // ---------------------------------------------------------------------------
 // Cue Lists

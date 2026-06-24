@@ -2,6 +2,7 @@
 //!
 //! Corresponds to a `.wincue` file on disk.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    cue::registry::CueRegistry,
+    cue::{registry::CueRegistry, traits::Cue, types::CueType},
     engine::{audio_input::InputPatch, device_manager::OutputPatch, dmx_sink::UniverseOutput, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch},
     preferences::AppPreferences,
 };
@@ -76,6 +77,100 @@ fn absolutize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
         }
         _ => {}
     }
+}
+
+/// Recursively walk cue JSON and replace `file_path` values using `path_map`
+/// (absolute path → new relative path).  Paths not present in the map are
+/// left unchanged so the subsequent `relativize_paths` pass can handle them.
+fn remap_paths(value: &mut serde_json::Value, path_map: &HashMap<PathBuf, String>) {
+    match value {
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                remap_paths(item, path_map);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(p)) = obj.get("file_path") {
+                let path = PathBuf::from(p.as_str());
+                if let Some(new_rel) = path_map.get(&path) {
+                    obj.insert("file_path".into(), serde_json::Value::String(new_rel.clone()));
+                }
+            }
+            if let Some(children) = obj.get_mut("children") {
+                remap_paths(children, path_map);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_for_filename(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 32 => '_',
+            c => c,
+        })
+        .collect();
+    s.trim().to_string()
+}
+
+fn unique_filename(orig: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(orig.to_string()) {
+        return orig.to_string();
+    }
+    let (stem, ext) = orig
+        .rfind('.')
+        .map_or((orig, ""), |i| (&orig[..i], &orig[i..]));
+    let mut n = 1u32;
+    loop {
+        let candidate = format!("{stem}_{n}{ext}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Recursively collect `(cue_type, abs_path)` for every Audio / Video / Image
+/// cue in the tree, including those nested inside groups.
+fn collect_all_media_paths(
+    cues: &[Box<dyn Cue>],
+    out: &mut Vec<(CueType, PathBuf)>,
+) {
+    for cue in cues {
+        match cue.cue_type() {
+            ct @ (CueType::Audio | CueType::Video | CueType::Image) => {
+                if let Some(path) = cue.media_file_path() {
+                    if !path.as_os_str().is_empty() {
+                        out.push((ct, path.to_path_buf()));
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(children) = cue.child_cues() {
+            collect_all_media_paths(children, out);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Collect & Save report
+// ---------------------------------------------------------------------------
+
+/// Result returned by [`Workspace::collect_and_save`].
+#[derive(Debug, Serialize)]
+pub struct CollectReport {
+    /// Absolute path to the newly created `.wincue` file.
+    pub workspace_path: String,
+    /// Number of media files successfully copied to the new location.
+    pub files_copied: u32,
+    /// Number of files already at their destination (source == destination).
+    pub files_skipped: u32,
+    /// Paths of files referenced by cues but missing from disk.
+    pub files_missing: Vec<String>,
 }
 
 /// Serialisable workspace metadata.
@@ -233,6 +328,129 @@ impl Workspace {
         self.file_path = Some(target);
         self.is_modified = false;
         Ok(())
+    }
+
+    /// Copy all media files referenced by this workspace into
+    /// `{target_dir}/{workspace_name}/audio|video|images/` and write a
+    /// self-contained `.wincue` file with updated relative paths.
+    ///
+    /// The workspace in memory is **not modified** — this is a pure export.
+    pub fn collect_and_save(&self, target_dir: &Path) -> Result<CollectReport> {
+        let raw_name = if self.metadata.name.is_empty() { "Untitled" } else { &self.metadata.name };
+        let safe_name = {
+            let s = sanitize_for_filename(raw_name);
+            if s.is_empty() { "Untitled".into() } else { s }
+        };
+
+        let project_dir = target_dir.join(&safe_name);
+        for sub in &["audio", "video", "images"] {
+            std::fs::create_dir_all(project_dir.join(sub))
+                .with_context(|| format!("Cannot create {}/{sub}", project_dir.display()))?;
+        }
+
+        // Collect (cue_type, abs_path) pairs, deduplicating by path.
+        let mut raw: Vec<(CueType, PathBuf)> = Vec::new();
+        for cl in &self.cue_lists {
+            collect_all_media_paths(&cl.cues, &mut raw);
+        }
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let deduped: Vec<(CueType, PathBuf)> =
+            raw.into_iter().filter(|(_, p)| seen.insert(p.clone())).collect();
+
+        // Per-subfolder used-filename sets for conflict resolution.
+        let mut used: HashMap<&str, HashSet<String>> = [("audio", HashSet::new()), ("video", HashSet::new()), ("images", HashSet::new())]
+            .into_iter()
+            .collect();
+
+        let mut path_map: HashMap<PathBuf, String> = HashMap::new();
+        let mut files_copied = 0u32;
+        let mut files_skipped = 0u32;
+        let mut files_missing: Vec<String> = Vec::new();
+
+        for (cue_type, abs_path) in &deduped {
+            if !abs_path.exists() {
+                files_missing.push(abs_path.to_string_lossy().into_owned());
+                continue;
+            }
+
+            let subfolder = match cue_type {
+                CueType::Audio => "audio",
+                CueType::Video => "video",
+                CueType::Image => "images",
+                _ => continue,
+            };
+
+            let orig_name = abs_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".into());
+
+            let dest_name = unique_filename(&orig_name, used.get_mut(subfolder).unwrap());
+            let dest_path = project_dir.join(subfolder).join(&dest_name);
+            let new_rel = format!("{subfolder}/{dest_name}");
+
+            if abs_path == &dest_path {
+                // Source == destination: file is already at the right place.
+                files_skipped += 1;
+            } else {
+                std::fs::copy(abs_path, &dest_path).with_context(|| {
+                    format!("Failed to copy {} → {}", abs_path.display(), dest_path.display())
+                })?;
+                files_copied += 1;
+            }
+            path_map.insert(abs_path.clone(), new_rel);
+        }
+
+        let new_wincue_path = project_dir.join(format!("{safe_name}.wincue"));
+        let json = self.to_json_collected(&new_wincue_path, &path_map)?;
+        std::fs::write(&new_wincue_path, json)
+            .with_context(|| format!("Failed to write {}", new_wincue_path.display()))?;
+
+        Ok(CollectReport {
+            workspace_path: new_wincue_path.to_string_lossy().into_owned(),
+            files_copied,
+            files_skipped,
+            files_missing,
+        })
+    }
+
+    /// Like [`Self::to_json`] but applies `path_map` before the standard
+    /// `relativize_paths` step, so collected files get their new relative paths.
+    fn to_json_collected(
+        &self,
+        save_path: &Path,
+        path_map: &HashMap<PathBuf, String>,
+    ) -> Result<String> {
+        let base = save_path.parent();
+
+        let mut cue_lists_json: Vec<serde_json::Value> =
+            self.cue_lists.iter().map(|cl| cl.to_json()).collect();
+
+        for cl in &mut cue_lists_json {
+            if let Some(cues) = cl.get_mut("cues") {
+                remap_paths(cues, path_map);
+                if let Some(base_dir) = base {
+                    relativize_paths(cues, base_dir);
+                }
+            }
+        }
+
+        let doc = serde_json::json!({
+            "version": "1.0.0",
+            "workspace": self.metadata,
+            "output_patches": self.output_patches,
+            "default_output_patch": self.default_output_patch_id,
+            "osc_patches": self.osc_patches,
+            "input_patches": self.input_patches,
+            "universe_outputs": self.universe_outputs,
+            "fixtures": self.fixtures,
+            "fixture_groups": self.fixture_groups,
+            "preferences": self.preferences,
+            "cue_lists": cue_lists_json,
+            "active_cue_list_id": self.active_cue_list_id,
+        });
+
+        serde_json::to_string_pretty(&doc).context("Failed to serialize collected workspace")
     }
 
     /// Load a workspace from a `.wincue` file.

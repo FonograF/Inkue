@@ -9,7 +9,7 @@ use tauri::{Emitter, State};
 use crate::{
     commands::cue_list_cmds,
     cue::types::CueType,
-    show::Workspace,
+    show::{workspace::CollectReport, Workspace},
     state::AppState,
 };
 
@@ -140,6 +140,23 @@ pub fn load_workspace(
     }
 
     Ok(())
+}
+
+/// Copy all media files into a self-contained project folder and write a
+/// new `.wincue` file there with updated relative paths.
+///
+/// `target_dir` is the parent directory chosen by the user; the command
+/// creates `{target_dir}/{workspace_name}/` automatically.
+///
+/// The workspace currently open in memory is not affected.
+#[tauri::command]
+pub fn collect_and_save_workspace(
+    target_dir: String,
+    state: State<'_, AppState>,
+) -> Result<CollectReport, String> {
+    let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.collect_and_save(std::path::Path::new(&target_dir))
+        .map_err(|e| e.to_string())
 }
 
 /// Return basic workspace metadata for the title bar.

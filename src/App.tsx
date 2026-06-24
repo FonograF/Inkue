@@ -12,7 +12,8 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists } from "./lib/commands";
+import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists } from "./lib/commands";
+import type { CollectReport } from "./lib/types";
 import type { CueSummary } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -213,17 +214,108 @@ function GotoDialog({
 // File menu
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Collect & Save result dialog
+// ---------------------------------------------------------------------------
+
+function CollectResultDialog({
+  report,
+  onClose,
+}: {
+  report: CollectReport;
+  onClose: () => void;
+}) {
+  const hasMissing = report.files_missing.length > 0;
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 99999,
+        background: "rgba(0,0,0,0.6)", display: "flex",
+        alignItems: "center", justifyContent: "center",
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+          borderRadius: 10, padding: "24px 28px", maxWidth: 520, width: "90%",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.8)",
+        }}
+      >
+        <h3 style={{ margin: "0 0 16px", fontSize: 15, color: "var(--wc-text)" }}>
+          Collect &amp; Save Complete
+        </h3>
+
+        <div style={{ fontSize: 12, color: "var(--wc-text-muted)", marginBottom: 14, fontFamily: "monospace", wordBreak: "break-all" }}>
+          {report.workspace_path}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, marginBottom: 16 }}>
+          <div style={{ color: "var(--wc-text)" }}>
+            <span style={{ color: "#4ade80" }}>✓</span>{" "}
+            {report.files_copied} file{report.files_copied !== 1 ? "s" : ""} copied
+          </div>
+          {report.files_skipped > 0 && (
+            <div style={{ color: "var(--wc-text-muted)" }}>
+              — {report.files_skipped} already in place (skipped)
+            </div>
+          )}
+          {hasMissing && (
+            <div style={{ color: "#f87171" }}>
+              ⚠ {report.files_missing.length} file{report.files_missing.length !== 1 ? "s" : ""} missing from disk
+            </div>
+          )}
+        </div>
+
+        {hasMissing && (
+          <div style={{
+            background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)",
+            borderRadius: 6, padding: "8px 12px", marginBottom: 16,
+            maxHeight: 140, overflowY: "auto",
+          }}>
+            {report.files_missing.map((p) => (
+              <div key={p} style={{ fontSize: 11, color: "#fca5a5", fontFamily: "monospace", wordBreak: "break-all", marginBottom: 4 }}>
+                {p}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button
+            onClick={onClose}
+            style={{
+              background: "var(--wc-bg-hover)", border: "1px solid var(--wc-border-strong)",
+              borderRadius: 6, color: "var(--wc-text)", cursor: "pointer",
+              fontSize: 13, padding: "6px 18px",
+            }}
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// File menu
+// ---------------------------------------------------------------------------
+
 function FileMenu({
   onSave,
   onSaveAs,
   onOpen,
   onNew,
+  onCollect,
   onPreferences,
 }: {
   onSave: () => void;
   onSaveAs: () => void;
   onOpen: () => void;
   onNew: () => void;
+  onCollect: () => void;
   onPreferences: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -245,8 +337,9 @@ function FileMenu({
     { type: "item", label: "New Workspace",  shortcut: "Ctrl+N",         action: act(onNew) },
     { type: "item", label: "Open…",         shortcut: "Ctrl+O",         action: act(onOpen) },
     { type: "separator" },
-    { type: "item", label: "Save",          shortcut: "Ctrl+S",         action: act(onSave) },
-    { type: "item", label: "Save As…",      shortcut: "Ctrl+Shift+S",   action: act(onSaveAs) },
+    { type: "item", label: "Save",              shortcut: "Ctrl+S",       action: act(onSave) },
+    { type: "item", label: "Save As…",         shortcut: "Ctrl+Shift+S", action: act(onSaveAs) },
+    { type: "item", label: "Collect and Save…",                          action: act(onCollect) },
     { type: "separator" },
     { type: "item", label: "Preferences",   shortcut: "Ctrl+,",         action: act(onPreferences) },
     { type: "separator" },
@@ -439,6 +532,7 @@ export default function App() {
   const [gotoOpen, setGotoOpen]                   = useState(false);
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
   const [loadError, setLoadError]                 = useState<string | null>(null);
+  const [collectReport, setCollectReport]         = useState<CollectReport | null>(null);
 
   // Persist panel visibility across launches.
   useEffect(() => {
@@ -534,6 +628,17 @@ export default function App() {
   const handleNew = useCallback(async () => {
     await newWorkspace().catch(console.error);
     // cue-lists-changed and workspace-modified are emitted by the backend.
+  }, []);
+
+  const handleCollectAndSave = useCallback(async () => {
+    const dir = await openDialog({ directory: true });
+    if (typeof dir !== "string") return;
+    try {
+      const report = await collectAndSave(dir);
+      setCollectReport(report);
+    } catch (err) {
+      setLoadError(String(err));
+    }
   }, []);
 
   // -------------------------------------------------------------------------
@@ -754,6 +859,14 @@ export default function App() {
         />
       )}
 
+      {/* Collect & Save result dialog */}
+      {collectReport && (
+        <CollectResultDialog
+          report={collectReport}
+          onClose={() => setCollectReport(null)}
+        />
+      )}
+
       {/* Custom title bar — no drag-region on the container so menus/buttons work on Linux */}
       <div
         style={{
@@ -768,6 +881,7 @@ export default function App() {
           onSaveAs={() => void handleSaveAs()}
           onOpen={() => void handleOpen()}
           onNew={() => void handleNew()}
+          onCollect={() => void handleCollectAndSave()}
           onPreferences={() => void openPreferencesWindow()}
         />
         <ViewMenu
