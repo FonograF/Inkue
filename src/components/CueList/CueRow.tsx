@@ -204,6 +204,12 @@ export function CueRow({
   else if (isRunning)  bg = "var(--wc-bg-running)";
   else if (isPaused)   bg = "var(--wc-bg-paused)";
 
+  // Solid background for sticky-right cells (must be opaque to cover scrolled content).
+  const stickyBg = isRunning  ? "var(--wc-bg-running)"
+    : isPaused ? "var(--wc-bg-paused)"
+    : isGroup  ? "var(--wc-bg-group)"
+    : "var(--wc-bg-app)";
+
   const rowStyle: React.CSSProperties = {
     ...gridStyle,
     position: "relative",
@@ -435,7 +441,21 @@ export function CueRow({
         }}
       />
       {visibleDefs.map((col) => (
-        <div key={col.id} style={{ minWidth: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
+        <div
+          key={col.id}
+          style={col.stickyRight ? {
+            position: "sticky",
+            right: 0,
+            zIndex: 2,
+            background: stickyBg,
+            boxShadow: "-4px 0 8px rgba(0,0,0,0.18)",
+          } : {
+            minWidth: 0,
+            overflow: "hidden",
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
           {renderCell(col.id)}
         </div>
       ))}

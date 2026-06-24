@@ -25,6 +25,8 @@ export interface ColumnDef {
   fixed: boolean;
   /** Shows a resize drag handle on the right edge. */
   resizable: boolean;
+  /** Sticks to the right edge of the scroll container — always visible. */
+  stickyRight?: boolean;
 }
 
 export const DEFAULT_COLUMNS: ColumnDef[] = [
@@ -39,7 +41,7 @@ export const DEFAULT_COLUMNS: ColumnDef[] = [
   { id: "duration",  label: "Dur",     defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },
   { id: "post_wait", label: "Post-W",  defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },
   { id: "continue",  label: "C",       defaultWidth: 36,  minWidth: 28, fixed: false, resizable: true  },
-  { id: "stop_btn",  label: "Stop",    defaultWidth: 44,  minWidth: 36, fixed: false, resizable: false },
+  { id: "stop_btn",  label: "Stop",    defaultWidth: 44,  minWidth: 36, fixed: false, resizable: false, stickyRight: true },
 ];
 
 const DEFAULT_ORDER: ColumnId[] = DEFAULT_COLUMNS.map((d) => d.id);

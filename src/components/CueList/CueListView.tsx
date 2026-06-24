@@ -1005,7 +1005,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               data-col-id={def.id}
               title={def.fixed ? undefined : "Drag to reorder · Right-click for options"}
               style={{
-                position: "relative",
+                position: def.stickyRight ? "sticky" : "relative",
+                right: def.stickyRight ? 0 : undefined,
+                zIndex: def.stickyRight ? 3 : undefined,
+                background: def.stickyRight ? "var(--wc-bg-app)" : undefined,
+                boxShadow: def.stickyRight ? "-4px 0 8px rgba(0,0,0,0.18)" : undefined,
                 display: "flex",
                 alignItems: "center",
                 height: "100%",
