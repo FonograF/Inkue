@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-24
 
-## Current version: 0.9.9
+## Current version: 0.9.10
 
 ## cargo build result
 
@@ -126,6 +126,24 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.10 (2026-06-24) — Inline Editing + Active Cues View
+
+#### Inline Editing
+
+Double-click any `pre_wait`, `post_wait`, or `duration` (Wait/Fade only) cell in the cue list to edit it in-place.
+
+- **`components/CueList/CueRow.tsx`** — `editingCell` / `editingValue` state; `inlineInput()` renders a focused `<input>` with accent border; `commitInlineEdit()` parses seconds (supports `"1.5"`, `"1:30"` formats) and calls `updateCue`; `stopPropagation` prevents row drag/double-click from firing. `parseSeconds` helper and `INLINE_INPUT_STYLE` defined at module level.
+- **`components/CueList/CueListView.tsx`** — threads `onRefresh` prop through to `CueRow`.
+
+#### Active Cues View
+
+Compact panel that auto-appears above the cue list whenever one or more cues are running or paused.
+
+- **`components/ActiveCues/ActiveCuesView.tsx`** — new component; `flattenActive()` recursively collects running/paused cues from the nested tree; one `ActiveCueRow` per active cue: color stripe, icon, number, name, state badge (RUNNING / PAUSED), remaining time (or elapsed for infinite cues), bottom progress bar, stop button; `maxHeight: 180px` with overflow scroll; sticky "Active [N]" header; auto-hides when no active cues.
+- **`App.tsx`** — `<ActiveCuesView />` inserted between CueListTabs and the main view.
+
+**Tests** — 130 total, unchanged (pure frontend). tsc clean.
 
 ### 0.9.9 (2026-06-24) — Cart Mode
 

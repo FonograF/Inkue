@@ -7,6 +7,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { CueListView } from "./components/CueList/CueListView";
 import { CartView } from "./components/CueList/CartView";
 import { ShowModeView } from "./components/ShowMode/ShowModeView";
+import { ActiveCuesView } from "./components/ActiveCues/ActiveCuesView";
 import { CueListTabs } from "./components/CueList/CueListTabs";
 import { InspectorPanel } from "./components/Inspector/InspectorPanel";
 import { TransportBar } from "./components/Transport/TransportBar";
@@ -1025,6 +1026,7 @@ export default function App() {
           <>
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
+              <ActiveCuesView />
               {(() => {
                 const activeList = cueLists.find((l) => l.id === activeCueListId);
                 if (activeList?.mode === "cart") {
