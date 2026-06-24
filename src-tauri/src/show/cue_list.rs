@@ -3,10 +3,26 @@
 use std::collections::{HashMap, HashSet, BTreeMap};
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::cue::{registry::CueRegistry, traits::Cue, types::CueId};
 use crate::engine::timecode_types::{CueListTcConfig, TcTrigger};
+
+// ---------------------------------------------------------------------------
+// CueListMode
+// ---------------------------------------------------------------------------
+
+/// Playback mode for a cue list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CueListMode {
+    /// Sequential: GO fires the cue at the Playhead then advances it.
+    #[default]
+    Sequential,
+    /// Cart: each cue is triggered independently by clicking its tile.
+    Cart,
+}
 
 // ---------------------------------------------------------------------------
 // Recursive helpers (free functions to avoid borrow-checker conflicts)
@@ -80,6 +96,8 @@ fn add_child_to_group_anywhere(
 pub struct CueList {
     pub id: Uuid,
     pub name: String,
+    /// Sequential (playhead-driven) or Cart (each tile fires independently).
+    pub mode: CueListMode,
     /// Cues in their display/execution order.
     pub cues: Vec<Box<dyn Cue>>,
     /// ID of the cue at the Playhead (next to be triggered by GO).
@@ -102,6 +120,7 @@ impl CueList {
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
+            mode: CueListMode::default(),
             cues: Vec::new(),
             playhead_cue_id: None,
             tc_config: CueListTcConfig::default(),
@@ -630,6 +649,7 @@ impl CueList {
         serde_json::json!({
             "id": self.id,
             "name": self.name,
+            "mode": self.mode,
             "playhead_cue_id": self.playhead_cue_id,
             "tc_config": self.tc_config,
             "tc_triggers": self.tc_triggers.iter().map(|(id, t)| {
@@ -652,6 +672,11 @@ impl CueList {
             .and_then(|v| v.as_str())
             .unwrap_or("Cue List")
             .to_string();
+
+        let mode: CueListMode = value
+            .get("mode")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         let playhead_cue_id: Option<CueId> = value
             .get("playhead_cue_id")
@@ -707,6 +732,7 @@ impl CueList {
         Ok(Self {
             id,
             name,
+            mode,
             cues,
             playhead_cue_id,
             tc_config,

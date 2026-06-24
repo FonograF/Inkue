@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
-import { addCueList, removeCueList, renameCueList, setActiveCueList } from "../../lib/commands";
+import { addCueList, removeCueList, renameCueList, setActiveCueList, setCueListMode } from "../../lib/commands";
 
 export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
   const { cueLists, activeCueListId, refreshCueLists } = useWorkspaceStore();
@@ -43,6 +43,15 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
     await removeCueList(id).catch(console.error);
     await refreshCueLists();
     onRefresh();
+  };
+
+  const handleToggleMode = async (id: string) => {
+    const list = cueLists.find((l) => l.id === id);
+    if (!list) return;
+    const next = list.mode === "cart" ? "sequential" : "cart";
+    await setCueListMode(id, next).catch(console.error);
+    await refreshCueLists();
+    setContextMenu(null);
   };
 
   const startRename = (id: string, currentName: string) => {
@@ -116,8 +125,21 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
                 }}
               />
             ) : (
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>
-                {list.name}
+              <span style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 120 }}>
+                  {list.name}
+                </span>
+                {list.mode === "cart" && (
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, letterSpacing: "0.04em",
+                    color: isActive ? "var(--wc-accent)" : "var(--wc-text-faint)",
+                    border: `1px solid ${isActive ? "var(--wc-accent)" : "var(--wc-border)"}`,
+                    borderRadius: 3, padding: "0 3px", lineHeight: "14px",
+                    flexShrink: 0,
+                  }}>
+                    CART
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -158,6 +180,12 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
               const list = cueLists.find((l) => l.id === contextMenu.id);
               if (list) startRename(list.id, list.name);
             }}
+          />
+          <ContextMenuItem
+            label={cueLists.find((l) => l.id === contextMenu.id)?.mode === "cart"
+              ? "Switch to Sequential Mode"
+              : "Switch to Cart Mode"}
+            onClick={() => void handleToggleMode(contextMenu.id)}
           />
           <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
           <ContextMenuItem

@@ -101,6 +101,15 @@
         0%, 100% { opacity: 0.2; box-shadow: none; }
         50%       { opacity: 1;   box-shadow: 0 0 5px #22c55e; }
       }
+
+      /* ── Cart drag ghost ──────────────────────────────────────────────────── */
+      @keyframes wc-ghost-appear {
+        from { opacity: 0; }
+        to   { opacity: 0.93; }
+      }
+      .wc-drag-ghost {
+        animation: wc-ghost-appear 100ms ease-out forwards;
+      }
     </style>
     <!-- Apply saved theme before first paint to avoid flash -->
     <script>

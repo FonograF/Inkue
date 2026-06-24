@@ -167,6 +167,67 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
     Ok(())
 }
 
+/// Trigger a specific cue by ID (used in Cart Mode).
+///
+/// Parks the Playhead on the given cue and fires it via the normal GO path.
+/// Auto-Continue / Auto-Follow chains still work. The same loading guard as
+/// `go` applies to Audio Cues whose file is still being decoded.
+#[tauri::command]
+pub fn go_cue(
+    cue_id: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id: uuid::Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let context = make_context(&state, stop_fade_ms);
+    let mut transport = Transport::new(context);
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+
+    if let Some(cue) = cue_list.get_recursive(&id) {
+        if cue.cue_type() == CueType::Audio
+            && cue.file_duration().is_none()
+            && cue
+                .serialize()
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        {
+            return Ok(());
+        }
+    }
+
+    let result = transport.go_by_id(cue_list, &id).map_err(|e| e.to_string())?;
+
+    for stopped_id in &result.stopped {
+        let _ = app_handle.emit(
+            "cue-state-changed",
+            serde_json::json!({
+                "cue_id": stopped_id,
+                "old_state": "running",
+                "new_state": "standby",
+            }),
+        );
+    }
+    for &triggered_id in result.triggered.iter().skip(1) {
+        let _ = app_handle.emit(
+            "cue-state-changed",
+            serde_json::json!({
+                "cue_id": triggered_id,
+                "old_state": "standby",
+                "new_state": "running",
+            }),
+        );
+    }
+    let _ = app_handle.emit("playhead-moved", serde_json::json!({
+        "cue_id": cue_list.playhead_cue_id.map(|u| u.to_string())
+    }));
+    let _ = app_handle.emit("cue-list-refresh", serde_json::json!({}));
+    Ok(())
+}
+
 /// Stop all running cues with a soft fade-out.
 #[tauri::command]
 pub fn stop_all(

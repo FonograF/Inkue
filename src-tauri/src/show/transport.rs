@@ -239,6 +239,19 @@ impl Transport {
     }
 
     // -----------------------------------------------------------------------
+    // CART MODE — trigger by ID
+    // -----------------------------------------------------------------------
+
+    /// Trigger a specific cue by ID (Cart Mode).
+    ///
+    /// Parks the Playhead on `cue_id` then fires it via the normal GO path so
+    /// Auto-Continue / Auto-Follow chains still work.
+    pub fn go_by_id(&mut self, cue_list: &mut CueList, cue_id: &CueId) -> Result<GoResult> {
+        cue_list.set_playhead(Some(*cue_id))?;
+        self.go(cue_list)
+    }
+
+    // -----------------------------------------------------------------------
     // STOP / PAUSE / RESUME
     // -----------------------------------------------------------------------
 

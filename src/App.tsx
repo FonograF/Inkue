@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
+import { CartView } from "./components/CueList/CartView";
 import { ShowModeView } from "./components/ShowMode/ShowModeView";
 import { CueListTabs } from "./components/CueList/CueListTabs";
 import { InspectorPanel } from "./components/Inspector/InspectorPanel";
@@ -522,7 +523,7 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
 }
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues } =
+  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, cueLists, activeCueListId } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
@@ -1024,24 +1025,36 @@ export default function App() {
           <>
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
-              <CueListView
-                onCueDoubleClick={(cue: CueSummary) => {
-                  useWorkspaceStore.getState().setSelectedCueId(cue.id);
-                  setInspectorOpen(true);
-                }}
-                onRefresh={handleRefresh}
-              />
+              {(() => {
+                const activeList = cueLists.find((l) => l.id === activeCueListId);
+                if (activeList?.mode === "cart") {
+                  return <CartView onRefresh={handleRefresh} />;
+                }
+                return (
+                  <CueListView
+                    onCueDoubleClick={(cue: CueSummary) => {
+                      useWorkspaceStore.getState().setSelectedCueId(cue.id);
+                      setInspectorOpen(true);
+                    }}
+                    onRefresh={handleRefresh}
+                  />
+                );
+              })()}
             </div>
-            {inspectorOpen && (
-              <div
-                style={{
-                  width: 300, borderLeft: "1px solid var(--wc-border)",
-                  overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
-                }}
-              >
-                <InspectorPanel selectedCue={selectedCue} selectedCueIds={selectedCueIds} onRefresh={handleRefresh} />
-              </div>
-            )}
+            {inspectorOpen && (() => {
+              const activeList = cueLists.find((l) => l.id === activeCueListId);
+              if (activeList?.mode === "cart") return null;
+              return (
+                <div
+                  style={{
+                    width: 300, borderLeft: "1px solid var(--wc-border)",
+                    overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
+                  }}
+                >
+                  <InspectorPanel selectedCue={selectedCue} selectedCueIds={selectedCueIds} onRefresh={handleRefresh} />
+                </div>
+              );
+            })()}
           </>
         )}
       </div>

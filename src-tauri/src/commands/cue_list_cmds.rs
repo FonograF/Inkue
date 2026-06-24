@@ -4,13 +4,14 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
-use crate::{show::{cue_list::CueList, workspace::Workspace}, state::AppState};
+use crate::{show::{cue_list::{CueList, CueListMode}, workspace::Workspace}, state::AppState};
 
 /// Compact info about a cue list, sent to the frontend.
 #[derive(Debug, Clone, Serialize)]
 pub struct CueListInfo {
     pub id: String,
     pub name: String,
+    pub mode: CueListMode,
 }
 
 /// Returns the list of all cue lists and which one is active.
@@ -115,8 +116,30 @@ fn cue_list_infos(ws: &Workspace) -> Vec<CueListInfo> {
         .map(|cl| CueListInfo {
             id: cl.id.to_string(),
             name: cl.name.clone(),
+            mode: cl.mode,
         })
         .collect()
+}
+
+/// Set the playback mode of a cue list (Sequential or Cart).
+#[tauri::command]
+pub fn set_cue_list_mode(
+    state: State<'_, AppState>,
+    handle: tauri::AppHandle,
+    id: String,
+    mode: CueListMode,
+) -> Result<(), String> {
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let target: Uuid = id.parse().map_err(|_| "Invalid cue list ID")?;
+    let cl = ws
+        .cue_lists
+        .iter_mut()
+        .find(|cl| cl.id == target)
+        .ok_or("Cue list not found")?;
+    cl.mode = mode;
+    ws.mark_modified();
+    emit_cue_lists_changed(&handle, &ws);
+    Ok(())
 }
 
 pub fn emit_cue_lists_changed(handle: &tauri::AppHandle, ws: &Workspace) {

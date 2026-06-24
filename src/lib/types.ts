@@ -221,9 +221,12 @@ export interface MicCueData extends CueSummary {
   fade_out_curve: FadeCurve | null;
 }
 
+export type CueListMode = "sequential" | "cart";
+
 export interface CueListSummary {
   id: string;
   name: string;
+  mode: CueListMode;
 }
 
 export interface WorkspaceInfo {

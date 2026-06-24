@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-24
 
-## Current version: 0.9.8
+## Current version: 0.9.9
 
 ## cargo build result
 
@@ -126,6 +126,28 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.9 (2026-06-24) — Cart Mode
+
+Per-cue-list mode property: **Sequential** (current behavior, playhead-driven) or **Cart** (QLab-style grid of trigger tiles).
+
+- **`show/cue_list.rs`** — `CueListMode` enum (`sequential` | `cart`, default sequential); `mode` field on `CueList`; serialized in `.wincue` (backward-compat default). `to_json` + `from_json` updated.
+- **`show/transport.rs`** — `Transport::go_by_id(cue_list, cue_id)`: parks the Playhead on the given cue and fires via the normal GO path, so Auto-Continue / Auto-Follow still work.
+- **`commands/cue_list_cmds.rs`** — `CueListInfo.mode` added; new `set_cue_list_mode(id, mode)` command.
+- **`commands/transport_cmds.rs`** — new `go_cue(cue_id)` command (same loading guard as `go`, calls `go_by_id`).
+- **`lib.rs`** — both new commands registered in invoke_handler.
+- **`lib/types.ts`** — `CueListMode` type; `CueListSummary.mode` field.
+- **`lib/commands.ts`** — `goCue()`, `setCueListMode()`.
+- **`components/CueList/CartView.tsx`** — new component: responsive CSS grid (`auto-fill, minmax(160px, 1fr)`), one tile per top-level cue. Each tile: color stripe (left edge), cue number (top-left), type icon (top-right), name (bold, 2-line clamp), running LED + remaining time + STOP button (footer). Progress bar (bottom edge, green). Running: green border + tint + pulsing LED. Paused: orange border + tint. Completed: dimmed.
+  - **Drag to reorder** — mousedown+threshold activates drag; dragged tile is removed from `displayItems` and replaced by a `DropSlot` (dashed accent border) that moves with the cursor as it crosses tile midpoints — grid CSS reflowing naturally around it. On drop: `moveCue(id, insertIndex)` where `insertIndex` is already the after-removal index (no adjustment needed). Floating **DragGhost** follows cursor; rotation driven by exponentially-smoothed horizontal velocity (`smoothedVel = 0.78*prev + 0.22*dx`) giving inertia up to ±13°. System cursor hidden (`cursor:none`) during drag; ghost fade-in via `wc-ghost-appear` keyframe.
+  - **Drag from toolbar** — listens to `wincue:cue-drag-start` CustomEvent (same as sequential mode); inserts `DropSlot` at cursor position; on drop calls `addCue(type, insertIndex)`.
+  - **File drag-drop** — Tauri `onDragDropEvent`; inserts `DropSlot` at cursor position; creates cues with file assigned and name from filename.
+  - **Insert indicator** — `DropSlot` is a dashed-border placeholder cell that flows in the grid (not injected via box-shadow). Color-stripe overlay uses `zIndex: 10` to always appear above cue color stripe.
+- **`components/CueList/CueListTabs.tsx`** — "Switch to Cart Mode / Sequential Mode" in context menu; CART badge on cart-mode tabs.
+- **`App.tsx`** — branches on `activeList.mode === "cart"` to render `CartView` (inspector hidden in cart mode).
+- **`index.html`** — `@keyframes wc-ghost-appear` (opacity 0→0.93, 100ms) + `.wc-drag-ghost` class.
+
+**Tests** — 130 total, unchanged (cart mode is pure transport reuse). Clippy clean. tsc clean.
 
 ### 0.9.8 (2026-06-24) — Show Mode + CueList LED indicator
 

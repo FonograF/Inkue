@@ -9,6 +9,7 @@ import type {
   CollectReport,
   MachineAudioConfig,
   CueId,
+  CueListMode,
   CueListSummary,
   CueSummary,
   CueType,
@@ -42,6 +43,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 export const go = () => invoke<void>("go");
+export const goCue = (cueId: CueId) => invoke<void>("go_cue", { cueId });
 export const setMasterVolume = (db: number) => invoke<void>("set_master_volume", { db });
 export const stopAll = () => invoke<void>("stop_all");
 export const hardStopAll = () => invoke<void>("hard_stop_all");
@@ -159,6 +161,8 @@ export const renameCueList = (id: string, name: string) =>
   invoke<void>("rename_cue_list", { id, name });
 export const setActiveCueList = (id: string) =>
   invoke<void>("set_active_cue_list", { id });
+export const setCueListMode = (id: string, mode: CueListMode) =>
+  invoke<void>("set_cue_list_mode", { id, mode });
 
 // ---------------------------------------------------------------------------
 // Devices

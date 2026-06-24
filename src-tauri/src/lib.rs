@@ -22,7 +22,8 @@ use commands::{
         set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
     },
     cue_list_cmds::{
-        add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list, set_active_cue_list,
+        add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list,
+        set_active_cue_list, set_cue_list_mode,
     },
     device_cmds::{get_output_patches, list_input_devices, list_output_devices, refresh_devices, set_output_patch},
     input_cmds::{add_input_patch, list_input_patches, remove_input_patch, update_input_patch},
@@ -52,7 +53,8 @@ use commands::{
         update_general_preferences, update_machine_audio_config,
     },
     transport_cmds::{
-        go, hard_stop_all, pause_cue, resume_cue, seek_cue, set_master_volume, stop_all, stop_cue,
+        go, go_cue, hard_stop_all, pause_cue, resume_cue, seek_cue,
+        set_master_volume, stop_all, stop_cue,
     },
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
     workspace_cmds::{collect_and_save_workspace, get_workspace_info, load_workspace, new_workspace, save_workspace},
@@ -194,6 +196,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Transport
             go,
+            go_cue,
             stop_all,
             hard_stop_all,
             stop_cue,
@@ -249,6 +252,7 @@ pub fn run() {
             remove_cue_list,
             rename_cue_list,
             set_active_cue_list,
+            set_cue_list_mode,
             // Timecode
             get_tc_config,
             set_tc_config,
