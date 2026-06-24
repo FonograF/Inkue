@@ -539,8 +539,7 @@ export function CartView({ onRefresh }: { onRefresh: () => void }) {
           setIsDraggingFile(true);
           const pos = event.payload.position;
           if (pos) {
-            const dpr = window.devicePixelRatio || 1;
-            setInsertIndex(calcInsertIndex(pos.x / dpr, pos.y / dpr));
+            setInsertIndex(calcInsertIndex(pos.x, pos.y));
           }
         } else if (type === "leave") {
           setIsDraggingFile(false);
@@ -552,8 +551,7 @@ export function CartView({ onRefresh }: { onRefresh: () => void }) {
           const pos = event.payload.position;
           const mediaPaths = paths.filter(p => isAudioPath(p) || isVideoPath(p) || isImagePath(p));
           if (mediaPaths.length === 0) return;
-          const dpr = window.devicePixelRatio || 1;
-          let at = pos ? calcInsertIndex(pos.x / dpr, pos.y / dpr) : cuesRef.current.length;
+          let at = pos ? calcInsertIndex(pos.x, pos.y) : cuesRef.current.length;
           for (const p of mediaPaths) {
             const ct = cueTypeForPath(p);
             const newId = await addCue(ct, at).catch(() => null);

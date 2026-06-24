@@ -803,8 +803,6 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     let unlisten: (() => void) | undefined;
 
     (async () => {
-      // Tauri drag-drop positions are in physical (DPI-scaled) pixels.
-      // Convert to logical CSS pixels before comparing with getBoundingClientRect().
       // Cursor in the top/bottom 8 logical px of a row → insert line.
       // Cursor in the middle of a non-group row → assign/replace that cue.
       // Cursor in the middle of a top-level group row → drop into the group.
@@ -814,21 +812,33 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
         assignId: string | null;
         groupId: string | null;
       } {
-        const dpr = window.devicePixelRatio || 1;
-        const py  = physY / dpr;
-        const rowEls = rowsScrollRef.current
-          ? (Array.from(rowsScrollRef.current.querySelectorAll("[data-cue-id]")) as HTMLElement[])
-          : [];
+        const rowsEl = rowsScrollRef.current;
+        if (!rowsEl) return { insertIdx: flatItemsRef.current.length, assignId: null, groupId: null };
+
+        // Get the container's bounding rect to convert screen coords to container-relative
+        const containerRect = rowsEl.getBoundingClientRect();
+        // Tauri gives screen-relative coords; convert to container-relative by subtracting container's top
+        const containerRelativeY = physY - containerRect.top + rowsEl.scrollTop;
+
+        const rowEls = Array.from(rowsEl.querySelectorAll("[data-cue-id]")) as HTMLElement[];
         for (const el of rowEls) {
           const rect = el.getBoundingClientRect();
-          if (py < rect.top) {
+          // Convert row's screen-relative rect to container-relative by subtracting container's top
+          const rowTopRelative = rect.top - containerRect.top + rowsEl.scrollTop;
+          const rowBottomRelative = rect.bottom - containerRect.top + rowsEl.scrollTop;
+
+          if (containerRelativeY < rowTopRelative) {
             return { insertIdx: Number(el.dataset.cueIndex ?? 0), assignId: null, groupId: null };
           }
-          if (py < rect.bottom) {
+          if (containerRelativeY < rowBottomRelative) {
             const idx = Number(el.dataset.cueIndex ?? -1);
             const id  = el.dataset.cueId ?? null;
-            if (py - rect.top    < EDGE_PX) return { insertIdx: idx >= 0 ? idx     : 0,                           assignId: null, groupId: null };
-            if (rect.bottom - py < EDGE_PX) return { insertIdx: idx >= 0 ? idx + 1 : flatItemsRef.current.length, assignId: null, groupId: null };
+            if (containerRelativeY - rowTopRelative < EDGE_PX) {
+              return { insertIdx: idx >= 0 ? idx : 0, assignId: null, groupId: null };
+            }
+            if (rowBottomRelative - containerRelativeY < EDGE_PX) {
+              return { insertIdx: idx >= 0 ? idx + 1 : flatItemsRef.current.length, assignId: null, groupId: null };
+            }
             // Middle of row — group vs normal cue.
             if (el.dataset.isGroup === "true") {
               return { insertIdx: null, assignId: null, groupId: id };
