@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-23
+# WinCue — Project state as of 2026-06-24
 
-## Current version: 0.9.7
+## Current version: 0.9.8
 
 ## cargo build result
 
@@ -85,11 +85,12 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 | `stores/transportStore.ts` | ✅ Complete |
 | `stores/timingStore.ts` | ✅ Complete |
 | `hooks/useTauriEvents.ts` | ✅ Complete |
-| `components/CueList/columns.ts` | ✅ Complete — `notes` + `stop_btn` columns added |
+| `components/CueList/columns.ts` | ✅ Complete — `notes` + `stop_btn` + `led` columns; `led` always follows `playhead` (migration in `loadColumnConfig`); LS key v2 |
 | `components/CueList/CueListTabs.tsx` | ✅ Complete |
-| `components/CueList/CueRow.tsx` | ✅ Complete — `notes` cell (truncated + tooltip); `stop_btn` cell (`StopButton` component, visible only when running/paused); per-loop progress bar via `file_duration_ms % loop`; `onStop` prop |
-| `hooks/useKeyboardShortcuts.ts` | ✅ Complete |
-| `App.tsx` | ✅ Complete |
+| `components/CueList/CueRow.tsx` | ✅ Complete — `notes` cell; `stop_btn`; per-loop progress bar; `RunningLed` (sync via negative `animation-delay`); playhead left-aligned |
+| `components/ShowMode/ShowModeView.tsx` | ✅ Complete — read-only bubble-card list; `flattenAll` (groups → children); `computeArmedIds` (sequential/simultaneous groups); status: Completed/Armed/Ready/Running/Paused/Loading; progress bar; auto-scroll |
+| `hooks/useKeyboardShortcuts.ts` | ✅ Complete — `F5` → `onToggleShowMode` |
+| `App.tsx` | ✅ Complete — Show Mode state; View menu with F5 shortcut; toolbar hidden in Show Mode; ShowModeView replaces CueList+Inspector |
 | `components/CueList/CueListView.tsx` | ✅ Complete — passes `onStop` to CueRow |
 | `components/Inspector/InspectorPanel.tsx` | ✅ Complete |
 | `components/Inspector/OscTab.tsx` | ✅ Complete |
@@ -125,6 +126,25 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.8 (2026-06-24) — Show Mode + CueList LED indicator
+
+#### Show Mode (`View > Show Mode` / `F5`)
+
+Read-only, full-window presentation view — replaces the cue list and inspector while keeping the transport bar fully operational.
+
+- **`components/ShowMode/ShowModeView.tsx`** — bubble-card list of all cues, groups flattened to their children. Each card shows: cue number (left, monospace), name (bold), status label (right).
+  - Status mapping: **Completed** (opacity 0.45, no border — idle cues before the playhead) · **Armed** (cyan border + tint — next GO target) · **Ready** (subtle border — idle cues after playhead) · **Running MM:SS** (green border + tint + bottom progress bar) · **Paused MM:SS** (orange border) · **Loading…**
+  - `computeArmedIds` — mirrors `CueListView`'s inner-playhead logic for sequential groups (`active_child_id`) and simultaneous groups (all children), so the Armed highlight is always correct even inside nested groups.
+  - Auto-scroll: smooth scroll to the Armed (or Running) card on every playhead change.
+- **`hooks/useKeyboardShortcuts.ts`** — `F5` → `onToggleShowMode` (8th parameter, added to dependency array).
+- **`App.tsx`** — `showMode: boolean` state; View menu entry "Show Mode" with `F5` shortcut displayed; toolbar buttons hidden when active; ShowModeView rendered instead of CueList + Inspector.
+
+#### CueList LED indicator
+
+- **`components/CueList/CueRow.tsx`** — `RunningLed` component: 8px green circle, CSS `wc-led-pulse` animation. Sync: `animation-delay` set to `-(Date.now() % 1800) / 1000` seconds at mount (via `useRef`, stable across re-renders) so all concurrent LEDs share the same phase. Playhead triangle left-aligned with `paddingLeft: 6`.
+- **`components/CueList/columns.ts`** — new `"led"` column (20px, fixed, non-resizable), inserted right after `"playhead"`; `loadColumnConfig` migration ensures ordering is correct for existing saved configs; LS key bumped to `wincue_column_config_v2` to force a clean default on the first load.
+- **`index.html`** — `@keyframes wc-led-pulse` (1.8 s ease-in-out, opacity 0.2 → 1 with a green glow at 50 %).
 
 ### 0.9.7 (2026-06-23) — cpal 0.15.3 → 0.18.1 upgrade (Mic Cue crash root-fix)
 

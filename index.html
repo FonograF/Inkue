@@ -25,10 +25,34 @@
         --wc-text-secondary: #8a8480;
         --wc-text-muted:     #6a6460;
         --wc-text-faint:     #504c48;
-        --wc-accent:       #f59e0b;
-        --wc-accent-hover: #d97706;
-        --wc-accent-fg:    #1a0f00;
-        --wc-accent-dim:   rgba(245, 158, 11, 0.15);
+        --wc-accent:       #22c55e;
+        --wc-accent-hover: #16a34a;
+        --wc-accent-fg:    #071a0e;
+        --wc-accent-dim:   rgba(34, 197, 94, 0.15);
+        color-scheme: dark;
+      }
+      :root[data-theme="navy"] {
+        --wc-bg-deepest:   #08090f;
+        --wc-bg-app:       #0f1117;
+        --wc-bg-surface:   #171c28;
+        --wc-bg-input:     #0c0e16;
+        --wc-bg-hover:     #1e2438;
+        --wc-bg-selected:  rgba(34, 197, 94, 0.15);
+        --wc-bg-running:   #0a1f14;
+        --wc-bg-paused:    #1a1a08;
+        --wc-bg-group:     #0b0e18;
+        --wc-bg-drag-over: #0c1f12;
+        --wc-border:        #1c2238;
+        --wc-border-strong: #28304c;
+        --wc-text-bright:    #e8edf8;
+        --wc-text:           #bcc8e0;
+        --wc-text-secondary: #5e6e94;
+        --wc-text-muted:     #404e6a;
+        --wc-text-faint:     #2c3650;
+        --wc-accent:       #22c55e;
+        --wc-accent-hover: #16a34a;
+        --wc-accent-fg:    #071a0e;
+        --wc-accent-dim:   rgba(34, 197, 94, 0.15);
         color-scheme: dark;
       }
       :root[data-theme="light"] {
@@ -49,10 +73,10 @@
         --wc-text-secondary: #484038;
         --wc-text-muted:     #706860;
         --wc-text-faint:     #988880;
-        --wc-accent:       #b86000;
-        --wc-accent-hover: #904800;
+        --wc-accent:       #15803d;
+        --wc-accent-hover: #166534;
         --wc-accent-fg:    #ffffff;
-        --wc-accent-dim:   rgba(184, 96, 0, 0.16);
+        --wc-accent-dim:   rgba(21, 128, 61, 0.16);
         color-scheme: light;
       }
 
@@ -71,13 +95,19 @@
       *::-webkit-scrollbar-thumb { background: var(--wc-border-strong); border-radius: 3px; }
       *::-webkit-scrollbar-thumb:hover { background: var(--wc-text-faint); }
       *::-webkit-scrollbar-corner { background: transparent; }
+
+      /* ── Running LED pulse ────────────────────────────────────────────────── */
+      @keyframes wc-led-pulse {
+        0%, 100% { opacity: 0.2; box-shadow: none; }
+        50%       { opacity: 1;   box-shadow: 0 0 5px #22c55e; }
+      }
     </style>
     <!-- Apply saved theme before first paint to avoid flash -->
     <script>
       (function () {
         try {
           var t = localStorage.getItem("wc_theme");
-          if (t === "dark" || t === "light") {
+          if (t && t !== "system") {
             document.documentElement.setAttribute("data-theme", t);
           } else {
             document.documentElement.setAttribute(

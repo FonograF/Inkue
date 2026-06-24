@@ -1,10 +1,31 @@
 // A single row in the cue list table.
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { PlayheadIndicator } from "./PlayheadIndicator";
 import type { ColumnDef } from "./columns";
 import type { CueColorStyle, CueSummary } from "../../lib/types";
 import { useTimingStore } from "../../stores/timingStore";
+
+function RunningLed() {
+  const delayRef = useRef<string | null>(null);
+  if (!delayRef.current) {
+    const phase = (Date.now() % 1800) / 1000;
+    delayRef.current = `-${phase.toFixed(3)}s`;
+  }
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: "#22c55e",
+        flexShrink: 0,
+        animation: `wc-led-pulse 1.8s ease-in-out ${delayRef.current} infinite`,
+      }}
+    />
+  );
+}
 
 function StopButton({ onStop }: { onStop: () => void }) {
   const [hovered, setHovered] = useState(false);
@@ -215,7 +236,7 @@ export function CueRow({
       case "playhead":
         if (isGroup) {
           return (
-            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", width: "100%", gap: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", paddingLeft: 6 }}>
               <PlayheadIndicator visible={isAtPlayhead} />
               <button
                 style={{
@@ -233,8 +254,15 @@ export function CueRow({
           );
         }
         return (
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", width: "100%" }}>
+          <div style={{ display: "flex", justifyContent: "flex-start", alignItems: "center", width: "100%", paddingLeft: 6 }}>
             <PlayheadIndicator visible={isAtPlayhead} />
+          </div>
+        );
+
+      case "led":
+        return (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+            {isRunning && <RunningLed />}
           </div>
         );
 

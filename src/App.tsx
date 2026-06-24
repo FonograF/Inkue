@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
+import { ShowModeView } from "./components/ShowMode/ShowModeView";
 import { CueListTabs } from "./components/CueList/CueListTabs";
 import { InspectorPanel } from "./components/Inspector/InspectorPanel";
 import { TransportBar } from "./components/Transport/TransportBar";
@@ -314,6 +315,7 @@ interface ViewMenuItem {
   label: string;
   checked: boolean;
   onClick: () => void;
+  shortcut?: string;
 }
 
 function ViewMenu({ items }: { items: ViewMenuItem[] }) {
@@ -363,7 +365,10 @@ function ViewMenu({ items }: { items: ViewMenuItem[] }) {
               <span style={{ width: 14, textAlign: "center", color: "var(--wc-text-secondary)" }}>
                 {item.checked ? "✓" : ""}
               </span>
-              <span>{item.label}</span>
+              <span style={{ flex: 1 }}>{item.label}</span>
+              {item.shortcut && (
+                <span style={{ color: "var(--wc-text-muted)", fontSize: 11 }}>{item.shortcut}</span>
+              )}
             </button>
           ))}
         </div>
@@ -429,6 +434,7 @@ export default function App() {
 
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
   const [showCueListTabs, setShowCueListTabs]     = useState(() => loadUiLayout().showCueListTabs);
+  const [showMode, setShowMode]                   = useState(false);
   const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
   const [gotoOpen, setGotoOpen]                   = useState(false);
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
@@ -444,20 +450,20 @@ export default function App() {
     const root = document.documentElement;
     const theme = displayPrefs.theme ?? "system";
 
-    const apply = (dark: boolean) => {
-      const effective = dark ? "dark" : "light";
-      root.setAttribute("data-theme", effective);
-      try { localStorage.setItem("wc_theme", effective); } catch { /* ignore */ }
-    };
-
     if (theme === "system") {
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      const apply = (dark: boolean) => {
+        const effective = dark ? "dark" : "light";
+        root.setAttribute("data-theme", effective);
+        try { localStorage.setItem("wc_theme", effective); } catch { /* ignore */ }
+      };
       apply(mq.matches);
       const handler = (e: MediaQueryListEvent) => apply(e.matches);
       mq.addEventListener("change", handler);
       return () => mq.removeEventListener("change", handler);
     } else {
-      apply(theme === "dark");
+      root.setAttribute("data-theme", theme);
+      try { localStorage.setItem("wc_theme", theme); } catch { /* ignore */ }
     }
   }, [displayPrefs.theme]);
 
@@ -589,6 +595,7 @@ export default function App() {
     () => setInspectorOpen((v) => !v),
     () => setGotoOpen(true),
     () => void handleToggleSurface(),
+    () => setShowMode((v) => !v),
   );
 
   const selectedCue = findCueRecursive(cues, selectedCueId) ?? null;
@@ -765,9 +772,10 @@ export default function App() {
         />
         <ViewMenu
           items={[
-            { label: "Cue List Tabs",  checked: showCueListTabs,     onClick: () => setShowCueListTabs((v) => !v) },
-            { label: "Inspector",      checked: inspectorOpen,        onClick: () => setInspectorOpen((v) => !v) },
-            { label: "Output Surface", checked: outputSurfaceVisible, onClick: () => void handleToggleSurface() },
+            { label: "Show Mode",      checked: showMode,             onClick: () => setShowMode((v) => !v),       shortcut: "F5" },
+            { label: "Cue List Tabs",  checked: showCueListTabs,      onClick: () => setShowCueListTabs((v) => !v) },
+            { label: "Inspector",      checked: inspectorOpen,         onClick: () => setInspectorOpen((v) => !v) },
+            { label: "Output Surface", checked: outputSurfaceVisible,  onClick: () => void handleToggleSurface() },
           ]}
         />
 
@@ -790,8 +798,8 @@ export default function App() {
           </span>
         </div>
 
-        {/* Toolbar — ordered most → least frequently used */}
-        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        {/* Toolbar — hidden in Show Mode */}
+        <div style={{ display: showMode ? "none" : "flex", gap: 6, flexShrink: 0 }}>
           <button
             style={{ ...toolbarBtn, color: "var(--wc-accent)", cursor: "grab", userSelect: "none" }}
             onClick={handleAddAudio}
@@ -896,25 +904,31 @@ export default function App() {
 
       {/* Main area */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
-          <CueListView
-            onCueDoubleClick={(cue: CueSummary) => {
-              useWorkspaceStore.getState().setSelectedCueId(cue.id);
-              setInspectorOpen(true);
-            }}
-            onRefresh={handleRefresh}
-          />
-        </div>
-        {inspectorOpen && (
-          <div
-            style={{
-              width: 300, borderLeft: "1px solid var(--wc-border)",
-              overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
-            }}
-          >
-            <InspectorPanel selectedCue={selectedCue} selectedCueIds={selectedCueIds} onRefresh={handleRefresh} />
-          </div>
+        {showMode ? (
+          <ShowModeView />
+        ) : (
+          <>
+            <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+              {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
+              <CueListView
+                onCueDoubleClick={(cue: CueSummary) => {
+                  useWorkspaceStore.getState().setSelectedCueId(cue.id);
+                  setInspectorOpen(true);
+                }}
+                onRefresh={handleRefresh}
+              />
+            </div>
+            {inspectorOpen && (
+              <div
+                style={{
+                  width: 300, borderLeft: "1px solid var(--wc-border)",
+                  overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
+                }}
+              >
+                <InspectorPanel selectedCue={selectedCue} selectedCueIds={selectedCueIds} onRefresh={handleRefresh} />
+              </div>
+            )}
+          </>
         )}
       </div>
 

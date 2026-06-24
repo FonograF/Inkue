@@ -691,23 +691,16 @@ function PersonalizationContent({
 
       <Section title="Appearance">
         <Row label="Theme">
-          <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid var(--wc-border-strong)" }}>
-            {(["dark", "light", "system"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => onThemeChange({ ...theme, theme: t })}
-                style={{
-                  flex: 1, padding: "5px 0", border: "none",
-                  background: theme.theme === t ? "var(--wc-accent)" : "var(--wc-bg-surface)",
-                  color: theme.theme === t ? "var(--wc-accent-fg)" : "var(--wc-text-secondary)",
-                  cursor: "pointer", fontSize: 12, fontWeight: theme.theme === t ? 600 : 400,
-                  textTransform: "capitalize",
-                }}
-              >
-                {t === "system" ? "System" : t === "dark" ? "Dark" : "Light"}
-              </button>
-            ))}
-          </div>
+          <Select
+            style={selectStyle}
+            value={theme.theme}
+            onChange={(e) => onThemeChange({ ...theme, theme: e.target.value as typeof theme.theme })}
+          >
+            <option value="dark">Dark</option>
+            <option value="navy">Navy</option>
+            <option value="light">Light (Warm Cream)</option>
+            <option value="system">System (follow OS)</option>
+          </Select>
         </Row>
       </Section>
     </>
@@ -918,20 +911,20 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   }, []);
 
   // In standalone mode: apply theme preview to this window's document as the
-  // user clicks Dark / Light / System so the preferences panel itself repaints.
+  // user changes the theme selector so the preferences panel itself repaints.
   useEffect(() => {
     if (!standalone) return;
     const root = document.documentElement;
     const t = draftTheme.theme ?? "system";
-    const apply = (dark: boolean) => root.setAttribute("data-theme", dark ? "dark" : "light");
     if (t === "system") {
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      const apply = (dark: boolean) => root.setAttribute("data-theme", dark ? "dark" : "light");
       apply(mq.matches);
       const h = (e: MediaQueryListEvent) => apply(e.matches);
       mq.addEventListener("change", h);
       return () => mq.removeEventListener("change", h);
     } else {
-      apply(t === "dark");
+      root.setAttribute("data-theme", t);
     }
   }, [standalone, draftTheme.theme]);
 

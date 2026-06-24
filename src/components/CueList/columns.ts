@@ -2,6 +2,7 @@
 
 export type ColumnId =
   | "playhead"
+  | "led"
   | "number"
   | "name"
   | "notes"
@@ -27,7 +28,8 @@ export interface ColumnDef {
 }
 
 export const DEFAULT_COLUMNS: ColumnDef[] = [
-  { id: "playhead",  label: "▶",      defaultWidth: 60,  minWidth: 40, fixed: true,  resizable: false },
+  { id: "playhead",  label: "▶",      defaultWidth: 28,  minWidth: 24, fixed: true,  resizable: false },
+  { id: "led",       label: "",        defaultWidth: 20,  minWidth: 16, fixed: true,  resizable: false },
   { id: "number",    label: "#",       defaultWidth: 60,  minWidth: 36, fixed: false, resizable: true  },
   { id: "name",      label: "Name",    defaultWidth: 200, minWidth: 80, fixed: true,  resizable: true  },
   { id: "notes",     label: "Notes",   defaultWidth: 220, minWidth: 60, fixed: false, resizable: true  },
@@ -61,7 +63,7 @@ export const DEFAULT_COLUMN_CONFIG: ColumnConfig = {
   order: DEFAULT_ORDER,
 };
 
-const LS_KEY = "wincue_column_config";
+const LS_KEY = "wincue_column_config_v2";
 
 export function loadColumnConfig(): ColumnConfig {
   try {
@@ -73,10 +75,20 @@ export function loadColumnConfig(): ColumnConfig {
       DEFAULT_ORDER.includes(id as ColumnId),
     ) as ColumnId[];
     const missing = DEFAULT_ORDER.filter((id) => !savedOrder.includes(id));
+    const order: ColumnId[] = [...savedOrder, ...missing];
+
+    // Ensure "led" always sits right after "playhead" (migration for older configs).
+    const phPos = order.indexOf("playhead");
+    const ldPos = order.indexOf("led");
+    if (phPos >= 0 && ldPos >= 0 && ldPos !== phPos + 1) {
+      order.splice(ldPos, 1);
+      order.splice(phPos + 1, 0, "led");
+    }
+
     return {
       widths: parsed.widths ?? {},
       hidden: parsed.hidden ?? {},
-      order: [...savedOrder, ...missing],
+      order,
     };
   } catch {
     return DEFAULT_COLUMN_CONFIG;
