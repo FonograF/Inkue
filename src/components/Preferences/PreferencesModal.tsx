@@ -204,6 +204,13 @@ function AudioContent({
               </Select>
               <button
                 style={btnStyle}
+                onClick={() => void loadDevices(machineConfig.backend)}
+                title="Refresh device list"
+              >
+                ↺
+              </button>
+              <button
+                style={btnStyle}
                 onClick={() => void testAudioDevice(machineConfig.device_id ?? "", machineConfig.backend)}
                 title="Play 440 Hz test tone on selected device"
               >

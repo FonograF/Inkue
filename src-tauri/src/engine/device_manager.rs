@@ -219,10 +219,17 @@ pub fn query_pipewire_devices() -> (Vec<DeviceInfo>, Vec<DeviceInfo>) {
 
         let node_name = props.get("node.name").and_then(|v| v.as_str()).unwrap_or_default();
         if node_name.is_empty() { continue; }
-        let description = props
-            .get("node.description").and_then(|v| v.as_str())
-            .or_else(|| props.get("node.nick").and_then(|v| v.as_str()))
-            .unwrap_or(node_name);
+        let nick = props.get("node.nick").and_then(|v| v.as_str()).unwrap_or_default();
+        let desc = props.get("node.description").and_then(|v| v.as_str()).unwrap_or_default();
+        // Prefer nick when the description is just the nick repeated with
+        // PipeWire profile noise (e.g. "UMC404HD 192k Direct UMC404HD 192k").
+        let description = if !nick.is_empty() && (desc.is_empty() || desc.starts_with(nick)) {
+            nick
+        } else if !desc.is_empty() {
+            desc
+        } else {
+            node_name
+        };
         let channels: u16 = props
             .get("audio.channels").and_then(|v| v.as_u64())
             .unwrap_or(2) as u16;
