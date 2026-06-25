@@ -46,7 +46,7 @@ use crate::engine::AudioEngine;
 
 use super::mpv_sys::{
     MpvLib, MpvNode, MpvNodeList, MpvNodeUnion,
-    MPV_FORMAT_INT64, MPV_FORMAT_NODE_MAP, MPV_FORMAT_NONE, MPV_FORMAT_STRING,
+    MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64, MPV_FORMAT_NODE_MAP, MPV_FORMAT_NONE, MPV_FORMAT_STRING,
 };
 
 // ---------------------------------------------------------------------------
@@ -697,6 +697,33 @@ impl OutputEngine {
         OUTPUT_CURRENT_AUDIO_VOICE.get()
             .and_then(|m| m.lock().ok())
             .and_then(|g| *g)
+    }
+
+    /// Current playback position of the output video (mpv `time-pos`), in ms.
+    pub fn current_video_position_ms(&self) -> Option<u64> {
+        let mut secs: f64 = 0.0;
+        let name = cs("time-pos");
+        let ret = unsafe {
+            (self.mpv_lib.mpv_get_property)(
+                self.mpv_ctx.0,
+                name.as_ptr(),
+                MPV_FORMAT_DOUBLE,
+                &mut secs as *mut f64 as *mut c_void,
+            )
+        };
+        (ret == 0 && secs >= 0.0).then_some((secs * 1000.0) as u64)
+    }
+
+    /// Re-anchor the paired audio voice to the video's **actual** position
+    /// (mpv `time-pos`), without moving mpv.  Corrects the A/V drift that builds
+    /// up when the picture keeps advancing while the audio voice is frozen
+    /// during an output-device outage.
+    pub fn resync_audio_to_video(&self) {
+        if let (Some(ms), Some(av)) =
+            (self.current_video_position_ms(), self.get_current_audio_voice())
+        {
+            let _ = self.audio_engine.seek_voice_ms(av, ms);
+        }
     }
 
     // ── Legacy API kept for VideoCue ─────────────────────────────────────────

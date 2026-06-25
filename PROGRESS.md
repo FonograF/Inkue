@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.21
+## Current version: 0.9.22
 
 ## cargo build result
 
@@ -128,6 +128,10 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.22 (2026-06-26) — Precise A/V re-sync (mpv time-pos)
+
+Tightens 0.9.21. The re-sync seeked both clocks to the cue's *wall-clock* `action_elapsed`, an approximation of mpv's real position, leaving a small residual offset. Now `OutputEngine::resync_audio_to_video()` reads mpv's actual `time-pos` (new `current_video_position_ms`) and seeks **only the paired audio voice** to it — mpv (the picture) is the master and is left untouched. The event-loop freeze-guard calls it while the cue is still paused, so audio and video are aligned to mpv's true position before playback resumes. Residual is now just the inherent, fixed render/output-buffer latency. `engine/output_engine/mod.rs`, `show/event_loop.rs`.
 
 ### 0.9.21 (2026-06-26) — Re-sync video A/V after an audio outage
 

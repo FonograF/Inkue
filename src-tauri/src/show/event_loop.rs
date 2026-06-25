@@ -364,11 +364,11 @@ fn tick(
                 }
                 // Video: mpv (its own clock) kept playing during the ~250 ms
                 // detection window while the paired audio voice was frozen, so
-                // they desynced.  Re-seek both to the cue's frozen elapsed
-                // position before resuming so audio catches up to the picture.
+                // they desynced.  Re-anchor the audio voice to mpv's *actual*
+                // position (time-pos) — without moving the picture — so audio
+                // catches up precisely before playback resumes.
                 if cue.cue_type() == CueType::Video {
-                    let pos = cue.action_elapsed().as_millis() as u64;
-                    cue.seek(pos, &tick_ctx);
+                    tick_ctx.output_engine.resync_audio_to_video();
                 }
                 if cue.resume(&tick_ctx).is_ok() {
                     just_resumed.push(cue.id());
