@@ -296,11 +296,20 @@ pub fn run() {
                         use crate::health::{self, HealthAlert, HealthLevel};
 
                         let mut last_seq = 0u64;
+                        let mut last_count = engine.callback_count();
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(2));
 
+                            // Heartbeat: if the output callback stopped firing over
+                            // the last tick, the stream is dead even if cpal raised
+                            // no error (device-loss detection, kind-agnostic).
+                            let count = engine.callback_count();
+                            let stalled = count == last_count;
+                            last_count = count;
+
                             let h = engine.audio_health();
-                            if h.failed && !h.in_fallback {
+                            let failed = h.failed || stalled;
+                            if failed && !h.in_fallback {
                                 if h.desired_device.is_some() {
                                     let lost = engine.fall_back_to_default().unwrap_or_default();
                                     health::set(HealthAlert::new(

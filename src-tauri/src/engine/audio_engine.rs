@@ -100,6 +100,10 @@ pub struct AudioEngine {
     /// Actual output callback period in frames (updated on the first callback).
     /// Used by `mix_live` to set a tight `target_lag` instead of a fixed 25 ms.
     output_period: Arc<std::sync::atomic::AtomicU32>,
+    /// Monotonic count of output callbacks fired.  Shared across restarts; the
+    /// device watchdog treats a count that stops advancing for ~2 s as a dead
+    /// stream (kind-agnostic device-loss detection, even if cpal reports no error).
+    output_callbacks: Arc<std::sync::atomic::AtomicU64>,
     /// Total output channel count of the current stream (updated on restart).
     output_channels: std::sync::atomic::AtomicU32,
     master_gain: Arc<std::sync::atomic::AtomicU32>,
@@ -141,6 +145,7 @@ impl AudioEngine {
         let shared_voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
         let input_feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let output_period = Arc::new(std::sync::atomic::AtomicU32::new(256));
+        let output_callbacks = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         let stream_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -152,6 +157,7 @@ impl AudioEngine {
                 Arc::clone(&master_gain),
                 Arc::clone(&output_period),
                 Arc::clone(&stream_failed),
+                Arc::clone(&output_callbacks),
             )
         };
 
@@ -183,6 +189,7 @@ impl AudioEngine {
             output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
             master_gain,
             output_period,
+            output_callbacks,
             stream_failed: Mutex::new(stream_failed),
             // `desired_config` keeps the operator's choice even when we started on
             // the fallback, so the watchdog can offer a restore when it returns.
@@ -202,6 +209,13 @@ impl AudioEngine {
     }
 
     // ── Device resilience ─────────────────────────────────────────────────────
+
+    /// Monotonic output-callback count.  The watchdog flags a dead stream when
+    /// this stops advancing — a device-loss signal that does not depend on cpal
+    /// surfacing an error of a particular kind.
+    pub fn callback_count(&self) -> u64 {
+        self.output_callbacks.load(std::sync::atomic::Ordering::Relaxed)
+    }
 
     /// Snapshot of the output device's current health for the watchdog.
     pub fn audio_health(&self) -> AudioHealth {
@@ -539,6 +553,7 @@ impl AudioEngine {
             Arc::clone(&self.master_gain),
             Arc::clone(&self.output_period),
             Arc::clone(&new_failed),
+            Arc::clone(&self.output_callbacks),
         )?;
 
         *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = sr.cmd_prod;
@@ -587,6 +602,7 @@ fn open_stream_inner(
     cb_mg: Arc<std::sync::atomic::AtomicU32>,
     cb_period: Arc<std::sync::atomic::AtomicU32>,
     stream_failed: Arc<std::sync::atomic::AtomicBool>,
+    cb_callbacks: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<StreamResult> {
     use crate::preferences::AudioBackend;
 
@@ -679,13 +695,11 @@ fn open_stream_inner(
     let (mut status_prod, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
 
     // Throttled error callback: log at most once per second, signal stream_failed
-    // after 50 rapid errors so the watchdog can switch to a working device.
+    // on the first DeviceNotAvailable so the watchdog can switch devices quickly.
     let make_err_fn = {
         let last_log  = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let err_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         move || {
             let last_log2  = Arc::clone(&last_log);
-            let err_count2 = Arc::clone(&err_count);
             let failed2    = Arc::clone(&stream_failed);
             move |err: cpal::Error| {
                 // Only DeviceNotAvailable is truly fatal (device pulled or
@@ -693,10 +707,7 @@ fn open_stream_inner(
                 // errors (e.g. Xrun, POLLERR) that should not trigger the
                 // watchdog restart.
                 if matches!(err.kind(), cpal::ErrorKind::DeviceNotAvailable) {
-                    let n = err_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if n == 50 {
-                        failed2.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    failed2.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -704,7 +715,7 @@ fn open_stream_inner(
                     .as_secs();
                 let prev = last_log2.swap(now, std::sync::atomic::Ordering::Relaxed);
                 if now > prev {
-                    log::error!("cpal stream error: {err}");
+                    log::error!("cpal stream error ({:?}): {err}", err.kind());
                 }
             }
         }
@@ -714,6 +725,7 @@ fn open_stream_inner(
         cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
             stream_cfg,
             move |data: &mut [f32], _| {
+                cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cb_period.store((data.len() / total_ch) as u32, std::sync::atomic::Ordering::Relaxed);
                 fill_buffer(data, total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
             },
@@ -726,6 +738,7 @@ fn open_stream_inner(
             device.build_output_stream(
                 stream_cfg,
                 move |data: &mut [f32], _| {
+                    cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let frames = data.len() / total_ch;
                     cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
                     let n = (frames * 2).min(scratch.len());
@@ -747,6 +760,7 @@ fn open_stream_inner(
             device.build_output_stream(
                 stream_cfg,
                 move |data: &mut [i32], _| {
+                    cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let frames = data.len() / total_ch;
                     cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
                     let n = (frames * 2).min(scratch.len());

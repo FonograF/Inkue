@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.17
+## Current version: 0.9.18
 
 ## cargo build result
 
@@ -128,6 +128,13 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.18 (2026-06-25) — Reliable mid-show device-loss detection
+
+The 0.9.14 watchdog never fired on a real unplug: the cpal error callback only set `stream_failed` after **50** `DeviceNotAvailable` errors, but a WASAPI device removal fires it once or twice — so the flag never tripped and no banner appeared. Fixed in `engine/audio_engine.rs`:
+- `stream_failed` is now set on the **first** `DeviceNotAvailable`.
+- Added a kind-agnostic **heartbeat**: a monotonic `output_callbacks` counter incremented in every output callback (shared across restarts). The `wincue-device-watchdog` (`lib.rs`) treats a count that stops advancing for one ~2 s tick as a dead stream — so device loss is detected even if cpal surfaces no error or a different error kind.
+- The cpal error log now includes `err.kind()` for diagnosis via the in-app log viewer.
 
 ### 0.9.17 (2026-06-25) — Dismissible health banner
 
