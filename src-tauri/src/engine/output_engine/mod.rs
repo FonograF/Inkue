@@ -31,7 +31,7 @@ use types::{
 use types::OutputWndState;
 
 use std::collections::HashMap;
-use std::ffi::{c_void, CString};
+use std::ffi::{c_char, c_void, CString};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -44,9 +44,10 @@ use uuid::Uuid;
 use crate::cue::types::{db_to_linear, FadeSpec};
 use crate::engine::AudioEngine;
 
-use super::mpv_sys::MpvLib;
-#[cfg(output_win32)]
-use super::mpv_sys::MPV_FORMAT_INT64;
+use super::mpv_sys::{
+    MpvLib, MpvNode, MpvNodeList, MpvNodeUnion,
+    MPV_FORMAT_INT64, MPV_FORMAT_NODE_MAP, MPV_FORMAT_NONE, MPV_FORMAT_STRING,
+};
 
 // ---------------------------------------------------------------------------
 // Global mpv state (cross-platform)
@@ -71,13 +72,13 @@ pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
 /// Font family mirrored from OSD settings → emitted to the float-timer window.
 pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
 /// `true` while a Text Cue has loaded the `av://lavfi:color=black` dummy source
-/// to activate mpv's subtitle compositor in idle mode.  Cleared when the text ends.
+/// so the OSD has a surface to composite onto in idle mode.  Cleared when the
+/// text ends.
 static TEXT_HAS_DUMMY: AtomicBool = AtomicBool::new(false);
-/// ASS-tagged text to display; `Some` while a Text Cue overlay is active.
-/// Written by `show_text_overlay`, read by the mpv event loop's PLAYBACK_RESTART
-/// handler to re-apply `sub-text` after mpv initialises the lavfi file (which
-/// resets the subtitle state and clears any `sub-text` we set before load).
-pub(super) static TEXT_PENDING_ASS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// mpv `osd-overlay` ID reserved for the Text Cue surface.  Distinct from the
+/// timer (which uses `osd-msg1`, a separate OSD channel).
+const TEXT_OSD_OVERLAY_ID: i64 = 47;
 
 // ---------------------------------------------------------------------------
 // Global Win32-only state
@@ -254,7 +255,6 @@ impl OutputEngine {
         // preference happens to be — the float-timer window's own React state
         // has no other way to learn the current font.
         FLOAT_TIMER_FONT.get_or_init(|| Mutex::new(String::new()));
-        TEXT_PENDING_ASS.get_or_init(|| Mutex::new(None));
 
         // Unified GL path (Linux + Windows default): create the winit/GL output
         // window and block until mpv's render context is live, so no `loadfile` can
@@ -944,24 +944,18 @@ impl OutputEngine {
 
     /// Display an ASS-tagged text string on the output surface.
     ///
-    /// Uses `sub-text` (mpv's subtitle layer) because it supports full ASS override
-    /// tags (`\an`, `\fn`, `\fs`, `\c` …) and is independent of `osd-level`.
-    /// `osd-msg1` is reserved for the cue timer; `osd-msg2`/`osd-msg3` only show
-    /// at `osd-level >= 2` or `3` which we do not set.
+    /// Uses mpv's `osd-overlay` command (`format=ass-events`), the API-supported
+    /// way to draw client-supplied ASS: it honours full override tags (`\an`,
+    /// `\fn`, `\fs`, `\c` …), is independent of `osd-level`, persists across file
+    /// loads, and composites over whatever the VO shows.  (`sub-text` is read-only
+    /// and `osd-msg2`/`osd-msg3` only render at `osd-level >= 2`, which is reserved
+    /// for the cue timer on `osd-msg1`.)
     ///
-    /// mpv's subtitle pipeline is only active when a file is loaded, so we load a
-    /// black lavfi source if nothing is playing — this also fires `PLAYBACK_RESTART`,
-    /// where the event loop re-applies `sub-text` in case mpv cleared it during
-    /// file initialisation.  The text is stored in `TEXT_PENDING_ASS` for that
-    /// deferred re-application.
+    /// When nothing is playing, a black lavfi source is loaded so the OSD has a
+    /// surface to composite onto and the output shows black rather than the desktop.
     pub fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
         self.position_window(screen_index);
         render::TEXT_OVERLAY_ACTIVE.store(true, Ordering::Relaxed);
-
-        // Store text so PLAYBACK_RESTART can re-apply it after lavfi initialises.
-        if let Some(m) = TEXT_PENDING_ASS.get() {
-            if let Ok(mut g) = m.lock() { *g = Some(ass_text.to_string()); }
-        }
 
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             let no_content = OUTPUT_CURRENT_VOICE
@@ -971,16 +965,15 @@ impl OutputEngine {
                 .unwrap_or(true);
 
             if no_content && !TEXT_HAS_DUMMY.load(Ordering::Relaxed) {
-                // Load a 1920×1080 black lavfi source so mpv's subtitle pipeline
-                // activates.  PLAYBACK_RESTART (image/idle path) will re-apply
-                // sub-text after the file initialises and subtitle state is reset.
+                // Load a 1920×1080 black lavfi source so the OSD compositor has a
+                // surface and the output is black rather than transparent.
                 unsafe {
                     let cmd   = cs("loadfile");
                     let url   = cs("av://lavfi:color=black:size=1920x1080:rate=1");
                     let flags = cs("replace");
                     let idx   = cs("0");
                     let opts  = cs("audio=no,loop-file=inf");
-                    let args: [*const std::ffi::c_char; 6] = [
+                    let args: [*const c_char; 6] = [
                         cmd.as_ptr(), url.as_ptr(), flags.as_ptr(),
                         idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
                     ];
@@ -990,12 +983,12 @@ impl OutputEngine {
                     }
                 }
                 TEXT_HAS_DUMMY.store(true, Ordering::Relaxed);
-            } else if !no_content {
-                // Content already playing: subtitle pipeline is live, apply directly.
-                unsafe { prop_str(lib, ctx.0, "sub-text", ass_text); }
             }
-            // If dummy already loaded: PLAYBACK_RESTART will apply on the next
-            // loop iteration.  No-op here avoids a race with the previous load.
+
+            // osd-overlay persists across the lavfi file load, so it can be set
+            // now whether or not the dummy frame has decoded yet — the render
+            // loop composites it as soon as the first frame is ready.
+            unsafe { osd_overlay_set(lib, ctx.0, ass_text); }
         }
 
         fade::set_overlay_alpha(0);
@@ -1008,12 +1001,8 @@ impl OutputEngine {
     pub fn clear_text_overlay(&self) {
         render::TEXT_OVERLAY_ACTIVE.store(false, Ordering::Relaxed);
 
-        if let Some(m) = TEXT_PENDING_ASS.get() {
-            if let Ok(mut g) = m.lock() { *g = None; }
-        }
-
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe { prop_str(lib, ctx.0, "sub-text", ""); }
+            unsafe { osd_overlay_remove(lib, ctx.0); }
 
             if TEXT_HAS_DUMMY.swap(false, Ordering::Relaxed) {
                 let no_real_content = OUTPUT_CURRENT_VOICE
@@ -1188,4 +1177,66 @@ pub(super) unsafe fn prop_str(lib: &MpvLib, ctx: *mut c_void, name: &str, value:
     let n = cs(name);
     let v = cs(value);
     (lib.mpv_set_property_string)(ctx, n.as_ptr(), v.as_ptr());
+}
+
+/// Show the Text Cue ASS string via mpv's `osd-overlay` command.
+///
+/// `res_y=720` is the ASS script reference height, so `\fs` sizes stay
+/// proportional to the output regardless of its actual resolution.
+pub(super) unsafe fn osd_overlay_set(lib: &MpvLib, ctx: *mut c_void, ass_text: &str) {
+    let Ok(data_v) = CString::new(ass_text) else {
+        log::warn!("[output] osd-overlay text contains an interior NUL — ignored");
+        return;
+    };
+    let (name, id, format, data_k, res_y) =
+        (cs("name"), cs("id"), cs("format"), cs("data"), cs("res_y"));
+    let (name_v, format_v) = (cs("osd-overlay"), cs("ass-events"));
+
+    let mut keys: [*const c_char; 5] =
+        [name.as_ptr(), id.as_ptr(), format.as_ptr(), data_k.as_ptr(), res_y.as_ptr()];
+    let mut values: [MpvNode; 5] = [
+        MpvNode { u: MpvNodeUnion { string: name_v.as_ptr() },    format: MPV_FORMAT_STRING },
+        MpvNode { u: MpvNodeUnion { int64: TEXT_OSD_OVERLAY_ID }, format: MPV_FORMAT_INT64  },
+        MpvNode { u: MpvNodeUnion { string: format_v.as_ptr() },  format: MPV_FORMAT_STRING },
+        MpvNode { u: MpvNodeUnion { string: data_v.as_ptr() },    format: MPV_FORMAT_STRING },
+        MpvNode { u: MpvNodeUnion { int64: 720 },                 format: MPV_FORMAT_INT64  },
+    ];
+    command_node_map(lib, ctx, &mut keys, &mut values);
+}
+
+/// Remove the Text Cue `osd-overlay` (`format=none`).
+pub(super) unsafe fn osd_overlay_remove(lib: &MpvLib, ctx: *mut c_void) {
+    let (name, id, format) = (cs("name"), cs("id"), cs("format"));
+    let (name_v, format_v) = (cs("osd-overlay"), cs("none"));
+
+    let mut keys: [*const c_char; 3] = [name.as_ptr(), id.as_ptr(), format.as_ptr()];
+    let mut values: [MpvNode; 3] = [
+        MpvNode { u: MpvNodeUnion { string: name_v.as_ptr() },    format: MPV_FORMAT_STRING },
+        MpvNode { u: MpvNodeUnion { int64: TEXT_OSD_OVERLAY_ID }, format: MPV_FORMAT_INT64  },
+        MpvNode { u: MpvNodeUnion { string: format_v.as_ptr() },  format: MPV_FORMAT_STRING },
+    ];
+    command_node_map(lib, ctx, &mut keys, &mut values);
+}
+
+/// Run `mpv_command_node` with a `MPV_FORMAT_NODE_MAP` built from parallel
+/// `keys`/`values` slices, freeing any memory mpv allocates for the result.
+unsafe fn command_node_map(
+    lib: &MpvLib,
+    ctx: *mut c_void,
+    keys: &mut [*const c_char],
+    values: &mut [MpvNode],
+) {
+    debug_assert_eq!(keys.len(), values.len());
+    let mut list = MpvNodeList {
+        num: keys.len() as i32,
+        values: values.as_mut_ptr(),
+        keys: keys.as_mut_ptr(),
+    };
+    let arg = MpvNode { u: MpvNodeUnion { list: &mut list }, format: MPV_FORMAT_NODE_MAP };
+    let mut result = MpvNode { u: MpvNodeUnion { int64: 0 }, format: MPV_FORMAT_NONE };
+    let ret = (lib.mpv_command_node)(ctx, &arg, &mut result);
+    (lib.mpv_free_node_contents)(&mut result);
+    if ret < 0 {
+        log::warn!("[output] mpv_command_node(osd-overlay) failed: {ret}");
+    }
 }

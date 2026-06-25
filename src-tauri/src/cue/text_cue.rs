@@ -1,8 +1,9 @@
-//! [`TextCue`] — displays formatted text on the output surface via mpv's subtitle layer.
+//! [`TextCue`] — displays formatted text on the output surface via mpv's OSD overlay.
 //!
-//! Uses mpv's `sub-text` property with ASS inline tags to render styled text on top
-//! of whatever is currently on screen (black idle surface, or over existing video/image).
-//! The cue timer uses `osd-msg1`; `sub-text` is a separate rendering layer so they coexist.
+//! Uses mpv's `osd-overlay` command (`format=ass-events`) with ASS inline tags to
+//! render styled text on top of whatever is currently on screen (black idle surface,
+//! or over existing video/image).  The cue timer uses `osd-msg1`; the overlay is a
+//! separate OSD channel so they coexist.
 //!
 //! Styling: font family, size, hex colour, and a 9-point position grid.
 //! Multi-line text is supported (newlines converted to ASS `\N`).

@@ -23,6 +23,9 @@ pub const MPV_FORMAT_FLAG: i32 = 3;
 pub const MPV_FORMAT_INT64: i32 = 4;
 pub const MPV_FORMAT_DOUBLE: i32 = 5;
 pub const MPV_FORMAT_NODE: i32 = 6;
+pub const MPV_FORMAT_NODE_ARRAY: i32 = 7;
+pub const MPV_FORMAT_NODE_MAP: i32 = 8;
+pub const MPV_FORMAT_BYTE_ARRAY: i32 = 9;
 
 // ---------------------------------------------------------------------------
 // mpv_event_id constants
@@ -142,6 +145,43 @@ pub struct MpvEventEndFile {
 }
 
 // ---------------------------------------------------------------------------
+// mpv_node — generic value tree (mpv/client.h)
+// ---------------------------------------------------------------------------
+
+/// Active member of [`MpvNode`], selected by its `format` tag.
+#[repr(C)]
+pub union MpvNodeUnion {
+    /// Valid when `format == MPV_FORMAT_STRING`.
+    pub string: *const c_char,
+    /// Valid when `format == MPV_FORMAT_FLAG`.
+    pub flag: i32,
+    /// Valid when `format == MPV_FORMAT_INT64`.
+    pub int64: i64,
+    /// Valid when `format == MPV_FORMAT_DOUBLE`.
+    pub double_: f64,
+    /// Valid when `format == MPV_FORMAT_NODE_ARRAY` or `MPV_FORMAT_NODE_MAP`.
+    pub list: *mut MpvNodeList,
+    /// Valid when `format == MPV_FORMAT_BYTE_ARRAY`.
+    pub ba: *mut c_void,
+}
+
+/// Matches `mpv_node` from `mpv/client.h`.
+#[repr(C)]
+pub struct MpvNode {
+    pub u: MpvNodeUnion,
+    pub format: i32,
+}
+
+/// Matches `mpv_node_list` from `mpv/client.h` — an array (keys null) or a
+/// map (keys non-null, parallel to `values`).
+#[repr(C)]
+pub struct MpvNodeList {
+    pub num: i32,
+    pub values: *mut MpvNode,
+    pub keys: *mut *const c_char,
+}
+
+// ---------------------------------------------------------------------------
 // MpvLib — runtime-loaded function table
 // ---------------------------------------------------------------------------
 
@@ -161,6 +201,13 @@ pub struct MpvLib {
     pub mpv_get_property:         unsafe extern "C" fn(*mut c_void, *const c_char, i32, *mut c_void) -> i32,
     pub mpv_command:              unsafe extern "C" fn(*mut c_void, *const *const c_char) -> i32,
     pub mpv_command_string:       unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+    /// Run a command described by an `mpv_node` (array = positional, map = named).
+    /// Required for commands like `osd-overlay` whose argument order is not
+    /// guaranteed and which must be invoked with named arguments.
+    pub mpv_command_node:         unsafe extern "C" fn(*mut c_void, *const MpvNode, *mut MpvNode) -> i32,
+    /// Free memory mpv allocated inside an `mpv_node` returned by the API
+    /// (e.g. the result out-parameter of `mpv_command_node`).
+    pub mpv_free_node_contents:   unsafe extern "C" fn(*mut MpvNode),
     pub mpv_wait_event:           unsafe extern "C" fn(*mut c_void, f64) -> *mut MpvEvent,
     pub mpv_wakeup:               unsafe extern "C" fn(*mut c_void),
     pub mpv_error_string:         unsafe extern "C" fn(i32) -> *const c_char,
@@ -318,6 +365,8 @@ impl MpvLib {
             mpv_get_property:         sym!("mpv_get_property":         unsafe extern "C" fn(*mut c_void, *const c_char, i32, *mut c_void) -> i32),
             mpv_command:              sym!("mpv_command":              unsafe extern "C" fn(*mut c_void, *const *const c_char) -> i32),
             mpv_command_string:       sym!("mpv_command_string":       unsafe extern "C" fn(*mut c_void, *const c_char) -> i32),
+            mpv_command_node:         sym!("mpv_command_node":         unsafe extern "C" fn(*mut c_void, *const MpvNode, *mut MpvNode) -> i32),
+            mpv_free_node_contents:   sym!("mpv_free_node_contents":   unsafe extern "C" fn(*mut MpvNode)),
             mpv_wait_event:           sym!("mpv_wait_event":           unsafe extern "C" fn(*mut c_void, f64) -> *mut MpvEvent),
             mpv_wakeup:               sym!("mpv_wakeup":               unsafe extern "C" fn(*mut c_void)),
             mpv_error_string:         sym!("mpv_error_string":         unsafe extern "C" fn(i32) -> *const c_char),

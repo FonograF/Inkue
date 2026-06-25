@@ -31,7 +31,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
 | Mic      | ✅ **Functional** | (see 0.9.5) |
 | Timecode | ✅ **Functional** | SMPTE timecode generation (MTC out via `TimecodeCue`) + receive (MTC in via `TimecodeReceiver`); per-cue TC triggers + CueList sync toggle; LTC encoder/decoder (`ltc.rs`); TC status indicator in TransportBar; Triggers inspector tab on every cue; TC Preferences (Network tab). LTC out = planned v2; drop-frame 29.97 fully tested. | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
-| Text     | ✅ **Functional** | Renders styled text on the mpv output surface via `sub-text` + ASS inline tags; independent of OSD timer. Font, size, hex colour, 9-point position grid, optional auto-complete duration. Stop-on-next-go. |
+| Text     | ✅ **Functional** | Renders styled text on the mpv output surface via the `osd-overlay` command (`format=ass-events`) + ASS inline tags; independent of OSD timer. Font, size, hex colour, 9-point position grid, optional auto-complete duration. Stop-on-next-go. |
 
 ---
 
@@ -131,12 +131,14 @@ fix, not the full investigation.
 
 ### 0.9.11 (2026-06-25) — Text Cue
 
-Displays formatted text on the mpv output surface. Uses mpv's `sub-text` property with ASS inline tags — completely separate from the OSD timer (`osd-msg1`), so both can be active simultaneously.
+Displays formatted text on the mpv output surface. Uses mpv's `osd-overlay` command (`format=ass-events`) with ASS inline tags — completely separate from the OSD timer (`osd-msg1`), so both can be active simultaneously.
+
+**Bugfix (post-initial):** the first cut wrote the `sub-text` property, which is **read-only** — nothing rendered (output window opened blank). Switched to the `osd-overlay` command, the API-supported way to draw client ASS. This required FFI bindings for `mpv_command_node` + `mpv_free_node_contents` and the `mpv_node`/`mpv_node_list` structs (`engine/mpv_sys.rs`), since `osd-overlay` mandates named arguments (positional order is not guaranteed). The deferred `TEXT_PENDING_ASS` re-application in `PLAYBACK_RESTART` was removed — unlike subtitle state, an `osd-overlay` persists across file loads. The black `av://lavfi` dummy source is kept to give the OSD a compositing surface (and a black background) when no video/image is playing.
 
 - **`cue/text_cue.rs`** (new) — `TextCue` struct + `TextPosition` enum (9-point grid) + `TextCueFactory`. Key fields: `text`, `font`, `font_size`, `text_color` (#RRGGBB), `position`, `screen_index`, `display_duration_ms`. `build_ass_text()` emits `{\an<N>\fn<family>\fs<size>\c&H00BBGGRR&\bord2\shad1\3c&H00000000&\4c&H00000000&}Text` (ASS colour is BGR-reversed from the hex input; `\N` for multiline). Empty text = instant complete. `stop_on_next_go() = true`. 12 unit tests.
 - **`cue/types.rs`** — `CueType::Text` variant added.
 - **`cue/mod.rs`** — `pub mod text_cue`.
-- **`engine/output_engine/mod.rs`** — `show_text_overlay(ass_text, screen_index)` sets `sub-text` and positions the output window; `clear_text_overlay()` resets it.
+- **`engine/output_engine/mod.rs`** — `show_text_overlay(ass_text, screen_index)` positions the output window + issues `osd-overlay` via helpers `osd_overlay_set` / `osd_overlay_remove` (`command_node_map` builds the `MPV_FORMAT_NODE_MAP`); `clear_text_overlay()` removes the overlay (`format=none`).
 - **`state/app_state.rs`** — `TextCueFactory` registered in `CueRegistry`.
 - **`lib/types.ts`** — `CueType` union gains `"text"`; `TextPosition` type; `TextCueData` interface.
 - **`components/Inspector/TextTab.tsx`** (new) — multiline textarea, font picker (`listSystemFonts`), size input, colour picker + hex input synced, 9-button position grid, auto-complete duration toggle.

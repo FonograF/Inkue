@@ -76,8 +76,8 @@ pub(super) static RENDER_SIGNAL: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLoc
 /// Set to `true` while a Text Cue overlay is active.
 ///
 /// When set, the render loop does **not** skip on `!has_frame && alpha==0` so
-/// that mpv's OSD text (set via `osd-msg2`) is composited and displayed even in
-/// idle mode (no video file loaded).
+/// that the Text Cue's `osd-overlay` ASS is composited and displayed even in
+/// idle mode (mpv does not signal `MPV_RENDER_UPDATE_FRAME` for OSD-only changes).
 pub(super) static TEXT_OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The winit output window, shared between the event-loop thread, the render
@@ -643,7 +643,7 @@ fn render_thread_main(
         // when a Text Cue overlay is active we must render even without a new
         // mpv frame — mpv does not signal MPV_RENDER_UPDATE_FRAME for OSD
         // changes in idle mode, so we call render unconditionally to composite
-        // the osd-msg2 text onto the output surface.
+        // the osd-overlay text onto the output surface.
         if !has_frame && alpha == 0 && !text_active { continue; }
 
         let mut fbo = MpvOpenglFbo { fbo: 0, w: w_px as i32, h: h_px as i32, internal_format: 0 };
