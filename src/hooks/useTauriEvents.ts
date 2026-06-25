@@ -20,13 +20,20 @@ interface TauriEventsOptions {
 }
 
 export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
-  const { refreshCues, refreshWorkspaceInfo, loadDisplayPrefs, loadGeneralPrefs, setPlayheadCueId, updateCueState, setCueLists } =
+  const { refreshCues, refreshWorkspaceInfo, refreshValidation, loadDisplayPrefs, loadGeneralPrefs, setPlayheadCueId, updateCueState, setCueLists } =
     useWorkspaceStore();
   const { updateMasterLevels, markOscActivity, addOscLog } = useTransportStore();
   const { setTiming, clearTiming } = useTimingStore();
 
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
+    // Re-validate the workspace after edits settle (avoids running the full
+    // preflight — incl. MIDI port enumeration — on every keystroke).
+    let validationTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleValidation = () => {
+      if (validationTimer) clearTimeout(validationTimer);
+      validationTimer = setTimeout(() => { void refreshValidation(); }, 1200);
+    };
 
     const setup = async () => {
       unlisteners.push(
@@ -67,6 +74,7 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
         await listen("workspace-modified", async () => {
           await refreshCues();
           await refreshWorkspaceInfo();
+          scheduleValidation();
         })
       );
 
@@ -207,6 +215,7 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
     setup().catch(console.error);
 
     return () => {
+      if (validationTimer) clearTimeout(validationTimer);
       unlisteners.forEach((u) => u());
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

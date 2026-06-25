@@ -16,6 +16,8 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists, checkRecovery, restoreRecovery, discardRecovery } from "./lib/commands";
 import { AboutDialog } from "./components/About/AboutDialog";
+import { PreflightModal } from "./components/Preflight/PreflightModal";
+import { LogViewerModal } from "./components/Logs/LogViewerModal";
 import type { CollectReport } from "./lib/types";
 import type { CueSummary } from "./lib/types";
 
@@ -332,6 +334,8 @@ function FileMenu({
   onOpen,
   onNew,
   onCollect,
+  onCheck,
+  onLogs,
   onPreferences,
   onAbout,
   recentFiles,
@@ -342,6 +346,8 @@ function FileMenu({
   onOpen: () => void;
   onNew: () => void;
   onCollect: () => void;
+  onCheck: () => void;
+  onLogs: () => void;
   onPreferences: () => void;
   onAbout: () => void;
   recentFiles: string[];
@@ -380,6 +386,9 @@ function FileMenu({
     { type: "item", label: "Save",              shortcut: "Ctrl+S",         action: act(onSave) },
     { type: "item", label: "Save As…",         shortcut: "Ctrl+Shift+S",   action: act(onSaveAs) },
     { type: "item", label: "Collect and Save…",                            action: act(onCollect) },
+    { type: "separator" },
+    { type: "item", label: "Check Workspace…",                             action: act(onCheck) },
+    { type: "item", label: "Logs…",                                        action: act(onLogs) },
     { type: "separator" },
     { type: "item", label: "Preferences",     shortcut: "Ctrl+,",          action: act(onPreferences) },
     { type: "separator" },
@@ -633,7 +642,7 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
 }
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, cueLists, activeCueListId } =
+  const { refreshCues, refreshWorkspaceInfo, refreshValidation, brokenCueIds, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, cueLists, activeCueListId } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
@@ -646,6 +655,8 @@ export default function App() {
   const [collectReport, setCollectReport]         = useState<CollectReport | null>(null);
   const [recentFiles, setRecentFiles]             = useState<string[]>(loadRecentFiles);
   const [showAbout, setShowAbout]                 = useState(false);
+  const [preflightOpen, setPreflightOpen]         = useState(false);
+  const [logsOpen, setLogsOpen]                   = useState(false);
   const [searchQuery, setSearchQuery]             = useState("");
 
   // Persist panel visibility across launches.
@@ -688,6 +699,7 @@ export default function App() {
       }
     }).catch(console.error);
     refreshWorkspaceInfo();
+    void refreshValidation();
     loadGeneralPrefs();
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);
@@ -1028,6 +1040,8 @@ export default function App() {
 
       {/* About dialog */}
       {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
+      {preflightOpen && <PreflightModal onClose={() => setPreflightOpen(false)} />}
+      {logsOpen && <LogViewerModal onClose={() => setLogsOpen(false)} />}
 
       {/* Custom title bar — no drag-region on the container so menus/buttons work on Linux */}
       <div
@@ -1044,6 +1058,8 @@ export default function App() {
           onOpen={() => void handleOpen()}
           onNew={() => void handleNew()}
           onCollect={() => void handleCollectAndSave()}
+          onCheck={() => setPreflightOpen(true)}
+          onLogs={() => setLogsOpen(true)}
           onPreferences={() => void openPreferencesWindow()}
           onAbout={() => setShowAbout(true)}
           recentFiles={recentFiles}
@@ -1075,6 +1091,20 @@ export default function App() {
           >
             {titleBarName}
           </span>
+          {brokenCueIds.size > 0 && (
+            <button
+              onClick={() => setPreflightOpen(true)}
+              title="Des cues ont des problèmes — cliquer pour vérifier"
+              style={{
+                flexShrink: 0, display: "flex", alignItems: "center", gap: 4,
+                background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.5)",
+                borderRadius: 5, color: "#ef4444", cursor: "pointer",
+                fontSize: 11, padding: "2px 8px",
+              }}
+            >
+              ⚠ {brokenCueIds.size}
+            </button>
+          )}
         </div>
 
         {/* Toolbar — hidden in Show Mode */}

@@ -135,6 +135,23 @@ impl Cue for OscCue {
     fn continue_mode(&self) -> ContinueMode { self.continue_mode }
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        use crate::cue::validation::CueIssue;
+        let mut issues = Vec::new();
+        if self.messages.is_empty() {
+            issues.push(CueIssue::warning("Aucun message OSC"));
+        }
+        for msg in &self.messages {
+            if !ctx.osc_patch_ids.contains(&msg.patch_id) {
+                issues.push(CueIssue::warning("Patch OSC introuvable"));
+            }
+        }
+        issues
+    }
+
     fn serialize(&self) -> Value {
         json!({
             "type": "osc",

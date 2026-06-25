@@ -4,6 +4,7 @@ pub mod bundled_fonts;
 pub mod commands;
 pub mod cue;
 pub mod engine;
+pub mod logger;
 pub mod machine_config;
 pub mod preferences;
 pub mod recovery;
@@ -58,6 +59,8 @@ use commands::{
         set_master_volume, stop_all, stop_cue,
     },
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
+    log_cmds::{clear_logs, get_recent_logs, open_logs_folder},
+    preflight_cmds::{check_workspace, relink_media},
     recovery_cmds::{check_recovery, discard_recovery, restore_recovery},
     workspace_cmds::{collect_and_save_workspace, get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
@@ -68,10 +71,9 @@ use tauri::Manager;
 /// Build and run the Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("wincue=info"),
-    )
-    .init();
+    // Custom logger: stderr + rotating file in the config dir + in-memory ring
+    // buffer for the in-app log viewer.  RUST_LOG=debug/trace still bumps the level.
+    crate::logger::init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -250,6 +252,31 @@ pub fn run() {
                     .expect("Failed to spawn autosave thread");
             }
 
+            // ----------------------------------------------------------------
+            // Log viewer feed: tell the UI when new log lines are available so
+            // the in-app viewer can live-tail without polling.  Fires at most
+            // ~2×/s and only when the log sequence actually advanced.
+            // ----------------------------------------------------------------
+            {
+                let handle = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("wincue-log-emitter".to_string())
+                    .spawn(move || {
+                        use std::sync::atomic::Ordering;
+                        use tauri::Emitter;
+                        let mut last = 0u64;
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            let seq = crate::logger::SEQ.load(Ordering::Relaxed);
+                            if seq != last {
+                                last = seq;
+                                let _ = handle.emit("logs-updated", ());
+                            }
+                        }
+                    })
+                    .expect("Failed to spawn log-emitter thread");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -308,6 +335,11 @@ pub fn run() {
             check_recovery,
             restore_recovery,
             discard_recovery,
+            check_workspace,
+            relink_media,
+            get_recent_logs,
+            clear_logs,
+            open_logs_folder,
             // Cue Lists
             get_cue_lists,
             add_cue_list,

@@ -489,6 +489,21 @@ impl Cue for AudioCue {
     fn continue_mode(&self) -> ContinueMode { self.continue_mode }
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        use crate::cue::validation::CueIssue;
+        // `None` routes to the default patch — only a *set* patch that no longer
+        // exists is worth flagging (the cue silently falls back otherwise).
+        match self.output_patch_id {
+            Some(id) if !ctx.output_patch_ids.contains(&id) => {
+                vec![CueIssue::warning("Output Patch introuvable (patch par défaut utilisé)")]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn playing_voice_id(&self) -> Option<CueId> {
         self.active_voice_id
     }

@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.12
+## Current version: 0.9.13
 
 ## cargo build result
 
@@ -10,7 +10,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## cargo test result
 
-**141 tests pass, 0 failures.** (130 prior + 11 TextCue tests — run `cargo test` from `src-tauri/` after closing dev server to confirm. DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue; TC types/DF/display/RT, MTC receiver QF+SysEx+flywheel, LTC encoder/decoder, TC generator QF round-trip.)
+**143 tests pass, 0 failures.** (run `cargo test` from `src-tauri/` after closing dev server to confirm. DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue; TC types/DF/display/RT, MTC receiver QF+SysEx+flywheel, LTC encoder/decoder, TC generator QF round-trip.)
 
 ---
 
@@ -128,6 +128,23 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.13 (2026-06-25) — Preflight + relink, in-app log viewer
+
+Two professional-readiness items toward 1.0.
+
+**Preflight ("Check Workspace") + media relink.** Surfaces every cue whose external dependency does not resolve, before the show, with inline fixing.
+- **`cue/validation.rs`** (new) — `Severity` (error/warning), `CueIssue`, `ValidationContext` (all cue IDs, fixture/group IDs, OSC patch IDs, output patch IDs, available MIDI ports).
+- **`cue/traits.rs`** — new `validate(&self, ctx) -> Vec<CueIssue>` (default empty; a new cue type validates itself). Implemented on Audio (dangling Output Patch), Stop/Fade (dangling targets), Light (unpatched fixture/group), Osc (missing patch), Midi (absent/unconfigured port). Media-file existence is checked centrally via `media_file_path()`.
+- **`commands/preflight_cmds.rs`** (new) — `check_workspace` walks all lists/nested groups → `Vec<CueValidation>`; `relink_media(cue_id, new_path)` rebuilds the cue with the new file and auto-relinks every other missing file found in the same folder (then re-preloads audio/video). 2 unit tests (Stop dangling target, MIDI absent port).
+- **Frontend** — `PreflightModal` (issue list + per-file "Localiser…" relink), title-bar ⚠ badge (error count, opens the panel), `workspaceStore.refreshValidation` + `brokenCueIds`, debounced re-validate on `workspace-modified` (`useTauriEvents`). The existing per-row `is_broken`/`is_warning` indicators (media files) are unchanged. File menu → "Check Workspace…".
+
+**In-app log viewer.** Logs are now visible to the operator without a terminal.
+- **`logger.rs`** (new) — custom `log` backend fanning out to stderr + a size-rotated file (`%APPDATA%/WinCue/logs/wincue.log`, one backup) + a 2000-line in-memory ring buffer. Replaces `env_logger` (removed; `log` now carries the `std` feature). `RUST_LOG=debug/trace` still bumps the level.
+- **`commands/log_cmds.rs`** (new) — `get_recent_logs`, `clear_logs`, `open_logs_folder` (per-OS reveal). `lib.rs` spawns a `wincue-log-emitter` thread emitting a throttled `logs-updated` event (event-driven live tail, no frontend polling).
+- **Frontend** — `LogViewerModal` (level filter, follow/auto-scroll, copy, open folder, clear). File menu → "Logs…".
+
+**Tests** — 143 pass (141 + 2 validation). `cargo clippy --lib` + `tsc --noEmit` clean. Version 0.9.13.
 
 ### 0.9.12 (2026-06-25) — Crash recovery (autosave)
 

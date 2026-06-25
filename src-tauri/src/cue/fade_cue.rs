@@ -368,6 +368,23 @@ impl Cue for FadeCue {
         }
     }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        use crate::cue::validation::CueIssue;
+        let mut issues: Vec<CueIssue> = self
+            .target_cue_ids
+            .iter()
+            .filter(|id| !ctx.all_cue_ids.contains(id))
+            .map(|_| CueIssue::warning("Cible Fade introuvable (cue supprimé)"))
+            .collect();
+        if self.target_cue_ids.is_empty() && self.target_cue_numbers.is_empty() {
+            issues.push(CueIssue::warning("Aucune cible sélectionnée"));
+        }
+        issues
+    }
+
     fn runtime_state(&self) -> RuntimeState {
         RuntimeState {
             state: self.state,

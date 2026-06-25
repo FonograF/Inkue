@@ -226,6 +226,36 @@ impl Cue for LightCue {
     fn continue_mode(&self) -> ContinueMode { self.continue_mode }
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        use crate::cue::validation::CueIssue;
+        let mut issues = Vec::new();
+        if self.targets.is_empty() {
+            issues.push(CueIssue::warning("Aucune cible lumière"));
+        }
+        for target in &self.targets {
+            match target {
+                ParamTarget::Fixture { fixture_id, .. } => match fixture_id.parse::<Uuid>() {
+                    Ok(id) if !ctx.fixture_ids.contains(&id) => {
+                        issues.push(CueIssue::warning("Fixture cible non patché"));
+                    }
+                    Err(_) => issues.push(CueIssue::warning("Fixture cible non configuré")),
+                    _ => {}
+                },
+                ParamTarget::Group { group_id, .. } => match group_id.parse::<Uuid>() {
+                    Ok(id) if !ctx.fixture_group_ids.contains(&id) => {
+                        issues.push(CueIssue::warning("Groupe de fixtures introuvable"));
+                    }
+                    Err(_) => issues.push(CueIssue::warning("Groupe cible non configuré")),
+                    _ => {}
+                },
+            }
+        }
+        issues
+    }
+
     fn serialize(&self) -> Value {
         json!({
             "type": "light",

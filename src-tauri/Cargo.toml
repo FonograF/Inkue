@@ -1,6 +1,6 @@
 [package]
 name = "wincue"
-version = "0.9.12"
+version = "0.9.13"
 edition = "2021"
 
 [lib]
@@ -51,8 +51,7 @@ rosc = "0.10"
 midir = "0.11"
 
 # Logging
-log = "0.4"
-env_logger = "0.11"
+log = { version = "0.4", features = ["std"] }
 
 symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
 

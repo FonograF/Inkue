@@ -211,6 +211,28 @@ impl Cue for MidiCue {
     fn continue_mode(&self) -> ContinueMode { self.continue_mode }
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        use crate::cue::validation::CueIssue;
+        let mut issues = Vec::new();
+        if self.messages.is_empty() {
+            issues.push(CueIssue::warning("Aucun message MIDI"));
+        }
+        for msg in &self.messages {
+            if msg.port_name.is_empty() {
+                issues.push(CueIssue::warning("Port MIDI non configuré"));
+            } else if !ctx.midi_ports.iter().any(|p| p == &msg.port_name) {
+                issues.push(CueIssue::error(format!(
+                    "Port MIDI absent : « {} »",
+                    msg.port_name
+                )));
+            }
+        }
+        issues
+    }
+
     fn serialize(&self) -> Value {
         json!({
             "type": "midi",
@@ -341,6 +363,38 @@ mod tests {
             data2: 100,
         };
         assert_eq!(msg.to_bytes(), vec![0xB2, 7, 100]);
+    }
+
+    #[test]
+    fn validate_flags_absent_and_unconfigured_ports() {
+        use crate::cue::validation::{Severity, ValidationContext};
+        use std::collections::HashSet;
+        let ctx = ValidationContext {
+            all_cue_ids: HashSet::new(),
+            fixture_ids: HashSet::new(),
+            fixture_group_ids: HashSet::new(),
+            osc_patch_ids: HashSet::new(),
+            output_patch_ids: HashSet::new(),
+            midi_ports: vec!["Real Port".to_string()],
+        };
+
+        let mut cue = MidiCue::new();
+        // A port that is not present on this machine → an error.
+        cue.messages.push(MidiMessage {
+            port_name: "Ghost Port".to_string(),
+            message_type: MidiMessageType::NoteOn,
+            channel: 1, data1: 60, data2: 100,
+        });
+        let issues = cue.validate(&ctx);
+        assert!(issues.iter().any(|i| i.severity == Severity::Error));
+
+        // A present port → no issue.
+        cue.messages = vec![MidiMessage {
+            port_name: "Real Port".to_string(),
+            message_type: MidiMessageType::NoteOn,
+            channel: 1, data1: 60, data2: 100,
+        }];
+        assert!(cue.validate(&ctx).is_empty());
     }
 
     #[test]

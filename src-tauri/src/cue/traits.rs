@@ -498,6 +498,22 @@ pub trait Cue: Send {
     }
 
     // -----------------------------------------------------------------------
+    // Preflight validation
+    // -----------------------------------------------------------------------
+
+    /// Report problems with this cue's external dependencies (dangling
+    /// Stop/Fade target, unpatched fixture, absent MIDI port, …) for the
+    /// "Check Workspace" preflight.  The default returns no issues; cue types
+    /// with external dependencies override this.
+    ///
+    /// Media-file existence is **not** checked here — the command layer covers
+    /// that centrally via [`media_file_path`](Self::media_file_path) so it can
+    /// also drive relink.
+    fn validate(&self, _ctx: &super::validation::ValidationContext) -> Vec<super::validation::CueIssue> {
+        Vec::new()
+    }
+
+    // -----------------------------------------------------------------------
     // Serialisation
     // -----------------------------------------------------------------------
 

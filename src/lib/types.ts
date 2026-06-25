@@ -267,6 +267,39 @@ export interface RecoveryInfo {
   modified_at: string | null;
 }
 
+// --- Preflight (Check Workspace) -------------------------------------------
+
+export type Severity = "error" | "warning";
+
+export interface CueIssue {
+  severity: Severity;
+  message: string;
+}
+
+/** One cue's preflight result (only cues with at least one issue are returned). */
+export interface CueValidation {
+  cue_id: CueId;
+  cue_number: string | null;
+  cue_name: string;
+  cue_type: CueType;
+  issues: CueIssue[];
+  /** The unresolved media path when the problem is a missing file (drives relink). */
+  missing_file: string | null;
+}
+
+export interface RelinkResult {
+  relinked: number;
+}
+
+// --- Logs ------------------------------------------------------------------
+
+export interface LogLine {
+  ts: string;
+  level: string;
+  target: string;
+  message: string;
+}
+
 export interface CollectReport {
   workspace_path: string;
   files_copied: number;

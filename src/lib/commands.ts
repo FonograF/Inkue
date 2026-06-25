@@ -7,6 +7,7 @@ import type {
   AudioCueData,
   AudioPreferences,
   CollectReport,
+  CueValidation,
   MachineAudioConfig,
   CueId,
   CueListMode,
@@ -23,6 +24,7 @@ import type {
   CueListTcConfig,
   GroupMode,
   InputPatch,
+  LogLine,
   OscPatch,
   TcMachineConfig,
   TcPosition,
@@ -32,6 +34,7 @@ import type {
   ParamTarget,
   PatchedFixture,
   RecoveryInfo,
+  RelinkResult,
   ScreenInfo,
   UniverseOutput,
   VideoCueData,
@@ -153,6 +156,25 @@ export const collectAndSave = (targetDir: string) =>
 export const checkRecovery = () => invoke<RecoveryInfo | null>("check_recovery");
 export const restoreRecovery = () => invoke<void>("restore_recovery");
 export const discardRecovery = () => invoke<void>("discard_recovery");
+
+// ---------------------------------------------------------------------------
+// Preflight (Check Workspace) + relink
+// ---------------------------------------------------------------------------
+
+/** Validate the whole workspace; returns one entry per cue that has problems. */
+export const checkWorkspace = () => invoke<CueValidation[]>("check_workspace");
+/** Re-point a cue's missing media file (and any sibling missing files in the same folder). */
+export const relinkMedia = (cueId: CueId, newPath: string) =>
+  invoke<RelinkResult>("relink_media", { cueId, newPath });
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+export const getRecentLogs = (limit?: number) =>
+  invoke<LogLine[]>("get_recent_logs", { limit });
+export const clearLogs = () => invoke<void>("clear_logs");
+export const openLogsFolder = () => invoke<void>("open_logs_folder");
 
 // ---------------------------------------------------------------------------
 // Cue Lists

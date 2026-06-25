@@ -139,6 +139,19 @@ impl Cue for StopCue {
         Some((self.hard_stop_mode, self.target_cue_ids.clone()))
     }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        use crate::cue::validation::CueIssue;
+        // Empty target list = "stop all" — that is intentional, not a problem.
+        self.target_cue_ids
+            .iter()
+            .filter(|id| !ctx.all_cue_ids.contains(id))
+            .map(|_| CueIssue::warning("Cible Stop introuvable (cue supprimé)"))
+            .collect()
+    }
+
     fn resolve_stop_target(&mut self, number_to_id: &std::collections::HashMap<String, CueId>) {
         if self.target_cue_ids.is_empty() {
             for num in &self.target_cue_numbers {
@@ -271,6 +284,36 @@ mod tests {
         let spec = cue.stop_specification().unwrap();
         assert!(!spec.0, "hard_stop_mode should default to false");
         assert!(spec.1.is_empty(), "target should default to empty (stop all)");
+    }
+
+    fn empty_ctx() -> crate::cue::validation::ValidationContext {
+        use std::collections::HashSet;
+        crate::cue::validation::ValidationContext {
+            all_cue_ids: HashSet::new(),
+            fixture_ids: HashSet::new(),
+            fixture_group_ids: HashSet::new(),
+            osc_patch_ids: HashSet::new(),
+            output_patch_ids: HashSet::new(),
+            midi_ports: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validate_flags_dangling_target_but_not_resolved() {
+        let mut cue = StopCue::new();
+        // Empty target list = "stop all" — never an issue.
+        assert!(cue.validate(&empty_ctx()).is_empty());
+
+        // A target that no longer exists → one warning.
+        cue.target_cue_ids = vec![Uuid::new_v4()];
+        assert_eq!(cue.validate(&empty_ctx()).len(), 1);
+
+        // The same target present in the workspace → no issue.
+        let id = Uuid::new_v4();
+        cue.target_cue_ids = vec![id];
+        let mut ctx = empty_ctx();
+        ctx.all_cue_ids.insert(id);
+        assert!(cue.validate(&ctx).is_empty());
     }
 
     #[test]

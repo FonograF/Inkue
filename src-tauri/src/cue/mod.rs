@@ -23,6 +23,7 @@ pub mod stop_cue;
 pub mod text_cue;
 pub mod traits;
 pub mod types;
+pub mod validation;
 pub mod video_cue;
 pub mod wait_cue;
 
