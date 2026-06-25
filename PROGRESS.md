@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.20
+## Current version: 0.9.21
 
 ## cargo build result
 
@@ -128,6 +128,10 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.21 (2026-06-26) — Re-sync video A/V after an audio outage
+
+Follow-up to 0.9.20. mpv runs on its own display clock, independent of the cpal audio device, so during the ~250 ms freeze-detection window the picture kept advancing while the paired audio voice was frozen — leaving a constant lip-sync offset after the freeze guard paused/resumed the video cue. Fix in `show/event_loop.rs`: when the freeze guard resumes an auto-paused **Video** cue, it first re-seeks (`output_engine.seek`, which repositions mpv *and* the paired audio voice together) to the cue's frozen `action_elapsed`, so audio catches up to the picture before playback resumes. Audio cues are unaffected (single clock, already in sync).
 
 ### 0.9.20 (2026-06-25) — Freeze the cue timeline during an audio outage
 

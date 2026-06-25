@@ -19,7 +19,7 @@ use tauri::Emitter;
 use crate::{
     cue::{
         context::{CueContext, CueEvent},
-        types::{ContinueMode, CueId, CueState},
+        types::{ContinueMode, CueId, CueState, CueType},
     },
     engine::{
         output_engine::{OutputEngine, OutputStatus},
@@ -359,9 +359,18 @@ fn tick(
     } else if !frozen_now && *audio_frozen {
         for cl in ws.cue_lists.iter_mut() {
             for cue in cl.cues.iter_mut() {
-                if auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused
-                    && cue.resume(&tick_ctx).is_ok()
-                {
+                if !(auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused) {
+                    continue;
+                }
+                // Video: mpv (its own clock) kept playing during the ~250 ms
+                // detection window while the paired audio voice was frozen, so
+                // they desynced.  Re-seek both to the cue's frozen elapsed
+                // position before resuming so audio catches up to the picture.
+                if cue.cue_type() == CueType::Video {
+                    let pos = cue.action_elapsed().as_millis() as u64;
+                    cue.seek(pos, &tick_ctx);
+                }
+                if cue.resume(&tick_ctx).is_ok() {
                     just_resumed.push(cue.id());
                 }
             }
