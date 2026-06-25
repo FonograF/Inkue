@@ -233,22 +233,22 @@ impl Cue for LightCue {
         use crate::cue::validation::CueIssue;
         let mut issues = Vec::new();
         if self.targets.is_empty() {
-            issues.push(CueIssue::warning("Aucune cible lumière"));
+            issues.push(CueIssue::warning("No light target"));
         }
         for target in &self.targets {
             match target {
                 ParamTarget::Fixture { fixture_id, .. } => match fixture_id.parse::<Uuid>() {
                     Ok(id) if !ctx.fixture_ids.contains(&id) => {
-                        issues.push(CueIssue::warning("Fixture cible non patché"));
+                        issues.push(CueIssue::warning("Target fixture not patched"));
                     }
-                    Err(_) => issues.push(CueIssue::warning("Fixture cible non configuré")),
+                    Err(_) => issues.push(CueIssue::warning("Target fixture not configured")),
                     _ => {}
                 },
                 ParamTarget::Group { group_id, .. } => match group_id.parse::<Uuid>() {
                     Ok(id) if !ctx.fixture_group_ids.contains(&id) => {
-                        issues.push(CueIssue::warning("Groupe de fixtures introuvable"));
+                        issues.push(CueIssue::warning("Fixture group not found"));
                     }
-                    Err(_) => issues.push(CueIssue::warning("Groupe cible non configuré")),
+                    Err(_) => issues.push(CueIssue::warning("Target group not configured")),
                     _ => {}
                 },
             }

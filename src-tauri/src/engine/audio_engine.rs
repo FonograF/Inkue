@@ -143,14 +143,33 @@ impl AudioEngine {
 
         let stream_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let sr = open_stream_inner(
-            config,
-            Arc::clone(&shared_voices),
-            Arc::clone(&input_feeds),
-            Arc::clone(&master_gain),
-            Arc::clone(&output_period),
-            Arc::clone(&stream_failed),
-        )?;
+        let open = |cfg: &MachineAudioConfig| {
+            open_stream_inner(
+                cfg,
+                Arc::clone(&shared_voices),
+                Arc::clone(&input_feeds),
+                Arc::clone(&master_gain),
+                Arc::clone(&output_period),
+                Arc::clone(&stream_failed),
+            )
+        };
+
+        // Resilient startup: if the configured device is absent (unplugged since
+        // it was saved), fall back to the system default rather than crashing.
+        // The device watchdog then raises the banner and offers a restore when it
+        // returns.  `desired_config` keeps the operator's original choice.
+        let (sr, started_in_fallback) = match open(config) {
+            Ok(sr) => (sr, false),
+            Err(e) if config.device_id.is_some() => {
+                log::warn!(
+                    "Configured audio device unavailable at startup ({e}); \
+                     falling back to the system default"
+                );
+                let fallback = MachineAudioConfig { device_id: None, ..config.clone() };
+                (open(&fallback)?, true)
+            }
+            Err(e) => return Err(e),
+        };
 
         let engine = Arc::new(Self {
             device_manager: Mutex::new(DeviceManager::new()),
@@ -164,9 +183,13 @@ impl AudioEngine {
             master_gain,
             output_period,
             stream_failed: Mutex::new(stream_failed),
+            // `desired_config` keeps the operator's choice even when we started on
+            // the fallback, so the watchdog can offer a restore when it returns.
             desired_config: Mutex::new(config.clone()),
-            current_device_id: Mutex::new(config.device_id.clone()),
-            in_fallback: std::sync::atomic::AtomicBool::new(false),
+            current_device_id: Mutex::new(
+                if started_in_fallback { None } else { config.device_id.clone() },
+            ),
+            in_fallback: std::sync::atomic::AtomicBool::new(started_in_fallback),
         });
 
         // A broken configured device (HDMI with no display, unplugged interface)

@@ -726,11 +726,11 @@ export default function App() {
         const label = info.name || "Untitled";
         const when = info.modified_at
           ? new Date(info.modified_at).toLocaleString()
-          : "récemment";
+          : "recently";
         const restore = await ask(
-          `WinCue ne s'est pas fermé correctement.\n\nRécupérer le travail non sauvegardé de « ${label} » ` +
-            `(dernière modification : ${when}) ?`,
-          { title: "Récupération", kind: "warning", okLabel: "Récupérer", cancelLabel: "Ignorer" },
+          `WinCue did not close properly.\n\nRecover unsaved work from "${label}" ` +
+            `(last edited ${when})?`,
+          { title: "Recovery", kind: "warning", okLabel: "Recover", cancelLabel: "Discard" },
         );
         if (restore) {
           await restoreRecovery();
@@ -1096,7 +1096,7 @@ export default function App() {
           {brokenCueIds.size > 0 && (
             <button
               onClick={() => setPreflightOpen(true)}
-              title="Des cues ont des problèmes — cliquer pour vérifier"
+              title="Some cues have problems — click to check"
               style={{
                 flexShrink: 0, display: "flex", alignItems: "center", gap: 4,
                 background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.5)",

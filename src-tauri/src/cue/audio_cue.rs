@@ -498,7 +498,7 @@ impl Cue for AudioCue {
         // exists is worth flagging (the cue silently falls back otherwise).
         match self.output_patch_id {
             Some(id) if !ctx.output_patch_ids.contains(&id) => {
-                vec![CueIssue::warning("Output Patch introuvable (patch par défaut utilisé)")]
+                vec![CueIssue::warning("Output Patch not found (using default patch)")]
             }
             _ => Vec::new(),
         }

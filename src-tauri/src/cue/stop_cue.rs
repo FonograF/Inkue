@@ -148,7 +148,7 @@ impl Cue for StopCue {
         self.target_cue_ids
             .iter()
             .filter(|id| !ctx.all_cue_ids.contains(id))
-            .map(|_| CueIssue::warning("Cible Stop introuvable (cue supprimé)"))
+            .map(|_| CueIssue::warning("Stop target not found (cue deleted)"))
             .collect()
     }
 

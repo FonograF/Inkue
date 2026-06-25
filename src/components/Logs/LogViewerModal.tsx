@@ -92,7 +92,7 @@ export function LogViewerModal({ onClose }: { onClose: () => void }) {
           ))}
           <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--wc-text-secondary)", marginLeft: 6 }}>
             <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
-            Suivre
+            Follow
           </label>
         </div>
 
@@ -105,7 +105,7 @@ export function LogViewerModal({ onClose }: { onClose: () => void }) {
           }}
         >
           {visible.length === 0 ? (
-            <div style={{ color: "var(--wc-text-faint)" }}>Aucune entrée.</div>
+            <div style={{ color: "var(--wc-text-faint)" }}>No entries.</div>
           ) : (
             visible.map((l, i) => (
               <div key={i} style={{ display: "flex", gap: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
@@ -118,12 +118,12 @@ export function LogViewerModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
-          <span style={{ fontSize: 11, color: "var(--wc-text-muted)" }}>{visible.length} ligne{visible.length > 1 ? "s" : ""}</span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-muted)" }}>{visible.length} line{visible.length > 1 ? "s" : ""}</span>
           <div style={{ flex: 1 }} />
-          <button onClick={() => void openLogsFolder()} style={btn}>Ouvrir le dossier</button>
-          <button onClick={handleCopy} style={btn}>Copier</button>
-          <button onClick={() => { void clearLogs().then(refresh); }} style={btn}>Vider</button>
-          <button onClick={onClose} style={{ ...btn, background: "var(--wc-bg-hover)", color: "var(--wc-text)" }}>Fermer</button>
+          <button onClick={() => void openLogsFolder()} style={btn}>Open folder</button>
+          <button onClick={handleCopy} style={btn}>Copy</button>
+          <button onClick={() => { void clearLogs().then(refresh); }} style={btn}>Clear</button>
+          <button onClick={onClose} style={{ ...btn, background: "var(--wc-bg-hover)", color: "var(--wc-text)" }}>Close</button>
         </div>
       </div>
     </div>

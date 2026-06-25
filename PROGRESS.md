@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.14
+## Current version: 0.9.15
 
 ## cargo build result
 
@@ -128,6 +128,11 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.15 (2026-06-25) — Startup-fallback fix + English-only UI
+
+- **Bugfix (`engine/audio_engine.rs`)** — `AudioEngine::new` panicked at startup when the saved audio device was absent (e.g. an interface unplugged since it was configured), taking the whole app down. It now falls back to the system default on that failure (sets `in_fallback`, keeps the operator's choice as `desired_config`), so the app always starts; the device watchdog then raises the banner and offers a restore when the device returns.
+- **i18n** — all user-facing strings introduced in 0.9.12–0.9.14 (health banner, preflight panel, log viewer, recovery prompt, validation messages) were mistakenly in French; converted to English to match the rest of the UI.
 
 ### 0.9.14 (2026-06-25) — Hardware/network resilience (audio + MIDI)
 

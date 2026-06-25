@@ -142,11 +142,11 @@ impl Cue for OscCue {
         use crate::cue::validation::CueIssue;
         let mut issues = Vec::new();
         if self.messages.is_empty() {
-            issues.push(CueIssue::warning("Aucun message OSC"));
+            issues.push(CueIssue::warning("No OSC messages"));
         }
         for msg in &self.messages {
             if !ctx.osc_patch_ids.contains(&msg.patch_id) {
-                issues.push(CueIssue::warning("Patch OSC introuvable"));
+                issues.push(CueIssue::warning("OSC patch not found"));
             }
         }
         issues

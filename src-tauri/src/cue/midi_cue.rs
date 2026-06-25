@@ -88,7 +88,7 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
             crate::health::set(crate::health::HealthAlert::new(
                 &alert_key,
                 crate::health::HealthLevel::Error,
-                format!("Port MIDI « {} » introuvable", msg.port_name),
+                format!("MIDI port \"{}\" not found", msg.port_name),
             ));
             continue;
         };
@@ -100,7 +100,7 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
                     crate::health::set(crate::health::HealthAlert::new(
                         &alert_key,
                         crate::health::HealthLevel::Error,
-                        format!("Envoi MIDI échoué sur « {} »", msg.port_name),
+                        format!("MIDI send failed on \"{}\"", msg.port_name),
                     ));
                 } else {
                     // The port is reachable again — drop any stale alert for it.
@@ -113,7 +113,7 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
                 crate::health::set(crate::health::HealthAlert::new(
                     &alert_key,
                     crate::health::HealthLevel::Error,
-                    format!("Connexion MIDI impossible : « {} »", msg.port_name),
+                    format!("Cannot connect to MIDI port \"{}\"", msg.port_name),
                 ));
                 midi_out = e.into_inner();
             }
@@ -238,14 +238,14 @@ impl Cue for MidiCue {
         use crate::cue::validation::CueIssue;
         let mut issues = Vec::new();
         if self.messages.is_empty() {
-            issues.push(CueIssue::warning("Aucun message MIDI"));
+            issues.push(CueIssue::warning("No MIDI messages"));
         }
         for msg in &self.messages {
             if msg.port_name.is_empty() {
-                issues.push(CueIssue::warning("Port MIDI non configuré"));
+                issues.push(CueIssue::warning("MIDI port not configured"));
             } else if !ctx.midi_ports.iter().any(|p| p == &msg.port_name) {
                 issues.push(CueIssue::error(format!(
-                    "Port MIDI absent : « {} »",
+                    "MIDI port not available: \"{}\"",
                     msg.port_name
                 )));
             }

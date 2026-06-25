@@ -307,14 +307,14 @@ pub fn run() {
                                         "audio-device",
                                         HealthLevel::Error,
                                         format!(
-                                            "Périphérique audio « {lost} » perdu — bascule sur le périphérique par défaut"
+                                            "Audio device \"{lost}\" lost — switched to the default device"
                                         ),
                                     ));
                                 } else {
                                     health::set(HealthAlert::new(
                                         "audio-device",
                                         HealthLevel::Error,
-                                        "Périphérique audio par défaut indisponible",
+                                        "Default audio device unavailable",
                                     ));
                                 }
                             } else if h.in_fallback {
@@ -324,16 +324,16 @@ pub fn run() {
                                         HealthAlert::new(
                                             "audio-device",
                                             HealthLevel::Warning,
-                                            format!("Périphérique audio « {dev} » de retour"),
+                                            format!("Audio device \"{dev}\" is back"),
                                         )
-                                        .with_action("restore_audio_device", "Rebasculer"),
+                                        .with_action("restore_audio_device", "Switch back"),
                                     );
                                 } else {
                                     health::set(HealthAlert::new(
                                         "audio-device",
                                         HealthLevel::Error,
                                         format!(
-                                            "Périphérique audio « {dev} » perdu — lecture sur le périphérique par défaut"
+                                            "Audio device \"{dev}\" lost — playing on the default device"
                                         ),
                                     ));
                                 }

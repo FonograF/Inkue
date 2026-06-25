@@ -76,7 +76,7 @@ fn walk_validate(cues: &[Box<dyn Cue>], ctx: &ValidationContext, out: &mut Vec<C
             if !path.as_os_str().is_empty() && !path.exists() {
                 issues.insert(
                     0,
-                    CueIssue::error(format!("Fichier introuvable : {}", path.display())),
+                    CueIssue::error(format!("File not found: {}", path.display())),
                 );
                 missing_file = Some(path.to_string_lossy().to_string());
             }
@@ -192,7 +192,7 @@ pub fn relink_media(
         ws.mark_modified();
 
         let cue_type = set_cue_media_path(&mut ws, &registry, &id, &new_path)
-            .ok_or("Cue introuvable")?;
+            .ok_or("Cue not found")?;
         to_preload.push((id, cue_type, PathBuf::from(&new_path)));
 
         // Apply the chosen folder to the workspace's other missing files.

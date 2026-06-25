@@ -377,10 +377,10 @@ impl Cue for FadeCue {
             .target_cue_ids
             .iter()
             .filter(|id| !ctx.all_cue_ids.contains(id))
-            .map(|_| CueIssue::warning("Cible Fade introuvable (cue supprimé)"))
+            .map(|_| CueIssue::warning("Fade target not found (cue deleted)"))
             .collect();
         if self.target_cue_ids.is_empty() && self.target_cue_numbers.is_empty() {
-            issues.push(CueIssue::warning("Aucune cible sélectionnée"));
+            issues.push(CueIssue::warning("No target selected"));
         }
         issues
     }

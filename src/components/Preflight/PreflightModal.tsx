@@ -66,19 +66,19 @@ export function PreflightModal({ onClose }: { onClose: () => void }) {
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4 }}>
           <span style={{ fontSize: 18, fontWeight: 700, color: "var(--wc-text-bright)" }}>
-            Vérification du workspace
+            Check Workspace
           </span>
         </div>
 
         <div style={{ fontSize: 12, color: "var(--wc-text-secondary)", marginBottom: 18 }}>
           {validation.length === 0 ? (
-            <span style={{ color: "#86efac" }}>✓ Aucun problème détecté — le show est prêt.</span>
+            <span style={{ color: "#86efac" }}>✓ No problems found — the show is ready.</span>
           ) : (
             <>
-              <span style={{ color: SEVERITY_COLOR.error }}>{errorCount} erreur{errorCount > 1 ? "s" : ""}</span>
+              <span style={{ color: SEVERITY_COLOR.error }}>{errorCount} error{errorCount > 1 ? "s" : ""}</span>
               {" · "}
-              <span style={{ color: SEVERITY_COLOR.warning }}>{warnCount} avertissement{warnCount > 1 ? "s" : ""}</span>
-              {" sur "}{validation.length} cue{validation.length > 1 ? "s" : ""}
+              <span style={{ color: SEVERITY_COLOR.warning }}>{warnCount} warning{warnCount > 1 ? "s" : ""}</span>
+              {" across "}{validation.length} cue{validation.length > 1 ? "s" : ""}
             </>
           )}
         </div>
@@ -94,7 +94,7 @@ export function PreflightModal({ onClose }: { onClose: () => void }) {
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                 <span style={{ fontSize: 13, color: "var(--wc-text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {v.cue_number ? `${v.cue_number} · ` : ""}{v.cue_name || "(sans nom)"}
+                  {v.cue_number ? `${v.cue_number} · ` : ""}{v.cue_name || "(untitled)"}
                 </span>
                 {v.missing_file && (
                   <button
@@ -107,7 +107,7 @@ export function PreflightModal({ onClose }: { onClose: () => void }) {
                       fontSize: 12, padding: "4px 12px", opacity: busy ? 0.5 : 1,
                     }}
                   >
-                    Localiser…
+                    Locate…
                   </button>
                 )}
               </div>
@@ -134,7 +134,7 @@ export function PreflightModal({ onClose }: { onClose: () => void }) {
               fontSize: 13, padding: "6px 16px",
             }}
           >
-            Revérifier
+            Re-check
           </button>
           <button
             onClick={onClose}
@@ -144,7 +144,7 @@ export function PreflightModal({ onClose }: { onClose: () => void }) {
               fontSize: 13, padding: "6px 18px",
             }}
           >
-            Fermer
+            Close
           </button>
         </div>
       </div>
