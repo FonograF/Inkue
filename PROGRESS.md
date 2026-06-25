@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.16
+## Current version: 0.9.17
 
 ## cargo build result
 
@@ -128,6 +128,10 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.17 (2026-06-25) — Dismissible health banner
+
+The health banner's left glyph was the severity icon (`✕` for error), which read as a non-working close button. Changed the error icon to a dot (`●`) and added a real dismiss (`×`) button on the right. Dismissal is client-side and keyed on the alert's content (`key|message`), so a changed/recurring fault — e.g. the device's "is back" alert — re-appears; stale dismissals are pruned when their alert clears. `components/Health/HealthBanner.tsx`.
 
 ### 0.9.16 (2026-06-25) — Friendly audio device name in alerts
 
