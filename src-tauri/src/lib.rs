@@ -213,7 +213,12 @@ pub fn run() {
                         // u64::MAX forces a first evaluation; the pristine
                         // "Untitled" workspace (is_modified == false) yields Clear.
                         let mut last_rev: u64 = u64::MAX;
-                        let mut on_disk = crate::recovery::exists();
+                        // Only track files written by THIS session. A pre-existing
+                        // recovery file belongs to the previous session — it must
+                        // not be deleted here (the user hasn't responded to the
+                        // recovery prompt yet). It is removed by discard_recovery()
+                        // or by the clean-exit WindowEvent::Destroyed handler.
+                        let mut on_disk = false;
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(3));
                             let action = match ws.lock() {
