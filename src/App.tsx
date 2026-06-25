@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog, ask } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
 import { CartView } from "./components/CueList/CartView";
 import { ShowModeView } from "./components/ShowMode/ShowModeView";
@@ -19,7 +19,7 @@ import { AboutDialog } from "./components/About/AboutDialog";
 import { PreflightModal } from "./components/Preflight/PreflightModal";
 import { LogViewerModal } from "./components/Logs/LogViewerModal";
 import { HealthBanner } from "./components/Health/HealthBanner";
-import type { CollectReport } from "./lib/types";
+import type { CollectReport, RecoveryInfo } from "./lib/types";
 import type { CueSummary } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -158,6 +158,59 @@ function DialogBtn({
     >
       {label}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Crash-recovery dialog — shown on startup when a recovery snapshot exists
+// ---------------------------------------------------------------------------
+
+function RecoveryDialog({
+  info,
+  onRecover,
+  onDiscard,
+}: {
+  info: RecoveryInfo;
+  onRecover: () => void;
+  onDiscard: () => void;
+}) {
+  const label = info.name || "Untitled";
+  const when = info.modified_at
+    ? new Date(info.modified_at).toLocaleString()
+    : "recently";
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 99999,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+          borderRadius: 10, padding: "28px 32px", width: 380,
+          boxShadow: "0 16px 48px rgba(0,0,0,0.8)",
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--wc-text-bright)", marginBottom: 8 }}>
+          Recover Unsaved Work
+        </div>
+        <div style={{ fontSize: 13, color: "var(--wc-text-secondary)", marginBottom: 6 }}>
+          WinCue did not close properly.
+        </div>
+        <div style={{ fontSize: 13, color: "var(--wc-text)", marginBottom: 24 }}>
+          Recover unsaved work from{" "}
+          <span style={{ color: "var(--wc-text-bright)", fontWeight: 500 }}>"{label}"</span>
+          {" "}(last edited {when})?
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <DialogBtn label="Discard" onClick={onDiscard} danger />
+          <DialogBtn label="Recover" onClick={onRecover} primary />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -659,6 +712,7 @@ export default function App() {
   const [preflightOpen, setPreflightOpen]         = useState(false);
   const [logsOpen, setLogsOpen]                   = useState(false);
   const [searchQuery, setSearchQuery]             = useState("");
+  const [recoveryInfo, setRecoveryInfo]           = useState<RecoveryInfo | null>(null);
 
   // Persist panel visibility across launches.
   useEffect(() => {
@@ -719,31 +773,26 @@ export default function App() {
   useEffect(() => {
     if (recoveryPrompted.current) return;
     recoveryPrompted.current = true;
-    void (async () => {
-      try {
-        const info = await checkRecovery();
-        if (!info) return;
-        const label = info.name || "Untitled";
-        const when = info.modified_at
-          ? new Date(info.modified_at).toLocaleString()
-          : "recently";
-        const restore = await ask(
-          `WinCue did not close properly.\n\nRecover unsaved work from "${label}" ` +
-            `(last edited ${when})?`,
-          { title: "Recovery", kind: "warning", okLabel: "Recover", cancelLabel: "Discard" },
-        );
-        if (restore) {
-          await restoreRecovery();
-          refreshCues();
-          await refreshWorkspaceInfo();
-        } else {
-          await discardRecovery();
-        }
-      } catch (err) {
-        console.error("recovery check failed", err);
-      }
-    })();
+    void checkRecovery()
+      .then((info) => { if (info) setRecoveryInfo(info); })
+      .catch((err) => console.error("recovery check failed", err));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleRecover = useCallback(async () => {
+    setRecoveryInfo(null);
+    try {
+      await restoreRecovery();
+      refreshCues();
+      await refreshWorkspaceInfo();
+    } catch (err) {
+      console.error("restore recovery failed", err);
+    }
+  }, [refreshCues, refreshWorkspaceInfo]);
+
+  const handleDiscardRecovery = useCallback(async () => {
+    setRecoveryInfo(null);
+    await discardRecovery().catch((err) => console.error("discard recovery failed", err));
+  }, []);
 
   // -------------------------------------------------------------------------
   // Shared save helpers (used by FileMenu AND CloseConfirmDialog)
@@ -1037,6 +1086,15 @@ export default function App() {
         <CollectResultDialog
           report={collectReport}
           onClose={() => setCollectReport(null)}
+        />
+      )}
+
+      {/* Crash-recovery dialog */}
+      {recoveryInfo && (
+        <RecoveryDialog
+          info={recoveryInfo}
+          onRecover={() => void handleRecover()}
+          onDiscard={() => void handleDiscardRecovery()}
         />
       )}
 
