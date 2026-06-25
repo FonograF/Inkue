@@ -302,6 +302,12 @@ pub fn run() {
 
                         let mut last_seq = 0u64;
                         let mut last_count = engine.callback_count();
+                        // Hysteresis: only report "device is back" after it has
+                        // appeared in enumeration for this many consecutive ticks
+                        // (avoids a false-positive flash when PipeWire is slow to
+                        // remove a just-unplugged device from its node list).
+                        let mut desired_present_streak: u32 = 0;
+                        const DESIRED_PRESENT_MIN_TICKS: u32 = 2;
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(2));
 
@@ -334,6 +340,11 @@ pub fn run() {
                             } else if h.in_fallback {
                                 let dev = h.desired_device.clone().unwrap_or_default();
                                 if h.desired_present {
+                                    desired_present_streak += 1;
+                                } else {
+                                    desired_present_streak = 0;
+                                }
+                                if desired_present_streak >= DESIRED_PRESENT_MIN_TICKS {
                                     health::set(
                                         HealthAlert::new(
                                             "audio-device",
@@ -346,12 +357,11 @@ pub fn run() {
                                     health::set(HealthAlert::new(
                                         "audio-device",
                                         HealthLevel::Error,
-                                        format!(
-                                            "Audio device \"{dev}\" lost — cues paused"
-                                        ),
+                                        format!("Audio device \"{dev}\" lost — cues paused"),
                                     ));
                                 }
                             } else {
+                                desired_present_streak = 0;
                                 health::clear("audio-device");
                             }
 

@@ -345,6 +345,29 @@ fn tick(
 
     let mut just_paused:  Vec<CueId> = Vec::new();
     let mut just_resumed: Vec<CueId> = Vec::new();
+
+    // Explicit pause request from the watchdog (device-loss fallback).  This
+    // fires even when the fallback stream starts fast enough that the freeze
+    // guard's 250 ms window never triggers.
+    if audio_engine.request_pause_for_fallback
+        .compare_exchange(true, false,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed)
+        .is_ok()
+    {
+        for cl in ws.cue_lists.iter_mut() {
+            for cue in cl.cues.iter_mut() {
+                if cue.state() == CueState::Running && cue.playing_voice_id().is_some()
+                    && cue.pause(&tick_ctx).is_ok()
+                {
+                    auto_paused.insert(cue.id());
+                    just_paused.push(cue.id());
+                }
+            }
+        }
+        *audio_frozen = true;
+    }
+
     if frozen_now && !*audio_frozen {
         for cl in ws.cue_lists.iter_mut() {
             for cue in cl.cues.iter_mut() {

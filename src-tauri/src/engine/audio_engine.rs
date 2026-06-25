@@ -123,6 +123,10 @@ pub struct AudioEngine {
     /// paused on the fallback device (they should not resume mid-show on the wrong
     /// output — the operator must consciously switch back first).
     pub fallback_active: std::sync::atomic::AtomicBool,
+    /// One-shot flag: the event loop should pause all running audio cues on the
+    /// next tick.  Set by `fall_back_to_default()` so cues stop immediately even
+    /// when the fallback stream starts too quickly for the freeze guard to fire.
+    pub request_pause_for_fallback: std::sync::atomic::AtomicBool,
 }
 
 /// Snapshot of the output device's health, read by the device watchdog.
@@ -204,6 +208,7 @@ impl AudioEngine {
             ),
             in_fallback: std::sync::atomic::AtomicBool::new(started_in_fallback),
             fallback_active: std::sync::atomic::AtomicBool::new(started_in_fallback),
+            request_pause_for_fallback: std::sync::atomic::AtomicBool::new(false),
         });
 
         // A broken configured device (HDMI with no display, unplugged interface)
@@ -277,6 +282,7 @@ impl AudioEngine {
         let fallback = MachineAudioConfig { device_id: None, ..desired };
         self.in_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
         self.fallback_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.request_pause_for_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = self.restart(&fallback) {
             log::error!("Audio fallback restart failed: {e}");
         }
