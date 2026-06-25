@@ -338,16 +338,16 @@ pub fn run() {
                                         HealthAlert::new(
                                             "audio-device",
                                             HealthLevel::Warning,
-                                            format!("Audio device \"{dev}\" is back"),
+                                            format!("Audio device \"{dev}\" is back — cues are paused"),
                                         )
-                                        .with_action("restore_audio_device", "Switch back"),
+                                        .with_action("restore_audio_device", "Switch back & resume"),
                                     );
                                 } else {
                                     health::set(HealthAlert::new(
                                         "audio-device",
                                         HealthLevel::Error,
                                         format!(
-                                            "Audio device \"{dev}\" lost — playing on the default device"
+                                            "Audio device \"{dev}\" lost — cues paused"
                                         ),
                                     ));
                                 }

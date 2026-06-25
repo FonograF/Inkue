@@ -118,6 +118,11 @@ pub struct AudioEngine {
     current_device_id: Mutex<Option<String>>,
     /// `true` while running on the default device after the desired one was lost.
     in_fallback: std::sync::atomic::AtomicBool,
+    /// `true` from the moment we fall back until the operator explicitly restores
+    /// the desired device.  The event loop checks this to keep auto-paused cues
+    /// paused on the fallback device (they should not resume mid-show on the wrong
+    /// output — the operator must consciously switch back first).
+    pub fallback_active: std::sync::atomic::AtomicBool,
 }
 
 /// Snapshot of the output device's health, read by the device watchdog.
@@ -198,6 +203,7 @@ impl AudioEngine {
                 if started_in_fallback { None } else { config.device_id.clone() },
             ),
             in_fallback: std::sync::atomic::AtomicBool::new(started_in_fallback),
+            fallback_active: std::sync::atomic::AtomicBool::new(started_in_fallback),
         });
 
         // A broken configured device (HDMI with no display, unplugged interface)
@@ -258,6 +264,7 @@ impl AudioEngine {
         if let Ok(mut d) = self.desired_config.lock() {
             *d = config.clone();
         }
+        self.fallback_active.store(false, std::sync::atomic::Ordering::Relaxed);
         self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
         self.restart(config)
     }
@@ -269,6 +276,7 @@ impl AudioEngine {
         let lost = desired.device_id.clone();
         let fallback = MachineAudioConfig { device_id: None, ..desired };
         self.in_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.fallback_active.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = self.restart(&fallback) {
             log::error!("Audio fallback restart failed: {e}");
         }
@@ -276,12 +284,15 @@ impl AudioEngine {
     }
 
     /// Re-open the operator's chosen device after it returned (manual restore).
+    /// Clears `fallback_active` first so the event-loop freeze guard will
+    /// auto-resume any cues that were held paused during the fallback.
     pub fn restore_desired(&self) -> Result<()> {
         let desired = self
             .desired_config
             .lock()
             .map(|c| c.clone())
             .map_err(|_| anyhow!("desired_config poisoned"))?;
+        self.fallback_active.store(false, std::sync::atomic::Ordering::Relaxed);
         self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
         self.restart(&desired)
     }

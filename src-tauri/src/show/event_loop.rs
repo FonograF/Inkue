@@ -357,25 +357,34 @@ fn tick(
             }
         }
     } else if !frozen_now && *audio_frozen {
-        for cl in ws.cue_lists.iter_mut() {
-            for cue in cl.cues.iter_mut() {
-                if !(auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused) {
-                    continue;
-                }
-                // Video: mpv (its own clock) kept playing during the ~250 ms
-                // detection window while the paired audio voice was frozen, so
-                // they desynced.  Re-anchor the audio voice to mpv's *actual*
-                // position (time-pos) — without moving the picture — so audio
-                // catches up precisely before playback resumes.
-                if cue.cue_type() == CueType::Video {
-                    tick_ctx.output_engine.resync_audio_to_video();
-                }
-                if cue.resume(&tick_ctx).is_ok() {
-                    just_resumed.push(cue.id());
+        // Only auto-resume if this thaw is from a transient glitch or a
+        // deliberate device switch-back.  During an automatic fallback
+        // (wrong device, operator hasn't switched back yet) keep cues
+        // paused so the show doesn't continue on the wrong output.
+        let in_fallback = audio_engine
+            .fallback_active
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !in_fallback {
+            for cl in ws.cue_lists.iter_mut() {
+                for cue in cl.cues.iter_mut() {
+                    if !(auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused) {
+                        continue;
+                    }
+                    // Video: mpv (its own clock) kept playing during the ~250 ms
+                    // detection window while the paired audio voice was frozen, so
+                    // they desynced.  Re-anchor the audio voice to mpv's *actual*
+                    // position (time-pos) — without moving the picture — so audio
+                    // catches up precisely before playback resumes.
+                    if cue.cue_type() == CueType::Video {
+                        tick_ctx.output_engine.resync_audio_to_video();
+                    }
+                    if cue.resume(&tick_ctx).is_ok() {
+                        just_resumed.push(cue.id());
+                    }
                 }
             }
+            auto_paused.clear();
         }
-        auto_paused.clear();
     }
     *audio_frozen = frozen_now;
 
