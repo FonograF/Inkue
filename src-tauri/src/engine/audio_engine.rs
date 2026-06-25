@@ -530,16 +530,17 @@ impl AudioEngine {
     }
 
     /// Stop the current stream and re-open according to `config`.
-    /// All active voices are killed; cues should be reset by the caller.
+    ///
+    /// Playing voices are **preserved**: the voice pool is shared with the new
+    /// stream's callback, so each voice resumes from its current `frame_pos` on
+    /// the new device (the source-frame cursor is output-rate-independent, and
+    /// channel routing is bounds-checked in `fill_buffer`).  A device switch
+    /// therefore only drops audio for the brief teardown/re-open gap instead of
+    /// killing the running cue — for both a planned change and an auto-fallback.
     pub fn restart(&self, config: &MachineAudioConfig) -> Result<()> {
-        // Kill all active voices.
-        if let Ok(mut voices) = self.voices.lock() {
-            for v in voices.iter() { v.set_stopped(); }
-            voices.clear();
-        }
-
         // Drop the old stream before opening the new one (exclusive backends
-        // require the device to be released first).
+        // require the device to be released first).  Voices are intentionally
+        // left intact so the new stream continues mixing them where they froze.
         {
             let mut sg = self._stream.lock().map_err(|_| anyhow!("stream mutex poisoned"))?;
             *sg = None;

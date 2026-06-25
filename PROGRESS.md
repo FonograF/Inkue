@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.18
+## Current version: 0.9.19
 
 ## cargo build result
 
@@ -128,6 +128,15 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.19 (2026-06-25) — Seamless audio across a device switch
+
+A device switch (planned change in Preferences, or an auto-fallback after a loss) no longer stops the running cue. `AudioEngine::restart` now **preserves the voice pool** instead of killing it: the `voices` Vec is shared with the new stream's callback, so each voice resumes from its current `frame_pos` on the new device. This is safe cross-device because the cursor is in source frames (output-rate-independent — `fill_buffer` resamples per output rate) and channel routing is already bounds-checked (`if voice.out_l < channels`). On an unplanned loss the voices simply freeze during the gap (the engine produces no callbacks) and resume when the watchdog opens the fallback ~2 s later. Cross-platform: all via generic cpal, no per-OS code.
+
+- `engine/audio_engine.rs` — `restart` drops the stream + re-opens without clearing/stopping voices.
+- `commands/health_cmds.rs` (`restore_audio_device`) and `preferences_cmds.rs` (`update_machine_audio_config`) — removed the running-cue reset; the cue keeps playing.
+
+Completion stays correct: an AudioCue completes on the engine's `AudioStatus::Completed` (voice reaching its end), not on a wall-clock timer, so a frozen voice finishes after it resumes — no premature cutoff. Known minor: on an *unplanned* loss the cue's displayed elapsed/remaining drifts by the ~2 s detection latency (audio resumes at the correct position; only the clock is ahead). A planned change has a ~tens-of-ms gap, negligible.
 
 ### 0.9.18 (2026-06-25) — Reliable mid-show device-loss detection
 

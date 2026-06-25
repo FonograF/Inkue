@@ -107,8 +107,9 @@ pub fn get_machine_audio_config() -> MachineAudioConfig {
     config
 }
 
-/// Persist machine audio config to `%APPDATA%\WinCue\audio.json`, restart the
-/// audio engine, and reset any running cues (their voice IDs become stale).
+/// Persist machine audio config to `%APPDATA%\WinCue\audio.json` and re-open the
+/// audio engine on the new device.  Running cues keep playing — voices are
+/// preserved across the restart and resume on the new output.
 #[tauri::command]
 pub fn update_machine_audio_config(
     config: MachineAudioConfig,
@@ -126,14 +127,9 @@ pub fn update_machine_audio_config(
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         // Keep the runtime buffer-size hint in sync with the new machine config.
+        // Running cues are NOT reset: voices are preserved across the device
+        // switch and keep playing on the new output.
         ws.preferences.audio.audio_buffer_size = new_buffer_size;
-        if let Some(cl) = ws.active_cue_list_mut() {
-            for cue in cl.cues.iter_mut() {
-                if cue.is_running() || cue.is_paused() {
-                    let _ = cue.reset();
-                }
-            }
-        }
     }
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
