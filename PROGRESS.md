@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.11
+## Current version: 0.9.12
 
 ## cargo build result
 
@@ -10,7 +10,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## cargo test result
 
-**142 tests pass, 0 failures.** (130 prior + 12 new TextCue tests — run `cargo test` from `src-tauri/` after closing dev server to confirm. DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue; TC types/DF/display/RT, MTC receiver QF+SysEx+flywheel, LTC encoder/decoder, TC generator QF round-trip.)
+**141 tests pass, 0 failures.** (130 prior + 11 TextCue tests — run `cargo test` from `src-tauri/` after closing dev server to confirm. DMX engine + sink, fixtures, groups, Light Cue; live input resampler + Mic Cue; TC types/DF/display/RT, MTC receiver QF+SysEx+flywheel, LTC encoder/decoder, TC generator QF round-trip.)
 
 ---
 
@@ -128,6 +128,19 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.12 (2026-06-25) — Crash recovery (autosave)
+
+Continuous crash-recovery snapshot so an abnormal exit (crash / power loss) loses at most a few seconds of work — the first reliability item on the road to a professional 1.0.
+
+- **`recovery.rs`** (new) — snapshot lives at `%APPDATA%\WinCue\recovery.wincue` (per-OS config dir, reusing `machine_config::config_base_dir`, so dev writes never trip the source-tree file watcher). Atomic write (`.tmp` + rename) so a crash mid-write never corrupts it. `info()` parses the header for the restore prompt; `exists()/read()/delete()`.
+- **`show/workspace.rs`** — `revision: u64` field bumped by `mark_modified` (the single mutation chokepoint) so the autosave thread only re-serialises when the show actually changed. `to_recovery_json()` keeps media paths **absolute** (the snapshot is not beside the media) and embeds `recovery_original_path`. `load()` refactored to share `from_json_str(content, base_dir, registry)` — `base_dir: None` parses the absolute-path recovery snapshot.
+- **`lib.rs`** — `wincue-autosave` thread (3 s tick): writes the snapshot while `is_modified`, deletes it once the show is saved/pristine. The `WindowEvent::Destroyed` handler deletes the snapshot on any deliberate close, so presence at startup ⇒ previous session crashed.
+- **`commands/recovery_cmds.rs`** (new) — `check_recovery` (→ `RecoveryInfo`), `restore_recovery` (loads the snapshot, re-targets the original `.wincue`, marks dirty), `discard_recovery`. `workspace_cmds::install_workspace` extracted from `load_workspace` and shared with restore. `save_workspace` now drops the snapshot on explicit save.
+- **Frontend** — `App.tsx` one-time mount prompt via `ask()` (native dialog): restore or discard. `lib/commands.ts` + `lib/types.ts` (`RecoveryInfo`). `capabilities/default.json` gains `dialog:allow-ask`.
+- **mpv_sys.rs** unaffected; version bumped to 0.9.12 across `Cargo.toml`, `tauri.conf.json` (was drifting at 0.9.10), `package.json`.
+
+**Tests** — 141 pass (workspace `load` refactor covered by existing serialize/roundtrip tests); `cargo clippy --lib` + `tsc --noEmit` clean.
 
 ### 0.9.11 (2026-06-25) — Text Cue
 

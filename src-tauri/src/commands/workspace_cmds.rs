@@ -49,8 +49,14 @@ pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -
 /// Save the workspace to the given path.
 #[tauri::command]
 pub fn save_workspace(path: String, state: State<'_, AppState>) -> Result<(), String> {
-    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-    ws.save(Some(PathBuf::from(path))).map_err(|e| e.to_string())
+    {
+        let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        ws.save(Some(PathBuf::from(path))).map_err(|e| e.to_string())?;
+    }
+    // Work is now persisted to the real `.wincue` file — drop the crash-recovery
+    // snapshot so a crash right after saving does not prompt a redundant restore.
+    crate::recovery::delete();
+    Ok(())
 }
 
 /// Load a workspace from the given path.
@@ -65,6 +71,18 @@ pub fn load_workspace(
         .map_err(|e| e.to_string())?;
     drop(registry);
 
+    install_workspace(state.inner(), &app_handle, loaded)
+}
+
+/// Install a freshly loaded/restored workspace into the running app: store it,
+/// emit cue-list + modified events, rebind DMX outputs + floating timer, and
+/// kick off background media preload.  Shared by [`load_workspace`] and the
+/// crash-recovery restore path.
+pub(crate) fn install_workspace(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    loaded: Workspace,
+) -> Result<(), String> {
     // Collect audio + video cue IDs + file paths before storing the workspace.
     // Scan ALL cue lists so non-active lists are also preloaded on open.
     let cues_to_preload: Vec<(uuid::Uuid, PathBuf)> = {
@@ -81,7 +99,7 @@ pub fn load_workspace(
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         *ws = loaded;
-        cue_list_cmds::emit_cue_lists_changed(&app_handle, &ws);
+        cue_list_cmds::emit_cue_lists_changed(app_handle, &ws);
     }
     state.output_engine.set_floating_timer_visible(show_floating);
     // Bind the engine's sinks to the loaded show's universe outputs.

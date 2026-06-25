@@ -260,6 +260,13 @@ export interface WorkspaceInfo {
   file_path: string | null;
 }
 
+/** Metadata for an unsaved-work snapshot left by an abnormally-terminated session. */
+export interface RecoveryInfo {
+  name: string;
+  original_path: string | null;
+  modified_at: string | null;
+}
+
 export interface CollectReport {
   workspace_path: string;
   files_copied: number;

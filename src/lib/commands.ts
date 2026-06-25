@@ -31,6 +31,7 @@ import type {
   OutputPatch,
   ParamTarget,
   PatchedFixture,
+  RecoveryInfo,
   ScreenInfo,
   UniverseOutput,
   VideoCueData,
@@ -147,6 +148,11 @@ export const loadWorkspace = (path: string) =>
 export const getWorkspaceInfo = () => invoke<WorkspaceInfo>("get_workspace_info");
 export const collectAndSave = (targetDir: string) =>
   invoke<CollectReport>("collect_and_save_workspace", { targetDir });
+
+/** Returns snapshot metadata if a previous session ended without a clean exit. */
+export const checkRecovery = () => invoke<RecoveryInfo | null>("check_recovery");
+export const restoreRecovery = () => invoke<void>("restore_recovery");
+export const discardRecovery = () => invoke<void>("discard_recovery");
 
 // ---------------------------------------------------------------------------
 // Cue Lists

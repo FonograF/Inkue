@@ -17,7 +17,7 @@ use crate::{
 /// environment variable is unset — this must never resolve into the source
 /// tree (`src-tauri/`), or writes during `tauri dev` retrigger its file
 /// watcher and restart the whole app.
-fn config_base_dir() -> PathBuf {
+pub(crate) fn config_base_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         std::env::var("APPDATA")

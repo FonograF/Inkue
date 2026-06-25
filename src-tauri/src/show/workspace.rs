@@ -221,6 +221,10 @@ pub struct Workspace {
     pub file_path: Option<PathBuf>,
     /// Whether the workspace has unsaved changes.
     pub is_modified: bool,
+    /// Monotonic counter bumped on every mutation ([`mark_modified`]).  The
+    /// autosave thread snapshots the workspace only when this changes, so an
+    /// idle show is never re-serialised.  Not persisted.
+    pub revision: u64,
 }
 
 impl Workspace {
@@ -242,12 +246,14 @@ impl Workspace {
             preferences: AppPreferences::default(),
             file_path: None,
             is_modified: false,
+            revision: 0,
         }
     }
 
     /// Mark the workspace as modified (unsaved changes exist).
     pub fn mark_modified(&mut self) {
         self.is_modified = true;
+        self.revision = self.revision.wrapping_add(1);
         self.metadata.modified_at = Utc::now();
     }
 
@@ -311,6 +317,37 @@ impl Workspace {
         });
 
         serde_json::to_string_pretty(&doc).context("Failed to serialize workspace")
+    }
+
+    /// Serialise the workspace for the crash-recovery snapshot.
+    ///
+    /// Differs from [`to_json`](Self::to_json) in two ways: media `file_path`s are
+    /// kept **absolute** (the recovery file lives in the per-user config dir, not
+    /// beside the show's media, so relative paths would not resolve), and the
+    /// original `.wincue` path is embedded under `recovery_original_path` so a
+    /// restore can target the same file.  Compact (not pretty) since it is
+    /// rewritten every few seconds.
+    pub fn to_recovery_json(&self) -> Result<String> {
+        let cue_lists_json: Vec<serde_json::Value> =
+            self.cue_lists.iter().map(|cl| cl.to_json()).collect();
+
+        let doc = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "recovery_original_path": self.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "workspace": self.metadata,
+            "output_patches": self.output_patches,
+            "default_output_patch": self.default_output_patch_id,
+            "osc_patches": self.osc_patches,
+            "input_patches": self.input_patches,
+            "universe_outputs": self.universe_outputs,
+            "fixtures": self.fixtures,
+            "fixture_groups": self.fixture_groups,
+            "preferences": self.preferences,
+            "cue_lists": cue_lists_json,
+            "active_cue_list_id": self.active_cue_list_id,
+        });
+
+        serde_json::to_string(&doc).context("Failed to serialize recovery workspace")
     }
 
     /// Save the workspace to the given path (or the previously saved path).
@@ -460,8 +497,32 @@ impl Workspace {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read workspace file: {}", path.display()))?;
 
+        let base_dir = path.parent().map(|p| p.to_path_buf());
+        let mut ws = Self::from_json_str(&content, base_dir.as_deref(), registry)?;
+
+        // Derive the name from the filename stem so it always matches the file,
+        // even if the JSON still contains an older name (e.g. "Untitled").
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            ws.metadata.name = stem.to_string();
+        }
+        ws.file_path = Some(path);
+        Ok(ws)
+    }
+
+    /// Parse a workspace document from a JSON string.
+    ///
+    /// `base_dir`, when `Some`, is the directory the document's media paths are
+    /// relative to (used to absolutize them) — pass the `.wincue` file's parent
+    /// for a normal load.  Pass `None` when the document already stores absolute
+    /// paths (the crash-recovery snapshot).  The returned workspace has
+    /// `file_path: None` and `is_modified: false`; callers set those.
+    pub fn from_json_str(
+        content: &str,
+        base_dir: Option<&Path>,
+        registry: &CueRegistry,
+    ) -> Result<Self> {
         let doc: serde_json::Value =
-            serde_json::from_str(&content).context("Invalid JSON in workspace file")?;
+            serde_json::from_str(content).context("Invalid JSON in workspace file")?;
 
         let file_schema: u32 = doc
             .get("schema_version")
@@ -475,7 +536,7 @@ impl Workspace {
             );
         }
 
-        let mut metadata: WorkspaceMetadata = serde_json::from_value(
+        let metadata: WorkspaceMetadata = serde_json::from_value(
             doc.get("workspace")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'workspace' key"))?,
@@ -526,10 +587,9 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
 
-        let base_dir = path.parent().map(|p| p.to_path_buf());
         let mut cue_lists = Vec::new();
         for mut cl_val in cue_lists_val {
-            if let Some(ref base) = base_dir {
+            if let Some(base) = base_dir {
                 if let Some(cues) = cl_val.get_mut("cues") {
                     absolutize_paths(cues, base);
                 }
@@ -550,12 +610,6 @@ impl Workspace {
             .filter(|id| cue_lists.iter().any(|cl| cl.id == *id))
             .unwrap_or_else(|| cue_lists[0].id);
 
-        // Derive the name from the filename stem so it always matches the file,
-        // even if the JSON still contains an older name (e.g. "Untitled").
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            metadata.name = stem.to_string();
-        }
-
         Ok(Self {
             metadata,
             cue_lists,
@@ -568,8 +622,9 @@ impl Workspace {
             fixtures,
             fixture_groups,
             preferences,
-            file_path: Some(path),
+            file_path: None,
             is_modified: false,
+            revision: 0,
         })
     }
 }

@@ -6,6 +6,7 @@ pub mod cue;
 pub mod engine;
 pub mod machine_config;
 pub mod preferences;
+pub mod recovery;
 pub mod show;
 pub mod state;
 
@@ -57,6 +58,7 @@ use commands::{
         set_master_volume, stop_all, stop_cue,
     },
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
+    recovery_cmds::{check_recovery, discard_recovery, restore_recovery},
     workspace_cmds::{collect_and_save_workspace, get_workspace_info, load_workspace, new_workspace, save_workspace},
 };
 use engine::{AudioEngine, DmxEngine, OscServer, OutputEngine};
@@ -79,6 +81,10 @@ pub fn run() {
             // and the audio / event-loop threads keep the process alive
             // indefinitely.  Force-exit so the OS cleans everything up.
             if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
+                // Deliberate close (whatever the save/discard choice): drop the
+                // crash-recovery snapshot so the next launch does not offer to
+                // restore work the operator already decided about.
+                crate::recovery::delete();
                 std::process::exit(0);
             }
         })
@@ -191,6 +197,59 @@ pub fn run() {
                 })
                 .expect("Failed to spawn event loop thread");
 
+            // ----------------------------------------------------------------
+            // Crash-recovery autosave: snapshot unsaved work every few seconds.
+            // ----------------------------------------------------------------
+            {
+                let ws = app.state::<AppState>().workspace.clone();
+                std::thread::Builder::new()
+                    .name("wincue-autosave".to_string())
+                    .spawn(move || {
+                        enum Action { Write(String), Clear, Idle }
+                        // u64::MAX forces a first evaluation; the pristine
+                        // "Untitled" workspace (is_modified == false) yields Clear.
+                        let mut last_rev: u64 = u64::MAX;
+                        let mut on_disk = crate::recovery::exists();
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                            let action = match ws.lock() {
+                                Ok(w) => {
+                                    if !w.is_modified {
+                                        last_rev = w.revision;
+                                        Action::Clear
+                                    } else if w.revision != last_rev {
+                                        last_rev = w.revision;
+                                        match w.to_recovery_json() {
+                                            Ok(json) => Action::Write(json),
+                                            Err(e) => {
+                                                log::warn!("[autosave] serialize failed: {e}");
+                                                Action::Idle
+                                            }
+                                        }
+                                    } else {
+                                        Action::Idle
+                                    }
+                                }
+                                Err(_) => Action::Idle,
+                            };
+                            match action {
+                                Action::Write(json) => match crate::recovery::write(&json) {
+                                    Ok(()) => on_disk = true,
+                                    Err(e) => log::warn!("[autosave] write failed: {e}"),
+                                },
+                                Action::Clear => {
+                                    if on_disk {
+                                        crate::recovery::delete();
+                                        on_disk = false;
+                                    }
+                                }
+                                Action::Idle => {}
+                            }
+                        }
+                    })
+                    .expect("Failed to spawn autosave thread");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -246,6 +305,9 @@ pub fn run() {
             load_workspace,
             get_workspace_info,
             collect_and_save_workspace,
+            check_recovery,
+            restore_recovery,
+            discard_recovery,
             // Cue Lists
             get_cue_lists,
             add_cue_list,

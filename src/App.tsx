@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog, ask } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
 import { CartView } from "./components/CueList/CartView";
 import { ShowModeView } from "./components/ShowMode/ShowModeView";
@@ -14,7 +14,7 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists } from "./lib/commands";
+import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists, checkRecovery, restoreRecovery, discardRecovery } from "./lib/commands";
 import { AboutDialog } from "./components/About/AboutDialog";
 import type { CollectReport } from "./lib/types";
 import type { CueSummary } from "./lib/types";
@@ -697,6 +697,38 @@ export default function App() {
       setOutputSurfaceVisible(e.payload);
     }).then((u) => { unlistenVisible = u; }).catch(console.error);
     return () => { unlistenVisible?.(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // One-time crash-recovery prompt: a snapshot left by a previous session means
+  // it ended abnormally (crash / power loss) with unsaved work. Offer to restore.
+  const recoveryPrompted = useRef(false);
+  useEffect(() => {
+    if (recoveryPrompted.current) return;
+    recoveryPrompted.current = true;
+    void (async () => {
+      try {
+        const info = await checkRecovery();
+        if (!info) return;
+        const label = info.name || "Untitled";
+        const when = info.modified_at
+          ? new Date(info.modified_at).toLocaleString()
+          : "récemment";
+        const restore = await ask(
+          `WinCue ne s'est pas fermé correctement.\n\nRécupérer le travail non sauvegardé de « ${label} » ` +
+            `(dernière modification : ${when}) ?`,
+          { title: "Récupération", kind: "warning", okLabel: "Récupérer", cancelLabel: "Ignorer" },
+        );
+        if (restore) {
+          await restoreRecovery();
+          refreshCues();
+          await refreshWorkspaceInfo();
+        } else {
+          await discardRecovery();
+        }
+      } catch (err) {
+        console.error("recovery check failed", err);
+      }
+    })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // -------------------------------------------------------------------------
