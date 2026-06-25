@@ -782,10 +782,11 @@ export default function App() {
     setRecoveryInfo(null);
     try {
       await restoreRecovery();
-      refreshCues();
+      await refreshCues();
       await refreshWorkspaceInfo();
     } catch (err) {
       console.error("restore recovery failed", err);
+      setLoadError(`Recovery failed: ${String(err)}`);
     }
   }, [refreshCues, refreshWorkspaceInfo]);
 
