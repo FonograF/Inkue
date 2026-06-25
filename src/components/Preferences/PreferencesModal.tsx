@@ -168,6 +168,7 @@ function AudioContent({
                 ...machineConfig,
                 backend: e.target.value as MachineAudioConfig["backend"],
                 device_id: null,
+                device_name: null,
               })
             }
           >
@@ -190,9 +191,11 @@ function AudioContent({
               <Select
                 style={selectStyle}
                 value={machineConfig.device_id ?? ""}
-                onChange={(e) =>
-                  onMachineConfigChange({ ...machineConfig, device_id: e.target.value || null })
-                }
+                onChange={(e) => {
+                  const id = e.target.value || null;
+                  const name = id ? (devices.find((d) => d.id === id)?.name ?? null) : null;
+                  onMachineConfigChange({ ...machineConfig, device_id: id, device_name: name });
+                }}
               >
                 <option value="">— System Default —</option>
                 {devices.map((d) => (

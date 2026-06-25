@@ -48,6 +48,13 @@ pub struct MachineAudioConfig {
     #[serde(default)]
     pub device_id: Option<String>,
 
+    /// Human-readable name of the selected output device, captured at selection
+    /// time so a banner can show "Focusrite Scarlett…" instead of the raw
+    /// WASAPI endpoint id even when the device is currently absent.  `None` =
+    /// system default (or selected before this field existed).
+    #[serde(default)]
+    pub device_name: Option<String>,
+
     /// Identifier of the selected audio **input** device for Mic Cues / live
     /// capture.  `None` = system default input.  Machine-specific, like
     /// `device_id`.
@@ -75,6 +82,7 @@ impl Default for MachineAudioConfig {
         Self {
             backend: AudioBackend::default(),
             device_id: None,
+            device_name: None,
             input_device_id: None,
             buffer_size: Self::default_buffer_size(),
             asio_out_pair: 0,

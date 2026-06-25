@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.15
+## Current version: 0.9.16
 
 ## cargo build result
 
@@ -128,6 +128,10 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.16 (2026-06-25) — Friendly audio device name in alerts
+
+`MachineAudioConfig` gains `device_name: Option<String>`, captured at selection time in Preferences → Audio. The device watchdog banner now shows the human-readable name ("Focusrite Scarlett…") instead of the raw WASAPI endpoint id, even when the device is absent (`audio_health()` resolves presence by id but reports the friendly label, falling back to the id for devices saved before this field existed). `engine/audio_engine.rs`, `preferences.rs`, `PreferencesModal.tsx`, `lib/types.ts`.
 
 ### 0.9.15 (2026-06-25) — Startup-fallback fix + English-only UI
 

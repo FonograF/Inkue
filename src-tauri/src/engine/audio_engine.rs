@@ -123,7 +123,8 @@ pub struct AudioHealth {
     pub failed: bool,
     /// Running on the default device after an automatic fallback.
     pub in_fallback: bool,
-    /// The operator-selected device id (`None` = system default).
+    /// The operator-selected device's display label — friendly name when known,
+    /// else its id (`None` = system default).
     pub desired_device: Option<String>,
     /// Whether the desired device is currently present among enumerated devices.
     pub desired_present: bool,
@@ -210,11 +211,20 @@ impl AudioEngine {
             .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false);
         let in_fallback = self.in_fallback.load(std::sync::atomic::Ordering::Relaxed);
-        let desired_device = self.desired_config.lock().ok().and_then(|c| c.device_id.clone());
+        let (desired_id, desired_label) = self
+            .desired_config
+            .lock()
+            .ok()
+            .map(|c| {
+                // Presence is checked by id; the banner shows the friendly name
+                // (falling back to the id for devices saved before names existed).
+                (c.device_id.clone(), c.device_name.clone().or_else(|| c.device_id.clone()))
+            })
+            .unwrap_or((None, None));
         // Only enumerate devices while in fallback — that is the sole moment we
         // need to detect the desired device's return.  In the healthy steady
         // state the watchdog stays free (just an atomic read of `failed`).
-        let desired_present = match (&in_fallback, &desired_device) {
+        let desired_present = match (&in_fallback, &desired_id) {
             (true, Some(id)) => {
                 if let Ok(mut mgr) = self.device_manager.lock() {
                     let _ = mgr.refresh_devices();
@@ -225,7 +235,7 @@ impl AudioEngine {
             }
             _ => true,
         };
-        AudioHealth { failed, in_fallback, desired_device, desired_present }
+        AudioHealth { failed, in_fallback, desired_device: desired_label, desired_present }
     }
 
     /// Open `config` as the operator's chosen device (an explicit settings change).

@@ -517,6 +517,8 @@ export type AudioBackend = "wasapi_shared" | "wasapi_exclusive" | "asio";
 export interface MachineAudioConfig {
   backend: AudioBackend;
   device_id: string | null;
+  /** Friendly name of the selected output device, captured at selection time. */
+  device_name: string | null;
   /** Selected audio input device for Mic Cues. null = system default input. */
   input_device_id: string | null;
   /** Samples. Only applied for WASAPI Exclusive. */
@@ -528,6 +530,7 @@ export interface MachineAudioConfig {
 export const DEFAULT_MACHINE_AUDIO_CONFIG: MachineAudioConfig = {
   backend: "wasapi_shared",
   device_id: null,
+  device_name: null,
   input_device_id: null,
   buffer_size: 256,
   asio_out_pair: 0,
