@@ -8,7 +8,7 @@ import { stopCue } from "../../lib/commands";
 const CUE_TYPE_ICONS: Record<string, string> = {
   audio: "🔊", memo: "📝", wait: "⏱", group: "📁",
   fade: "📉", stop: "⬛", video: "🎬", image: "🖼",
-  osc: "📡", midi: "🎹", light: "💡", mic: "🎤", timecode: "🕐",
+  osc: "📡", midi: "🎹", light: "💡", mic: "🎤", timecode: "🕐", text: "🔤",
 };
 
 const COLOR_SWATCHES: Record<string, string> = {

@@ -145,15 +145,12 @@ fn collect_all_media_paths(
     out: &mut Vec<(CueType, PathBuf)>,
 ) {
     for cue in cues {
-        match cue.cue_type() {
-            ct @ (CueType::Audio | CueType::Video | CueType::Image) => {
-                if let Some(path) = cue.media_file_path() {
-                    if !path.as_os_str().is_empty() {
-                        out.push((ct, path.to_path_buf()));
-                    }
+        if let ct @ (CueType::Audio | CueType::Video | CueType::Image) = cue.cue_type() {
+            if let Some(path) = cue.media_file_path() {
+                if !path.as_os_str().is_empty() {
+                    out.push((ct, path.to_path_buf()));
                 }
             }
-            _ => {}
         }
         if let Some(children) = cue.child_cues() {
             collect_all_media_paths(children, out);

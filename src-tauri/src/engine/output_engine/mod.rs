@@ -70,6 +70,14 @@ pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new
 pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
 /// Font family mirrored from OSD settings → emitted to the float-timer window.
 pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
+/// `true` while a Text Cue has loaded the `av://lavfi:color=black` dummy source
+/// to activate mpv's subtitle compositor in idle mode.  Cleared when the text ends.
+static TEXT_HAS_DUMMY: AtomicBool = AtomicBool::new(false);
+/// ASS-tagged text to display; `Some` while a Text Cue overlay is active.
+/// Written by `show_text_overlay`, read by the mpv event loop's PLAYBACK_RESTART
+/// handler to re-apply `sub-text` after mpv initialises the lavfi file (which
+/// resets the subtitle state and clears any `sub-text` we set before load).
+pub(super) static TEXT_PENDING_ASS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Global Win32-only state
@@ -246,6 +254,7 @@ impl OutputEngine {
         // preference happens to be — the float-timer window's own React state
         // has no other way to learn the current font.
         FLOAT_TIMER_FONT.get_or_init(|| Mutex::new(String::new()));
+        TEXT_PENDING_ASS.get_or_init(|| Mutex::new(None));
 
         // Unified GL path (Linux + Windows default): create the winit/GL output
         // window and block until mpv's render context is live, so no `loadfile` can
@@ -935,26 +944,60 @@ impl OutputEngine {
 
     /// Display an ASS-tagged text string on the output surface.
     ///
-    /// Uses `osd-msg2` — the OSD layer is always active even in idle mode, unlike
-    /// `sub-text` which requires the subtitle pipeline (only active when a file is
-    /// loaded).  `osd-msg1` is reserved for the cue timer; `osd-msg2` renders
-    /// independently and simultaneously.  ASS override tags in `ass_text`
-    /// (`\an`, `\fn`, `\fs`, `\c` …) take precedence over the global OSD style.
+    /// Uses `sub-text` (mpv's subtitle layer) because it supports full ASS override
+    /// tags (`\an`, `\fn`, `\fs`, `\c` …) and is independent of `osd-level`.
+    /// `osd-msg1` is reserved for the cue timer; `osd-msg2`/`osd-msg3` only show
+    /// at `osd-level >= 2` or `3` which we do not set.
     ///
-    /// The GL fade quad is set to alpha=0 (transparent) so mpv's rendered OSD
-    /// is visible on its idle black background.  `TEXT_OVERLAY_ACTIVE` tells the
-    /// render loop not to skip when `!has_frame && alpha==0` — mpv does not fire
-    /// `MPV_RENDER_UPDATE_FRAME` for OSD changes in idle mode.
+    /// mpv's subtitle pipeline is only active when a file is loaded, so we load a
+    /// black lavfi source if nothing is playing — this also fires `PLAYBACK_RESTART`,
+    /// where the event loop re-applies `sub-text` in case mpv cleared it during
+    /// file initialisation.  The text is stored in `TEXT_PENDING_ASS` for that
+    /// deferred re-application.
     pub fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
         self.position_window(screen_index);
         render::TEXT_OVERLAY_ACTIVE.store(true, Ordering::Relaxed);
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe {
-                prop_str(lib, ctx.0, "osd-msg2", ass_text);
-            }
+
+        // Store text so PLAYBACK_RESTART can re-apply it after lavfi initialises.
+        if let Some(m) = TEXT_PENDING_ASS.get() {
+            if let Ok(mut g) = m.lock() { *g = Some(ass_text.to_string()); }
         }
-        // Make the GL quad transparent so the OSD layer is visible, then wake
-        // the render loop (set_overlay_alpha calls render::wake internally).
+
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            let no_content = OUTPUT_CURRENT_VOICE
+                .get()
+                .and_then(|cv| cv.lock().ok())
+                .map(|cv| cv.is_none())
+                .unwrap_or(true);
+
+            if no_content && !TEXT_HAS_DUMMY.load(Ordering::Relaxed) {
+                // Load a 1920×1080 black lavfi source so mpv's subtitle pipeline
+                // activates.  PLAYBACK_RESTART (image/idle path) will re-apply
+                // sub-text after the file initialises and subtitle state is reset.
+                unsafe {
+                    let cmd   = cs("loadfile");
+                    let url   = cs("av://lavfi:color=black:size=1920x1080:rate=1");
+                    let flags = cs("replace");
+                    let idx   = cs("0");
+                    let opts  = cs("audio=no,loop-file=inf");
+                    let args: [*const std::ffi::c_char; 6] = [
+                        cmd.as_ptr(), url.as_ptr(), flags.as_ptr(),
+                        idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
+                    ];
+                    let ret = (lib.mpv_command)(ctx.0, args.as_ptr());
+                    if ret < 0 {
+                        log::warn!("[output] text dummy loadfile failed: {ret}");
+                    }
+                }
+                TEXT_HAS_DUMMY.store(true, Ordering::Relaxed);
+            } else if !no_content {
+                // Content already playing: subtitle pipeline is live, apply directly.
+                unsafe { prop_str(lib, ctx.0, "sub-text", ass_text); }
+            }
+            // If dummy already loaded: PLAYBACK_RESTART will apply on the next
+            // loop iteration.  No-op here avoids a race with the previous load.
+        }
+
         fade::set_overlay_alpha(0);
     }
 
@@ -964,13 +1007,30 @@ impl OutputEngine {
     /// content is currently playing.
     pub fn clear_text_overlay(&self) {
         render::TEXT_OVERLAY_ACTIVE.store(false, Ordering::Relaxed);
+
+        if let Some(m) = TEXT_PENDING_ASS.get() {
+            if let Ok(mut g) = m.lock() { *g = None; }
+        }
+
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe {
-                prop_str(lib, ctx.0, "osd-msg2", "");
+            unsafe { prop_str(lib, ctx.0, "sub-text", ""); }
+
+            if TEXT_HAS_DUMMY.swap(false, Ordering::Relaxed) {
+                let no_real_content = OUTPUT_CURRENT_VOICE
+                    .get()
+                    .and_then(|cv| cv.lock().ok())
+                    .map(|cv| cv.is_none())
+                    .unwrap_or(true);
+                if no_real_content {
+                    unsafe {
+                        let cmd  = cs("stop");
+                        let args: [*const std::ffi::c_char; 2] = [cmd.as_ptr(), std::ptr::null()];
+                        (lib.mpv_command)(ctx.0, args.as_ptr());
+                    }
+                }
             }
         }
-        // If no visual content is active, return to the idle black state so
-        // the window shows opaque black and not a transparent/empty surface.
+
         let has_content = OUTPUT_CURRENT_VOICE
             .get()
             .and_then(|cv| cv.lock().ok())

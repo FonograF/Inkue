@@ -81,8 +81,17 @@ pub(super) fn mpv_event_loop(
             MPV_EVENT_PLAYBACK_RESTART => {
                 let go_time = *go_sent_at.lock().unwrap();
                 let Some(t) = go_time else {
-                    // Image / idle restart — no audio to gate, nothing to reveal.
                     log::debug!("[output-mpv] PLAYBACK_RESTART (image/idle)");
+                    // Re-apply sub-text: mpv resets subtitle state when a file
+                    // (including the lavfi dummy) initialises, clearing any
+                    // sub-text we set before load completed.
+                    if let Some(m) = super::TEXT_PENDING_ASS.get() {
+                        if let Ok(g) = m.lock() {
+                            if let Some(ref ass_text) = *g {
+                                unsafe { super::prop_str(&lib, ctx.0, "sub-text", ass_text); }
+                            }
+                        }
+                    }
                     continue;
                 };
 

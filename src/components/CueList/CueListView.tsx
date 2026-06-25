@@ -212,7 +212,7 @@ const ROW_GHOST_COLORS: Record<string, string> = {
 const ROW_GHOST_ICONS: Record<string, string> = {
   audio: "🔊", memo: "📝", wait: "⏱", group: "📁", fade: "📉",
   stop: "⬛", video: "🎬", image: "🖼", osc: "📡", midi: "🎹",
-  light: "💡", mic: "🎤", timecode: "🕐",
+  light: "💡", mic: "🎤", timecode: "🕐", text: "🔤",
 };
 
 function RowGhost({ cue, x, y, rotation }: { cue: CueSummary; x: number; y: number; rotation: number }) {
