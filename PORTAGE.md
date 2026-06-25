@@ -22,7 +22,7 @@ portage macOS (branche `macos-port`, 2026-06-22). Ce document décrit l'architec
 | Legacy Windows | Win32+D3D11+wid derrière `#[cfg(feature="legacy-win32-output")]` (éteint) |
 | Audio | cpal **0.18** partout : WASAPI/ASIO (Windows), ALSA/PipeWire (Linux), CoreAudio (macOS) — aucun code par-OS |
 | libmpv Windows | `libmpv-2.dll` bundlé (`vendor/mpv/`) |
-| libmpv macOS | Homebrew en dev (`/opt/homebrew/lib/libmpv.dylib`) ; bundle `.app` = phase ultérieure |
+| libmpv macOS | Homebrew en dev ; **bundle `.app` résolu** : `./scripts/bundle_macos_libs.sh` collecte libmpv + toutes les deps Homebrew dans `src-tauri/vendor/mpv/macos/`, fixe les install names en `@loader_path/`, signe ad-hoc ; `tauri.macos.conf.json` bundle le tout dans `Contents/Resources/`. `mpv_sys::open_dll()` cherche `Contents/Resources/libmpv.dylib` en premier. |
 | libmpv Linux | Dépendance système (`.deb` dépend de `libmpv2 | libmpv1`) |
 | CI | GitHub Actions — `windows-latest` (check+test), `ubuntu-latest` (check), `macos-latest` (clippy+test) |
 

@@ -1,0 +1,141 @@
+name: Release
+
+# Triggered by pushing a version tag: git tag v1.0.0 && git push --tags
+# Produces a draft GitHub release with signed installers for all 3 platforms.
+#
+# ── One-time setup required ──────────────────────────────────────────────────
+#
+# 1. Windows libmpv binary (gitignored, ~113 MB):
+#    Create a GitHub release on this repo with tag "vendor-libs" and upload
+#    libmpv-2.dll as a release asset.  The Windows CI job downloads it from there.
+#    To update libmpv: re-upload to that same release and bump LIBMPV_TAG below.
+#
+# 2. macOS signing + notarization (Apple Developer Program required):
+#    Set these repository secrets (Settings → Secrets → Actions):
+#      APPLE_CERTIFICATE          base64-encoded .p12 Developer ID Application cert
+#      APPLE_CERTIFICATE_PASSWORD .p12 export password
+#      APPLE_SIGNING_IDENTITY     "Developer ID Application: Your Name (TEAMID)"
+#      APPLE_ID                   your Apple ID email
+#      APPLE_PASSWORD             app-specific password (appleid.apple.com)
+#      APPLE_TEAM_ID              10-character Apple Team ID
+#    Without these secrets the build still succeeds but the .app won't be notarized
+#    and Gatekeeper will block it.
+#
+# 3. Tauri updater signing (optional — enables in-app update checks):
+#    a. Generate key pair: pnpm tauri signer generate -w ~/.tauri/wincue.key
+#    b. Add the public key to tauri.conf.json under plugins.updater.pubkey
+#    c. Set these repository secrets:
+#         TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/wincue.key
+#         TAURI_SIGNING_PRIVATE_KEY_PASSWORD key password (empty string if none)
+#    The tauri-action will then sign update bundles and generate latest.json automatically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:   # allow manual trigger for testing (always creates a draft)
+
+env:
+  LIBMPV_TAG: vendor-libs   # tag of the release that hosts libmpv-2.dll
+
+permissions:
+  contents: write   # required to create GitHub releases
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust-targets: ''
+
+          - platform: macos-latest
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust-targets: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Node + pnpm ──────────────────────────────────────────────────────────
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # ── Rust ─────────────────────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Frontend deps ────────────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      # ── Platform-specific: provide libmpv ────────────────────────────────────
+
+      - name: Download libmpv-2.dll (Windows)
+        if: matrix.platform == 'windows-latest'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/vendor/mpv | Out-Null
+          gh release download $env:LIBMPV_TAG `
+            --pattern "libmpv-2.dll" `
+            --dir src-tauri/vendor/mpv `
+            --repo $env:GITHUB_REPOSITORY
+
+      - name: Bundle libmpv + Homebrew deps (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew install mpv
+          bash scripts/bundle_macos_libs.sh
+
+      - name: Install system dependencies (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libssl-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev \
+            libasound2-dev libmpv-dev
+
+      # ── Build + publish ───────────────────────────────────────────────────────
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing (optional — skip if secrets are not set)
+          APPLE_CERTIFICATE:           ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD:  ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:      ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID:                    ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD:              ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID:               ${{ secrets.APPLE_TEAM_ID }}
+          # Updater signing (optional)
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: WinCue ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: --target ${{ matrix.target }}

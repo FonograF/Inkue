@@ -15,8 +15,29 @@ import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists } from "./lib/commands";
+import { AboutDialog } from "./components/About/AboutDialog";
 import type { CollectReport } from "./lib/types";
 import type { CueSummary } from "./lib/types";
+
+// ---------------------------------------------------------------------------
+// Recent files
+// ---------------------------------------------------------------------------
+
+const RECENT_FILES_KEY = "wincue_recent_files";
+const MAX_RECENT = 8;
+
+function loadRecentFiles(): string[] {
+  try { return JSON.parse(localStorage.getItem(RECENT_FILES_KEY) ?? "[]") as string[]; }
+  catch { return []; }
+}
+
+function pushRecentFile(path: string): string[] {
+  const list = loadRecentFiles().filter((p) => p !== path);
+  list.unshift(path);
+  const trimmed = list.slice(0, MAX_RECENT);
+  try { localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(trimmed)); } catch { /* ignore */ }
+  return trimmed;
+}
 
 // ---------------------------------------------------------------------------
 // Window control buttons (minimize / maximize / close)
@@ -312,6 +333,9 @@ function FileMenu({
   onNew,
   onCollect,
   onPreferences,
+  onAbout,
+  recentFiles,
+  onOpenRecent,
 }: {
   onSave: () => void;
   onSaveAs: () => void;
@@ -319,6 +343,9 @@ function FileMenu({
   onNew: () => void;
   onCollect: () => void;
   onPreferences: () => void;
+  onAbout: () => void;
+  recentFiles: string[];
+  onOpenRecent: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -333,19 +360,32 @@ function FileMenu({
   };
 
   const menuItems: Array<
-    | { type: "item"; label: string; shortcut?: string; action: () => void }
+    | { type: "item"; label: string; shortcut?: string; action: () => void; muted?: boolean }
     | { type: "separator" }
   > = [
-    { type: "item", label: "New Workspace",  shortcut: "Ctrl+N",         action: act(onNew) },
-    { type: "item", label: "Open…",         shortcut: "Ctrl+O",         action: act(onOpen) },
+    { type: "item", label: "New Workspace",    shortcut: "Ctrl+N",         action: act(onNew) },
+    { type: "item", label: "Open…",           shortcut: "Ctrl+O",         action: act(onOpen) },
+    ...(recentFiles.length > 0
+      ? [
+          { type: "separator" as const },
+          ...recentFiles.map((p) => ({
+            type: "item" as const,
+            label: p.split(/[\\/]/).pop() ?? p,
+            action: act(() => onOpenRecent(p)),
+            muted: true,
+          })),
+        ]
+      : []),
     { type: "separator" },
-    { type: "item", label: "Save",              shortcut: "Ctrl+S",       action: act(onSave) },
-    { type: "item", label: "Save As…",         shortcut: "Ctrl+Shift+S", action: act(onSaveAs) },
-    { type: "item", label: "Collect and Save…",                          action: act(onCollect) },
+    { type: "item", label: "Save",              shortcut: "Ctrl+S",         action: act(onSave) },
+    { type: "item", label: "Save As…",         shortcut: "Ctrl+Shift+S",   action: act(onSaveAs) },
+    { type: "item", label: "Collect and Save…",                            action: act(onCollect) },
     { type: "separator" },
-    { type: "item", label: "Preferences",   shortcut: "Ctrl+,",         action: act(onPreferences) },
+    { type: "item", label: "Preferences",     shortcut: "Ctrl+,",          action: act(onPreferences) },
     { type: "separator" },
-    { type: "item", label: "Quit",                                       action: handleQuit },
+    { type: "item", label: "About WinCue",                                 action: act(onAbout) },
+    { type: "separator" },
+    { type: "item", label: "Quit",                                         action: handleQuit },
   ];
 
   return (
@@ -385,13 +425,16 @@ function FileMenu({
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   width: "100%", padding: "6px 14px",
                   background: hovered === item.label ? "var(--wc-bg-hover)" : "transparent",
-                  border: "none", color: "var(--wc-text)", fontSize: 13,
-                  cursor: "pointer", textAlign: "left", gap: 24,
+                  border: "none",
+                  color: item.muted ? "var(--wc-text-secondary)" : "var(--wc-text)",
+                  fontSize: 13, cursor: "pointer", textAlign: "left", gap: 24,
                 }}
               >
-                <span>{item.label}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>
+                  {item.label}
+                </span>
                 {item.shortcut && (
-                  <span style={{ color: "var(--wc-text-muted)", fontSize: 11 }}>{item.shortcut}</span>
+                  <span style={{ color: "var(--wc-text-muted)", fontSize: 11, flexShrink: 0 }}>{item.shortcut}</span>
                 )}
               </button>
             )
@@ -508,6 +551,72 @@ function saveUiLayout(layout: UiLayout): void {
 }
 
 // ---------------------------------------------------------------------------
+// Search results overlay
+// ---------------------------------------------------------------------------
+
+function flattenCues(cues: CueSummary[]): CueSummary[] {
+  return cues.flatMap((c) => [c, ...(c.children ? flattenCues(c.children) : [])]);
+}
+
+function SearchResults({
+  query,
+  allCues,
+  onSelect,
+}: {
+  query: string;
+  allCues: CueSummary[];
+  onSelect: (id: string) => void;
+}) {
+  const q = query.toLowerCase();
+  const matches = flattenCues(allCues).filter(
+    (c) =>
+      c.name?.toLowerCase().includes(q) ||
+      (c.number ?? "").toLowerCase().includes(q),
+  );
+
+  if (matches.length === 0) {
+    return (
+      <div style={{ padding: "16px", fontSize: 12, color: "var(--wc-text-faint)", textAlign: "center" }}>
+        No cues match "{query}"
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto" }}>
+      {matches.map((cue) => (
+        <button
+          key={cue.id}
+          onClick={() => onSelect(cue.id)}
+          style={{
+            display: "flex", alignItems: "center", gap: 10,
+            width: "100%", padding: "7px 12px",
+            background: "transparent", border: "none",
+            borderBottom: "1px solid var(--wc-border)",
+            color: "var(--wc-text)", cursor: "pointer", textAlign: "left",
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--wc-bg-hover)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+        >
+          {cue.color && (
+            <div style={{ width: 3, height: 22, borderRadius: 2, background: cue.color, flexShrink: 0 }} />
+          )}
+          <span style={{ fontSize: 11, color: "var(--wc-text-muted)", width: 36, flexShrink: 0, fontFamily: "monospace" }}>
+            {cue.number ?? ""}
+          </span>
+          <span style={{ fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {cue.name || <span style={{ color: "var(--wc-text-faint)" }}>(unnamed)</span>}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--wc-text-faint)", flexShrink: 0 }}>
+            {cue.cue_type}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Root component
 // ---------------------------------------------------------------------------
 
@@ -535,6 +644,9 @@ export default function App() {
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
   const [loadError, setLoadError]                 = useState<string | null>(null);
   const [collectReport, setCollectReport]         = useState<CollectReport | null>(null);
+  const [recentFiles, setRecentFiles]             = useState<string[]>(loadRecentFiles);
+  const [showAbout, setShowAbout]                 = useState(false);
+  const [searchQuery, setSearchQuery]             = useState("");
 
   // Persist panel visibility across launches.
   useEffect(() => {
@@ -602,6 +714,7 @@ export default function App() {
     const filePath = path.endsWith(".wincue") ? path : path + ".wincue";
     await saveWorkspace(filePath).catch(console.error);
     await refreshWorkspaceInfo();
+    setRecentFiles(pushRecentFile(filePath));
     return true;
   }, [workspaceInfo, refreshWorkspaceInfo]);
 
@@ -610,10 +723,17 @@ export default function App() {
     if (path) {
       await saveWorkspace(path).catch(console.error);
       await refreshWorkspaceInfo();
+      setRecentFiles(pushRecentFile(path));
       return true;
     }
     return handleSaveAs();
   }, [workspaceInfo, refreshWorkspaceInfo, handleSaveAs]);
+
+  const openWorkspacePath = useCallback(async (path: string) => {
+    await loadWorkspace(path).catch(console.error);
+    setRecentFiles(pushRecentFile(path));
+    setSearchQuery("");
+  }, []);
 
   const handleOpen = useCallback(async () => {
     const path = await openDialog({
@@ -621,11 +741,9 @@ export default function App() {
       filters: [{ name: "WinCue Workspace", extensions: ["wincue"] }],
     });
     if (typeof path === "string") {
-      await loadWorkspace(path).catch(console.error);
-      // cue-lists-changed is emitted by the backend and handled in useTauriEvents.
-      // workspace-modified triggers refreshCues + refreshWorkspaceInfo.
+      await openWorkspacePath(path);
     }
-  }, []);
+  }, [openWorkspacePath]);
 
   const handleNew = useCallback(async () => {
     await newWorkspace().catch(console.error);
@@ -796,7 +914,14 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode", e: React.MouseEvent) => {
+  const handleAddText = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("text", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("wincue:cue-drag-start", {
@@ -869,6 +994,9 @@ export default function App() {
         />
       )}
 
+      {/* About dialog */}
+      {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
+
       {/* Custom title bar — no drag-region on the container so menus/buttons work on Linux */}
       <div
         style={{
@@ -885,6 +1013,9 @@ export default function App() {
           onNew={() => void handleNew()}
           onCollect={() => void handleCollectAndSave()}
           onPreferences={() => void openPreferencesWindow()}
+          onAbout={() => setShowAbout(true)}
+          recentFiles={recentFiles}
+          onOpenRecent={(p) => void openWorkspacePath(p)}
         />
         <ViewMenu
           items={[
@@ -1012,6 +1143,14 @@ export default function App() {
           >
             + TC
           </button>
+          <button
+            style={{ ...toolbarBtn, color: "#e2e8f0", cursor: "grab", userSelect: "none" }}
+            onClick={handleAddText}
+            onMouseDown={(e) => dispatchCueDrag("text", e)}
+            title="Add Text Cue after selection · Drag to insert at position"
+          >
+            + Text
+          </button>
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector
           </button>
@@ -1027,25 +1166,54 @@ export default function App() {
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
               <ActiveCuesView />
-              {(() => {
-                const activeList = cueLists.find((l) => l.id === activeCueListId);
-                if (activeList?.mode === "cart") {
-                  return <CartView onRefresh={handleRefresh} />;
-                }
-                return (
-                  <CueListView
-                    onCueDoubleClick={(cue: CueSummary) => {
-                      useWorkspaceStore.getState().setSelectedCueId(cue.id);
-                      setInspectorOpen(true);
-                    }}
-                    onRefresh={handleRefresh}
-                  />
-                );
-              })()}
+
+              {/* Search bar */}
+              <div style={{ padding: "4px 8px", borderBottom: "1px solid var(--wc-border)", flexShrink: 0 }}>
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Escape") setSearchQuery(""); }}
+                  placeholder="Search cues…"
+                  style={{
+                    width: "100%", boxSizing: "border-box",
+                    background: searchQuery ? "var(--wc-bg-surface)" : "transparent",
+                    border: searchQuery ? "1px solid var(--wc-accent)" : "1px solid transparent",
+                    borderRadius: 4, color: "var(--wc-text)", fontSize: 12,
+                    padding: "4px 8px", outline: "none",
+                    transition: "border-color 0.15s, background 0.15s",
+                  }}
+                />
+              </div>
+
+              {searchQuery.trim() ? (
+                <SearchResults
+                  query={searchQuery.trim()}
+                  allCues={cues}
+                  onSelect={(id) => {
+                    useWorkspaceStore.getState().setSelectedCueId(id);
+                    setInspectorOpen(true);
+                    setSearchQuery("");
+                  }}
+                />
+              ) : (
+                (() => {
+                  const activeList = cueLists.find((l) => l.id === activeCueListId);
+                  if (activeList?.mode === "cart") {
+                    return <CartView onRefresh={handleRefresh} />;
+                  }
+                  return (
+                    <CueListView
+                      onCueDoubleClick={(cue: CueSummary) => {
+                        useWorkspaceStore.getState().setSelectedCueId(cue.id);
+                        setInspectorOpen(true);
+                      }}
+                      onRefresh={handleRefresh}
+                    />
+                  );
+                })()
+              )}
             </div>
             {inspectorOpen && (() => {
-              const activeList = cueLists.find((l) => l.id === activeCueListId);
-              if (activeList?.mode === "cart") return null;
               return (
                 <div
                   style={{

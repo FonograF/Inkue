@@ -2,6 +2,11 @@
 //!
 //! Corresponds to a `.wincue` file on disk.
 
+/// Bumped whenever the `.wincue` JSON format gains a breaking change.
+/// Files written by newer WinCue versions (schema > this) are rejected
+/// at load time to prevent silent data corruption.
+pub const SCHEMA_VERSION: u32 = 1;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -294,7 +299,7 @@ impl Workspace {
         }
 
         let doc = serde_json::json!({
-            "version": "1.0.0",
+            "schema_version": SCHEMA_VERSION,
             "workspace": self.metadata,
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
@@ -436,7 +441,7 @@ impl Workspace {
         }
 
         let doc = serde_json::json!({
-            "version": "1.0.0",
+            "schema_version": SCHEMA_VERSION,
             "workspace": self.metadata,
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
@@ -460,6 +465,18 @@ impl Workspace {
 
         let doc: serde_json::Value =
             serde_json::from_str(&content).context("Invalid JSON in workspace file")?;
+
+        let file_schema: u32 = doc
+            .get("schema_version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        if file_schema > SCHEMA_VERSION {
+            anyhow::bail!(
+                "This workspace was created with a newer version of WinCue \
+                 (schema v{file_schema}, this app supports up to v{SCHEMA_VERSION}). \
+                 Please update WinCue to open it."
+            );
+        }
 
         let mut metadata: WorkspaceMetadata = serde_json::from_value(
             doc.get("workspace")

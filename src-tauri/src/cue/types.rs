@@ -31,24 +31,27 @@ pub enum CueType {
     Mic,
     /// Generates a SMPTE timecode stream (MTC or LTC).
     Timecode,
+    /// Displays formatted text on the output surface via the mpv subtitle layer.
+    Text,
 }
 
 impl std::fmt::Display for CueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CueType::Audio => write!(f, "audio"),
-            CueType::Memo => write!(f, "memo"),
-            CueType::Wait => write!(f, "wait"),
-            CueType::Group => write!(f, "group"),
-            CueType::Fade => write!(f, "fade"),
-            CueType::Stop => write!(f, "stop"),
-            CueType::Video => write!(f, "video"),
-            CueType::Image => write!(f, "image"),
-            CueType::Osc   => write!(f, "osc"),
-            CueType::Midi  => write!(f, "midi"),
-            CueType::Light => write!(f, "light"),
+            CueType::Audio    => write!(f, "audio"),
+            CueType::Memo     => write!(f, "memo"),
+            CueType::Wait     => write!(f, "wait"),
+            CueType::Group    => write!(f, "group"),
+            CueType::Fade     => write!(f, "fade"),
+            CueType::Stop     => write!(f, "stop"),
+            CueType::Video    => write!(f, "video"),
+            CueType::Image    => write!(f, "image"),
+            CueType::Osc      => write!(f, "osc"),
+            CueType::Midi     => write!(f, "midi"),
+            CueType::Light    => write!(f, "light"),
             CueType::Mic      => write!(f, "mic"),
             CueType::Timecode => write!(f, "timecode"),
+            CueType::Text     => write!(f, "text"),
         }
     }
 }

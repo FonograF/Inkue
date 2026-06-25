@@ -20,6 +20,7 @@ pub mod osc_cue;
 pub mod osc_types;
 pub mod registry;
 pub mod stop_cue;
+pub mod text_cue;
 pub mod traits;
 pub mod types;
 pub mod video_cue;

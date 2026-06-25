@@ -2,7 +2,7 @@
 // Shows cue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useState } from "react";
-import type { AudioCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import type { AudioCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
 import { WaveformModal } from "../WaveformModal";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -14,6 +14,7 @@ import { MidiTab } from "./MidiTab";
 import { OscTab } from "./OscTab";
 import { LightTab } from "./LightTab";
 import { MicTab } from "./MicTab";
+import { TextTab } from "./TextTab";
 import { TimecodeTab } from "./TimecodeTab";
 import { TriggersTab } from "./TriggersTab";
 
@@ -23,10 +24,10 @@ interface Props {
   onRefresh: () => void;
 }
 
-type Tab = "basics" | "time" | "levels" | "fade" | "messages" | "light" | "mic" | "timecode" | "triggers";
+type Tab = "basics" | "time" | "levels" | "fade" | "messages" | "light" | "mic" | "timecode" | "text" | "triggers";
 
 export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props) {
-  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData | MidiCueData | OscCueData | StopCueData | LightCueData | MicCueData | TimecodeCueData | null>(null);
+  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData | MidiCueData | OscCueData | StopCueData | LightCueData | MicCueData | TimecodeCueData | TextCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
 
@@ -43,8 +44,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     const hasLight = selectedCue.cue_type === "light";
     const hasMic      = selectedCue.cue_type === "mic";
     const hasTimecode = selectedCue.cue_type === "timecode";
+    const hasText     = selectedCue.cue_type === "text";
     setActiveTab((prev) => {
-      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages) || (prev === "light" && !hasLight) || (prev === "mic" && !hasMic) || (prev === "timecode" && !hasTimecode)) return "basics";
+      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages) || (prev === "light" && !hasLight) || (prev === "mic" && !hasMic) || (prev === "timecode" && !hasTimecode) || (prev === "text" && !hasText)) return "basics";
       return prev;
     });
     getCue(selectedCue.id)
@@ -83,6 +85,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
   const isLight    = selectedCue.cue_type === "light";
   const isMic      = selectedCue.cue_type === "mic";
   const isTimecode = selectedCue.cue_type === "timecode";
+  const isText     = selectedCue.cue_type === "text";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
@@ -179,7 +182,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
           background: "var(--wc-bg-deepest)",
         }}
       >
-        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : isMic ? "🎤" : isTimecode ? "🕐" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : isMic ? "🎤" : isTimecode ? "🕐" : isText ? "🔤" : "📝"} {cueData.name}
       </div>
 
       {/* Tabs */}
@@ -218,6 +221,11 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         {isTimecode && (
           <button style={tabStyle("timecode")} onClick={() => setActiveTab("timecode")}>
             Timecode
+          </button>
+        )}
+        {isText && (
+          <button style={tabStyle("text")} onClick={() => setActiveTab("text")}>
+            Text
           </button>
         )}
         <button style={tabStyle("triggers")} onClick={() => setActiveTab("triggers")}>
@@ -276,6 +284,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         )}
         {activeTab === "timecode" && isTimecode && (
           <TimecodeTab cue={cueData as TimecodeCueData} onSave={save} />
+        )}
+        {activeTab === "text" && isText && (
+          <TextTab cue={cueData as TextCueData} onSave={save} />
         )}
         {activeTab === "triggers" && (
           <TriggersTab cue={selectedCue} onSave={onRefresh} />

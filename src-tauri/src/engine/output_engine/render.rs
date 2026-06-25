@@ -27,7 +27,7 @@
 use std::ffi::{CStr, CString, c_void};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 // `Instant` is only used by the winit event-loop window backend (drag / double-click
 // timing); macOS uses the AppKit backend instead and never touches it.
@@ -72,6 +72,13 @@ use super::fade;
 
 /// Wakes the render thread when mpv signals a new frame is available.
 pub(super) static RENDER_SIGNAL: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
+
+/// Set to `true` while a Text Cue overlay is active.
+///
+/// When set, the render loop does **not** skip on `!has_frame && alpha==0` so
+/// that mpv's OSD text (set via `osd-msg2`) is composited and displayed even in
+/// idle mode (no video file loaded).
+pub(super) static TEXT_OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The winit output window, shared between the event-loop thread, the render
 /// thread, and `OutputEngine` methods (show/hide/position/fullscreen).
@@ -630,7 +637,14 @@ fn render_thread_main(
 
         let flags     = unsafe { (lib.mpv_render_context_update)(render_ctx) };
         let has_frame = flags & MPV_RENDER_UPDATE_FRAME != 0;
-        if !has_frame && alpha == 0 { continue; }
+        let text_active = TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed);
+        // Skip rendering when there is nothing to show: no new frame from mpv
+        // and the GL fade quad is fully transparent (alpha=0).  Exception:
+        // when a Text Cue overlay is active we must render even without a new
+        // mpv frame — mpv does not signal MPV_RENDER_UPDATE_FRAME for OSD
+        // changes in idle mode, so we call render unconditionally to composite
+        // the osd-msg2 text onto the output surface.
+        if !has_frame && alpha == 0 && !text_active { continue; }
 
         let mut fbo = MpvOpenglFbo { fbo: 0, w: w_px as i32, h: h_px as i32, internal_format: 0 };
         let mut flip = flip_y;

@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "vendor/mpv/libmpv.dylib": "libmpv.dylib"
+      "vendor/mpv/macos/**/*": "."
     }
   }
 }
+

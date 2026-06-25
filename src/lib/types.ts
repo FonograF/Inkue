@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text";
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 
@@ -100,6 +100,31 @@ export interface VideoCueData extends CueSummary {
   end_time_ms: number | null;
   loop_count: number;
   output_surface_id: string | null;
+}
+
+/** 9-point position grid for TextCue. */
+export type TextPosition =
+  | "top_left" | "top_center" | "top_right"
+  | "middle_left" | "center" | "middle_right"
+  | "bottom_left" | "bottom_center" | "bottom_right";
+
+/** Full cue data returned by get_cue for a Text Cue. */
+export interface TextCueData extends CueSummary {
+  notes: string;
+  /** Text content to display (multi-line supported). */
+  text: string;
+  /** Font family name. */
+  font: string;
+  /** Font size in mpv OSD/ASS points. */
+  font_size: number;
+  /** Text colour as "#RRGGBB". */
+  text_color: string;
+  /** Position on the output surface. */
+  position: TextPosition;
+  /** Target monitor index. null = use workspace display setting. */
+  screen_index: number | null;
+  /** Auto-complete after this duration in ms. null = hold until stopped. */
+  display_duration_ms: number | null;
 }
 
 /** Full cue data returned by get_cue for an Image Cue. */

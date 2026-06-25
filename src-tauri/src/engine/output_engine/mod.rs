@@ -931,6 +931,56 @@ impl OutputEngine {
         TIMER_PREVIEW.get()?.lock().ok()?.clone()
     }
 
+    // ── Text overlay (sub-text / ASS) ────────────────────────────────────────
+
+    /// Display an ASS-tagged text string on the output surface.
+    ///
+    /// Uses `osd-msg2` — the OSD layer is always active even in idle mode, unlike
+    /// `sub-text` which requires the subtitle pipeline (only active when a file is
+    /// loaded).  `osd-msg1` is reserved for the cue timer; `osd-msg2` renders
+    /// independently and simultaneously.  ASS override tags in `ass_text`
+    /// (`\an`, `\fn`, `\fs`, `\c` …) take precedence over the global OSD style.
+    ///
+    /// The GL fade quad is set to alpha=0 (transparent) so mpv's rendered OSD
+    /// is visible on its idle black background.  `TEXT_OVERLAY_ACTIVE` tells the
+    /// render loop not to skip when `!has_frame && alpha==0` — mpv does not fire
+    /// `MPV_RENDER_UPDATE_FRAME` for OSD changes in idle mode.
+    pub fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
+        self.position_window(screen_index);
+        render::TEXT_OVERLAY_ACTIVE.store(true, Ordering::Relaxed);
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                prop_str(lib, ctx.0, "osd-msg2", ass_text);
+            }
+        }
+        // Make the GL quad transparent so the OSD layer is visible, then wake
+        // the render loop (set_overlay_alpha calls render::wake internally).
+        fade::set_overlay_alpha(0);
+    }
+
+    /// Clear the text set via [`show_text_overlay`].
+    ///
+    /// Restores the opaque-black idle state (alpha=255) when no video or image
+    /// content is currently playing.
+    pub fn clear_text_overlay(&self) {
+        render::TEXT_OVERLAY_ACTIVE.store(false, Ordering::Relaxed);
+        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+            unsafe {
+                prop_str(lib, ctx.0, "osd-msg2", "");
+            }
+        }
+        // If no visual content is active, return to the idle black state so
+        // the window shows opaque black and not a transparent/empty surface.
+        let has_content = OUTPUT_CURRENT_VOICE
+            .get()
+            .and_then(|cv| cv.lock().ok())
+            .map(|cv| cv.is_some())
+            .unwrap_or(false);
+        if !has_content {
+            fade::set_overlay_alpha(255);
+        }
+    }
+
     // ── Fullscreen ────────────────────────────────────────────────────────────
 
     /// Toggle the output window between windowed and true fullscreen.

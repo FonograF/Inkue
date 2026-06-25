@@ -39,8 +39,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Create stub libmpv.dylib for tauri-build resource validation
-        run: mkdir -p vendor/mpv && touch vendor/mpv/libmpv.dylib
+      - name: Create empty vendor dirs for tauri-build (no real dylibs in CI)
+        run: mkdir -p vendor/mpv/macos
       - name: Create empty frontend dist for tauri::generate_context!
         run: mkdir -p ../dist
       - run: cargo clippy --all-targets
