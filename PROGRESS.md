@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.19
+## Current version: 0.9.20
 
 ## cargo build result
 
@@ -128,6 +128,10 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.20 (2026-06-25) — Freeze the cue timeline during an audio outage
+
+Follow-up to 0.9.19. With voices preserved across a device loss, the audio froze but the cue's **wall-clock timeline kept advancing** — so `time_done` (`action_elapsed >= duration`, event_loop.rs:396) eventually completed the cue while its (still-queued) audio kept playing, leaving an unstoppable voice. Fix in `show/event_loop.rs`: an **audio-freeze guard**. The 30 fps tick watches `AudioEngine::callback_count()`; if it stops advancing for `AUDIO_FREEZE_MS` (250 ms), every running audio cue (`playing_voice_id().is_some()`) is **paused** — which freezes its `action_elapsed` in sync with the frozen audio and makes the completion loop skip it (Paused ≠ Running). When callbacks resume, the cues we auto-paused are resumed. Detection latency caps the drift at ~250 ms; a planned switch's shorter gap never trips it (no pause flicker). `cue-state-changed` (running↔paused) events keep the UI in sync.
 
 ### 0.9.19 (2026-06-25) — Seamless audio across a device switch
 

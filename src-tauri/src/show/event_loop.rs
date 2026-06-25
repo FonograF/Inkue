@@ -34,6 +34,11 @@ use crate::{
 const TICK_MS: u64 = 33;
 /// Timer overlay refresh interval — fast enough for smooth millisecond display.
 const TIMER_TICK_MS: u64 = 16;
+/// If the output stream produces no callback for this long, the audio is frozen
+/// (device lost / mid-switch) and running audio cues are paused so their
+/// timeline does not drift past the frozen audio.  Above a planned switch's
+/// ~tens-of-ms gap, below a perceptible delay.
+const AUDIO_FREEZE_MS: u64 = 250;
 
 /// Entry point for the event loop thread.  Loops indefinitely.
 pub fn run(
@@ -68,6 +73,11 @@ pub fn run(
     let mut prev_playhead_cue: Option<CueId> = None;
     // Fingerprint of the full cue list (number+name). Sending on change.
     let mut prev_cue_list_hash: u64 = 0;
+    // Audio-freeze guard state (device-loss timeline pause).
+    let mut last_cb_count: u64 = audio_engine.callback_count();
+    let mut cb_last_advance: Instant = Instant::now();
+    let mut audio_frozen = false;
+    let mut auto_paused: std::collections::HashSet<CueId> = std::collections::HashSet::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(TICK_MS));
@@ -84,6 +94,10 @@ pub fn run(
             &mut prev_running_cues,
             &mut prev_playhead_cue,
             &mut prev_cue_list_hash,
+            &mut last_cb_count,
+            &mut cb_last_advance,
+            &mut audio_frozen,
+            &mut auto_paused,
         );
     }
 }
@@ -159,6 +173,10 @@ fn tick(
     prev_running_cues:   &mut Vec<CueId>,
     prev_playhead_cue:   &mut Option<CueId>,
     prev_cue_list_hash:  &mut u64,
+    last_cb_count:       &mut u64,
+    cb_last_advance:     &mut Instant,
+    audio_frozen:        &mut bool,
+    auto_paused:         &mut std::collections::HashSet<CueId>,
 ) {
     // ------------------------------------------------------------------
     // 0. Drain incoming timecode events and fire TC-triggered cues.
@@ -309,6 +327,48 @@ fn tick(
     }
 
     let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size);
+
+    // ------------------------------------------------------------------
+    // 3b. Audio-freeze guard.  When the output stream stops producing
+    //     callbacks (device pulled, or briefly during a switch), pause every
+    //     running audio cue so its wall-clock timeline freezes in sync with
+    //     the frozen (preserved) audio — otherwise the clock keeps advancing,
+    //     hits `duration`, and the cue completes while its audio is still
+    //     queued and unstoppable.  Resume them when callbacks return.
+    // ------------------------------------------------------------------
+    let cb = audio_engine.callback_count();
+    if cb != *last_cb_count {
+        *last_cb_count = cb;
+        *cb_last_advance = Instant::now();
+    }
+    let frozen_now = cb_last_advance.elapsed() >= Duration::from_millis(AUDIO_FREEZE_MS);
+
+    let mut just_paused:  Vec<CueId> = Vec::new();
+    let mut just_resumed: Vec<CueId> = Vec::new();
+    if frozen_now && !*audio_frozen {
+        for cl in ws.cue_lists.iter_mut() {
+            for cue in cl.cues.iter_mut() {
+                if cue.state() == CueState::Running && cue.playing_voice_id().is_some()
+                    && cue.pause(&tick_ctx).is_ok()
+                {
+                    auto_paused.insert(cue.id());
+                    just_paused.push(cue.id());
+                }
+            }
+        }
+    } else if !frozen_now && *audio_frozen {
+        for cl in ws.cue_lists.iter_mut() {
+            for cue in cl.cues.iter_mut() {
+                if auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused
+                    && cue.resume(&tick_ctx).is_ok()
+                {
+                    just_resumed.push(cue.id());
+                }
+            }
+        }
+        auto_paused.clear();
+    }
+    *audio_frozen = frozen_now;
 
     // ------------------------------------------------------------------
     // 4. Apply video duration updates — search every cue list.
@@ -596,6 +656,18 @@ fn tick(
                 "new_state": "standby",
             }),
         );
+    }
+
+    // Audio-freeze pause / resume (device-loss timeline guard).
+    for cue_id in &just_paused {
+        let _ = handle.emit("cue-state-changed", serde_json::json!({
+            "cue_id": cue_id, "old_state": "running", "new_state": "paused",
+        }));
+    }
+    for cue_id in &just_resumed {
+        let _ = handle.emit("cue-state-changed", serde_json::json!({
+            "cue_id": cue_id, "old_state": "paused", "new_state": "running",
+        }));
     }
 
     // Emit playhead-moved for each sequential-group completion advance.
