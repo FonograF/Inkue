@@ -300,6 +300,19 @@ export interface LogLine {
   message: string;
 }
 
+// --- Runtime health (device/network faults) --------------------------------
+
+export type HealthLevel = "error" | "warning" | "info";
+
+export interface HealthAlert {
+  key: string;
+  level: HealthLevel;
+  message: string;
+  /** Action id the banner maps to a command (e.g. "restore_audio_device"). */
+  action: string | null;
+  action_label: string | null;
+}
+
 export interface CollectReport {
   workspace_path: string;
   files_copied: number;

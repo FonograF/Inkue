@@ -4,6 +4,7 @@ pub mod bundled_fonts;
 pub mod commands;
 pub mod cue;
 pub mod engine;
+pub mod health;
 pub mod logger;
 pub mod machine_config;
 pub mod preferences;
@@ -59,6 +60,7 @@ use commands::{
         set_master_volume, stop_all, stop_cue,
     },
     undo_cmds::{can_redo, can_undo, copy_cue, paste_cue, redo, undo},
+    health_cmds::{get_health_alerts, restore_audio_device},
     log_cmds::{clear_logs, get_recent_logs, open_logs_folder},
     preflight_cmds::{check_workspace, relink_media},
     recovery_cmds::{check_recovery, discard_recovery, restore_recovery},
@@ -277,6 +279,78 @@ pub fn run() {
                     .expect("Failed to spawn log-emitter thread");
             }
 
+            // ----------------------------------------------------------------
+            // Device watchdog: detect a lost audio output device mid-show, fall
+            // back to the system default to keep the show audible, and surface a
+            // non-blocking banner (with a "restore" action when the device
+            // returns).  In the healthy steady state this is just an atomic read.
+            // ----------------------------------------------------------------
+            {
+                let handle = app.handle().clone();
+                let engine = app.state::<AppState>().audio_engine.clone();
+                std::thread::Builder::new()
+                    .name("wincue-device-watchdog".to_string())
+                    .spawn(move || {
+                        use std::sync::atomic::Ordering;
+                        use tauri::Emitter;
+                        use crate::health::{self, HealthAlert, HealthLevel};
+
+                        let mut last_seq = 0u64;
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+
+                            let h = engine.audio_health();
+                            if h.failed && !h.in_fallback {
+                                if h.desired_device.is_some() {
+                                    let lost = engine.fall_back_to_default().unwrap_or_default();
+                                    health::set(HealthAlert::new(
+                                        "audio-device",
+                                        HealthLevel::Error,
+                                        format!(
+                                            "Périphérique audio « {lost} » perdu — bascule sur le périphérique par défaut"
+                                        ),
+                                    ));
+                                } else {
+                                    health::set(HealthAlert::new(
+                                        "audio-device",
+                                        HealthLevel::Error,
+                                        "Périphérique audio par défaut indisponible",
+                                    ));
+                                }
+                            } else if h.in_fallback {
+                                let dev = h.desired_device.clone().unwrap_or_default();
+                                if h.desired_present {
+                                    health::set(
+                                        HealthAlert::new(
+                                            "audio-device",
+                                            HealthLevel::Warning,
+                                            format!("Périphérique audio « {dev} » de retour"),
+                                        )
+                                        .with_action("restore_audio_device", "Rebasculer"),
+                                    );
+                                } else {
+                                    health::set(HealthAlert::new(
+                                        "audio-device",
+                                        HealthLevel::Error,
+                                        format!(
+                                            "Périphérique audio « {dev} » perdu — lecture sur le périphérique par défaut"
+                                        ),
+                                    ));
+                                }
+                            } else {
+                                health::clear("audio-device");
+                            }
+
+                            let seq = health::SEQ.load(Ordering::Relaxed);
+                            if seq != last_seq {
+                                last_seq = seq;
+                                let _ = handle.emit("health-changed", ());
+                            }
+                        }
+                    })
+                    .expect("Failed to spawn device-watchdog thread");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -340,6 +414,8 @@ pub fn run() {
             get_recent_logs,
             clear_logs,
             open_logs_folder,
+            get_health_alerts,
+            restore_audio_device,
             // Cue Lists
             get_cue_lists,
             add_cue_list,

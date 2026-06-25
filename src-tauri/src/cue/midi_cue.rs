@@ -81,8 +81,15 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
             .into_iter()
             .find(|p| midi_out.port_name(p).ok().as_deref() == Some(msg.port_name.as_str()));
 
+        let alert_key = format!("midi:{}", msg.port_name);
+
         let Some(port) = port else {
             log::warn!("MIDI: port '{}' not found", msg.port_name);
+            crate::health::set(crate::health::HealthAlert::new(
+                &alert_key,
+                crate::health::HealthLevel::Error,
+                format!("Port MIDI « {} » introuvable", msg.port_name),
+            ));
             continue;
         };
 
@@ -90,11 +97,24 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
             Ok(mut conn) => {
                 if let Err(e) = conn.send(&msg.to_bytes()) {
                     log::warn!("MIDI send failed on '{}': {e}", msg.port_name);
+                    crate::health::set(crate::health::HealthAlert::new(
+                        &alert_key,
+                        crate::health::HealthLevel::Error,
+                        format!("Envoi MIDI échoué sur « {} »", msg.port_name),
+                    ));
+                } else {
+                    // The port is reachable again — drop any stale alert for it.
+                    crate::health::clear(&alert_key);
                 }
                 midi_out = conn.close();
             }
             Err(e) => {
                 log::warn!("MIDI: failed to connect to '{}': {:?}", msg.port_name, e.kind());
+                crate::health::set(crate::health::HealthAlert::new(
+                    &alert_key,
+                    crate::health::HealthLevel::Error,
+                    format!("Connexion MIDI impossible : « {} »", msg.port_name),
+                ));
                 midi_out = e.into_inner();
             }
         }

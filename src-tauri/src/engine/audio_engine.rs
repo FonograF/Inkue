@@ -103,6 +103,30 @@ pub struct AudioEngine {
     /// Total output channel count of the current stream (updated on restart).
     output_channels: std::sync::atomic::AtomicU32,
     master_gain: Arc<std::sync::atomic::AtomicU32>,
+    /// Failure flag of the **current** stream (replaced on every restart).  Set by
+    /// the cpal error callback after repeated `DeviceNotAvailable`; read by the
+    /// device watchdog to detect a lost output device mid-show.
+    stream_failed: Mutex<Arc<std::sync::atomic::AtomicBool>>,
+    /// The config the operator actually selected — kept across an automatic
+    /// fallback so the watchdog can detect the desired device's return.
+    desired_config: Mutex<MachineAudioConfig>,
+    /// Device id the current stream is open on (`None` = system default).
+    current_device_id: Mutex<Option<String>>,
+    /// `true` while running on the default device after the desired one was lost.
+    in_fallback: std::sync::atomic::AtomicBool,
+}
+
+/// Snapshot of the output device's health, read by the device watchdog.
+#[derive(Debug, Clone)]
+pub struct AudioHealth {
+    /// The current stream is erroring (device pulled / grabbed exclusively).
+    pub failed: bool,
+    /// Running on the default device after an automatic fallback.
+    pub in_fallback: bool,
+    /// The operator-selected device id (`None` = system default).
+    pub desired_device: Option<String>,
+    /// Whether the desired device is currently present among enumerated devices.
+    pub desired_present: bool,
 }
 
 // SAFETY: cpal::Stream is not Send on Windows when using WASAPI.
@@ -139,33 +163,80 @@ impl AudioEngine {
             output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
             master_gain,
             output_period,
+            stream_failed: Mutex::new(stream_failed),
+            desired_config: Mutex::new(config.clone()),
+            current_device_id: Mutex::new(config.device_id.clone()),
+            in_fallback: std::sync::atomic::AtomicBool::new(false),
         });
 
-        // If the configured device starts erroring immediately (e.g. HDMI with no
-        // display, or an unplugged device), fall back to the system default after
-        // 500 ms rather than flooding logs forever.
-        if config.device_id.is_some() {
-            let bad_device = config.device_id.clone().unwrap_or_default();
-            let fallback = MachineAudioConfig { device_id: None, ..config.clone() };
-            let engine2 = Arc::clone(&engine);
-            std::thread::Builder::new()
-                .name("wincue-audio-watchdog".into())
-                .spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    if stream_failed.load(std::sync::atomic::Ordering::Relaxed) {
-                        log::warn!(
-                            "Audio device '{bad_device}' is broken (repeated errors), \
-                             falling back to system default"
-                        );
-                        if let Err(e) = engine2.restart(&fallback) {
-                            log::error!("Audio fallback restart failed: {e}");
-                        }
-                    }
-                })
-                .ok();
-        }
+        // A broken configured device (HDMI with no display, unplugged interface)
+        // is now handled continuously by the device watchdog (lib.rs), which
+        // falls back to the default device and surfaces a banner — no one-shot
+        // startup watchdog needed.
 
         Ok(engine)
+    }
+
+    // ── Device resilience ─────────────────────────────────────────────────────
+
+    /// Snapshot of the output device's current health for the watchdog.
+    pub fn audio_health(&self) -> AudioHealth {
+        let failed = self
+            .stream_failed
+            .lock()
+            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false);
+        let in_fallback = self.in_fallback.load(std::sync::atomic::Ordering::Relaxed);
+        let desired_device = self.desired_config.lock().ok().and_then(|c| c.device_id.clone());
+        // Only enumerate devices while in fallback — that is the sole moment we
+        // need to detect the desired device's return.  In the healthy steady
+        // state the watchdog stays free (just an atomic read of `failed`).
+        let desired_present = match (&in_fallback, &desired_device) {
+            (true, Some(id)) => {
+                if let Ok(mut mgr) = self.device_manager.lock() {
+                    let _ = mgr.refresh_devices();
+                    mgr.devices().iter().any(|d| &d.id == id)
+                } else {
+                    true
+                }
+            }
+            _ => true,
+        };
+        AudioHealth { failed, in_fallback, desired_device, desired_present }
+    }
+
+    /// Open `config` as the operator's chosen device (an explicit settings change).
+    /// Records it as the desired device and clears any fallback state.
+    pub fn apply_user_config(&self, config: &MachineAudioConfig) -> Result<()> {
+        if let Ok(mut d) = self.desired_config.lock() {
+            *d = config.clone();
+        }
+        self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.restart(config)
+    }
+
+    /// Automatically fall back to the system default after the desired device was
+    /// lost, keeping the show audible.  Returns the lost device id for the banner.
+    pub fn fall_back_to_default(&self) -> Option<String> {
+        let desired = self.desired_config.lock().ok().map(|c| c.clone())?;
+        let lost = desired.device_id.clone();
+        let fallback = MachineAudioConfig { device_id: None, ..desired };
+        self.in_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Err(e) = self.restart(&fallback) {
+            log::error!("Audio fallback restart failed: {e}");
+        }
+        lost
+    }
+
+    /// Re-open the operator's chosen device after it returned (manual restore).
+    pub fn restore_desired(&self) -> Result<()> {
+        let desired = self
+            .desired_config
+            .lock()
+            .map(|c| c.clone())
+            .map_err(|_| anyhow!("desired_config poisoned"))?;
+        self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.restart(&desired)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -427,13 +498,14 @@ impl AudioEngine {
             *sg = None;
         }
 
+        let new_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sr = open_stream_inner(
             config,
             Arc::clone(&self.voices),
             Arc::clone(&self.input_feeds),
             Arc::clone(&self.master_gain),
             Arc::clone(&self.output_period),
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            Arc::clone(&new_failed),
         )?;
 
         *self.cmd_prod.lock().map_err(|_| anyhow!("cmd_prod poisoned"))? = sr.cmd_prod;
@@ -441,6 +513,8 @@ impl AudioEngine {
         *self._stream.lock().map_err(|_| anyhow!("stream poisoned"))? = Some(sr.stream);
         self.sample_rate.store(sr.sample_rate, std::sync::atomic::Ordering::Relaxed);
         self.output_channels.store(sr.channels, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut f) = self.stream_failed.lock() { *f = new_failed; }
+        if let Ok(mut d) = self.current_device_id.lock() { *d = config.device_id.clone(); }
 
         if let Ok(mut mgr) = self.device_manager.lock() { let _ = mgr.refresh_devices(); }
 

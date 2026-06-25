@@ -117,7 +117,10 @@ pub fn update_machine_audio_config(
 ) -> Result<(), String> {
     crate::machine_config::save(&config).map_err(|e| e.to_string())?;
 
-    state.audio_engine.restart(&config).map_err(|e| e.to_string())?;
+    // Record this as the operator's desired device (clears any auto-fallback +
+    // its banner) and re-open the stream on it.
+    state.audio_engine.apply_user_config(&config).map_err(|e| e.to_string())?;
+    crate::health::clear("audio-device");
 
     let new_buffer_size = config.buffer_size;
     {

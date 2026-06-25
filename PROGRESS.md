@@ -1,6 +1,6 @@
 # WinCue — Project state as of 2026-06-25
 
-## Current version: 0.9.13
+## Current version: 0.9.14
 
 ## cargo build result
 
@@ -128,6 +128,21 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.14 (2026-06-25) — Hardware/network resilience (audio + MIDI)
+
+A device that drops mid-show no longer silently kills the show — it is detected, worked around, and surfaced to the operator. Professional-readiness item toward 1.0.
+
+- **`health.rs`** (new) — cross-cutting runtime-health registry (keyed `HealthAlert`s + `SEQ`), same pattern as `logger`. Idempotent `set`/`clear` so the watchdog re-asserts every tick for free; only real changes bump `SEQ`.
+- **`engine/audio_engine.rs`** — the per-stream `stream_failed` flag is now stored (replaced on each restart) along with the operator's `desired_config`, the `current_device_id`, and an `in_fallback` flag. New methods: `audio_health()` (enumerates devices **only** while in fallback, so the steady state is just an atomic read), `apply_user_config()` (explicit device change → records desired + clears fallback), `fall_back_to_default()` (auto-switch to default on loss), `restore_desired()` (manual re-switch). The one-shot 500 ms startup watchdog is removed (subsumed by the continuous one).
+- **`lib.rs`** — `wincue-device-watchdog` thread (2 s): on output-device loss falls back to the default device to keep audio alive and raises an error banner; when the desired device returns it switches the banner to a "Rebasculer" action (no automatic re-switch — re-opening the stream glitches audio, never forced onto a critical cue). Emits a throttled `health-changed` event.
+- **`cue/midi_cue.rs`** — `send_midi_messages` raises a keyed health alert on a missing/unreachable port and clears it on the next successful send to that port (self-healing).
+- **`commands/health_cmds.rs`** (new) — `get_health_alerts`, `restore_audio_device` (resets running cues since the restart kills voices). `update_machine_audio_config` now routes through `apply_user_config` and clears the audio alert.
+- **Frontend** — `HealthBanner` (non-blocking stack under the title bar, per-level colour, action button), `workspaceStore.healthAlerts` + `refreshHealth`, `health-changed` listener in `useTauriEvents`.
+
+Scope: output audio + MIDI. Network UDP (OSC / DMX) detection and input-device (Mic) loss are deliberately out of this v1. Note: an automatic fallback kills currently-playing voices (the device is gone anyway) — the operator re-triggers; seamless voice migration is not attempted.
+
+**Tests** — 143 pass; `cargo clippy --lib` + `tsc --noEmit` clean. Version 0.9.14.
 
 ### 0.9.13 (2026-06-25) — Preflight + relink, in-app log viewer
 

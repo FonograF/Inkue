@@ -23,6 +23,7 @@ import type {
   GeneralPreferences,
   CueListTcConfig,
   GroupMode,
+  HealthAlert,
   InputPatch,
   LogLine,
   OscPatch,
@@ -175,6 +176,13 @@ export const getRecentLogs = (limit?: number) =>
   invoke<LogLine[]>("get_recent_logs", { limit });
 export const clearLogs = () => invoke<void>("clear_logs");
 export const openLogsFolder = () => invoke<void>("open_logs_folder");
+
+// ---------------------------------------------------------------------------
+// Runtime health (device/network faults)
+// ---------------------------------------------------------------------------
+
+export const getHealthAlerts = () => invoke<HealthAlert[]>("get_health_alerts");
+export const restoreAudioDevice = () => invoke<void>("restore_audio_device");
 
 // ---------------------------------------------------------------------------
 // Cue Lists

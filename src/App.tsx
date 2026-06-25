@@ -18,6 +18,7 @@ import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, set
 import { AboutDialog } from "./components/About/AboutDialog";
 import { PreflightModal } from "./components/Preflight/PreflightModal";
 import { LogViewerModal } from "./components/Logs/LogViewerModal";
+import { HealthBanner } from "./components/Health/HealthBanner";
 import type { CollectReport } from "./lib/types";
 import type { CueSummary } from "./lib/types";
 
@@ -642,7 +643,7 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
 }
 
 export default function App() {
-  const { refreshCues, refreshWorkspaceInfo, refreshValidation, brokenCueIds, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, cueLists, activeCueListId } =
+  const { refreshCues, refreshWorkspaceInfo, refreshValidation, refreshHealth, brokenCueIds, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, cueLists, activeCueListId } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
@@ -700,6 +701,7 @@ export default function App() {
     }).catch(console.error);
     refreshWorkspaceInfo();
     void refreshValidation();
+    void refreshHealth();
     loadGeneralPrefs();
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);
@@ -1218,6 +1220,9 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* Runtime health banner (device/network faults) */}
+      <HealthBanner />
 
       {/* Main area */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>

@@ -1,9 +1,9 @@
 // Zustand store: workspace data, cue list, selection, and playhead.
 
 import { create } from "zustand";
-import type { CueId, CueListSummary, CueSummary, CueValidation, DisplayPreferences, GeneralPreferences, WorkspaceInfo } from "../lib/types";
+import type { CueId, CueListSummary, CueSummary, CueValidation, DisplayPreferences, GeneralPreferences, HealthAlert, WorkspaceInfo } from "../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_GENERAL_PREFS } from "../lib/types";
-import { checkWorkspace, getAllCues, getCueLists, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
+import { checkWorkspace, getAllCues, getCueLists, getHealthAlerts, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
 
 interface WorkspaceState {
   cues: CueSummary[];
@@ -20,10 +20,13 @@ interface WorkspaceState {
   validation: CueValidation[];
   /** IDs of cues with at least one error-severity problem (drives the row badge). */
   brokenCueIds: Set<CueId>;
+  /** Active runtime health alerts (device/network faults) shown in the banner. */
+  healthAlerts: HealthAlert[];
 
   // Actions
   refreshCues: () => Promise<void>;
   refreshValidation: () => Promise<void>;
+  refreshHealth: () => Promise<void>;
   refreshCueLists: () => Promise<void>;
   setCueLists: (lists: CueListSummary[], activeId: string) => void;
   refreshWorkspaceInfo: () => Promise<void>;
@@ -47,6 +50,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   workspaceInfo: null,
   validation: [],
   brokenCueIds: new Set<CueId>(),
+  healthAlerts: [],
   generalPrefs: DEFAULT_GENERAL_PREFS,
   displayPrefs: { ...DEFAULT_DISPLAY_PREFS, output_screen: null, show_output_timer: false, timer_floating: false, timer_count_down: false, timer_font: "DSEG7 Classic", timer_font_size: 120, timer_position: "center" as const, timer_show_ms: false, timer_margin: 50, theme: "system" as const },
 
@@ -71,6 +75,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
       set({ validation, brokenCueIds });
     } catch (e) {
       console.error("Failed to validate workspace:", e);
+    }
+  },
+
+  refreshHealth: async () => {
+    try {
+      set({ healthAlerts: await getHealthAlerts() });
+    } catch (e) {
+      console.error("Failed to fetch health alerts:", e);
     }
   },
 
