@@ -320,6 +320,15 @@ pub fn run() {
 
                             let h = engine.audio_health();
                             let failed = h.failed || stalled;
+                            // On Linux, PipeWire reroutes streams transparently on
+                            // device loss — callbacks keep firing on the wrong device
+                            // so `stalled` never fires.  Treat a missing desired device
+                            // as a failure even when the stream appears healthy.
+                            #[cfg(target_os = "linux")]
+                            let failed = failed
+                                || (!h.in_fallback
+                                    && h.desired_device.is_some()
+                                    && !h.desired_present);
                             if failed && !h.in_fallback {
                                 if h.desired_device.is_some() {
                                     let lost = engine.fall_back_to_default().unwrap_or_default();
