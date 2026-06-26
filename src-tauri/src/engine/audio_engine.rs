@@ -118,15 +118,6 @@ pub struct AudioEngine {
     current_device_id: Mutex<Option<String>>,
     /// `true` while running on the default device after the desired one was lost.
     in_fallback: std::sync::atomic::AtomicBool,
-    /// `true` from the moment we fall back until the operator explicitly restores
-    /// the desired device.  The event loop checks this to keep auto-paused cues
-    /// paused on the fallback device (they should not resume mid-show on the wrong
-    /// output — the operator must consciously switch back first).
-    pub fallback_active: std::sync::atomic::AtomicBool,
-    /// One-shot flag: the event loop should pause all running audio cues on the
-    /// next tick.  Set by `fall_back_to_default()` so cues stop immediately even
-    /// when the fallback stream starts too quickly for the freeze guard to fire.
-    pub request_pause_for_fallback: std::sync::atomic::AtomicBool,
 }
 
 /// Snapshot of the output device's health, read by the device watchdog.
@@ -207,8 +198,6 @@ impl AudioEngine {
                 if started_in_fallback { None } else { config.device_id.clone() },
             ),
             in_fallback: std::sync::atomic::AtomicBool::new(started_in_fallback),
-            fallback_active: std::sync::atomic::AtomicBool::new(started_in_fallback),
-            request_pause_for_fallback: std::sync::atomic::AtomicBool::new(false),
         });
 
         // A broken configured device (HDMI with no display, unplugged interface)
@@ -246,29 +235,19 @@ impl AudioEngine {
                 (c.device_id.clone(), c.device_name.clone().or_else(|| c.device_id.clone()))
             })
             .unwrap_or((None, None));
-        // On Windows/macOS the stream errors or stalls when a device is lost, so
-        // we only need to poll presence during fallback (to detect the return).
-        // On Linux, PipeWire reroutes the stream transparently — callbacks keep
-        // firing on the wrong device and we never see a stall.  Poll presence
-        // every watchdog tick so the loss is detected promptly.
-        let desired_present = match &desired_id {
-            None => true,
-            Some(id) => {
-                #[cfg(not(target_os = "linux"))]
-                let should_check = in_fallback;
-                #[cfg(target_os = "linux")]
-                let should_check = true;
-                if should_check {
-                    if let Ok(mut mgr) = self.device_manager.lock() {
-                        let _ = mgr.refresh_devices();
-                        mgr.devices().iter().any(|d| &d.id == id)
-                    } else {
-                        true
-                    }
+        // Only enumerate devices while in fallback — that is the sole moment we
+        // need to detect the desired device's return.  In the healthy steady
+        // state the watchdog stays free (just an atomic read of `failed`).
+        let desired_present = match (&in_fallback, &desired_id) {
+            (true, Some(id)) => {
+                if let Ok(mut mgr) = self.device_manager.lock() {
+                    let _ = mgr.refresh_devices();
+                    mgr.devices().iter().any(|d| &d.id == id)
                 } else {
                     true
                 }
             }
+            _ => true,
         };
         AudioHealth { failed, in_fallback, desired_device: desired_label, desired_present }
     }
@@ -279,7 +258,6 @@ impl AudioEngine {
         if let Ok(mut d) = self.desired_config.lock() {
             *d = config.clone();
         }
-        self.fallback_active.store(false, std::sync::atomic::Ordering::Relaxed);
         self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
         self.restart(config)
     }
@@ -291,8 +269,6 @@ impl AudioEngine {
         let lost = desired.device_id.clone();
         let fallback = MachineAudioConfig { device_id: None, ..desired };
         self.in_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.fallback_active.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.request_pause_for_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = self.restart(&fallback) {
             log::error!("Audio fallback restart failed: {e}");
         }
@@ -300,34 +276,14 @@ impl AudioEngine {
     }
 
     /// Re-open the operator's chosen device after it returned (manual restore).
-    /// Clears `fallback_active` and `in_fallback` only on success so the
-    /// watchdog banner stays visible and the user can retry if the restart fails.
     pub fn restore_desired(&self) -> Result<()> {
         let desired = self
             .desired_config
             .lock()
             .map(|c| c.clone())
             .map_err(|_| anyhow!("desired_config poisoned"))?;
-        log::info!("Restoring audio to desired device: {:?}", desired.device_id);
-        match self.restart(&desired) {
-            Ok(()) => {
-                self.fallback_active.store(false, std::sync::atomic::Ordering::Relaxed);
-                self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
-                log::info!("Audio restored to {:?} successfully", desired.device_id);
-                Ok(())
-            }
-            Err(e) => {
-                log::error!("Failed to restore audio to {:?}: {e}", desired.device_id);
-                // Keep in_fallback/fallback_active set so the banner stays visible.
-                // Re-open the default device so audio continues on HP while the
-                // user waits for the desired device to be fully ready.
-                let fallback = MachineAudioConfig { device_id: None, ..desired };
-                if let Err(e2) = self.restart(&fallback) {
-                    log::error!("Re-open of fallback device also failed: {e2}");
-                }
-                Err(e)
-            }
-        }
+        self.in_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.restart(&desired)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -701,14 +657,10 @@ fn open_stream_inner(
                 "No ASIO device found. Make sure the driver is not already in use by another application."
             ))?
     } else if let Some(name) = effective_name {
-        log::info!("Opening audio output device with id {name:?}");
-        let mut devices = host.output_devices()
-            .map_err(|e| anyhow!("Failed to enumerate devices: {e}"))?;
-        let found = devices.find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false));
-        if found.is_none() {
-            log::error!("Audio device {name:?} not found in cpal enumeration");
-        }
-        found.ok_or_else(|| anyhow!("Audio device '{}' not found", name))?
+        host.output_devices()
+            .map_err(|e| anyhow!("Failed to enumerate devices: {e}"))?
+            .find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false))
+            .ok_or_else(|| anyhow!("Audio device '{}' not found", name))?
     } else {
         host.default_output_device()
             .ok_or_else(|| anyhow!("No default audio output device found"))?

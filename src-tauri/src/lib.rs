@@ -302,12 +302,6 @@ pub fn run() {
 
                         let mut last_seq = 0u64;
                         let mut last_count = engine.callback_count();
-                        // Hysteresis: only report "device is back" after it has
-                        // appeared in enumeration for this many consecutive ticks
-                        // (avoids a false-positive flash when PipeWire is slow to
-                        // remove a just-unplugged device from its node list).
-                        let mut desired_present_streak: u32 = 0;
-                        const DESIRED_PRESENT_MIN_TICKS: u32 = 2;
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(2));
 
@@ -320,15 +314,6 @@ pub fn run() {
 
                             let h = engine.audio_health();
                             let failed = h.failed || stalled;
-                            // On Linux, PipeWire reroutes streams transparently on
-                            // device loss — callbacks keep firing on the wrong device
-                            // so `stalled` never fires.  Treat a missing desired device
-                            // as a failure even when the stream appears healthy.
-                            #[cfg(target_os = "linux")]
-                            let failed = failed
-                                || (!h.in_fallback
-                                    && h.desired_device.is_some()
-                                    && !h.desired_present);
                             if failed && !h.in_fallback {
                                 if h.desired_device.is_some() {
                                     let lost = engine.fall_back_to_default().unwrap_or_default();
@@ -349,28 +334,24 @@ pub fn run() {
                             } else if h.in_fallback {
                                 let dev = h.desired_device.clone().unwrap_or_default();
                                 if h.desired_present {
-                                    desired_present_streak += 1;
-                                } else {
-                                    desired_present_streak = 0;
-                                }
-                                if desired_present_streak >= DESIRED_PRESENT_MIN_TICKS {
                                     health::set(
                                         HealthAlert::new(
                                             "audio-device",
                                             HealthLevel::Warning,
-                                            format!("Audio device \"{dev}\" is back — cues are paused"),
+                                            format!("Audio device \"{dev}\" is back"),
                                         )
-                                        .with_action("restore_audio_device", "Switch back & resume"),
+                                        .with_action("restore_audio_device", "Switch back"),
                                     );
                                 } else {
                                     health::set(HealthAlert::new(
                                         "audio-device",
                                         HealthLevel::Error,
-                                        format!("Audio device \"{dev}\" lost — cues paused"),
+                                        format!(
+                                            "Audio device \"{dev}\" lost — playing on the default device"
+                                        ),
                                     ));
                                 }
                             } else {
-                                desired_present_streak = 0;
                                 health::clear("audio-device");
                             }
 

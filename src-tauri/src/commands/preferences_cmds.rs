@@ -421,11 +421,11 @@ pub fn test_audio_device(
     Ok(())
 }
 
-/// Spawn a background thread that opens an output stream on `device_name` (or
+/// Spawn a background thread that opens a WASAPI stream on `device_name` (or
 /// the default device if `None`) and plays a 440 Hz beep for ~400 ms.
 ///
 /// The cpal `Stream` is created and destroyed entirely inside the thread to
-/// avoid Send issues with the underlying OS handles.
+/// avoid Send issues with the underlying Win32 handles.
 fn play_beep_on_device(device_name: Option<String>) {
     std::thread::spawn(move || {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -435,30 +435,11 @@ fn play_beep_on_device(device_name: Option<String>) {
         };
 
         let host = cpal::default_host();
-
-        // On Linux, `pw:<node_name>` IDs must route through the `pipewire` ALSA
-        // device with PIPEWIRE_NODE set — the same mechanism used by the engine's
-        // open_stream_inner.  The guard holds PW_OPEN_MTX and keeps the env var
-        // live until after build_output_stream (i.e. until `snd_pcm_open` runs).
-        #[cfg(target_os = "linux")]
-        let (search_name, _pw_guard) = {
-            use crate::engine::device_manager::{acquire_pw_node, pipewire_node_of};
-            match device_name.as_deref().and_then(pipewire_node_of) {
-                Some(node) => {
-                    let guard = acquire_pw_node(node);
-                    (Some("pipewire".to_string()), Some(guard))
-                }
-                None => (device_name.clone(), None),
-            }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let search_name = device_name.clone();
-
-        let device = match search_name.as_deref() {
+        let device = match &device_name {
             Some(name) => host
                 .output_devices()
                 .ok()
-                .and_then(|mut it| it.find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false)))
+                .and_then(|mut it| it.find(|d| d.id().ok().map(|id| id.id() == *name).unwrap_or(false)))
                 .or_else(|| host.default_output_device()),
             None => host.default_output_device(),
         };
@@ -483,12 +464,6 @@ fn play_beep_on_device(device_name: Option<String>) {
             |_| {},
             None,
         ) else { return };
-
-        // Release PW_OPEN_MTX now — PIPEWIRE_NODE is only needed during snd_pcm_open
-        // (inside build_output_stream above).  Holding it for the full 600 ms beep
-        // would block any concurrent engine restart.
-        #[cfg(target_os = "linux")]
-        drop(_pw_guard);
 
         if stream.play().is_ok() {
             std::thread::sleep(std::time::Duration::from_millis(600));

@@ -345,29 +345,6 @@ fn tick(
 
     let mut just_paused:  Vec<CueId> = Vec::new();
     let mut just_resumed: Vec<CueId> = Vec::new();
-
-    // Explicit pause request from the watchdog (device-loss fallback).  This
-    // fires even when the fallback stream starts fast enough that the freeze
-    // guard's 250 ms window never triggers.
-    if audio_engine.request_pause_for_fallback
-        .compare_exchange(true, false,
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed)
-        .is_ok()
-    {
-        for cl in ws.cue_lists.iter_mut() {
-            for cue in cl.cues.iter_mut() {
-                if cue.state() == CueState::Running && cue.playing_voice_id().is_some()
-                    && cue.pause(&tick_ctx).is_ok()
-                {
-                    auto_paused.insert(cue.id());
-                    just_paused.push(cue.id());
-                }
-            }
-        }
-        *audio_frozen = true;
-    }
-
     if frozen_now && !*audio_frozen {
         for cl in ws.cue_lists.iter_mut() {
             for cue in cl.cues.iter_mut() {
@@ -380,34 +357,25 @@ fn tick(
             }
         }
     } else if !frozen_now && *audio_frozen {
-        // Only auto-resume if this thaw is from a transient glitch or a
-        // deliberate device switch-back.  During an automatic fallback
-        // (wrong device, operator hasn't switched back yet) keep cues
-        // paused so the show doesn't continue on the wrong output.
-        let in_fallback = audio_engine
-            .fallback_active
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if !in_fallback {
-            for cl in ws.cue_lists.iter_mut() {
-                for cue in cl.cues.iter_mut() {
-                    if !(auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused) {
-                        continue;
-                    }
-                    // Video: mpv (its own clock) kept playing during the ~250 ms
-                    // detection window while the paired audio voice was frozen, so
-                    // they desynced.  Re-anchor the audio voice to mpv's *actual*
-                    // position (time-pos) — without moving the picture — so audio
-                    // catches up precisely before playback resumes.
-                    if cue.cue_type() == CueType::Video {
-                        tick_ctx.output_engine.resync_audio_to_video();
-                    }
-                    if cue.resume(&tick_ctx).is_ok() {
-                        just_resumed.push(cue.id());
-                    }
+        for cl in ws.cue_lists.iter_mut() {
+            for cue in cl.cues.iter_mut() {
+                if !(auto_paused.contains(&cue.id()) && cue.state() == CueState::Paused) {
+                    continue;
+                }
+                // Video: mpv (its own clock) kept playing during the ~250 ms
+                // detection window while the paired audio voice was frozen, so
+                // they desynced.  Re-anchor the audio voice to mpv's *actual*
+                // position (time-pos) — without moving the picture — so audio
+                // catches up precisely before playback resumes.
+                if cue.cue_type() == CueType::Video {
+                    tick_ctx.output_engine.resync_audio_to_video();
+                }
+                if cue.resume(&tick_ctx).is_ok() {
+                    just_resumed.push(cue.id());
                 }
             }
-            auto_paused.clear();
         }
+        auto_paused.clear();
     }
     *audio_frozen = frozen_now;
 
