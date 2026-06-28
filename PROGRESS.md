@@ -1,6 +1,6 @@
-# WinCue — Project state as of 2026-06-25
+# WinCue — Project state as of 2026-06-26
 
-## Current version: 0.9.22
+## Current version: 0.9.26
 
 ## cargo build result
 
@@ -113,6 +113,51 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## Known issues
 
+### ✅ RESOLVED (0.9.26): Linux UI froze while a video cue plays — continuous UI animation
+
+**Symptom.** On the operator's Linux box (`pnpm tauri dev`), WinCue's WebKitGTK **UI** froze
+to ~0 fps *while a video cue plays* — GO/Stop only registered after ~5 s. The **video itself
+stayed fluid**. Audio cues never caused it; only video. A **production build was fluid** with
+the same clip, which is what finally localised the cause.
+
+**Root cause (measured directly on the UI thread).** The lag is **GPU/compositor contention**,
+not CPU and not the output render path. Measured with an in-UI `requestAnimationFrame` meter:
+during the freeze the GTK main loop stayed responsive (closures dispatched in ~150 µs) but rAF
+— WebKitGTK's *paint* clock — sat at 0 fps. So the UI thread wasn't busy; WebKitGTK simply
+could not get a frame **composited**. The trigger: UI elements that animate **continuously**
+force WebKitGTK to commit a fresh frame for the whole UI surface every display refresh
+(~60 fps) for the animation's entire lifetime. On a weak shared-memory iGPU that permanent
+recompositing can't coexist with a Video Cue's output window also presenting → the UI starves
+to ~0 fps. The culprits, both shown only while a cue runs:
+
+- the **running-cue LED** (`RunningLed`) — a CSS `@keyframes ... infinite` pulse (animating
+  `box-shadow`, then even `opacity`);
+- the **progress bars** (cue list, Active Cues, Show Mode) — a `transition: width …` retriggered
+  on every 30 fps timing update, i.e. effectively continuous.
+
+Audio cues put no load on the GPU, so the same continuous repaints were free → only video
+lagged. Dev React (StrictMode double-render, unminified) widened the gap; a production build
+had just enough compositor headroom to stay fluid.
+
+**Confirmation.** Capping the output present rate (`WINCUE_OUTPUT_FPS=10`) lifted the UI from
+0 → ~20 fps (proves the output window was starving it); disabling the LED lifted it further
+(0 → 6 fps interactive). With both UI fixes below, **dev mode + a video cue went from 0 fps
+(frozen, GO/Stop after ~5 s) to 30+ fps (responsive)**.
+
+**Fix (frontend, cross-platform).** Stop any UI element from driving continuous compositing:
+
+- `components/common/RunningLed.tsx` (new, shared by `CueRow` + `CartView`) — the running
+  indicator now blinks via a **discrete JS `setInterval` (~1.4 Hz)** instead of a CSS keyframe,
+  so the UI surface is idle between toggles. Removed the `wc-led-pulse` keyframe (`index.html`).
+- Progress bars (`CueRow`, `ActiveCuesView`, `ShowModeView`) — animate `transform: scaleX()` on
+  a `will-change: transform` layer (compositor-only, no layout/paint) and **dropped the
+  continuous `transition`**, so each timing update is one discrete cheap commit.
+
+No backend change was needed. The output render path is already cheap (mpv render call ~3 ms,
+swap ~0.6 ms). On Linux, `WINCUE_OUTPUT_BACKEND=wayland` additionally renders a correct-size
+(smaller) output FBO instead of the XWayland-scaled one, for extra headroom on weak iGPUs if
+ever needed.
+
 ### Long-video A/V drift (minor, future tuning)
 
 Video frames are timed by mpv's display clock; the video's audio voice plays on
@@ -128,6 +173,189 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 0.9.26 (2026-06-29) — Linux UI froze during video: continuous UI animation (frontend)
+
+The recurring "WinCue UI freezes while a video cue plays" on the weak Linux box (Intel HD 520,
+`pnpm tauri dev`) is **fixed**. Root-caused by measuring the UI thread directly (an in-UI
+`requestAnimationFrame` meter): during the freeze the GTK main loop stayed responsive (~150 µs)
+but WebKitGTK's paint clock sat at 0 fps — i.e. **GPU/compositor contention**, not CPU and not
+the output render path. Any UI element that animates **continuously** forces WebKitGTK to
+recomposite the whole UI surface ~60 fps for the animation's lifetime; on a shared iGPU that
+can't coexist with a Video Cue's output window also presenting → UI starves to ~0 fps. Audio
+cues put no GPU load on it, so only video lagged; a production build had enough headroom and
+stayed fluid.
+
+- `components/common/RunningLed.tsx` (new) — the running-cue indicator blinks via a **discrete
+  JS interval (~1.4 Hz)** instead of a CSS `@keyframes infinite` pulse, so the UI surface is
+  idle between toggles. Shared by `CueList/CueRow` and `CueList/CartView`; removed the
+  `wc-led-pulse` keyframe (`index.html`).
+- `CueList/CueRow`, `ActiveCues/ActiveCuesView`, `ShowMode/ShowModeView` — progress bars animate
+  `transform: scaleX()` on a `will-change` layer (compositor-only) and **dropped the continuous
+  `transition: width/transform`**, so each 30 fps timing update is one discrete cheap commit
+  instead of a permanent re-rasterisation.
+
+Result on the operator's HW: dev mode + a 1080p video cue went from **0 fps (frozen, GO/Stop
+after ~5 s) to 30+ fps (responsive)**. No backend change. See the **RESOLVED** entry under
+*Known issues* for the measurements and confirmation tests.
+
+### 0.9.25 (2026-06-26) — Linux fixes (redo 2): drag area, fullscreen-at-startup
+
+The 0.9.24 fixes for the three Linux bugs were still reported broken on GNOME/Wayland
+(Intel HD 520). Re-verified the working tree carried 0.9.24's render.rs (vsync `Wait(1)`)
+and OUTPUT_VISIBLE gate uncommitted — so the running binary likely predated them — and
+hardened the two frontend fixes that were genuinely too weak.
+
+**Can't drag the narrow window — real root cause + robust fix.** 0.9.24 only set
+`minWidth: 40` on the single-row drag region. With 14 cue-toolbar buttons at
+`flexShrink: 0`, the toolbar keeps full width and the flex algorithm collapses the
+drag region to that 40px minimum — so only the "WinCue" label is grabbable (exactly
+the symptom). Fix: split the custom title bar into **two rows** — Row 1 = window
+controls + File/View menus + a full-width draggable title; Row 2 = the cue toolbar
+(`flexWrap: wrap`, so every button stays reachable when narrow). The drag area can no
+longer be squeezed by the toolbar. No `data-tauri-drag-region` on the row containers
+(keeps menus/buttons clickable on WebKitGTK). `src/App.tsx`.
+
+**App starts maximized/fullscreen — hardened.** 0.9.24 called `unmaximize()` once on
+mount, which (a) doesn't clear a *fullscreen* state and (b) races Mutter applying the
+restored state *after* the window maps. Fix: the mount effect now calls
+`setFullscreen(false)` + `unmaximize()` immediately **and again on a 150 ms timeout**,
+reliably winning the race and covering both maximized and fullscreen restore.
+`src/App.tsx`.
+
+**Video playback froze WinCue's UI to ~1 fps (clicks delayed by seconds) — REGRESSION
+REVERTED.** The operator clarified: the *video plays fine*, but WinCue's WebKitGTK UI
+drops to ~1 fps while it plays (front **or** behind the output window — so not occlusion),
+single screen, and "it worked fine a few days ago." File mtimes confirmed it: the
+known-good commit was 11:33, but `render.rs` was edited at 12:16 the same day with the
+0.9.23/0.9.24 render-path changes — those are the regression. Root cause: blocking the
+render thread inside `eglSwapBuffers` (`SwapInterval::Wait(1)`, the 0.9.24 "fix") holds a
+Mesa driver lock for the entire vblank wait and serialises our GL with WebKitGTK's
+compositing on the main thread; the native-Wayland backend switch (0.9.23) made the two
+surfaces contend directly. Reverted both to the known-good baseline:
+- `engine/output_engine/render.rs` — vsync back to `SwapInterval::DontWait` (all OS);
+  `build_event_loop` back to the default winit backend (no forced native Wayland). Both
+  carry a comment so the regression is not reintroduced.
+- `src-tauri/Cargo.toml` — glutin Linux features back to `["egl", "glx", "x11"]`.
+- `engine/output_engine/fade.rs` — `hwdec` back to `auto-copy` (the operator confirmed
+  `auto` made no difference, because hwdec was never the cause).
+`PORTAGE.md` vsync/hwdec rows restored with a "do not re-introduce `Wait(1)`" warning.
+
+A ~30 fps output cap + render-thread `nice` were briefly added on top of the revert, then
+**removed**: they over-corrected — dropping output frames freed the UI but made the *video*
+judder.
+
+**Actual root cause — native Wayland EGL swap serialisation; fix = force X11/XWayland.**
+Even at the plain `DontWait` baseline the UI still lagged during playback. The smoking gun
+is in this very 0.9.23 note: *on Mesa/Wayland, `eglSwapBuffers` blocks on the compositor's
+frame callback regardless of swap interval*, which serialises the output window's render
+thread with WebKitGTK's UI compositing on the single iGPU. The previous sessions diagnosed
+this but "fixed" it backwards (forcing **more** Wayland, then `Wait(1)`). The output window
+runs on a *native Wayland* EGL surface (winit defaults to Wayland on a Wayland session),
+which is the lag. Fix (`engine/output_engine/render.rs`, `build_event_loop`): **force the
+X11/XWayland backend** on Linux (`with_x11()`) — XWayland's X11/DRI EGL path honours
+`SwapInterval::DontWait`, decoupling the two GL clients so the UI stays fluid during video.
+`WINCUE_OUTPUT_BACKEND=wayland` is an opt-in escape hatch (logged at startup; glutin keeps
+the `wayland` feature so it links). Windows/macOS untouched (`build_event_loop` is
+per-`cfg`). `render.rs` otherwise equals the known-good baseline plus the `OUTPUT_VISIBLE`
+gate.
+
+**Residual UI lag after decode+XWayland fixed — zero-copy hwdec + opt-in FPS cap.** Logs
+confirmed X11/XWayland *and* `vaapi-copy` hardware decode both active, yet the UI still
+lagged → the remaining cost is the output window's GPU compositing/bandwidth (consistent
+with the earlier cap freeing the UI). Two Linux levers: (1) `hwdec` `auto-copy` → `auto`
+(direct VAAPI↔GL interop, zero-copy) so the decoded surface is imported as a DMA-BUF/
+EGLImage instead of round-tripping GPU→RAM→GPU — halves memory-bus traffic on the shared
+iGPU, no video-smoothness cost (`engine/output_engine/fade.rs`). (2) An **opt-in** output
+FPS cap `WINCUE_OUTPUT_FPS` (default off/uncapped; `render.rs`) the operator can set to e.g.
+30 if the UI still lags — it halves the output's present rate (UI headroom) at the cost of
+video smoothness, so it stays off by default. Windows/macOS unaffected (both `cfg(linux)`).
+
+**XWayland needs `libxkbcommon-x11`.** winit's X11 backend hard-requires it and *panics*
+(not a recoverable `build()` error) during window creation if absent — which it is on a
+Wayland-only install, so the first attempt to force X11 crashed the output engine. Fixed by
+probing the lib with `dlopen` up front (`x11_xkb_available()`): X11/XWayland is selected
+only when the lib is present, else we fall back to native Wayland (app still runs) and log a
+warning naming the package to install. Added `libxkbcommon-x11-0` to the `.deb` `depends`
+(`tauri.conf.json`) so packaged builds get the smooth path automatically; `Xwayland` and the
+other X11 client libs (libX11/libxcb/libxkbcommon) are already standard on GNOME-Wayland.
+
+**Output window at startup — kept the fix.** The `OUTPUT_VISIBLE` frame-commit gate (added
+alongside the reverted changes) is orthogonal to performance and correctly keeps the
+output window unmapped until `render::show()`, so it is retained.
+
+### 0.9.24 (2026-06-26) — Linux fixes (redo): vsync, fullscreen, toolbar
+
+Correct fixes for the three Linux bugs reported in 0.9.23; the 0.9.23 CSS
+approach introduced two regressions (dropdown menus clipped, toolbar buttons
+squished) and the fullscreen fix was incomplete.
+
+**Video lag — root cause corrected.** On Linux with Mesa/Wayland EGL,
+`eglSwapInterval(0)` (DontWait) is ignored: `eglSwapBuffers` still blocks on the
+compositor's frame callback. But when it blocks _without_ yielding the GL context
+ownership, it serialises our render calls with WebKitGTK's GL commands — causing
+visible UI lag. Fix: use `SwapInterval::Wait(1)` on Linux so `swap_buffers()` does
+a proper vblank wait that yields the GPU to other contexts between frames. The
+render thread now blocks at ~60 fps, giving WebKitGTK uncontested GPU time in
+between. `engine/output_engine/render.rs`.
+
+**Output window visible at startup** (0.9.23, retained): `OUTPUT_VISIBLE: AtomicBool`
+gates all frame commits. Already correct in 0.9.23.
+
+**Wayland-native backend** (0.9.23, retained): `build_event_loop()` prefers Wayland
+over X11 on Wayland sessions. Already correct in 0.9.23.
+
+**Main app window starts maximized/fullscreen — correct fix.** `"maximized": false` in
+`tauri.conf.json` only sets the initial Tauri default; GNOME's session manager
+overrides it by restoring the previous WM state on every launch. Fix: call
+`getCurrentWindow().unmaximize()` from a `useEffect` on mount — runs after the WM
+has positioned the window and reliably overrides the restored state. `src/App.tsx`.
+
+**Can't drag narrow window — correct fix without regressions.** The 0.9.23 fix put
+`overflow: hidden` on the 36px title bar container, which clipped absolutely-
+positioned dropdown menus (File/View menu) that extend below the container. It also
+put `flexShrink: 1` on the toolbar, which caused button text (e.g. "+ Audio") to
+wrap when the buttons compressed. Correct fix: remove `overflow: hidden` from the
+container; revert toolbar to `flexShrink: 0` (natural width); keep `minWidth: 40`
+on the drag region. When the window is narrow, the toolbar overflows right and is
+clipped by the root `overflow: hidden` on `<html>`, not by any ancestor flex
+container — so dropdowns are unaffected and button labels never wrap. `src/App.tsx`.
+
+### 0.9.23 (2026-06-26) — Linux UI lag + output window at startup + title bar drag
+
+Three Linux-specific bugs fixed.
+
+**Video lag when playing a cue.** The output window's winit event loop forced X11 via
+`EventLoopBuilderExtX11::with_any_thread(true)` even on Wayland sessions, pushing all
+rendering through XWayland. On modern Linux distros (Wayland by default), this creates
+a translation layer that competes with WebKitGTK/Wayland for GPU time, causing visible
+UI lag while video decodes. Fix: `build_event_loop()` now detects `WAYLAND_DISPLAY` and
+builds the Wayland-native backend first (`EventLoopBuilderExtWayland::with_any_thread`);
+X11 is the fallback for pure X11 sessions. Also added `wayland` to glutin's Linux
+features so the EGL display initialises from the Wayland display handle instead of going
+through XWayland. `engine/output_engine/render.rs`, `src-tauri/Cargo.toml`.
+
+**Output window visible at startup.** On Wayland, a `wl_surface.commit()` with a buffer
+permanently maps (shows) the surface, even before any explicit `set_visible(true)` call.
+The render loop was always rendering (alpha=255 from `FadeAnimState::idle()`) and
+committing frames regardless of window visibility, so the output appeared at startup.
+Fix: new `OUTPUT_VISIBLE: AtomicBool` (false at init) in `render.rs`. The render loop
+skips all work while `OUTPUT_VISIBLE==false`. `render::show()` sets the flag and calls
+`wake()` so the first frame is committed immediately when the operator opens the window
+(or the first visual cue fires); `render::hide()` clears the flag. The
+`FadeAnimState::idle()` alpha=255 is retained — it is still the correct idle state for
+_when the window is visible_.  `engine/output_engine/render.rs`.
+
+**Main app window starts maximized/fullscreen.** Added `"maximized": false` to the main
+window config in `tauri.conf.json` to prevent Linux window managers (especially GNOME)
+from auto-maximizing client-side-decorated windows on first launch or session restore.
+
+**Can't drag the main window when narrow.** The toolbar (`flexShrink: 0`) would push the
+drag-region div to zero width when the window was made narrow, leaving no grabbable area.
+Fix: title bar container gets `overflow: hidden`; toolbar gets `flexShrink: 1, overflow:
+hidden, minWidth: 0` so it clips its right-side buttons when space is tight; drag region
+gets `minWidth: 40` so it always has a grabbable strip. `src/App.tsx`.
+_(Note: this 0.9.23 CSS fix introduced regressions — see 0.9.24 for the correct approach.)_
 
 ### 0.9.22 (2026-06-26) — Precise A/V re-sync (mpv time-pos)
 

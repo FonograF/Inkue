@@ -68,9 +68,11 @@ function ActiveCueRow({ cue }: { cue: CueSummary }) {
       {progressPct !== null && (
         <div style={{
           position: "absolute", bottom: 0, left: 0,
-          height: 2, width: `${progressPct}%`,
+          height: 2, width: "100%",
+          transform: `scaleX(${progressPct / 100})`,
+          transformOrigin: "left",
           background: isPaused ? "#fb923c" : "#22c55e",
-          transition: "width 0.05s linear",
+          willChange: "transform",
           pointerEvents: "none",
         }} />
       )}

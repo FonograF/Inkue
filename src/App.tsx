@@ -861,6 +861,22 @@ export default function App() {
   // Close-request interception
   // -------------------------------------------------------------------------
 
+  // On Linux, GNOME/Mutter may restore a previous maximised *or* fullscreen state
+  // from the session — overriding tauri.conf.json ("maximized": false,
+  // "fullscreen": false) — and it applies that state *after* the window is mapped.
+  // Normalise the window on mount and once more on the next tick so we reliably win
+  // that race and always start at the configured 1280×800 size.
+  useEffect(() => {
+    const normalize = () => {
+      const win = getCurrentWindow();
+      void win.setFullscreen(false).catch(() => {});
+      void win.unmaximize().catch(() => {});
+    };
+    normalize();
+    const id = setTimeout(normalize, 150);
+    return () => clearTimeout(id);
+  }, []);
+
   useEffect(() => {
     const win = getCurrentWindow();
     let unlisten: (() => void) | undefined;
@@ -1104,14 +1120,21 @@ export default function App() {
       {preflightOpen && <PreflightModal onClose={() => setPreflightOpen(false)} />}
       {logsOpen && <LogViewerModal onClose={() => setLogsOpen(false)} />}
 
-      {/* Custom title bar — no drag-region on the container so menus/buttons work on Linux */}
+      {/* Custom title bar — two rows: Row 1 holds the window controls, menus and a
+          full-width drag area; Row 2 holds the cue toolbar.  Splitting them means
+          the toolbar can never squeeze the drag area down to an ungrabbable sliver
+          when the window is narrow (the previous single-row layout collapsed it to
+          ~40px, so only the "WinCue" label was draggable).  No drag-region on the
+          row containers so menus/buttons keep working on Linux/WebKitGTK. */}
       <div
         style={{
-          display: "flex", alignItems: "center", height: 36, padding: "0 12px",
+          display: "flex", flexDirection: "column",
           background: "var(--wc-bg-surface)", borderBottom: "1px solid var(--wc-border)",
-          flexShrink: 0, gap: 12, userSelect: "none", WebkitUserSelect: "none",
+          flexShrink: 0, userSelect: "none", WebkitUserSelect: "none",
         }}
       >
+        {/* Row 1 — window controls, File/View menus, draggable workspace title */}
+        <div style={{ display: "flex", alignItems: "center", height: 36, padding: "0 12px", gap: 12 }}>
         <WindowControls />
         <FileMenu
           onSave={() => void handleSave()}
@@ -1138,7 +1161,7 @@ export default function App() {
         {/* Drag region: app name + workspace name */}
         <div
           data-tauri-drag-region
-          style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, overflow: "hidden" }}
+          style={{ flex: 1, minWidth: 40, display: "flex", alignItems: "center", gap: 10, overflow: "hidden" }}
         >
           <span
             data-tauri-drag-region
@@ -1168,8 +1191,12 @@ export default function App() {
           )}
         </div>
 
-        {/* Toolbar — hidden in Show Mode */}
-        <div style={{ display: showMode ? "none" : "flex", gap: 6, flexShrink: 0 }}>
+        </div>{/* end Row 1 */}
+
+        {/* Row 2 — cue toolbar on its own row.  It never competes with the Row 1
+            drag area, and wraps onto extra lines when the window is too narrow to
+            fit every button, so they all stay reachable.  Hidden in Show Mode. */}
+        <div style={{ display: showMode ? "none" : "flex", flexWrap: "wrap", gap: 6, padding: "0 12px 6px", alignItems: "center" }}>
           <button
             style={{ ...toolbarBtn, color: "var(--wc-accent)", cursor: "grab", userSelect: "none" }}
             onClick={handleAddAudio}

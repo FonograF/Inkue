@@ -1,6 +1,6 @@
 [package]
 name = "wincue"
-version = "0.9.22"
+version = "0.9.26"
 edition = "2021"
 
 [lib]
@@ -90,7 +90,9 @@ objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
 block2 = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-glutin = { version = "0.32", features = ["egl", "glx", "x11"] }
+# `wayland` is compiled in only so the `WINCUE_OUTPUT_BACKEND=wayland` escape hatch
+# (render.rs) can link; the default output backend is X11/XWayland (see build_event_loop).
+glutin = { version = "0.32", features = ["egl", "glx", "x11", "wayland"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 libc = "0.2"

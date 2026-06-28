@@ -242,7 +242,24 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let opts_cstr    = cs(&opts_str);
             let cmd_cstr     = cs("loadfile");
             let replace_cstr = cs("replace");
-            (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs("auto-copy").as_ptr());
+            // hwdec mode.
+            //
+            // Linux: `auto` = direct VAAPI↔GL interop (zero-copy) — the decoded surface
+            // is imported straight into our render-API GL context as a DMA-BUF/EGLImage.
+            // `auto-copy` instead round-trips every frame GPU→system-RAM→GPU, which on a
+            // shared-memory iGPU (Intel HD 520) doubles memory-bus traffic and steals the
+            // bandwidth WebKitGTK needs to composite the UI. Direct interop removes that
+            // round-trip; mpv falls back to copy on its own if interop is unavailable.
+            // (Only effective once a VA-API driver is installed — otherwise mpv software-
+            // decodes regardless; see PORTAGE.md.)
+            //
+            // Windows/macOS keep `auto-copy`: d3d11 / VideoToolbox copy interop is cheap
+            // there and direct interop is less robust through our external GL context.
+            #[cfg(target_os = "linux")]
+            let hwdec_mode = "auto";
+            #[cfg(not(target_os = "linux"))]
+            let hwdec_mode = "auto-copy";
+            (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs(hwdec_mode).as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());
 
             // Load paused: frame 0 decoded → PLAYBACK_RESTART → reveal + unpause.

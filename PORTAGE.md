@@ -14,10 +14,11 @@ portage macOS (branche `macos-port`, 2026-06-22). Ce document décrit l'architec
 | Pourquoi pas winit sur macOS | Son `EventLoop` exige la run loop principale AppKit, que la `NSApplication` de Tauri possède déjà. On ne peut pas avoir deux `[NSApp run]`. winit tourne sur un thread de fond sur Win/Linux (`with_any_thread`), interdit sur macOS |
 | Contexte GL | `glutin 0.32` (rwh 0.6) : WGL (Windows), EGL/GLX (Linux), **CGL** (macOS) |
 | Version GL | OpenGL 3.3 core (Windows/Linux) / **3.2 core (macOS — pas de profil 3.3)** ; shaders en `#version 150 core` (sous-ensemble accepté partout) |
-| hwdec | `hwdec=auto-copy` cross-platform (interop GL sûre), posé par-vidéo dans `fade::execute_load_params` |
+| hwdec | Posé par-vidéo dans `fade::execute_load_params`. **Linux** : `auto` = interop direct VAAPI↔GL (zero-copy, DMA-BUF/EGLImage) — évite le round-trip GPU→RAM→GPU de `auto-copy` qui double le trafic mémoire d'un iGPU à mémoire partagée et vole la bande passante du compositing WebKitGTK (n'a d'effet qu'avec un pilote VA-API installé : `intel-media-va-driver`, sinon mpv décode en logiciel). **Windows/macOS** : `auto-copy`. Cap FPS optionnel de la sortie : `WINCUE_OUTPUT_FPS` (Linux, off par défaut) |
 | Fade overlay | Quad GL noir dans le FBO mpv (PAS `overlay-add`, PAS layered window) — `tick_fade()` piloté par le thread render |
 | OSD timer | `osd-msg1` composité par mpv dans le FBO — inchangé sur les 3 OS |
-| vsync | `glutin` `SwapInterval::DontWait` (mpv `video-sync=desync` cadence la lecture) |
+| vsync | `glutin` `SwapInterval::DontWait` sur les 3 OS (mpv `video-sync=desync` cadence la lecture). **Ne pas** passer Linux en `Wait(1)` : bloquer dans `eglSwapBuffers` sur le vblank tient un lock driver Mesa et sérialise le thread render avec le compositing WebKitGTK → UI WinCue à ~1 fps pendant la lecture vidéo (régression 2026-06, revert) |
+| UI ↔ vidéo (iGPU faible) | Aucun élément de l'UI WebKitGTK ne doit s'animer **en continu** (keyframe CSS `infinite`, transition relancée à chaque frame) : ça force WebKitGTK à recomposer toute la surface UI à ~60 fps en permanence, ce qui sature le compositeur d'un iGPU partagé pendant qu'une fenêtre de sortie vidéo présente aussi → UI à ~0 fps. Indicateurs « en cours » = blink discret JS (`RunningLed`, ~1.4 Hz) ; barres de progression = `transform: scaleX()` sur une couche `will-change` mise à jour de façon discrète (pas de `transition` continue). Voir PROGRESS.md (0.9.26). |
 | Floating timer | Tauri WebView `float-timer` — unifié 3 OS |
 | Legacy Windows | Win32+D3D11+wid derrière `#[cfg(feature="legacy-win32-output")]` (éteint) |
 | Audio | cpal **0.18** partout : WASAPI/ASIO (Windows), ALSA/PipeWire (Linux), CoreAudio (macOS) — aucun code par-OS |
@@ -48,6 +49,14 @@ Dans `render.rs`, la création de fenêtre se branche par `target_os` : winit
 garde-fou « EventLoop sur le thread principal ». La fenêtre est stockée dans
 `render::GL_WINDOW: OnceLock<Arc<winit::window::Window>>` ; show/hide/position/fullscreen
 appellent l'API winit cross-platform depuis n'importe quel thread.
+
+**Linux : on force le backend X11/XWayland** (`build_event_loop` → `with_x11()`), même
+sous une session Wayland. Avec une surface EGL **Wayland native**, le `eglSwapBuffers` de
+Mesa bloque sur le frame-callback du compositeur quel que soit le swap-interval, ce qui
+sérialise le thread render de la fenêtre output avec le compositing WebKitGTK de l'UI sur
+le même iGPU → l'UI WinCue rame pendant toute la lecture vidéo. XWayland (chemin X11/DRI)
+respecte `SwapInterval::DontWait` et découple les deux clients GL → UI fluide. Override de
+test : `WINCUE_OUTPUT_BACKEND=wayland`. **Ne pas** remettre Wayland natif par défaut.
 
 ### AppKit / objc2 (macOS — `macos_window.rs`)
 
