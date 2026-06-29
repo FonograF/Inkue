@@ -6,9 +6,10 @@ name: Release
 # ── One-time setup required ──────────────────────────────────────────────────
 #
 # 1. Windows libmpv binary (gitignored, ~113 MB):
-#    Create a GitHub release on this repo with tag "vendor-libs" and upload
-#    libmpv-2.dll as a release asset.  The Windows CI job downloads it from there.
-#    To update libmpv: re-upload to that same release and bump LIBMPV_TAG below.
+#    Fetched automatically by the Windows job from the upstream shinchiro build on
+#    SourceForge (pinned filename + SHA-256 below — SourceForge keeps old builds for
+#    years, so the pin is stable). To update libmpv, change LIBMPV_URL / LIBMPV_SHA256
+#    in the "Download libmpv (Windows)" step. No manual upload needed.
 #
 # 2. macOS signing + notarization (Apple Developer Program required):
 #    Set these repository secrets (Settings → Secrets → Actions):
@@ -36,9 +37,6 @@ on:
     tags:
       - 'v[0-9]*'
   workflow_dispatch:   # allow manual trigger for testing (always creates a draft)
-
-env:
-  LIBMPV_TAG: vendor-libs   # tag of the release that hosts libmpv-2.dll
 
 permissions:
   contents: write   # required to create GitHub releases
@@ -91,17 +89,35 @@ jobs:
 
       # ── Platform-specific: provide libmpv ────────────────────────────────────
 
-      - name: Download libmpv-2.dll (Windows)
+      - name: Download libmpv (Windows)
         if: matrix.platform == 'windows-latest'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
+          # Pinned shinchiro libmpv build (x86_64 baseline — runs on all x86-64 CPUs,
+          # unlike the AVX2-only "-v3" variant). This is byte-identical to the libmpv
+          # the app is developed/tested against. SourceForge retains old builds, so the
+          # pin stays resolvable. To bump: pick a new file from
+          # https://sourceforge.net/projects/mpv-player-windows/files/libmpv/ and update
+          # both values below (its SHA-256 is the hash of the .7z archive).
+          $LIBMPV_URL    = 'https://downloads.sourceforge.net/project/mpv-player-windows/libmpv/mpv-dev-x86_64-20260412-git-062f4bf.7z'
+          $LIBMPV_SHA256 = 'f66f04075da0cbccd106513eab67b78b72ac00780423a9fe3c6e34ae93317806'
+
           New-Item -ItemType Directory -Force src-tauri/vendor/mpv | Out-Null
-          gh release download $env:LIBMPV_TAG `
-            --pattern "libmpv-2.dll" `
-            --dir src-tauri/vendor/mpv `
-            --repo $env:GITHUB_REPOSITORY
+          Write-Host "Downloading libmpv from $LIBMPV_URL"
+          curl.exe -fSL -o mpv-dev.7z $LIBMPV_URL
+
+          $actual = (Get-FileHash mpv-dev.7z -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $LIBMPV_SHA256) {
+            Write-Error "libmpv checksum mismatch: expected $LIBMPV_SHA256, got $actual"
+            exit 1
+          }
+
+          7z e -y mpv-dev.7z libmpv-2.dll "-osrc-tauri/vendor/mpv"
+          if (-not (Test-Path src-tauri/vendor/mpv/libmpv-2.dll)) {
+            Write-Error "libmpv-2.dll was not extracted"
+            exit 1
+          }
+          Write-Host "libmpv-2.dll ready"
 
       - name: Bundle libmpv + Homebrew deps (macOS)
         if: matrix.platform == 'macos-latest'

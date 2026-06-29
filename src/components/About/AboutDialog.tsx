@@ -5,7 +5,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState("…");
 
   useEffect(() => {
-    void getVersion().then(setVersion).catch(() => setVersion("0.9.10"));
+    void getVersion().then(setVersion).catch(() => setVersion("1.0.0"));
   }, []);
 
   return (
@@ -48,21 +48,25 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
             color: "var(--wc-text-muted)", marginBottom: 20, lineHeight: 1.6,
           }}
         >
+          <strong style={{ color: "var(--wc-text-secondary)" }}>Inkue</strong> is free software,
+          released under the <strong>GNU General Public License v3</strong> (GPL-3.0-or-later).
+          <br />
           <strong style={{ color: "var(--wc-text-secondary)" }}>libmpv</strong> is licensed under the{" "}
-          <strong>GNU Lesser General Public License v2.1+</strong> (LGPL-2.1-or-later).
-          Inkue loads it at runtime as an unmodified shared library.
-          Source: <span style={{ fontFamily: "monospace" }}>mpv.io</span>
+          <strong>GNU Lesser General Public License v2.1+</strong> (LGPL-2.1-or-later);
+          Inkue loads it at runtime as an unmodified shared library (source: <span style={{ fontFamily: "monospace" }}>mpv.io</span>).
+          <br />
+          ASIO is a trademark and software of Steinberg Media Technologies GmbH.
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <a
-            href="https://github.com/FonograF/inkue"
+            href="https://github.com/FonograF/Inkue"
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: 12, color: "var(--wc-accent)", textDecoration: "none" }}
             onClick={(e) => e.stopPropagation()}
           >
-            github.com/FonograF/inkue
+            github.com/FonograF/Inkue
           </a>
           <button
             onClick={onClose}

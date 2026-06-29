@@ -1,8 +1,49 @@
+<div align="center">
+
 # Inkue
 
-A professional, cross-platform show-control application (Windows, macOS, Linux), inspired by QLab (macOS). Inkue manages cue lists for live events — theatre, concerts, corporate shows — with a focus on reliability, low latency, and an extensible cue architecture.
+**A professional, cross-platform show-control application — inspired by [QLab](https://qlab.app/).**
 
-Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v2](https://tauri.app/).
+Cue lists for live events — theatre, concerts, corporate shows — with a focus on
+reliability, low latency, and an extensible cue architecture.
+Runs on **Windows, macOS and Linux**.
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#download)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB.svg)](https://tauri.app/)
+[![CI](https://github.com/FonograF/Inkue/actions/workflows/ci.yml/badge.svg)](https://github.com/FonograF/Inkue/actions/workflows/ci.yml)
+
+</div>
+
+---
+
+## Download
+
+Grab the latest installer for your platform from the **[Releases page](https://github.com/FonograF/Inkue/releases/latest)**:
+
+| Platform | File | Notes |
+|---|---|---|
+| **Windows 10 / 11** | `Inkue_x.y.z_x64-setup.exe` or `.msi` | libmpv is bundled — nothing else to install |
+| **macOS** (Apple Silicon + Intel) | `Inkue_x.y.z_universal.dmg` | requires `libmpv` (`brew install mpv`) |
+| **Linux** (x86-64) | `.deb` / `.AppImage` | `.deb` pulls in `libmpv` automatically |
+
+> Inkue is young software. If something breaks during a show-critical moment,
+> please [open an issue](https://github.com/FonograF/Inkue/issues) with the log
+> (File → Logs… → Open folder).
+
+---
+
+## What is Inkue?
+
+Inkue drives the playback side of a live show from a single ordered **cue list**.
+The operator presses **GO**; Inkue fires the cue at the **playhead** — play a
+sound, roll a video, fade a light, send an OSC/MIDI message — and advances.
+The vocabulary, keyboard flow and behaviour follow QLab as closely as possible,
+so QLab operators feel at home immediately.
+
+It is built with **Rust** (real-time audio/video engine + show logic) and
+**React + TypeScript** (UI) via [Tauri v2](https://tauri.app/), which keeps the
+binary small and the audio path native and low-latency.
 
 ---
 
@@ -12,66 +53,102 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 
 | Type | Description |
 |---|---|
-| **Audio** | WAV, MP3, FLAC, OGG, AAC, M4A — sample-accurate WASAPI/ASIO playback with fade-in/out, trim, loop (finite + infinite), rate, pan, Output Patch routing |
-| **Video** | Fullscreen or floating output window via libmpv (unified GL Render API); audio decoded as a normal audio voice (shared Output Patch, VU metering, fades); loop |
+| **Audio** | WAV, MP3, FLAC, OGG, AAC, M4A — sample-accurate WASAPI/ASIO/CoreAudio/ALSA playback with fade-in/out, trim, loop (finite + infinite), rate and pan |
+| **Video** | Fullscreen or floating output window via libmpv (unified GL Render API); audio decoded as a normal audio voice (VU metering, fades); loop |
 | **Image** | Any image format via libmpv; dip-to-black fades; optional display duration; stops on next visual GO |
 | **Group** | Sequential or Simultaneous; sequential mode holds the outer playhead and absorbs GO presses to advance the internal sequence |
 | **Wait** | Fixed-duration delay; integrates with Auto-Continue chains |
-| **Stop** | Stops all running cues or a chosen subset (soft fade or hard cut); drag the ■ STOP button or `+ Stop` from the toolbar to insert anywhere |
+| **Stop** | Stops all running cues or a chosen subset (soft fade or hard cut) |
 | **Fade** | Fades volume (dB) and/or image brightness on any running cue(s) to a target; configurable curve; optional Stop at End |
 | **OSC** | Sends one or more UDP OSC messages on GO; multiple messages per cue; workspace-level named patches |
-| **MIDI** | Sends Note On/Off, Control Change, Program Change on GO; multiple messages per cue; dynamic port enumeration (WinMM/CoreMIDI) |
+| **MIDI** | Sends Note On/Off, Control Change, Program Change on GO; dynamic port enumeration (WinMM/CoreMIDI/ALSA) |
+| **Light** | DMX-over-IP (sACN E1.31 + Art-Net); fixture patch in the workspace; fades fixture parameters to a target look (tracking + LTP) |
+| **Mic** | Routes a live audio input through the engine (separate in/out devices, adaptive drift resampler, gain/pan/fade/VU) |
+| **Timecode** | SMPTE timecode generate + receive (MTC); LTC encode/decode; per-cue TC triggers + cue-list sync |
+| **Text** | Renders styled text on the output surface (font, size, colour, 9-point grid); independent of the OSD timer |
 | **Memo** | Read-only label; no playback action |
 
 ### Transport & playback
 
-- **GO / STOP / Hard Stop** — keyboard (Space / Escape / double-Escape), toolbar buttons, or OSC remote
-- **Pre-Wait / Post-Wait** — delays before/after the cue action
-- **Continue modes** — Do Not Continue, Auto-Continue (overlap), Auto-Follow (chain on finish)
-- **Pause / Resume** — individual cues or all running cues
-- **Scrub / Seek** — drag the playhead in the Time tab; audio and video both seekable while running or paused
-- **Pause / Resume** — progress bar and inspector counter freeze at the exact pause position; seek while paused repositions the cue
-- **Double-GO protection** — configurable debounce window (default 500 ms) silently drops duplicate triggers from OSC controllers or accidental rapid presses
+- **GO / STOP / Hard Stop** — keyboard (Space / Escape / double-Escape), toolbar, or OSC remote
+- **Pre-Wait / Post-Wait**, **Auto-Continue** (overlap) and **Auto-Follow** (chain on finish)
+- **Pause / Resume** and **scrub / seek** — individual cues or everything at once; counters freeze at the exact pause position
+- **Double-GO protection** — configurable debounce (default 500 ms) drops duplicate triggers
+- **Show Mode** (F5) — a read-only, large-type operator view
 
-### Output
+### Output & I/O
 
-- **Unified output window** — single persistent native window (winit + mpv OpenGL Render API) for all video and image cues; no flicker between cues; supports fullscreen on any monitor or draggable floating window. The legacy Win32 + D3D11 path is kept behind the `legacy-win32-output` feature flag as a regression fallback
-- **Output timer** — OSD overlay via mpv; ships with the bundled **DSEG7 Classic** 7-segment font as default; configurable font/size/position/margin/ms display, with system-font autocomplete on Windows, Linux and macOS; live preview in Preferences. An optional always-on-top floating timer window mirrors it on the operator's screen
-- **WASAPI & ASIO** — low-latency audio via [cpal](https://github.com/RustAudio/cpal); ASIO requires the Steinberg SDK
-- **Output Patches** — named mappings to audio devices and channel pairs, shared across cue lists
+- **Unified output window** — a single persistent native window (mpv OpenGL Render API) for all video and image cues; no flicker between cues; fullscreen on any monitor or a draggable floating window
+- **Output timer** — OSD overlay with the bundled DSEG7 7-segment font; configurable font/size/position; optional always-on-top floating timer
+- **Low-latency audio** via [cpal](https://github.com/RustAudio/cpal) — WASAPI / **ASIO** on Windows, CoreAudio on macOS, ALSA / PipeWire on Linux
+
+### Editing
+
+Inspector with per-type tabs · waveform start/end trim · drag-and-drop reordering
+and grouping · drop media from the file manager · toolbar-drag insert · multi-select
+(edit/delete/duplicate/color) · full undo/redo · copy/paste · resizable/reorderable
+columns · QLab-compatible color tags · consistent dark theme on all three OSes.
 
 ### OSC remote control
 
-Inkue listens on UDP port 53001 (configurable). Supported receive addresses:
+Inkue listens on UDP **53001** (configurable). Examples:
 
 | Address | Action |
 |---|---|
 | `/inkue/go` | Advance playhead and fire GO |
-| `/inkue/stop` | Stop all (soft fade) |
-| `/inkue/hardstop` | Hard stop all |
-| `/inkue/pause` | Pause all running cues |
-| `/inkue/resume` | Resume all paused cues |
-| `/inkue/pause_toggle` | Pause if anything is running, resume if anything is paused |
-| `/inkue/select/next` | Move playhead to next cue (no fire) |
-| `/inkue/select/previous` | Move playhead to previous cue (no fire) |
-| `/inkue/cue/{number}/go` | Jump to cue number and fire |
-| `/inkue/cue/{number}/select` | Move playhead to cue number (no fire) |
-| `/inkue/cue/{number}/stop` | Stop specific cue |
+| `/inkue/stop` · `/inkue/hardstop` | Stop all (soft fade) / hard stop all |
+| `/inkue/pause` · `/inkue/resume` · `/inkue/pause_toggle` | Pause / resume control |
+| `/inkue/cue/{number}/go` · `/inkue/cue/{number}/select` | Jump to / select a specific cue |
 
-Configure in **Preferences → Network**. An activity dot in the transport bar flashes on every received packet. The **OSC Monitor** (click the dot) shows all incoming packets in real time with address, arguments, and match status. A built-in dedup cache (50 ms window) eliminates duplicate UDP packets from Windows loopback and OSC controllers that transmit each packet twice.
+A built-in **OSC Monitor** shows incoming packets in real time, and a 50 ms dedup
+cache eliminates duplicate UDP packets from controllers and Windows loopback.
 
-### Editor
+---
 
-- **Inspector panel** — Basics, Time, Levels, Fade, Messages tabs per cue type
-- **Waveform editor** — visual start/end trim with real-time preview playhead
-- **Drag-and-drop** — reorder cues, drag into groups, drop media files from Explorer
-- **Toolbar drag** — drag `+ Audio`, `+ Video`, etc. from the toolbar to insert at any list position
-- **Multi-select** — Ctrl/Shift/Ctrl+A; multi-delete, multi-duplicate, multi-drag, multi-color
-- **Undo / redo** — full snapshot-based history
-- **Copy / paste** — serialize cues to clipboard, paste anywhere
-- **Column config** — resizable, reorderable, hideable columns; layout persisted to localStorage
-- **Color tags** — QLab-compatible color labels on cue rows; render as a left-edge stripe or tint the whole row (Personalization preferences)
-- **Consistent dark theme** — custom dropdowns and a Personalization preferences category keep the look identical across Windows, Linux and macOS
+## Building from source
+
+### Prerequisites
+
+- [Rust](https://rustup.rs/) (stable) and [Node.js](https://nodejs.org/) + [pnpm](https://pnpm.io/)
+- **libmpv** — required for video/image cues (~113 MB, not versioned in git):
+  - Windows: place `libmpv-2.dll` in `src-tauri/vendor/mpv/` — get it from the baseline
+    `mpv-dev-x86_64` build at [sourceforge.net/projects/mpv-player-windows](https://sourceforge.net/projects/mpv-player-windows/files/libmpv/)
+    (the release CI pins the exact build; see [`docs/RELEASING.md`](docs/RELEASING.md))
+  - macOS: `brew install mpv`
+  - Linux: install the `libmpv2` (or `libmpv1`) + `libmpv-dev` system packages
+  - Full per-OS detail in [`PORTAGE.md`](PORTAGE.md).
+- *(Optional, Windows)* The **Steinberg ASIO SDK** is already bundled in
+  `vendor/asiosdk/` under its GPLv3 option (see [ASIO support](#asio-support)).
+
+### Run & build
+
+```bash
+pnpm install
+pnpm tauri dev            # development (WASAPI/CoreAudio/ALSA)
+pnpm tauri:dev            # development, with ASIO support (Windows)
+
+pnpm tauri build          # production installers
+pnpm tauri:build          # production, with ASIO support (Windows)
+```
+
+Installers land in `src-tauri/target/release/bundle/`.
+
+### Tests
+
+```bash
+cd src-tauri && cargo test     # cue registry, OSC, DMX, timecode, SR conversion, …
+cargo clippy                   # zero warnings expected
+```
+
+### ASIO support
+
+ASIO is **optional** and Windows-only, enabled by the `asio-support` Cargo feature
+(`pnpm tauri:dev` / `pnpm tauri:build`). The Steinberg ASIO SDK is bundled in
+`vendor/asiosdk/` under its **GPLv3 dual-license option**, which is compatible with
+Inkue's own GPLv3 license, so no separate download or agreement is required to build
+the open-source version. `CPAL_ASIO_DIR` is preconfigured in `src-tauri/.cargo/config.toml`.
+
+> *ASIO is a trademark and software of Steinberg Media Technologies GmbH.*
 
 ---
 
@@ -79,121 +156,60 @@ Configure in **Preferences → Network**. An activity dot in the transport bar f
 
 ```
 src-tauri/src/
-├── cue/            # Cue trait + CueRegistry + all cue types
-│   ├── audio_cue.rs, video_cue.rs, image_cue.rs
-│   ├── group_cue.rs, wait_cue.rs, stop_cue.rs, memo_cue.rs
-│   ├── osc_cue.rs, osc_types.rs
-│   ├── context.rs  # CueContext — passed to every lifecycle method
-│   └── registry.rs # factory registry — add new types without touching transport
-├── engine/
-│   ├── audio_engine.rs     # cpal real-time thread; zero alloc/lock in callback
-│   ├── output_engine/      # libmpv GL Render API output window for video + image
-│   ├── osc_patch.rs        # OscPatch (named UDP send target)
-│   ├── osc_server.rs       # UDP receive thread + frontend dispatch
-│   └── device_manager.rs   # WASAPI/ASIO device enumeration + Output Patches
-├── show/
-│   ├── transport.rs        # GO / STOP / PAUSE / RESUME logic
-│   ├── cue_list.rs         # ordered list + playhead
-│   ├── event_loop.rs       # 30 fps tick (completions, auto-continue, time events)
-│   │                       # + 60 fps timer-refresh thread for OSD
-│   ├── workspace.rs        # save / load .inkue JSON
-│   └── undo_stack.rs
-├── commands/       # Tauri IPC handlers (transport, cues, workspace, devices, prefs, osc)
-├── state/          # AppState — engines, registry, undo, clipboard, last-GO timestamp
-├── machine_config.rs  # per-OS config dir (audio.json, osc.json)
-└── preferences.rs  # AppPreferences (audio, general, display, network / OSC)
+├── cue/       # Cue trait + CueRegistry + every cue type (audio, video, image, group,
+│              #   wait, stop, fade, osc, midi, light, mic, timecode, text, memo)
+├── engine/    # AudioEngine (cpal real-time thread), OutputEngine (libmpv GL Render API),
+│              #   DMX engine/sink, OSC server/patch, device manager — know nothing about cues
+├── show/      # transport (GO/STOP/PAUSE), cue list + playhead, event loop, workspace I/O, undo
+├── commands/  # Tauri IPC handlers
+└── state/     # AppState — engines, registry, undo, clipboard
 
 src/
-├── components/
-│   ├── CueList/        # CueListView, CueRow, column definitions
-│   ├── Inspector/      # InspectorPanel + per-type tabs (Basics, Time, Levels, Fade, Messages)
-│   ├── Transport/      # TransportBar — GO/STOP, VU meters, master volume, OSC dot
-│   ├── Osc/            # OscMonitor — floating real-time packet log
-│   ├── OscPatches/     # OscPatchesPanel — workspace OSC patch CRUD
-│   ├── Preferences/    # PreferencesModal — Audio, General, Network, Display tabs
-│   └── WaveformModal.tsx
-├── stores/         # Zustand: workspaceStore, transportStore (incl. OSC log), timingStore
-├── hooks/          # useTauriEvents (all backend events), useKeyboardShortcuts
-└── lib/            # types.ts, commands.ts — typed Tauri invoke wrappers
+├── components/  # CueList, Inspector, Transport, ShowMode, Preferences, Lighting, Osc, …
+├── stores/      # Zustand: workspace, transport, timing
+├── hooks/       # useTauriEvents, useKeyboardShortcuts
+└── lib/         # types.ts, commands.ts (typed Tauri invoke wrappers)
 ```
 
-**Key invariants:**
-- The audio callback has zero allocations, zero locks, zero I/O — all comms via lock-free ring buffers.
-- The `Cue` trait is the only interface the transport layer uses. Adding a new cue type never requires touching `transport.rs`, `cue_list.rs`, or the CueList UI.
-- Machine-specific settings (audio device, OSC config) live in the per-OS config dir (`%APPDATA%\Inkue\` on Windows, `~/.config/Inkue` on Linux, `~/Library/Application Support/Inkue` on macOS); show-specific settings travel in the `.inkue` file.
+**Key invariants** (see [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`PORTAGE.md`](PORTAGE.md)):
+
+- The audio callback has **zero allocations, zero locks, zero I/O** — all comms via lock-free ring buffers.
+- Every cue type implements the `Cue` trait; adding a new type never touches `transport.rs`, `cue_list.rs` or the CueList UI.
+- Three layers never mix: `engine/` (no cue knowledge) → `cue/` → `show/`.
+- Every feature compiles and works on Windows, macOS **and** Linux.
+- Machine-specific settings live in the per-OS config dir; show-specific settings travel in the `.inkue` file.
 
 ---
 
-## Stack
+## QLab terminology
 
-| Layer | Technology |
-|---|---|
-| UI | React 18 + TypeScript + Vite |
-| State | Zustand |
-| Desktop shell | Tauri v2 |
-| Backend | Rust 2021 |
-| Audio I/O | cpal (WASAPI / ASIO on Windows, CoreAudio on macOS, ALSA / PipeWire on Linux) |
-| Audio decoding | Symphonia (WAV, MP3, FLAC, OGG, AAC, M4A) |
-| Video / Image | libmpv (OpenGL Render API, persistent native window via winit + glutin) |
-| OSC | rosc 0.10 |
-| Lock-free comms | ringbuf + crossbeam-channel |
+Inkue uses QLab's vocabulary throughout: **Workspace** (the `.inkue` file) ·
+**Cue List** · **Playhead** (next GO target) · **GO** · **Pre-Wait / Post-Wait** ·
+**Auto-Continue / Auto-Follow** · **Cue Number** (a string —
+`"1"`, `"1.5"`, `"Intro"` are all valid).
 
 ---
 
-## Getting Started
+## Contributing
 
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (stable)
-- [Node.js](https://nodejs.org/) + [pnpm](https://pnpm.io/)
-- Windows 10 / 11, macOS, or Linux
-- libmpv — required for video and image cues (not versioned, ~113 MB): `vendor/mpv/libmpv-2.dll` on Windows; `libmpv` via Homebrew on macOS; the `libmpv2` (or `libmpv1`) system package on Linux. Per-OS resolution detail in `PORTAGE.md`.
-- *(Optional, Windows only)* [Steinberg ASIO SDK](https://www.steinberg.net/developers/) in `vendor/asiosdk/` for ASIO support
-
-### Development
-
-```bash
-pnpm install
-pnpm tauri dev          # WASAPI only
-pnpm tauri:dev          # with ASIO (requires vendor/asiosdk/)
-```
-
-### Production build
-
-```bash
-pnpm tauri build        # WASAPI only
-pnpm tauri:build        # with ASIO
-```
-
-Generates an `.msi` installer and a standalone `.exe` in `src-tauri/target/release/bundle/`.
-
-### Tests
-
-```bash
-cd src-tauri && cargo test   # cue registry, OSC types/server/dedup, SR conversion, stop/fade specs, cue list ops, DMX engine/fixtures/Light Cue
-```
-
----
-
-## QLab Terminology
-
-Inkue uses QLab's vocabulary throughout:
-
-| Term | Meaning |
-|---|---|
-| **Workspace** | The project file (`.inkue`) |
-| **Cue List** | Ordered sequence of cues |
-| **Playhead** | Marker for the next cue triggered by GO |
-| **GO** | Trigger the cue at the playhead |
-| **Pre-Wait** | Delay before the cue action starts |
-| **Post-Wait** | Delay after the action starts before continue mode fires |
-| **Auto-Continue** | Start the next cue after Post-Wait elapses |
-| **Auto-Follow** | Start the next cue when this one finishes |
-| **Cue Number** | A string — `"1"`, `"1.5"`, `"Intro"` are all valid |
-| **Output Patch** | Named mapping to an audio device + channel pair |
+Issues and pull requests are welcome. By contributing you agree that your
+contributions are licensed under the GPL-3.0-or-later, the same license as the project.
+Before a large change, please open an issue to discuss the design — the layering rules
+above and in [`ARCHITECTURE.md`](ARCHITECTURE.md) are strict on purpose.
 
 ---
 
 ## License
 
-Private — all rights reserved.
+Inkue is **free software**, licensed under the
+**[GNU General Public License v3.0 or later](LICENSE)**.
+
+Third-party components:
+
+- **libmpv** — LGPL-2.1-or-later; loaded at runtime as an unmodified shared library ([mpv.io](https://mpv.io/)).
+- **Steinberg ASIO SDK** — bundled under its GPLv3 dual-license option. *ASIO is a trademark and software of Steinberg Media Technologies GmbH.*
+- **DSEG** 7-segment font — SIL Open Font License 1.1.
+- Rust crates: cpal, symphonia, winit, glutin, glow, rosc, midir and others under their respective MIT/Apache-2.0/MPL-2.0 licenses.
+
+Inkue is an independent project and is **not affiliated with or endorsed by**
+Figure 53 (QLab) or Steinberg.

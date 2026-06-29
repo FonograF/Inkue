@@ -1,7 +1,13 @@
 [package]
 name = "inkue"
-version = "0.9.26"
+version = "1.0.0"
 edition = "2021"
+description = "Professional, cross-platform show-control application (QLab-inspired)"
+authors = ["Inkue contributors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/FonograF/Inkue"
+homepage = "https://github.com/FonograF/Inkue"
+readme = "../README.md"
 
 [lib]
 name = "inkue_lib"

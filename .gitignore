@@ -38,6 +38,13 @@ Thumbs.db
 # Claude Code local config
 .claude/
 
+# Internal/dev-only docs — kept locally, not part of the public repo.
+/CLAUDE.md
+/PROGRESS.md
+/WHATSNEXT.md
+/RENAME.md
+/docs/archive/
+
 
 # Logs
 *.log
