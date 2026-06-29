@@ -1,7 +1,7 @@
 //! In-app logging backend.
 //!
 //! Fans the single `log` global out to three sinks: stderr (dev convenience), a
-//! size-rotated file in the per-user config dir (`%APPDATA%/WinCue/logs/`), and
+//! size-rotated file in the per-user config dir (`%APPDATA%/Inkue/logs/`), and
 //! an in-memory ring buffer the UI reads via [`recent`].  The buffer + file mean
 //! an operator can see "what went wrong" without a terminal — logs for the user.
 
@@ -40,22 +40,22 @@ pub static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Directory holding the log files.
 pub fn logs_dir() -> PathBuf {
-    config_base_dir().join("WinCue").join("logs")
+    config_base_dir().join("Inkue").join("logs")
 }
 
 fn log_path() -> PathBuf {
-    logs_dir().join("wincue.log")
+    logs_dir().join("inkue.log")
 }
 
-struct WincueLogger {
+struct InkueLogger {
     level: LevelFilter,
 }
 
-impl Log for WincueLogger {
+impl Log for InkueLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        // WinCue's own records up to the configured level, plus warnings/errors
+        // Inkue's own records up to the configured level, plus warnings/errors
         // from anywhere (so a dependency blowing up is never silently dropped).
-        (metadata.level() <= self.level && metadata.target().starts_with("wincue"))
+        (metadata.level() <= self.level && metadata.target().starts_with("inkue"))
             || metadata.level() <= Level::Warn
     }
 
@@ -105,7 +105,7 @@ impl Log for WincueLogger {
     }
 }
 
-/// Install the WinCue logger as the global `log` backend.  Call once at startup.
+/// Install the Inkue logger as the global `log` backend.  Call once at startup.
 pub fn init() {
     let level = match std::env::var("RUST_LOG").ok().as_deref() {
         Some(s) if s.contains("trace") => LevelFilter::Trace,
@@ -116,7 +116,7 @@ pub fn init() {
     RING.get_or_init(|| Mutex::new(VecDeque::with_capacity(RING_CAPACITY)));
     FILE.get_or_init(|| Mutex::new(open_log_file()));
 
-    if log::set_boxed_logger(Box::new(WincueLogger { level })).is_ok() {
+    if log::set_boxed_logger(Box::new(InkueLogger { level })).is_ok() {
         log::set_max_level(level);
     }
 }
@@ -129,7 +129,7 @@ fn open_log_file() -> Option<File> {
     let path = log_path();
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > ROTATE_BYTES {
-            let _ = std::fs::rename(&path, dir.join("wincue.log.1"));
+            let _ = std::fs::rename(&path, dir.join("inkue.log.1"));
         }
     }
     OpenOptions::new().create(true).append(true).open(&path).ok()

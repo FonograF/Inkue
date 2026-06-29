@@ -70,7 +70,7 @@ impl OscServer {
         let (tx, rx) = crossbeam_channel::bounded::<Option<OscReceiveConfig>>(4);
 
         std::thread::Builder::new()
-            .name("wincue-osc-server".to_string())
+            .name("inkue-osc-server".to_string())
             .spawn(move || server_loop(config, rx, app_handle))
             .expect("Failed to spawn OSC server thread");
 
@@ -183,7 +183,7 @@ fn handle_packet(packet: &rosc::OscPacket, app_handle: &tauri::AppHandle) {
 }
 
 fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
-    // Always emit a debug event regardless of whether the address matches WinCue.
+    // Always emit a debug event regardless of whether the address matches Inkue.
     let args_display: Vec<String> = msg.args.iter().map(format_osc_arg).collect();
     let _ = app_handle.emit(
         "osc-debug",
@@ -195,23 +195,23 @@ fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
     log::info!("OSC in: {} {:?}", msg.addr, args_display);
 
     let payload = match msg.addr.as_str() {
-        "/wincue/go"              => serde_json::json!({ "command": "go" }),
-        "/wincue/stop"            => serde_json::json!({ "command": "stop_all" }),
-        "/wincue/hardstop"        => serde_json::json!({ "command": "hard_stop_all" }),
-        "/wincue/pause"           => serde_json::json!({ "command": "pause_all" }),
-        "/wincue/resume"          => serde_json::json!({ "command": "resume_all" }),
-        "/wincue/select/next"     => serde_json::json!({ "command": "select_next" }),
-        "/wincue/select/previous" => serde_json::json!({ "command": "select_previous" }),
-        "/wincue/pause_toggle"    => serde_json::json!({ "command": "pause_toggle" }),
-        "/wincue/cues/request"     => {
+        "/inkue/go"              => serde_json::json!({ "command": "go" }),
+        "/inkue/stop"            => serde_json::json!({ "command": "stop_all" }),
+        "/inkue/hardstop"        => serde_json::json!({ "command": "hard_stop_all" }),
+        "/inkue/pause"           => serde_json::json!({ "command": "pause_all" }),
+        "/inkue/resume"          => serde_json::json!({ "command": "resume_all" }),
+        "/inkue/select/next"     => serde_json::json!({ "command": "select_next" }),
+        "/inkue/select/previous" => serde_json::json!({ "command": "select_previous" }),
+        "/inkue/pause_toggle"    => serde_json::json!({ "command": "pause_toggle" }),
+        "/inkue/cues/request"     => {
             crate::engine::osc_feedback::request_cue_list();
             return;
         }
-        "/wincue/playhead/request" => {
+        "/inkue/playhead/request" => {
             crate::engine::osc_feedback::request_playhead();
             return;
         }
-        addr if addr.starts_with("/wincue/cue/") => parse_cue_address(addr),
+        addr if addr.starts_with("/inkue/cue/") => parse_cue_address(addr),
         _ => return,
     };
 
@@ -234,10 +234,10 @@ fn format_osc_arg(arg: &rosc::OscType) -> String {
     }
 }
 
-/// Parse `/wincue/cue/{number}/go|select|stop` and build the command payload.
+/// Parse `/inkue/cue/{number}/go|select|stop` and build the command payload.
 fn parse_cue_address(addr: &str) -> serde_json::Value {
     let parts: Vec<&str> = addr.splitn(6, '/').collect();
-    // parts: ["", "wincue", "cue", "{number}", "action"]
+    // parts: ["", "inkue", "cue", "{number}", "action"]
     if parts.len() == 5 {
         let number = parts[3];
         let action = parts[4];
@@ -277,21 +277,21 @@ mod tests {
 
     #[test]
     fn parse_cue_go_address() {
-        let payload = parse_cue_address("/wincue/cue/1.5/go");
+        let payload = parse_cue_address("/inkue/cue/1.5/go");
         assert_eq!(payload["command"], "cue_go");
         assert_eq!(payload["cue_number"], "1.5");
     }
 
     #[test]
     fn parse_cue_select_address() {
-        let payload = parse_cue_address("/wincue/cue/Intro/select");
+        let payload = parse_cue_address("/inkue/cue/Intro/select");
         assert_eq!(payload["command"], "cue_select");
         assert_eq!(payload["cue_number"], "Intro");
     }
 
     #[test]
     fn parse_cue_stop_address() {
-        let payload = parse_cue_address("/wincue/cue/3/stop");
+        let payload = parse_cue_address("/inkue/cue/3/stop");
         assert_eq!(payload["command"], "cue_stop");
         assert_eq!(payload["cue_number"], "3");
     }

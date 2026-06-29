@@ -1,4 +1,4 @@
-//! Application-wide preferences, persisted inside the `.wincue` file under
+//! Application-wide preferences, persisted inside the `.inkue` file under
 //! the `"preferences"` key.
 //!
 //! Each top-level category (audio, general, network, display) is its own
@@ -34,9 +34,9 @@ pub enum AudioBackend {
 
 /// Hardware-specific audio settings — device, backend, buffer size.
 ///
-/// Stored in `%APPDATA%\WinCue\audio.json`, **not** in the workspace file,
+/// Stored in `%APPDATA%\Inkue\audio.json`, **not** in the workspace file,
 /// because they describe the physical machine rather than the show.
-/// Moving a `.wincue` file to another machine keeps its show defaults intact
+/// Moving a `.inkue` file to another machine keeps its show defaults intact
 /// while this config adapts to the local hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineAudioConfig {
@@ -92,7 +92,7 @@ impl Default for MachineAudioConfig {
 
 /// Show-specific audio defaults — stored in the workspace file.
 ///
-/// These travel with the `.wincue` file because they describe the show's
+/// These travel with the `.inkue` file because they describe the show's
 /// intent (how loud new cues are, what fade curve to use) rather than the
 /// hardware it runs on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,7 +186,7 @@ impl Default for GeneralPreferences {
 }
 
 /// OSC receive server configuration — stored machine-level in
-/// `%APPDATA%\WinCue\osc.json`, not in the workspace file.
+/// `%APPDATA%\Inkue\osc.json`, not in the workspace file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OscReceiveConfig {
     /// When `false` the server is not started (or is stopped if already running).
@@ -199,7 +199,7 @@ pub struct OscReceiveConfig {
     #[serde(default)]
     pub allowed_ips: Vec<String>,
 
-    /// When `true`, WinCue broadcasts the running cue's name and number to
+    /// When `true`, Inkue broadcasts the running cue's name and number to
     /// `feedback_host:feedback_port` whenever the active cue changes.
     #[serde(default)]
     pub feedback_enabled: bool,

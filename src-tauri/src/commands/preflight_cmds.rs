@@ -46,7 +46,7 @@ pub struct RelinkResult {
 
 /// Names of MIDI output ports currently available on this machine.
 fn available_midi_ports() -> Vec<String> {
-    match midir::MidiOutput::new("WinCue-preflight") {
+    match midir::MidiOutput::new("Inkue-preflight") {
         Ok(out) => out.ports().iter().filter_map(|p| out.port_name(p).ok()).collect(),
         Err(e) => {
             log::warn!("[preflight] MIDI port enumeration failed: {e}");
@@ -243,7 +243,7 @@ fn spawn_media_preload(
     let is_video = matches!(cue_type, CueType::Video);
 
     std::thread::Builder::new()
-        .name("wincue-relink-preload".into())
+        .name("inkue-relink-preload".into())
         .spawn(move || {
             let duration = if is_video {
                 crate::engine::OutputEngine::probe_duration(output_engine.mpv_lib(), &path)

@@ -30,6 +30,7 @@ const TC_RATE_LABELS: Record<TcRate, string> = {
 
 export function TriggersTab({ cue, onSave }: Props) {
   const [trigger, setTrigger] = useState<TcTrigger | null>(null);
+  const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [posInput, setPosInput] = useState("");
   const [rate, setRate] = useState<TcRate>("29.97df");
@@ -40,6 +41,7 @@ export function TriggersTab({ cue, onSave }: Props) {
     getCueTcTrigger(cue.id)
       .then((t) => {
         setTrigger(t);
+        setEnabled(t != null);
         if (t) {
           setPosInput(t.position);
           setRate(t.rate);
@@ -55,6 +57,7 @@ export function TriggersTab({ cue, onSave }: Props) {
   }, [cue.id]);
 
   const handleEnable = async (enable: boolean) => {
+    setEnabled(enable);
     if (!enable) {
       await setCueTcTrigger(cue.id, null, null, false).catch(console.error);
       setTrigger(null);
@@ -74,8 +77,6 @@ export function TriggersTab({ cue, onSave }: Props) {
   };
 
   if (loading) return <div style={{ color: "var(--wc-text-faint)", fontSize: 12 }}>Loading…</div>;
-
-  const enabled = trigger != null;
 
   return (
     <div>

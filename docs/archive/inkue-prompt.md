@@ -2,7 +2,7 @@
 > Some statements are intentionally outdated (e.g. "do not implement Video/MIDI/OSC" —
 > all now shipped). Preserved as a historical record of the founding spec.
 
-# Projet : WinCue — Show Control Application (QLab-like) pour Windows
+# Projet : Inkue — Show Control Application (QLab-like) pour Windows
 
 ## Objectif
 
@@ -30,7 +30,7 @@ Le comportement, la terminologie et les raccourcis clavier doivent reproduire ce
 
 ### Workspace
 
-Un Workspace est l'unité de sauvegarde (fichier .wincue). Il contient :
+Un Workspace est l'unité de sauvegarde (fichier .inkue). Il contient :
 - Des métadonnées (nom, date de création, date de modification)
 - Un ou plusieurs Cue Lists
 - La configuration des sorties audio (device mapping)
@@ -344,9 +344,9 @@ Les events time-update et level-meter sont throttlés à 30fps côté backend po
 
 ---
 
-## Format de sauvegarde (.wincue)
+## Format de sauvegarde (.inkue)
 
-Le fichier .wincue est un fichier JSON avec cette structure :
+Le fichier .inkue est un fichier JSON avec cette structure :
 
 Racine :
 - version : "1.0.0"
@@ -373,7 +373,7 @@ Cue (commun à tous les types) :
 - continue_mode : "do_not_continue" | "auto_continue" | "auto_follow"
 
 Cue Audio (propriétés additionnelles) :
-- file_path : string (chemin relatif au dossier du .wincue)
+- file_path : string (chemin relatif au dossier du .inkue)
 - volume_db : nombre
 - pan : nombre
 - fade_in_ms : nombre ou null
@@ -386,7 +386,7 @@ Cue Audio (propriétés additionnelles) :
 - output_patch_id : UUID
 - rate : nombre (1.0 = normal)
 
-Les chemins de fichiers audio sont TOUJOURS relatifs au dossier contenant le fichier .wincue.
+Les chemins de fichiers audio sont TOUJOURS relatifs au dossier contenant le fichier .inkue.
 
 ---
 
@@ -394,7 +394,7 @@ Les chemins de fichiers audio sont TOUJOURS relatifs au dossier contenant le fic
 
 Arborescence des fichiers à créer :
 
-Racine : wincue/
+Racine : inkue/
 
 Dossier src-tauri/src/ (Backend Rust) :
 - main.rs : point d'entrée Tauri

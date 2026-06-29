@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::engine::{
-    ring_command::VoiceId,
-    timecode_generator::MtcGenerator,
+    ring_command::{FadeCurve as EngineFadeCurve, VoiceId},
+    timecode_generator::{LtcGenerator, MtcGenerator},
     timecode_types::{TcPosition, TcRate},
 };
 
@@ -86,6 +86,8 @@ pub struct TimecodeCue {
     // ── Runtime ───────────────────────────────────────────────────────────
     /// Running MTC generator thread (held to keep it alive).
     active_gen: Option<MtcGenerator>,
+    /// Running LTC generator thread (held to keep it alive).
+    active_ltc_gen: Option<LtcGenerator>,
     /// LTC audio voice id (if LTC mode).
     active_ltc_voice: Option<VoiceId>,
     /// Computed duration from start_frame → end_frame (cached at GO).
@@ -117,6 +119,7 @@ impl TimecodeCue {
             start_frame: default_pos,
             end_frame: None,
             active_gen: None,
+            active_ltc_gen: None,
             active_ltc_voice: None,
             cached_duration: None,
         }
@@ -145,10 +148,42 @@ impl TimecodeCue {
                 }
             }
             TcOutputType::Ltc => {
-                // LTC is generated via a live audio voice that the event loop
-                // feeds sample-by-sample using the LTC encoder.  For now we
-                // log a warning and the feature is flagged as "MTC-only v1".
-                log::warn!("TimecodeCue '{}': LTC output not yet implemented (v1 MTC only)", self.name);
+                let sample_rate = context.audio_engine.sample_rate();
+
+                // Route to the chosen Output Patch (falls back to channels 0/1).
+                let (mut out_l, mut out_r) = (0usize, 1usize);
+                if let Some(op) = context.resolve_patch(self.output_patch_id) {
+                    if let Some(&c) = op.channels.first() {
+                        out_l = c as usize;
+                        out_r = c as usize;
+                    }
+                    if let Some(&c) = op.channels.get(1) {
+                        out_r = c as usize;
+                    }
+                }
+
+                // A synthetic feed bridges the LTC encoder thread to the mixer:
+                // the generator fills the ring, a live voice routes it to output.
+                match context.audio_engine.register_synthetic_feed(1, sample_rate) {
+                    Ok((feed_id, prod)) => {
+                        let mut start = self.start_frame;
+                        start.rate = self.rate;
+                        self.active_ltc_gen =
+                            Some(LtcGenerator::start(start, sample_rate, prod));
+                        match context.audio_engine.play_mic_voice(
+                            feed_id, 0, 0, out_l, out_r, 1.0, 0.0, 0, EngineFadeCurve::Linear,
+                        ) {
+                            Ok(vid) => self.active_ltc_voice = Some(vid),
+                            Err(e) => {
+                                self.active_ltc_gen = None;
+                                log::error!("TimecodeCue '{}': LTC voice failed: {e}", self.name);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("TimecodeCue '{}': LTC feed failed: {e}", self.name);
+                    }
+                }
             }
         }
 
@@ -198,7 +233,11 @@ impl Cue for TimecodeCue {
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
         self.active_gen = None;
-        self.active_ltc_voice = None;
+        self.active_ltc_gen = None;
+        // A control signal: cut cleanly (no fade tail of garbled timecode).
+        if let Some(vid) = self.active_ltc_voice.take() {
+            context.audio_engine.stop_voice(vid, 0, EngineFadeCurve::Linear)?;
+        }
         self.in_pre_wait = false;
         self.state = CueState::Standby;
         self.started_at = None;
@@ -221,6 +260,7 @@ impl Cue for TimecodeCue {
 
     fn reset(&mut self) -> Result<()> {
         self.active_gen = None;
+        self.active_ltc_gen = None;
         self.active_ltc_voice = None;
         self.state = CueState::Standby;
         self.started_at = None;

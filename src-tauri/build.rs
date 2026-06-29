@@ -29,7 +29,7 @@ fn main() {
     }
 
     // Copy libmpv-2.dll next to the compiled binary so it can be loaded at runtime.
-    // OUT_DIR is  target/{profile}/build/wincue-<hash>/out  — three levels up is target/{profile}.
+    // OUT_DIR is  target/{profile}/build/inkue-<hash>/out  — three levels up is target/{profile}.
     #[cfg(target_os = "windows")]
     {
         let out_dir = std::env::var("OUT_DIR").unwrap();

@@ -1,4 +1,4 @@
-# WinCue — Timecode (design + plan)
+# Inkue — Timecode (design + plan)
 
 Objectif : **parité QLab** sur le timecode — déclenchement de cues à une position (esclave)
 **et** génération de timecode pour asservir d'autres machines (maître). Formats **MTC + LTC**.
@@ -21,15 +21,15 @@ Le design verrouillé ci-dessous reste la référence pour v2.
 Un timecode est une horloge continue `HH:MM:SS:FF` à une cadence (24/25/29.97/30 fps),
 diffusée pour que plusieurs machines partagent **une seule ligne de temps**. Il transforme une
 liste de cues *pilotée à la main* en **show verrouillé sur une timeline**, répétable à la frame
-près, et permet à WinCue de s'insérer dans un écosystème pro.
+près, et permet à Inkue de s'insérer dans un écosystème pro.
 
 | Scénario | Sans TC | Avec TC |
 |---|---|---|
 | Vidéo + son + lumière sur un film/playback | GO « à peu près » | frame-accurate, identique à chaque représentation |
 | Concert avec click/bande | dérive humaine | les cues tombent pile sur la musique |
-| Corporate avec roll-ins vidéo | risque de décalage | serveur vidéo et WinCue sur la même horloge |
+| Corporate avec roll-ins vidéo | risque de décalage | serveur vidéo et Inkue sur la même horloge |
 | Broadcast / parc / install permanente | impossible sans opérateur | show déterministe, lancé une fois |
-| Piloter console lumière / DAW | déclenchements séparés | WinCue **maître** envoie le TC, tout suit |
+| Piloter console lumière / DAW | déclenchements séparés | Inkue **maître** envoie le TC, tout suit |
 
 ---
 
@@ -85,7 +85,7 @@ pattern thread+snapshot+event de `dmx_engine.rs`, serveur UDP existant si besoin
 
 ---
 
-## Formats — coût dans l'archi WinCue
+## Formats — coût dans l'archi Inkue
 
 | Brique | Implémentation | Coût |
 |---|---|---|
@@ -152,7 +152,56 @@ la complétude / parité, pas d'étape intermédiaire « MTC seul »).
 - Encodeur LTC : layout biphase-mark + sync word `0011111111111101` (golden test sur quelques frames).
 - Décodeur LTC : round-trip encodeur→décodeur sur un buffer audio synthétique.
 - MTC : quarter-frame (8 messages = 2 frames) + full-frame, sens montant/descendant.
-- Roundtrip serde : trigger de cue + `TimecodeCue` dans `.wincue`.
+- Roundtrip serde : trigger de cue + `TimecodeCue` dans `.inkue`.
+
+---
+
+## Test manuel — MTC en loopback (sans matériel)
+
+Le chemin complet (génération **maître** → réception → **déclenchement** de cues) se
+teste sur **un seul poste** avec un port MIDI virtuel en boucle. **MTC** est câblé de bout
+en bout ; LTC reste un placeholder (voir caveat en tête).
+
+**Prérequis — port MIDI virtuel**
+- Windows : **loopMIDI** (gratuit, Tobias Erichsen) → créer un port, ex. `Inkue TC`.
+- macOS : **IAC Driver** (Audio MIDI Setup → fenêtre MIDI → activer l'IAC).
+- Linux : port ALSA virtuel (`a2jmidid`, ou `snd-virmidi`).
+- **Créer le port AVANT de lancer Inkue** (les ports MIDI sont énumérés au démarrage ;
+  s'il manque dans les listes, recrée-le puis relance l'app).
+
+### Test A — Génération seule (MTC out + in)
+Valide que la Timecode Cue **génère** du MTC et qu'Inkue le **reçoit**.
+1. Preferences (`Ctrl+,`) → Network → *Timecode Receive* : ☑ Enable, Source = **MTC**,
+   MIDI Input Port = `Inkue TC`.
+2. Toolbar **`+ TC`** → Inspector → onglet **Timecode** : Output Type = **MTC**,
+   Frame Rate = **30**, MIDI Output Port = `Inkue TC`, Start = `00:00:00:00`.
+3. Sélectionner la cue + **Espace** (GO).
+4. **Attendu** : dans la **Transport Bar**, l'indicateur TC (point vert + `HH:MM:SS:FF`)
+   apparaît et **défile**. STOP coupe le flux.
+
+### Test B — Déclenchement de cues (chemin esclave complet)
+Valide qu'une cue **part toute seule** à une position TC.
+1. Faire d'abord les étapes 1–2 du Test A (réception active + Timecode Cue prêt).
+2. Onglets Cue List → bouton **`● TC SYNC`** (à droite) → cocher *Sync cues from incoming
+   timecode*, Expected Rate = **30**. Le bouton devient **vert**.
+3. Toolbar **`+ Audio`** → lui assigner un fichier (clic droit → *Assign Audio File…*,
+   ou glisser un fichier) → Inspector → onglet **Triggers** : ☑ *Timecode trigger*,
+   position = `00:00:05:00`, Rate = **30** → **Apply Trigger** (✓ s'affiche).
+4. **GO** sur le **Timecode Cue** (pas sur l'audio). L'horloge démarre à 0.
+5. **Attendu** : à `00:00:05:00`, la cue audio **part et joue** (fire-and-play).
+
+**Pièges**
+- **Frame rate identique partout** (générateur = trigger = Expected Rate). Un rate
+  différent → numéro de frame différent → pas (ou mauvais) déclenchement.
+- Mettre le trigger **quelques secondes après** le start pour le voir tomber.
+- **Rebuild backend** : `tauri dev` ne hot-reload pas proprement le Rust (verrou sur
+  `libmpv-2.dll` tenu par l'app lancée) → **fermer l'app puis relancer `pnpm tauri dev`**.
+
+**État (câblé cette session)** : toggle **TC SYNC** par Cue List (UI manquante avant),
+**firing réel** des triggers via `transport.go_by_id` (le dispatcher émettait juste un
+event sans jouer la cue), et sélecteur de **port MIDI de sortie** correct pour la Timecode
+Cue. Dispatcher : `show/event_loop.rs` — section 0 collecte les cues franchies, section 9b
+les joue. Gate : `CueList.tc_config.enabled`.
 
 ---
 

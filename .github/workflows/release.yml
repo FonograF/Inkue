@@ -22,10 +22,10 @@ name: Release
 #    and Gatekeeper will block it.
 #
 # 3. Tauri updater signing (optional — enables in-app update checks):
-#    a. Generate key pair: pnpm tauri signer generate -w ~/.tauri/wincue.key
+#    a. Generate key pair: pnpm tauri signer generate -w ~/.tauri/inkue.key
 #    b. Add the public key to tauri.conf.json under plugins.updater.pubkey
 #    c. Set these repository secrets:
-#         TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/wincue.key
+#         TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/inkue.key
 #         TAURI_SIGNING_PRIVATE_KEY_PASSWORD key password (empty string if none)
 #    The tauri-action will then sign update bundles and generate latest.json automatically.
 #
@@ -135,7 +135,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: WinCue ${{ github.ref_name }}
+          releaseName: Inkue ${{ github.ref_name }}
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: --target ${{ matrix.target }}

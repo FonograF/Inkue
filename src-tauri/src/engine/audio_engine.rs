@@ -380,6 +380,38 @@ impl AudioEngine {
         Ok(id)
     }
 
+    /// Register a synthetic input feed not backed by any capture device, and
+    /// return its id plus the ring producer to push samples into.
+    ///
+    /// Used by the Timecode Cue's LTC generator: a background thread fills the
+    /// producer with encoded LTC audio, and a live voice reading this feed routes
+    /// it to an Output Patch through the normal [`Self::play_mic_voice`] path.
+    /// The feed is released by [`Self::gc_voices`] once its live voice stops.
+    pub fn register_synthetic_feed(
+        &self,
+        channels: usize,
+        sample_rate: u32,
+    ) -> Result<(Uuid, ringbuf::HeapProd<f32>)> {
+        let channels = channels.max(1);
+        let (prod, cons) = HeapRb::<f32>::new(STAGING_FRAMES * channels).split();
+        let id = Uuid::new_v4();
+        let feed = InputFeed {
+            id,
+            device_id: format!("synthetic:{id}"),
+            in_channels: channels,
+            sample_rate,
+            cons,
+            staging: vec![0.0_f32; STAGING_FRAMES * channels].into_boxed_slice(),
+            write_frame: 0,
+            _capture: None,
+        };
+        self.input_feeds
+            .lock()
+            .map_err(|_| anyhow!("input_feeds poisoned"))?
+            .push(feed);
+        Ok((id, prod))
+    }
+
     /// Channel count and sample rate of an existing input feed.
     fn feed_info(&self, feed_id: Uuid) -> Option<(usize, u32)> {
         self.input_feeds

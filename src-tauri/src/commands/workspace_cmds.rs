@@ -53,7 +53,7 @@ pub fn save_workspace(path: String, state: State<'_, AppState>) -> Result<(), St
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         ws.save(Some(PathBuf::from(path))).map_err(|e| e.to_string())?;
     }
-    // Work is now persisted to the real `.wincue` file — drop the crash-recovery
+    // Work is now persisted to the real `.inkue` file — drop the crash-recovery
     // snapshot so a crash right after saving does not prompt a redundant restore.
     crate::recovery::delete();
     Ok(())
@@ -122,7 +122,7 @@ pub(crate) fn install_workspace(
         let app_handle2 = app_handle.clone();
 
         std::thread::Builder::new()
-            .name("wincue-preload".into())
+            .name("inkue-preload".into())
             .spawn(move || {
                 match crate::cue::media_decode::decode_audio_track(&file_path) {
                     Ok(Some((samples, channels, sample_rate))) => {
@@ -161,7 +161,7 @@ pub(crate) fn install_workspace(
 }
 
 /// Copy all media files into a self-contained project folder and write a
-/// new `.wincue` file there with updated relative paths.
+/// new `.inkue` file there with updated relative paths.
 ///
 /// `target_dir` is the parent directory chosen by the user; the command
 /// creates `{target_dir}/{workspace_name}/` automatically.

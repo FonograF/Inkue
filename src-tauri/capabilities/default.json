@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
   "identifier": "default",
-  "description": "Default capability for WinCue main window",
+  "description": "Default capability for Inkue main window",
   "windows": ["main"],
   "permissions": [
     "core:default",

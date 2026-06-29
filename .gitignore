@@ -13,12 +13,16 @@ src-tauri/target/
 src-tauri/WixTools/
 
 # Workspace files (user data, not source)
+*.inkue
 *.wincue
 
 # Loose user data at repo root (Open Stage Control sessions, runtime config) —
 # personal test artifacts, never source.
+/Inkue.config
 /Wincue.config
 /Export control.json
+/inkue interface mobile.json
+/inkue-monitor.json
 /wincue interface mobile.json
 /wincue-monitor.json
 

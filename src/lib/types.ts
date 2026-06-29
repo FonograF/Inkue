@@ -4,6 +4,25 @@ export type CueId = string; // UUID as string
 
 export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text";
 
+/** Accent color per cue type — the single source of truth for the toolbar
+ *  buttons (App.tsx) and the cue-list context menu (CueListView.tsx). */
+export const CUE_TYPE_COLORS: Record<CueType, string> = {
+  audio:    "#3b82f6",          // blue
+  video:    "#a78bfa",
+  image:    "#86efac",
+  stop:     "#ef4444",
+  fade:     "#ec4899",
+  wait:     "#fb923c",
+  group:    "#fde047",
+  midi:     "var(--wc-accent)", // the green audio used to be
+  osc:      "#06b6d4",
+  light:    "#fbbf24",
+  mic:      "#22d3ee",          // cyan
+  timecode: "#ff2d9c",          // hot pink
+  text:     "#e2e8f0",
+  memo:     "#e2e8f0",
+};
+
 export type CueState = "standby" | "running" | "paused" | "completed";
 
 export type ContinueMode = "do_not_continue" | "auto_continue" | "auto_follow";
@@ -513,7 +532,7 @@ export interface TcMachineConfig {
 
 export type AudioBackend = "wasapi_shared" | "wasapi_exclusive" | "asio";
 
-/** Hardware-specific settings — stored in %APPDATA%\WinCue\audio.json, not in the workspace. */
+/** Hardware-specific settings — stored in %APPDATA%\Inkue\audio.json, not in the workspace. */
 export interface MachineAudioConfig {
   backend: AudioBackend;
   device_id: string | null;
@@ -536,7 +555,7 @@ export const DEFAULT_MACHINE_AUDIO_CONFIG: MachineAudioConfig = {
   asio_out_pair: 0,
 };
 
-/** Show-specific audio defaults — travel with the .wincue workspace file. */
+/** Show-specific audio defaults — travel with the .inkue workspace file. */
 export interface AudioPreferences {
   default_volume_db: number;
   default_fade_out_ms: number;

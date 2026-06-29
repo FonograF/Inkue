@@ -1,9 +1,9 @@
-//! [`Workspace`] — the top-level save unit for a WinCue show.
+//! [`Workspace`] — the top-level save unit for a Inkue show.
 //!
-//! Corresponds to a `.wincue` file on disk.
+//! Corresponds to a `.inkue` file on disk.
 
-/// Bumped whenever the `.wincue` JSON format gains a breaking change.
-/// Files written by newer WinCue versions (schema > this) are rejected
+/// Bumped whenever the `.inkue` JSON format gains a breaking change.
+/// Files written by newer Inkue versions (schema > this) are rejected
 /// at load time to prevent silent data corruption.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -24,12 +24,12 @@ use crate::{
 use super::cue_list::CueList;
 
 // ---------------------------------------------------------------------------
-// Path helpers — keep file paths relative in the .wincue JSON so workspaces
+// Path helpers — keep file paths relative in the .inkue JSON so workspaces
 // are portable across machines and drive letters.
 // ---------------------------------------------------------------------------
 
 /// Recursively walk a cues JSON array and convert absolute `file_path` values
-/// to paths relative to `base` (the directory containing the .wincue file).
+/// to paths relative to `base` (the directory containing the .inkue file).
 fn relativize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
     match value {
         serde_json::Value::Array(arr) => {
@@ -59,7 +59,7 @@ fn relativize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
 }
 
 /// Recursively walk a cues JSON array and resolve relative `file_path` values
-/// to absolute paths using `base` (the directory containing the .wincue file).
+/// to absolute paths using `base` (the directory containing the .inkue file).
 fn absolutize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
     match value {
         serde_json::Value::Array(arr) => {
@@ -165,7 +165,7 @@ fn collect_all_media_paths(
 /// Result returned by [`Workspace::collect_and_save`].
 #[derive(Debug, Serialize)]
 pub struct CollectReport {
-    /// Absolute path to the newly created `.wincue` file.
+    /// Absolute path to the newly created `.inkue` file.
     pub workspace_path: String,
     /// Number of media files successfully copied to the new location.
     pub files_copied: u32,
@@ -217,7 +217,7 @@ pub struct Workspace {
     pub fixture_groups: Vec<FixtureGroup>,
     /// Application-wide preferences (audio engine, defaults, …).
     pub preferences: AppPreferences,
-    /// Path to the .wincue file on disk, if it has been saved.
+    /// Path to the .inkue file on disk, if it has been saved.
     pub file_path: Option<PathBuf>,
     /// Whether the workspace has unsaved changes.
     pub is_modified: bool,
@@ -283,7 +283,7 @@ impl Workspace {
     // -----------------------------------------------------------------------
 
     /// Serialise the workspace to a JSON string, with file paths made relative
-    /// to `save_path` so the `.wincue` file is portable.
+    /// to `save_path` so the `.inkue` file is portable.
     fn to_json(&self, save_path: &Path) -> Result<String> {
         let base = save_path.parent();
 
@@ -324,7 +324,7 @@ impl Workspace {
     /// Differs from [`to_json`](Self::to_json) in two ways: media `file_path`s are
     /// kept **absolute** (the recovery file lives in the per-user config dir, not
     /// beside the show's media, so relative paths would not resolve), and the
-    /// original `.wincue` path is embedded under `recovery_original_path` so a
+    /// original `.inkue` path is embedded under `recovery_original_path` so a
     /// restore can target the same file.  Compact (not pretty) since it is
     /// rewritten every few seconds.
     pub fn to_recovery_json(&self) -> Result<String> {
@@ -360,7 +360,7 @@ impl Workspace {
             .with_context(|| format!("Failed to write workspace to {}", target.display()))?;
 
         // Derive the workspace name from the filename stem (e.g. "My Show" from
-        // "My Show.wincue") so the title bar reflects the saved file immediately.
+        // "My Show.inkue") so the title bar reflects the saved file immediately.
         if let Some(stem) = target.file_stem().and_then(|s| s.to_str()) {
             self.metadata.name = stem.to_string();
         }
@@ -371,7 +371,7 @@ impl Workspace {
 
     /// Copy all media files referenced by this workspace into
     /// `{target_dir}/{workspace_name}/audio|video|images/` and write a
-    /// self-contained `.wincue` file with updated relative paths.
+    /// self-contained `.inkue` file with updated relative paths.
     ///
     /// The workspace in memory is **not modified** — this is a pure export.
     pub fn collect_and_save(&self, target_dir: &Path) -> Result<CollectReport> {
@@ -440,13 +440,13 @@ impl Workspace {
             path_map.insert(abs_path.clone(), new_rel);
         }
 
-        let new_wincue_path = project_dir.join(format!("{safe_name}.wincue"));
-        let json = self.to_json_collected(&new_wincue_path, &path_map)?;
-        std::fs::write(&new_wincue_path, json)
-            .with_context(|| format!("Failed to write {}", new_wincue_path.display()))?;
+        let new_inkue_path = project_dir.join(format!("{safe_name}.inkue"));
+        let json = self.to_json_collected(&new_inkue_path, &path_map)?;
+        std::fs::write(&new_inkue_path, json)
+            .with_context(|| format!("Failed to write {}", new_inkue_path.display()))?;
 
         Ok(CollectReport {
-            workspace_path: new_wincue_path.to_string_lossy().into_owned(),
+            workspace_path: new_inkue_path.to_string_lossy().into_owned(),
             files_copied,
             files_skipped,
             files_missing,
@@ -492,7 +492,7 @@ impl Workspace {
         serde_json::to_string_pretty(&doc).context("Failed to serialize collected workspace")
     }
 
-    /// Load a workspace from a `.wincue` file.
+    /// Load a workspace from a `.inkue` file.
     pub fn load(path: PathBuf, registry: &CueRegistry) -> Result<Self> {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read workspace file: {}", path.display()))?;
@@ -512,7 +512,7 @@ impl Workspace {
     /// Parse a workspace document from a JSON string.
     ///
     /// `base_dir`, when `Some`, is the directory the document's media paths are
-    /// relative to (used to absolutize them) — pass the `.wincue` file's parent
+    /// relative to (used to absolutize them) — pass the `.inkue` file's parent
     /// for a normal load.  Pass `None` when the document already stores absolute
     /// paths (the crash-recovery snapshot).  The returned workspace has
     /// `file_path: None` and `is_modified: false`; callers set those.
@@ -530,9 +530,9 @@ impl Workspace {
             .unwrap_or(0) as u32;
         if file_schema > SCHEMA_VERSION {
             anyhow::bail!(
-                "This workspace was created with a newer version of WinCue \
+                "This workspace was created with a newer version of Inkue \
                  (schema v{file_schema}, this app supports up to v{SCHEMA_VERSION}). \
-                 Please update WinCue to open it."
+                 Please update Inkue to open it."
             );
         }
 

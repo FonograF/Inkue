@@ -25,7 +25,7 @@ pub(super) fn create_output_window() -> Result<isize> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<isize>>();
 
     std::thread::Builder::new()
-        .name("wincue-output-win32".into())
+        .name("inkue-output-win32".into())
         .spawn(move || {
             unsafe {
                 use windows_sys::Win32::Graphics::Gdi::{GetStockObject, BLACK_BRUSH};
@@ -42,7 +42,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 let hinstance = GetModuleHandleW(std::ptr::null());
 
                 // --- Parent window class ---
-                let parent_class = wide("WinCueOutputWnd\0");
+                let parent_class = wide("InkueOutputWnd\0");
                 let wc_parent = WNDCLASSEXW {
                     cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                     style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
@@ -60,7 +60,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 RegisterClassExW(&wc_parent);
 
                 // --- Fade overlay class ---
-                let overlay_class = wide("WinCueFadeOverlay\0");
+                let overlay_class = wide("InkueFadeOverlay\0");
                 let wc_overlay = WNDCLASSEXW {
                     cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                     style: 0,
@@ -80,7 +80,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 // --- Create parent window ---
                 // WS_EX_TOPMOST at creation is the only reliable way to maintain
                 // always-on-top behaviour on Windows 11 with DWM.
-                let window_name = wide("WinCue Output\0");
+                let window_name = wide("Inkue Output\0");
                 let parent_hwnd = CreateWindowExW(
                     WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                     parent_class.as_ptr(),
@@ -114,7 +114,7 @@ pub(super) fn create_output_window() -> Result<isize> {
                 // Owned windows are always Z-above their owner, so the overlay naturally
                 // sits above mpv's D3D11 output.  WS_EX_TOPMOST keeps it above all
                 // normal windows.  WS_EX_TOOLWINDOW hides it from Alt+Tab.
-                let overlay_name = wide("WinCueFadeOverlay\0");
+                let overlay_name = wide("InkueFadeOverlay\0");
                 let overlay_hwnd = CreateWindowExW(
                     WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                     overlay_class.as_ptr(),

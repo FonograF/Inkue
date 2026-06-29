@@ -35,6 +35,7 @@ export function useKeyboardShortcuts(
   onGoto?: () => void,
   onToggleOutputWindow?: () => void,
   onToggleShowMode?: () => void,
+  onToggleSearch?: () => void,
 ) {
   const lastEscapeRef = useRef<number>(0);
   const lastGoRef = useRef<number>(0);
@@ -42,8 +43,18 @@ export function useKeyboardShortcuts(
 
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
-      // Ignore shortcuts when typing in an input / textarea.
       const target = e.target as HTMLElement;
+
+      // Ctrl+F toggles the in-app search bar and overrides the WebView's native
+      // find bar. Handled before the input guard so it works even while a text
+      // field (including the search box itself) is focused.
+      if ((e.key === "f" || e.key === "F") && e.ctrlKey) {
+        e.preventDefault();
+        onToggleSearch?.();
+        return;
+      }
+
+      // Ignore the remaining shortcuts when typing in an input / textarea.
       if (
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
@@ -291,5 +302,5 @@ export function useKeyboardShortcuts(
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedCueId, generalPrefs, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto, onToggleOutputWindow, onToggleShowMode]);
+  }, [selectedCueId, generalPrefs, onRefresh, onOpenPreferences, onSave, onOpen, onToggleInspector, onGoto, onToggleOutputWindow, onToggleShowMode, onToggleSearch]);
 }

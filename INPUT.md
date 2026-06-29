@@ -1,4 +1,4 @@
-# WinCue — Input Patches + Mic Cue (design)
+# Inkue — Input Patches + Mic Cue (design)
 
 Objectif : **entrée audio live** façon QLab Mic Cue — renfort micro, paging/annonces, routing
 multicanal de sources live — **et** prérequis de capture pour le **LTC entrant** du timecode
@@ -88,7 +88,7 @@ le sont nativement.
 
 ## Caveat : pas de rack d'effets
 
-QLab applique reverb/EQ (AudioUnits) sur le mic. WinCue **n'a pas de rack d'effets DSP audio** —
+QLab applique reverb/EQ (AudioUnits) sur le mic. Inkue **n'a pas de rack d'effets DSP audio** —
 une Mic Cue fera **routing + niveau + fade + pan**, **pas** reverb/EQ. C'est un chantier séparé
 (DSP audio ; sans rapport avec le moteur d'effets DMX de `LIGHT.md` malgré le nom).
 
@@ -115,7 +115,7 @@ biphase-mark, brique séparée). Input Patches est **nécessaire mais pas suffis
   (drift simulé) ; ratio≈1 quand in_sr = out_sr (no-op).
 - MicVoice : routing vers Output Patch, fade in/out, pan, VU — via `fill_buffer` sur un ring
   synthétique (pas de device réel), comme les tests SR existants.
-- MicCue : `duration()=None`, stop = fade court, roundtrip serde dans `.wincue`.
+- MicCue : `duration()=None`, stop = fade court, roundtrip serde dans `.inkue`.
 - Pas de glitch : robinet ouvert/fermé ne produit ni clic ni discontinuité (fade aux bornes).
 
 ---

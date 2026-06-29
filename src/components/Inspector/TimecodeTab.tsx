@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { TimecodeCueData, TcRate } from "../../lib/types";
-import { listTcMidiInputPorts, getOutputPatches } from "../../lib/commands";
+import { listMidiOutputPorts, getOutputPatches } from "../../lib/commands";
 import type { OutputPatch } from "../../lib/types";
 import { Select } from "../common/Select";
 
@@ -38,7 +38,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
   const [outputPatches, setOutputPatches] = useState<OutputPatch[]>([]);
 
   useEffect(() => {
-    listTcMidiInputPorts().then(setMidiPorts).catch(console.error);
+    listMidiOutputPorts().then(setMidiPorts).catch(console.error);
     getOutputPatches().then(setOutputPatches).catch(console.error);
   }, []);
 
@@ -58,7 +58,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
           onChange={(e) => onSave({ tc_type: e.target.value as "mtc" | "ltc" })}
         >
           <option value="mtc">MTC (MIDI Timecode)</option>
-          <option value="ltc">LTC (Linear Audio, v1 placeholder)</option>
+          <option value="ltc">LTC (Linear Audio)</option>
         </Select>
       </div>
 
@@ -116,7 +116,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
             ))}
           </Select>
           <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
-            LTC output is planned — currently logs a warning only.
+            LTC audio is generated on the chosen Output Patch's channels.
           </div>
         </div>
       )}

@@ -1,4 +1,4 @@
-# WinCue — Roadmap
+# Inkue — Roadmap
 
 Backlog des features à venir et de leur architecture *cible*. Pas d'estimation de durée.
 

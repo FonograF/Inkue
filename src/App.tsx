@@ -21,12 +21,13 @@ import { LogViewerModal } from "./components/Logs/LogViewerModal";
 import { HealthBanner } from "./components/Health/HealthBanner";
 import type { CollectReport, RecoveryInfo } from "./lib/types";
 import type { CueSummary } from "./lib/types";
+import { CUE_TYPE_COLORS } from "./lib/types";
 
 // ---------------------------------------------------------------------------
 // Recent files
 // ---------------------------------------------------------------------------
 
-const RECENT_FILES_KEY = "wincue_recent_files";
+const RECENT_FILES_KEY = "inkue_recent_files";
 const MAX_RECENT = 8;
 
 function loadRecentFiles(): string[] {
@@ -198,7 +199,7 @@ function RecoveryDialog({
           Recover Unsaved Work
         </div>
         <div style={{ fontSize: 13, color: "var(--wc-text-secondary)", marginBottom: 6 }}>
-          WinCue did not close properly.
+          Inkue did not close properly.
         </div>
         <div style={{ fontSize: 13, color: "var(--wc-text)", marginBottom: 24 }}>
           Recover unsaved work from{" "}
@@ -446,7 +447,7 @@ function FileMenu({
     { type: "separator" },
     { type: "item", label: "Preferences",     shortcut: "Ctrl+,",          action: act(onPreferences) },
     { type: "separator" },
-    { type: "item", label: "About WinCue",                                 action: act(onAbout) },
+    { type: "item", label: "About Inkue",                                 action: act(onAbout) },
     { type: "separator" },
     { type: "item", label: "Quit",                                         action: handleQuit },
   ];
@@ -582,14 +583,15 @@ function ViewMenu({ items }: { items: ViewMenuItem[] }) {
 // Persisted UI layout (panel visibility) — mirrors the column-config pattern.
 // ---------------------------------------------------------------------------
 
-const LS_LAYOUT_KEY = "wincue_ui_layout";
+const LS_LAYOUT_KEY = "inkue_ui_layout";
 
 interface UiLayout {
   showCueListTabs: boolean;
   inspectorOpen: boolean;
+  showSearchBar: boolean;
 }
 
-const DEFAULT_UI_LAYOUT: UiLayout = { showCueListTabs: true, inspectorOpen: true };
+const DEFAULT_UI_LAYOUT: UiLayout = { showCueListTabs: true, inspectorOpen: true, showSearchBar: true };
 
 function loadUiLayout(): UiLayout {
   try {
@@ -599,6 +601,7 @@ function loadUiLayout(): UiLayout {
     return {
       showCueListTabs: parsed.showCueListTabs ?? true,
       inspectorOpen: parsed.inspectorOpen ?? true,
+      showSearchBar: parsed.showSearchBar ?? true,
     };
   } catch {
     return DEFAULT_UI_LAYOUT;
@@ -695,12 +698,27 @@ function findCueRecursive(cues: CueSummary[], id: string | null): CueSummary | u
   return undefined;
 }
 
+/** Quick press-and-flash micro-interaction when a toolbar button is clicked.
+ *  Uses the Web Animations API so it needs no React state or re-render and
+ *  plays in the button's own accent color (via the brightness boost). */
+function pulseButton(el: HTMLElement) {
+  el.animate(
+    [
+      { transform: "scale(1)",    filter: "brightness(1)" },
+      { transform: "scale(0.88)", filter: "brightness(1.7)", offset: 0.35 },
+      { transform: "scale(1)",    filter: "brightness(1)" },
+    ],
+    { duration: 260, easing: "cubic-bezier(.2,.7,.3,1)" },
+  );
+}
+
 export default function App() {
   const { refreshCues, refreshWorkspaceInfo, refreshValidation, refreshHealth, brokenCueIds, loadGeneralPrefs, loadDisplayPrefs, displayPrefs, workspaceInfo, selectedCueId, selectedCueIds, cues, cueLists, activeCueListId } =
     useWorkspaceStore();
 
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
   const [showCueListTabs, setShowCueListTabs]     = useState(() => loadUiLayout().showCueListTabs);
+  const [showSearchBar, setShowSearchBar]         = useState(() => loadUiLayout().showSearchBar);
   const [showMode, setShowMode]                   = useState(false);
   const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
   const [gotoOpen, setGotoOpen]                   = useState(false);
@@ -713,11 +731,12 @@ export default function App() {
   const [logsOpen, setLogsOpen]                   = useState(false);
   const [searchQuery, setSearchQuery]             = useState("");
   const [recoveryInfo, setRecoveryInfo]           = useState<RecoveryInfo | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Persist panel visibility across launches.
   useEffect(() => {
-    saveUiLayout({ showCueListTabs, inspectorOpen });
-  }, [showCueListTabs, inspectorOpen]);
+    saveUiLayout({ showCueListTabs, inspectorOpen, showSearchBar });
+  }, [showCueListTabs, inspectorOpen, showSearchBar]);
 
   // Apply data-theme whenever display prefs change
   useEffect(() => {
@@ -803,11 +822,11 @@ export default function App() {
    *  Returns true if the save completed, false if the user cancelled. */
   const handleSaveAs = useCallback(async (): Promise<boolean> => {
     const path = await saveDialog({
-      filters: [{ name: "WinCue Workspace", extensions: ["wincue"] }],
-      defaultPath: (workspaceInfo?.name ?? "Untitled") + ".wincue",
+      filters: [{ name: "Inkue Workspace", extensions: ["inkue"] }],
+      defaultPath: (workspaceInfo?.name ?? "Untitled") + ".inkue",
     });
     if (typeof path !== "string") return false;
-    const filePath = path.endsWith(".wincue") ? path : path + ".wincue";
+    const filePath = path.endsWith(".inkue") ? path : path + ".inkue";
     await saveWorkspace(filePath).catch(console.error);
     await refreshWorkspaceInfo();
     setRecentFiles(pushRecentFile(filePath));
@@ -834,7 +853,7 @@ export default function App() {
   const handleOpen = useCallback(async () => {
     const path = await openDialog({
       multiple: false,
-      filters: [{ name: "WinCue Workspace", extensions: ["wincue"] }],
+      filters: [{ name: "Inkue Workspace", extensions: ["inkue", "wincue"] }],
     });
     if (typeof path === "string") {
       await openWorkspacePath(path);
@@ -933,6 +952,7 @@ export default function App() {
     () => setGotoOpen(true),
     () => void handleToggleSurface(),
     () => setShowMode((v) => !v),
+    () => handleToggleSearch(),
   );
 
   const selectedCue = findCueRecursive(cues, selectedCueId) ?? null;
@@ -940,6 +960,18 @@ export default function App() {
   const handleToggleSurface = async () => {
     await toggleOutputWindow().catch(console.error);
     // outputSurfaceVisible is driven by the "output-window-visible" event from Rust
+  };
+
+  // Show/hide the search bar. Showing it focuses the input; hiding clears the
+  // query so the cue list reappears without a lingering filter.
+  const handleToggleSearch = () => {
+    if (showSearchBar) {
+      setSearchQuery("");
+      setShowSearchBar(false);
+    } else {
+      setShowSearchBar(true);
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
   };
 
   const handleAddAudio = async () => {
@@ -1036,7 +1068,7 @@ export default function App() {
   const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
-      new CustomEvent("wincue:cue-drag-start", {
+      new CustomEvent("inkue:cue-drag-start", {
         detail: { cueType, startX: e.clientX, startY: e.clientY },
       }),
     );
@@ -1044,7 +1076,7 @@ export default function App() {
 
   const titleBarName = workspaceInfo
     ? `${workspaceInfo.name}${workspaceInfo.is_modified ? " •" : ""}`
-    : "WinCue";
+    : "Inkue";
 
   return (
     <div
@@ -1124,7 +1156,7 @@ export default function App() {
           full-width drag area; Row 2 holds the cue toolbar.  Splitting them means
           the toolbar can never squeeze the drag area down to an ungrabbable sliver
           when the window is narrow (the previous single-row layout collapsed it to
-          ~40px, so only the "WinCue" label was draggable).  No drag-region on the
+          ~40px, so only the "Inkue" label was draggable).  No drag-region on the
           row containers so menus/buttons keep working on Linux/WebKitGTK. */}
       <div
         style={{
@@ -1153,6 +1185,7 @@ export default function App() {
           items={[
             { label: "Show Mode",      checked: showMode,             onClick: () => setShowMode((v) => !v),       shortcut: "F5" },
             { label: "Cue List Tabs",  checked: showCueListTabs,      onClick: () => setShowCueListTabs((v) => !v) },
+            { label: "Search Bar",     checked: showSearchBar,         onClick: handleToggleSearch, shortcut: "Ctrl+F" },
             { label: "Inspector",      checked: inspectorOpen,         onClick: () => setInspectorOpen((v) => !v) },
             { label: "Output Surface", checked: outputSurfaceVisible,  onClick: () => void handleToggleSurface() },
           ]}
@@ -1167,7 +1200,7 @@ export default function App() {
             data-tauri-drag-region
             style={{ fontWeight: 700, fontSize: 13, color: "var(--wc-text-bright)", flexShrink: 0 }}
           >
-            WinCue
+            Inkue
           </span>
           <span
             data-tauri-drag-region
@@ -1196,9 +1229,12 @@ export default function App() {
         {/* Row 2 — cue toolbar on its own row.  It never competes with the Row 1
             drag area, and wraps onto extra lines when the window is too narrow to
             fit every button, so they all stay reachable.  Hidden in Show Mode. */}
-        <div style={{ display: showMode ? "none" : "flex", flexWrap: "wrap", gap: 6, padding: "0 12px 6px", alignItems: "center" }}>
+        <div
+          style={{ display: showMode ? "none" : "flex", flexWrap: "wrap", gap: 6, padding: "0 12px 6px", alignItems: "center" }}
+          onClick={(e) => { const btn = (e.target as HTMLElement).closest("button"); if (btn) pulseButton(btn); }}
+        >
           <button
-            style={{ ...toolbarBtn, color: "var(--wc-accent)", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.audio, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddAudio}
             onMouseDown={(e) => dispatchCueDrag("audio", e)}
             title="Add Audio Cue after selection (Ctrl+N) · Drag to insert at position"
@@ -1206,7 +1242,7 @@ export default function App() {
             + Audio
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#a78bfa", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.video, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddVideo}
             onMouseDown={(e) => dispatchCueDrag("video", e)}
             title="Add Video Cue after selection · Drag to insert at position"
@@ -1214,7 +1250,7 @@ export default function App() {
             + Video
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#86efac", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.image, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddImage}
             onMouseDown={(e) => dispatchCueDrag("image", e)}
             title="Add Image Cue after selection · Drag to insert at position"
@@ -1222,7 +1258,7 @@ export default function App() {
             + Image
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#ef4444", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.stop, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddStop}
             onMouseDown={(e) => dispatchCueDrag("stop", e)}
             title="Add Stop Cue after selection · Drag to insert at position"
@@ -1230,7 +1266,7 @@ export default function App() {
             + Stop
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#ec4899", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.fade, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddFade}
             onMouseDown={(e) => dispatchCueDrag("fade", e)}
             title="Add Fade Cue after selection · Drag to insert at position"
@@ -1238,7 +1274,7 @@ export default function App() {
             + Fade
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#fb923c", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.wait, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddWait}
             onMouseDown={(e) => dispatchCueDrag("wait", e)}
             title="Add Wait Cue after selection · Drag to insert at position"
@@ -1246,7 +1282,7 @@ export default function App() {
             + Wait
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#fde047", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.group, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddGroup}
             onMouseDown={(e) => dispatchCueDrag("group", e)}
             title="Add Group Cue after selection · Drag to insert at position"
@@ -1254,7 +1290,7 @@ export default function App() {
             + Group
           </button>
           <button
-            style={{ ...toolbarBtn, color: "var(--wc-text-bright)", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.midi, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddMidi}
             onMouseDown={(e) => dispatchCueDrag("midi", e)}
             title="Add MIDI Cue after selection · Drag to insert at position"
@@ -1262,7 +1298,7 @@ export default function App() {
             + MIDI
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#06b6d4", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.osc, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddOsc}
             onMouseDown={(e) => dispatchCueDrag("osc", e)}
             title="Add OSC Cue after selection · Drag to insert at position"
@@ -1270,7 +1306,7 @@ export default function App() {
             + OSC
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#fbbf24", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.light, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddLight}
             onMouseDown={(e) => dispatchCueDrag("light", e)}
             title="Add Light Cue after selection · Drag to insert at position"
@@ -1278,7 +1314,7 @@ export default function App() {
             + Light
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#86efac", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.mic, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddMic}
             onMouseDown={(e) => dispatchCueDrag("mic", e)}
             title="Add Mic Cue after selection · Drag to insert at position"
@@ -1286,7 +1322,7 @@ export default function App() {
             + Mic
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#67e8f9", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.timecode, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddTimecode}
             onMouseDown={(e) => dispatchCueDrag("timecode", e)}
             title="Add Timecode Cue after selection · Drag to insert at position"
@@ -1294,7 +1330,7 @@ export default function App() {
             + TC
           </button>
           <button
-            style={{ ...toolbarBtn, color: "#e2e8f0", cursor: "grab", userSelect: "none" }}
+            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.text, cursor: "pointer", userSelect: "none" }}
             onClick={handleAddText}
             onMouseDown={(e) => dispatchCueDrag("text", e)}
             title="Add Text Cue after selection · Drag to insert at position"
@@ -1319,24 +1355,6 @@ export default function App() {
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
               <ActiveCuesView />
-
-              {/* Search bar */}
-              <div style={{ padding: "4px 8px", borderBottom: "1px solid var(--wc-border)", flexShrink: 0 }}>
-                <input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Escape") setSearchQuery(""); }}
-                  placeholder="Search cues…"
-                  style={{
-                    width: "100%", boxSizing: "border-box",
-                    background: searchQuery ? "var(--wc-bg-surface)" : "transparent",
-                    border: searchQuery ? "1px solid var(--wc-accent)" : "1px solid transparent",
-                    borderRadius: 4, color: "var(--wc-text)", fontSize: 12,
-                    padding: "4px 8px", outline: "none",
-                    transition: "border-color 0.15s, background 0.15s",
-                  }}
-                />
-              </div>
 
               {searchQuery.trim() ? (
                 <SearchResults
@@ -1364,6 +1382,27 @@ export default function App() {
                     />
                   );
                 })()
+              )}
+
+              {/* Search bar — anchored at the bottom of the cue list */}
+              {showSearchBar && (
+                <div style={{ padding: "4px 8px", borderTop: "1px solid var(--wc-border)", flexShrink: 0 }}>
+                  <input
+                    ref={searchInputRef}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Escape") setSearchQuery(""); }}
+                    placeholder="Search cues…"
+                    style={{
+                      width: "100%", boxSizing: "border-box",
+                      background: searchQuery ? "var(--wc-bg-surface)" : "transparent",
+                      border: searchQuery ? "1px solid var(--wc-accent)" : "1px solid transparent",
+                      borderRadius: 4, color: "var(--wc-text)", fontSize: 12,
+                      padding: "4px 8px", outline: "none",
+                      transition: "border-color 0.15s, background 0.15s",
+                    }}
+                  />
+                </div>
               )}
             </div>
             {inspectorOpen && (() => {

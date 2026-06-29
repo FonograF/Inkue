@@ -2,7 +2,7 @@
 //!
 //! **MTC** sends a continuous stream of MIDI quarter-frame messages (one per
 //! output-frame quarter, i.e., 4 × fps messages/s) to a MIDI output port.
-//! A dedicated `wincue-tc-gen` thread owns the MIDI connection and times
+//! A dedicated `inkue-tc-gen` thread owns the MIDI connection and times
 //! quarter-frame messages using `std::thread::sleep`.
 //!
 //! **LTC** fills a `Vec<f32>` ring via [`super::ltc::LtcEncoder`] and feeds
@@ -19,6 +19,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use ringbuf::traits::{Observer, Producer};
+
+use super::ltc::LtcEncoder;
 use super::timecode_types::{TcPosition, TcRate};
 
 // ---------------------------------------------------------------------------
@@ -82,7 +85,7 @@ impl MtcGenerator {
         let stop2 = Arc::clone(&stop);
 
         std::thread::Builder::new()
-            .name("wincue-tc-gen".into())
+            .name("inkue-tc-gen".into())
             .spawn(move || mtc_gen_thread(start_pos, port_name, stop2))
             .ok()?;
 
@@ -102,19 +105,20 @@ fn mtc_gen_thread(
     stop: Arc<AtomicBool>,
 ) {
     // Open the MIDI output connection.
-    let midi_out = match midir::MidiOutput::new("WinCue-TC-Gen") {
+    let midi_out = match midir::MidiOutput::new("Inkue-TC-Gen") {
         Ok(m) => m,
         Err(e) => { log::error!("TC gen: failed to create MIDI output: {e}"); return; }
     };
 
     let ports = midi_out.ports();
-    let port = if let Some(name) = &port_name {
-        ports.iter().find(|p| midi_out.port_name(p).ok().as_deref() == Some(name))
-            .or_else(|| ports.first())
-            .cloned()
-    } else {
-        ports.into_iter().next()
-    };
+    // Resolve the target port: the explicitly named one, else the first port
+    // that isn't the Microsoft GS Wavetable Synth (never a useful MTC target).
+    let port = port_name
+        .as_deref()
+        .and_then(|name| ports.iter().find(|p| midi_out.port_name(p).ok().as_deref() == Some(name)))
+        .or_else(|| ports.iter().find(|p| midi_out.port_name(p).ok().as_deref() != Some("Microsoft GS Wavetable Synth")))
+        .or_else(|| ports.first())
+        .cloned();
 
     let Some(port) = port else {
         log::warn!("TC gen: MIDI output port '{:?}' not found", port_name);
@@ -122,7 +126,7 @@ fn mtc_gen_thread(
     };
 
     let port_name_display = midi_out.port_name(&port).unwrap_or_default();
-    let mut conn = match midi_out.connect(&port, "wincue-tc") {
+    let mut conn = match midi_out.connect(&port, "inkue-tc") {
         Ok(c) => c,
         Err(e) => { log::error!("TC gen: failed to connect to '{port_name_display}': {:?}", e.kind()); return; }
     };
@@ -164,6 +168,74 @@ fn mtc_gen_thread(
     }
 
     log::info!("TC gen: MTC generation stopped");
+}
+
+// ---------------------------------------------------------------------------
+// LTC generator (background thread → synthetic feed ring)
+// ---------------------------------------------------------------------------
+
+/// Handle to a running LTC generator thread.  Dropping it stops generation;
+/// the synthetic feed it fills then goes silent and is GC'd once its voice
+/// stops.
+pub struct LtcGenerator {
+    stop: Arc<AtomicBool>,
+}
+
+impl LtcGenerator {
+    /// Start encoding LTC from `start_pos` at `sample_rate`, pushing samples into
+    /// `prod` (the producer half of a synthetic input feed's ring).
+    pub fn start(
+        start_pos: TcPosition,
+        sample_rate: u32,
+        prod: ringbuf::HeapProd<f32>,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = Arc::clone(&stop);
+        let _ = std::thread::Builder::new()
+            .name("inkue-tc-ltc-gen".into())
+            .spawn(move || ltc_gen_thread(start_pos, sample_rate, prod, stop2));
+        Self { stop }
+    }
+}
+
+impl Drop for LtcGenerator {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn ltc_gen_thread(
+    start: TcPosition,
+    sample_rate: u32,
+    mut prod: ringbuf::HeapProd<f32>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut enc = LtcEncoder::new(start, sample_rate);
+    let spf = enc.samples_per_frame().max(1);
+    let mut frame_buf = vec![0.0_f32; spf];
+
+    // Hold a few frames of lead so the output callback never underruns, while
+    // keeping latency low.  Production is gated by ring vacancy, so it self-paces
+    // to the output device's consumption rate — no free-running clock, no drift.
+    let cap = prod.capacity().get();
+    let target_occupied = (spf * 3).min(cap.saturating_sub(spf));
+
+    log::info!("TC gen: LTC → synthetic feed @ {start} ({sample_rate} Hz)");
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        while prod.occupied_len() < target_occupied && prod.vacant_len() >= spf {
+            enc.next_frame(&mut frame_buf);
+            for &s in &frame_buf {
+                let _ = prod.try_push(s);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    log::info!("TC gen: LTC generation stopped");
 }
 
 // ---------------------------------------------------------------------------

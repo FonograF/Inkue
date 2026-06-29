@@ -107,7 +107,7 @@ pub fn get_machine_audio_config() -> MachineAudioConfig {
     config
 }
 
-/// Persist machine audio config to `%APPDATA%\WinCue\audio.json` and re-open the
+/// Persist machine audio config to `%APPDATA%\Inkue\audio.json` and re-open the
 /// audio engine on the new device.  Running cues keep playing — voices are
 /// preserved across the restart and resume on the new output.
 #[tauri::command]

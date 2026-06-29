@@ -10,7 +10,7 @@ use crate::{
 /// Return the names of all available MIDI output ports.
 #[tauri::command]
 pub fn list_midi_output_ports(_state: State<'_, AppState>) -> Vec<String> {
-    match midir::MidiOutput::new("WinCue-list") {
+    match midir::MidiOutput::new("Inkue-list") {
         Ok(out) => out
             .ports()
             .iter()

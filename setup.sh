@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WinCue — Ubuntu setup script
+# Inkue — Ubuntu setup script
 # Installs all build dependencies (Rust, Node, pnpm, system libs) and runs pnpm install.
 # Safe to run more than once.
 # Tested on Ubuntu 22.04 (Jammy) and 24.04 (Noble).
@@ -8,10 +8,10 @@ set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 
-info()    { echo -e "${BOLD}[wincue]${NC} $*"; }
-success() { echo -e "${GREEN}[wincue]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[wincue]${NC} $*"; }
-die()     { echo -e "${RED}[wincue] ERROR:${NC} $*" >&2; exit 1; }
+info()    { echo -e "${BOLD}[inkue]${NC} $*"; }
+success() { echo -e "${GREEN}[inkue]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[inkue]${NC} $*"; }
+die()     { echo -e "${RED}[inkue] ERROR:${NC} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # 1. Ubuntu version check

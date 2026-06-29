@@ -2,7 +2,12 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
-import { addCueList, removeCueList, renameCueList, setActiveCueList, setCueListMode } from "../../lib/commands";
+import {
+  addCueList, removeCueList, renameCueList, setActiveCueList, setCueListMode,
+  getCuelistTcConfig, setCuelistTcConfig,
+} from "../../lib/commands";
+import type { CueListTcConfig, TcRate, TcOnStop } from "../../lib/types";
+import { Select } from "../common/Select";
 
 export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
   const { cueLists, activeCueListId, refreshCueLists } = useWorkspaceStore();
@@ -163,6 +168,9 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
         +
       </button>
 
+      {/* Per-list timecode sync */}
+      <CueListTcSync activeCueListId={activeCueListId} />
+
       {/* Context menu */}
       {contextMenu && (
         <div
@@ -194,6 +202,149 @@ export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
             disabled={cueLists.length <= 1}
             onClick={() => void handleRemoveList(contextMenu.id)}
           />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-cue-list timecode sync control (lives at the right of the tab bar).
+// Gates whether incoming TC fires this list's cues (event_loop dispatcher reads
+// CueList.tc_config.enabled). Edits the *active* cue list via get/setCuelistTcConfig.
+// ---------------------------------------------------------------------------
+
+const TC_RATES: TcRate[] = ["24", "25", "29.97", "29.97df", "30"];
+const TC_RATE_LABELS: Record<TcRate, string> = {
+  "24": "24 fps", "25": "25 fps (PAL)", "29.97": "29.97 fps",
+  "29.97df": "29.97df (NTSC DF)", "30": "30 fps",
+};
+const ON_STOP_LABELS: Record<TcOnStop, string> = {
+  continue: "Keep cues running", pause: "Pause running cues", stop: "Stop running cues",
+};
+
+const tcFieldLabel: React.CSSProperties = { fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 3 };
+const tcInputStyle: React.CSSProperties = {
+  background: "var(--wc-bg-app)", border: "1px solid var(--wc-border-strong)",
+  borderRadius: 4, color: "var(--wc-text)", fontSize: 12, padding: "4px 6px",
+  width: "100%", boxSizing: "border-box",
+};
+
+function CueListTcSync({ activeCueListId }: { activeCueListId: string | null }) {
+  const [cfg, setCfg] = useState<CueListTcConfig | null>(null);
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    getCuelistTcConfig()
+      .then((c) => setCfg(c ?? { enabled: false, rate: "30", freewheel_ms: 500, on_stop: "continue" }))
+      .catch(console.error);
+  }, [activeCueListId]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  if (!cfg) return null;
+
+  const apply = (patch: Partial<CueListTcConfig>) => {
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    setCuelistTcConfig(next).catch(console.error);
+  };
+
+  return (
+    <div style={{ marginLeft: "auto", position: "relative", flexShrink: 0 }}>
+      <button
+        ref={btnRef}
+        onClick={(e) => {
+          e.stopPropagation();
+          const r = btnRef.current?.getBoundingClientRect();
+          if (r) setAnchor({ x: r.right, y: r.bottom + 4 });
+          setOpen((v) => !v);
+        }}
+        title="Timecode sync for this Cue List"
+        style={{
+          display: "flex", alignItems: "center", gap: 5, height: 22,
+          padding: "0 8px", borderRadius: 4, cursor: "pointer",
+          background: "transparent", fontSize: 11, fontWeight: 600, letterSpacing: "0.04em",
+          color: cfg.enabled ? "var(--wc-accent)" : "var(--wc-text-faint)",
+          border: `1px solid ${cfg.enabled ? "var(--wc-accent)" : "var(--wc-border)"}`,
+        }}
+      >
+        <span style={{
+          width: 6, height: 6, borderRadius: "50%",
+          background: cfg.enabled ? "var(--wc-accent)" : "var(--wc-text-faint)",
+        }} />
+        TC SYNC
+      </button>
+
+      {open && anchor && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "fixed", left: anchor.x, top: anchor.y, transform: "translateX(-100%)",
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+            borderRadius: 6, padding: 12, zIndex: 9999, width: 240,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.7)",
+            display: "flex", flexDirection: "column", gap: 10,
+          }}
+        >
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={cfg.enabled}
+              onChange={(e) => apply({ enabled: e.target.checked })}
+              style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
+            />
+            Sync cues from incoming timecode
+          </label>
+
+          <div>
+            <div style={tcFieldLabel}>Expected Rate</div>
+            <Select
+              style={{ ...tcInputStyle, cursor: "pointer" }}
+              value={cfg.rate}
+              onChange={(e) => apply({ rate: e.target.value as TcRate })}
+            >
+              {TC_RATES.map((r) => <option key={r} value={r}>{TC_RATE_LABELS[r]}</option>)}
+            </Select>
+          </div>
+
+          <div>
+            <div style={tcFieldLabel}>Freewheel (ms)</div>
+            <input
+              type="number"
+              min={0}
+              max={2000}
+              step={50}
+              value={cfg.freewheel_ms}
+              onChange={(e) => apply({ freewheel_ms: Math.max(0, Math.min(2000, Number(e.target.value) || 0)) })}
+              style={{ ...tcInputStyle, fontFamily: "monospace" }}
+            />
+          </div>
+
+          <div>
+            <div style={tcFieldLabel}>On Stop</div>
+            <Select
+              style={{ ...tcInputStyle, cursor: "pointer" }}
+              value={cfg.on_stop}
+              onChange={(e) => apply({ on_stop: e.target.value as TcOnStop })}
+            >
+              {(["continue", "pause", "stop"] as TcOnStop[]).map((s) => (
+                <option key={s} value={s}>{ON_STOP_LABELS[s]}</option>
+              ))}
+            </Select>
+          </div>
+
+          <div style={{ fontSize: 10, color: "var(--wc-text-faint)", lineHeight: 1.4 }}>
+            Enable TC receive in Preferences → Network, then set per-cue trigger
+            times in the Inspector → Triggers tab.
+          </div>
         </div>
       )}
     </div>

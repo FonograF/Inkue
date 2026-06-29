@@ -298,7 +298,7 @@ export function TransportBar({ onRefresh }: Props) {
   );
 
   // Pause toggle: pause every running cue, or (if none running) resume every
-  // paused cue — same semantics as the OSC `/wincue/pause_toggle` handler.
+  // paused cue — same semantics as the OSC `/inkue/pause_toggle` handler.
   const hasRunning = cues.some((c) => c.state === "running");
   const hasPaused = cues.some((c) => c.state === "paused");
   const pauseDisabled = !hasRunning && !hasPaused;
@@ -357,7 +357,7 @@ export function TransportBar({ onRefresh }: Props) {
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           document.dispatchEvent(
-            new CustomEvent("wincue:cue-drag-start", {
+            new CustomEvent("inkue:cue-drag-start", {
               detail: { cueType: "stop", startX: e.clientX, startY: e.clientY },
             }),
           );

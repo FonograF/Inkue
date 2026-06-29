@@ -108,9 +108,10 @@ pub struct CueList {
     /// Per-cue TC triggers: cue_id → TcTrigger.  Stored on the list so
     /// every cue type gains TC triggering without a per-type code change.
     pub tc_triggers: HashMap<CueId, TcTrigger>,
-    /// Last absolute frame number at which a TC trigger was fired in this
-    /// list (monotone guard — prevents re-firing on the same position).
-    /// `u64::MAX` means nothing has been fired yet.
+    /// Highest absolute frame number already covered by TC trigger firing in
+    /// this list (monotone guard — prevents re-firing on the same position).
+    /// A trigger at frame `tf` fires when `last < tf <= current`. `0` means
+    /// nothing has been covered yet, so every trigger is still armed.
     pub tc_last_triggered_frame: u64,
 }
 
@@ -125,8 +126,23 @@ impl CueList {
             playhead_cue_id: None,
             tc_config: CueListTcConfig::default(),
             tc_triggers: HashMap::new(),
-            tc_last_triggered_frame: u64::MAX,
+            tc_last_triggered_frame: 0,
         }
+    }
+
+    /// Cue ids whose TC trigger position falls in the half-open window
+    /// `(tc_last_triggered_frame, current]` — positions just crossed going
+    /// forward.  Does not mutate the guard; the caller advances
+    /// [`Self::tc_last_triggered_frame`] to `current` after firing.
+    pub fn tc_triggers_crossed(&self, current: u64) -> Vec<CueId> {
+        self.tc_triggers
+            .iter()
+            .filter(|(_, t)| {
+                let tf = t.position.to_frame_number();
+                tf > self.tc_last_triggered_frame && tf <= current
+            })
+            .map(|(&id, _)| id)
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -737,7 +753,7 @@ impl CueList {
             playhead_cue_id,
             tc_config,
             tc_triggers,
-            tc_last_triggered_frame: u64::MAX,
+            tc_last_triggered_frame: 0,
         })
     }
 }
@@ -956,5 +972,43 @@ mod tests {
         assert_eq!(list.playhead_cue_id, Some(group_id));
         // … and the group's next-to-fire child is the one we picked.
         assert_eq!(list.get(&group_id).unwrap().active_child_id(), Some(c1_id));
+    }
+
+    fn list_with_trigger_at(secs: u8) -> (CueList, CueId, u64) {
+        use crate::engine::timecode_types::{TcPosition, TcRate, TcTrigger};
+        let mut list = CueList::new("Test");
+        let cue = memo();
+        let id = cue.id();
+        list.push(cue);
+        let pos = TcPosition::new(0, 0, secs, 0, TcRate::Fps2997Df);
+        list.tc_triggers.insert(id, TcTrigger { position: pos, real_time: false });
+        (list, id, pos.to_frame_number())
+    }
+
+    #[test]
+    fn tc_trigger_fires_when_crossed_from_armed_start() {
+        let (list, id, tf) = list_with_trigger_at(3);
+        // Default guard is 0 (armed) — the regression: u64::MAX never fired.
+        assert!(list.tc_triggers_crossed(tf - 1).is_empty(), "must not fire before its frame");
+        assert_eq!(list.tc_triggers_crossed(tf), vec![id], "must fire on crossing");
+    }
+
+    #[test]
+    fn tc_trigger_does_not_refire_within_same_window() {
+        let (mut list, _id, tf) = list_with_trigger_at(3);
+        assert!(!list.tc_triggers_crossed(tf).is_empty());
+        // Event loop advances the guard after firing.
+        list.tc_last_triggered_frame = tf;
+        assert!(list.tc_triggers_crossed(tf + 10).is_empty(), "must not re-fire");
+    }
+
+    #[test]
+    fn tc_trigger_rearms_after_jump_back() {
+        let (mut list, id, tf) = list_with_trigger_at(3);
+        assert_eq!(list.tc_triggers_crossed(tf), vec![id]);
+        list.tc_last_triggered_frame = tf;
+        // Jump back: the event loop lowers the guard to the rewound position.
+        list.tc_last_triggered_frame = 0;
+        assert_eq!(list.tc_triggers_crossed(tf), vec![id], "must re-fire after rewind");
     }
 }

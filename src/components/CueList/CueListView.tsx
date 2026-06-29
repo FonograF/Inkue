@@ -23,7 +23,8 @@ import {
   type ColumnDef,
   type ColumnId,
 } from "./columns";
-import type { CueSummary } from "../../lib/types";
+import type { CueSummary, CueType } from "../../lib/types";
+import { CUE_TYPE_COLORS } from "../../lib/types";
 import {
   addCue,
   removeCue,
@@ -39,7 +40,6 @@ import {
   setVideoFile,
   setImageFile,
   setPlayhead,
-  stopCue,
   updateCue,
 } from "../../lib/commands";
 
@@ -50,6 +50,34 @@ import {
 const AUDIO_EXTS = new Set(["wav", "mp3", "flac", "ogg", "aac", "m4a"]);
 const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "mov", "mkv", "avi", "ogv"]);
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+
+// Every cue type that can be created, in toolbar order. Colors come from the
+// shared CUE_TYPE_COLORS map so the context menu and the Row 2 toolbar buttons
+// in App.tsx never drift apart. Adding a new cue type needs one entry here.
+const CUE_TYPES: { type: CueType; label: string; color: string }[] = (
+  [
+    { type: "audio",    label: "Audio" },
+    { type: "video",    label: "Video" },
+    { type: "image",    label: "Image" },
+    { type: "stop",     label: "Stop" },
+    { type: "fade",     label: "Fade" },
+    { type: "wait",     label: "Wait" },
+    { type: "group",    label: "Group" },
+    { type: "midi",     label: "MIDI" },
+    { type: "osc",      label: "OSC" },
+    { type: "light",    label: "Light" },
+    { type: "mic",      label: "Mic" },
+    { type: "timecode", label: "Timecode" },
+    { type: "text",     label: "Text" },
+  ] as { type: CueType; label: string }[]
+).map((c) => ({ ...c, color: CUE_TYPE_COLORS[c.type] }));
+
+// Cue types that hold a media file, with the open-dialog filter for each.
+const FILE_FILTERS: Partial<Record<CueType, { name: string; extensions: string[] }>> = {
+  audio: { name: "Audio Files", extensions: [...AUDIO_EXTS] },
+  video: { name: "Video Files", extensions: [...VIDEO_EXTS] },
+  image: { name: "Image Files", extensions: [...IMAGE_EXTS] },
+};
 
 function isAudioPath(p: string) {
   return AUDIO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
@@ -120,12 +148,12 @@ function computeInnerPlayheadIds(cues: CueSummary[], outerPlayheadId: string | n
   return result;
 }
 
-function CtxItem({ label, danger, onClick }: { label: string; danger?: boolean; onClick: () => void }) {
+function CtxItem({ label, danger, color, onClick }: { label: string; danger?: boolean; color?: string; onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
     <button
       style={{
-        display: "block", width: "100%", padding: "6px 16px",
+        display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 16px",
         background: hov ? "var(--wc-bg-hover)" : "transparent", border: "none",
         textAlign: "left", color: danger ? "#ef4444" : "var(--wc-text)",
         fontSize: 13, cursor: "pointer", whiteSpace: "nowrap",
@@ -134,8 +162,44 @@ function CtxItem({ label, danger, onClick }: { label: string; danger?: boolean; 
       onMouseLeave={() => setHov(false)}
       onClick={onClick}
     >
+      {color && <span style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />}
       {label}
     </button>
+  );
+}
+
+// A context-menu row that reveals a flyout of child items on hover. The flyout
+// opens to the right by default, or to the left when the menu sits near the
+// right edge of the window (`openLeft`).
+function CtxSubmenu({ label, openLeft, children }: { label: string; openLeft: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ position: "relative" }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          width: "100%", padding: "6px 16px",
+          background: open ? "var(--wc-bg-hover)" : "transparent", border: "none",
+          textAlign: "left", color: "var(--wc-text)", fontSize: 13, cursor: "default", whiteSpace: "nowrap",
+        }}
+      >
+        <span>{label}</span>
+        <span style={{ color: "var(--wc-text-muted)" }}>{openLeft ? "‹" : "›"}</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: -5,
+            ...(openLeft ? { right: "100%" } : { left: "100%" }),
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+            borderRadius: 6, padding: "4px 0", minWidth: 160, maxHeight: 380, overflowY: "auto",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.6)",
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -351,7 +415,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   const smoothedVelRef = useRef(0);
 
   // ---------- New-cue drag state (toolbar buttons dragged into list) ----------
-  // Driven by a CustomEvent "wincue:cue-drag-start" dispatched by external buttons.
+  // Driven by a CustomEvent "inkue:cue-drag-start" dispatched by external buttons.
   const [newCueDragType,     setNewCueDragType]     = useState<import("../../lib/types").CueType | null>(null);
   const [newCueDragInsertIdx, setNewCueDragInsertIdx] = useState<number | null>(null);
 
@@ -723,12 +787,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup",   onUp);
     document.addEventListener("keydown",   onKeyDown);
-    document.addEventListener("wincue:cue-drag-start", onNewCueDragStart);
+    document.addEventListener("inkue:cue-drag-start", onNewCueDragStart);
     return () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup",   onUp);
       document.removeEventListener("keydown",   onKeyDown);
-      document.removeEventListener("wincue:cue-drag-start", onNewCueDragStart);
+      document.removeEventListener("inkue:cue-drag-start", onNewCueDragStart);
     };
   }, []);
 
@@ -951,18 +1015,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   // ---------- Cue context menu ----------
   const closeCtx = () => setContextMenu(null);
 
-  const ctxAddAudio  = async () => { closeCtx(); await addCue("audio", -1).catch(console.error); await onRefresh(); };
-  const ctxAddAbove  = async () => {
+  const ctxAddType   = async (type: CueType) => { closeCtx(); await addCue(type, -1).catch(console.error); await onRefresh(); };
+  const ctxAddTypeAt = async (type: CueType, offset: 0 | 1) => {
     closeCtx();
     if (!contextMenu?.cueId) return;
     const idx = cuesRef.current.findIndex((c) => c.id === contextMenu.cueId);
-    if (idx >= 0) { await addCue("audio", idx).catch(console.error); await onRefresh(); }
-  };
-  const ctxAddBelow  = async () => {
-    closeCtx();
-    if (!contextMenu?.cueId) return;
-    const idx = cuesRef.current.findIndex((c) => c.id === contextMenu.cueId);
-    if (idx >= 0) { await addCue("audio", idx + 1).catch(console.error); await onRefresh(); }
+    if (idx >= 0) { await addCue(type, idx + offset).catch(console.error); await onRefresh(); }
   };
   const ctxDuplicate = async () => {
     closeCtx();
@@ -976,15 +1034,15 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     await removeCue(contextMenu.cueId).catch(console.error);
     await onRefresh();
   };
-  const ctxAssignFile = async () => {
+  const ctxAssignFile = async (cueType: "audio" | "video" | "image") => {
+    const cueId = contextMenu?.cueId;
     closeCtx();
-    if (!contextMenu?.cueId) return;
-    const result = await open({
-      multiple: false,
-      filters: [{ name: "Audio Files", extensions: ["wav", "mp3", "flac", "ogg", "aac"] }],
-    });
+    if (!cueId) return;
+    const filter = FILE_FILTERS[cueType];
+    if (!filter) return;
+    const result = await open({ multiple: false, filters: [filter] });
     if (typeof result === "string") {
-      await setAudioFile(contextMenu.cueId, result).catch(console.error);
+      await setFileForCue(cueType, cueId, result).catch(console.error);
       await onRefresh();
     }
   };
@@ -1336,12 +1394,34 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               fontSize: 13,
             }}
           >
-            {contextMenu.cueId ? (
+            {(() => {
+              const openLeft = contextMenu.x > window.innerWidth - 380;
+              if (!contextMenu.cueId) {
+                return (
+                  <CtxSubmenu label="Add Cue" openLeft={openLeft}>
+                    {CUE_TYPES.map((ct) => (
+                      <CtxItem key={ct.type} color={ct.color} label={ct.label} onClick={() => ctxAddType(ct.type)} />
+                    ))}
+                  </CtxSubmenu>
+                );
+              }
+              const ctxType = flatItems.find((fi) => fi.cue.id === contextMenu.cueId)?.cue.cue_type ?? null;
+              const assignType =
+                ctxType === "audio" || ctxType === "video" || ctxType === "image" ? ctxType : null;
+              return (
               <>
                 {!contextMenu.parentGroupId && (
                   <>
-                    <CtxItem label="Add Audio Cue Above" onClick={ctxAddAbove} />
-                    <CtxItem label="Add Audio Cue Below" onClick={ctxAddBelow} />
+                    <CtxSubmenu label="Add Cue Above" openLeft={openLeft}>
+                      {CUE_TYPES.map((ct) => (
+                        <CtxItem key={ct.type} color={ct.color} label={ct.label} onClick={() => ctxAddTypeAt(ct.type, 0)} />
+                      ))}
+                    </CtxSubmenu>
+                    <CtxSubmenu label="Add Cue Below" openLeft={openLeft}>
+                      {CUE_TYPES.map((ct) => (
+                        <CtxItem key={ct.type} color={ct.color} label={ct.label} onClick={() => ctxAddTypeAt(ct.type, 1)} />
+                      ))}
+                    </CtxSubmenu>
                     <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                   </>
                 )}
@@ -1421,16 +1501,18 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                     </>
                   );
                 })()}
-                {!contextMenu.parentGroupId && (
+                {!contextMenu.parentGroupId && assignType && (
                   <>
                     <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
-                    <CtxItem label="Assign Audio File…" onClick={ctxAssignFile} />
+                    <CtxItem
+                      label={`Assign ${assignType[0].toUpperCase()}${assignType.slice(1)} File…`}
+                      onClick={() => ctxAssignFile(assignType)}
+                    />
                   </>
                 )}
               </>
-            ) : (
-              <CtxItem label="Add Audio Cue" onClick={ctxAddAudio} />
-            )}
+              );
+            })()}
           </div>
         </>
       )}

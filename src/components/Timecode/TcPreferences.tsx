@@ -2,8 +2,8 @@
 // Configures the TC receiver (enable, source, MIDI input port).
 
 import { useEffect, useState } from "react";
-import type { TcMachineConfig } from "../../lib/types";
-import { getTcConfig, setTcConfig, listTcMidiInputPorts } from "../../lib/commands";
+import type { TcMachineConfig, DeviceInfo } from "../../lib/types";
+import { getTcConfig, setTcConfig, listTcMidiInputPorts, listInputDevices } from "../../lib/commands";
 import { Select } from "../common/Select";
 
 const inputStyle: React.CSSProperties = {
@@ -29,10 +29,12 @@ export function TcPreferences() {
     receiver_config: { source: "mtc", midi_port: null, ltc_device_id: null },
   });
   const [ports, setPorts] = useState<string[]>([]);
+  const [inputDevices, setInputDevices] = useState<DeviceInfo[]>([]);
 
   useEffect(() => {
     getTcConfig().then(setConfigState).catch(console.error);
     listTcMidiInputPorts().then(setPorts).catch(console.error);
+    listInputDevices().then(setInputDevices).catch(console.error);
   }, []);
 
   const apply = async (next: TcMachineConfig) => {
@@ -100,6 +102,36 @@ export function TcPreferences() {
               {ports.length === 0 && (
                 <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
                   No MIDI input ports detected. Connect a MIDI device.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Audio input device (LTC) */}
+          {config.receiver_config.source === "ltc" && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Audio Input Device</div>
+              <Select
+                style={{ ...inputStyle, cursor: "pointer" }}
+                value={config.receiver_config.ltc_device_id ?? ""}
+                onChange={(e) => apply({
+                  ...config,
+                  receiver_config: { ...config.receiver_config, ltc_device_id: e.target.value || null },
+                })}
+              >
+                <option value="">— default input —</option>
+                {inputDevices.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+                {config.receiver_config.ltc_device_id && !inputDevices.some((d) => d.id === config.receiver_config.ltc_device_id) && (
+                  <option value={config.receiver_config.ltc_device_id}>
+                    {config.receiver_config.ltc_device_id} (not found)
+                  </option>
+                )}
+              </Select>
+              {inputDevices.length === 0 && (
+                <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
+                  No audio input devices detected.
                 </div>
               )}
             </div>
