@@ -281,7 +281,7 @@ export function CueRow({
     paddingTop: 2,
     paddingBottom: 2,
     paddingLeft: depth > 0 ? `${8 + depth * 20}px` : undefined,
-    cursor: isDragSource ? "none" : "grab",
+    cursor: isDragSource ? "none" : "pointer",
     userSelect: "none",
     background: isDragSource ? "transparent"
       : isGroup && !isSelected ? (bg === "transparent" ? "var(--wc-bg-group)" : bg) : bg,
