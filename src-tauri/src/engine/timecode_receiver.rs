@@ -23,7 +23,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+use ringbuf::traits::{Consumer, Observer};
 
+use super::audio_input::open_input;
+use super::ltc::LtcDecoder;
 use super::timecode_types::{TcEvent, TcPosition, TcRate};
 
 // ---------------------------------------------------------------------------
@@ -285,9 +288,10 @@ impl TimecodeReceiver {
                     .expect("failed to spawn MTC receiver thread");
             }
             TcSource::Ltc => {
-                // LTC receive is handled by the show event loop which polls
-                // the audio input ring via ltc::Decoder — no separate thread needed.
-                log::info!("TC: LTC receive mode (polled by event loop)");
+                std::thread::Builder::new()
+                    .name("inkue-tc-ltc".into())
+                    .spawn(move || ltc_thread(config.ltc_device_id, tx, shutdown, flywheel))
+                    .expect("failed to spawn LTC receiver thread");
             }
         }
     }
@@ -388,6 +392,83 @@ fn decode_mtc_message(
         }
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// LTC receive thread
+// ---------------------------------------------------------------------------
+
+fn ltc_thread(
+    device_id: Option<String>,
+    tx:        Sender<TcEvent>,
+    shutdown:  Arc<AtomicBool>,
+    flywheel:  Arc<Mutex<TcFlywheel>>,
+) {
+    let (capture, mut cons) = match open_input(device_id.as_deref(), 0) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("TC: LTC failed to open input device {device_id:?}: {e}");
+            return;
+        }
+    };
+    let sample_rate = capture.sample_rate;
+    let channels = capture.channels.max(1) as usize;
+    // 30 fps seeds the decoder's bit-clock estimate; it adapts to the real rate.
+    let mut decoder = LtcDecoder::new(sample_rate, 30);
+    let mut mono: Vec<f32> = Vec::with_capacity(4096);
+
+    log::info!(
+        "TC: LTC listening on '{}' ({sample_rate} Hz, {channels} ch)",
+        capture.device_id
+    );
+
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Drain whole interleaved frames, keeping channel 0 for decoding.
+        mono.clear();
+        while cons.occupied_len() >= channels {
+            let mut frame0 = 0.0_f32;
+            for c in 0..channels {
+                if let Some(s) = cons.try_pop() {
+                    if c == 0 {
+                        frame0 = s;
+                    }
+                }
+            }
+            mono.push(frame0);
+        }
+
+        if !mono.is_empty() {
+            for pos in decoder.push(&mono) {
+                let started = flywheel.lock().map(|mut f| f.update(pos)).unwrap_or(false);
+                if started {
+                    let _ = tx.send(TcEvent::Started(pos));
+                }
+                let _ = tx.send(TcEvent::Position(pos));
+            }
+        }
+
+        // Freewheel expiry → TC stopped (mirrors the MTC thread).
+        let expired = flywheel
+            .lock()
+            .map(|mut f| {
+                let was = f.is_running();
+                f.current();
+                was && !f.is_running()
+            })
+            .unwrap_or(false);
+        if expired {
+            let _ = tx.send(TcEvent::Stopped);
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    drop(capture);
+    log::info!("TC: LTC thread stopped");
 }
 
 // ---------------------------------------------------------------------------

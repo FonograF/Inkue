@@ -219,25 +219,16 @@ fn tick(
                     for cl in &mut ws.cue_lists {
                         if !cl.tc_config.enabled { continue; }
 
-                        // Re-arm on jump back.
-                        if jumped_back { cl.tc_last_triggered_frame = u64::MAX; }
+                        // Re-arm on jump back: lower the covered mark to the
+                        // rewound position so triggers ahead of it fire again.
+                        if jumped_back { cl.tc_last_triggered_frame = abs_frame; }
 
                         // Fire every cue whose trigger sits in (last_triggered_frame, abs_frame].
-                        let triggers: Vec<(CueId, u64)> = cl.tc_triggers.iter()
-                            .filter_map(|(&id, trigger)| {
-                                let tf = trigger.position.to_frame_number();
-                                if tf <= abs_frame && tf > cl.tc_last_triggered_frame {
-                                    Some((id, tf))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        if triggers.is_empty() { continue; }
+                        let crossed = cl.tc_triggers_crossed(abs_frame);
+                        if crossed.is_empty() { continue; }
                         cl.tc_last_triggered_frame = abs_frame;
 
-                        for (cue_id, _) in triggers {
+                        for cue_id in crossed {
                             // Verify the cue exists, then queue it for the real GO
                             // path below (the engine context isn't assembled here).
                             if cl.get_mut_recursive(&cue_id).is_none() { continue };

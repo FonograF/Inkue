@@ -1,7 +1,7 @@
 // Timecode status indicator shown in the Transport Bar.
-// Shows the current received TC position and flashes on lock.
+// Shows the current received TC position and glows steadily while frames arrive.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { TcPosition } from "../../lib/types";
 
@@ -16,18 +16,29 @@ export function TcStatusIndicator() {
   const [pos, setPos] = useState<TcPosition | null>(null);
   const [running, setRunning] = useState(false);
   const [flash, setFlash] = useState(false);
+  // Single re-armable timer: each frame pushes the "off" moment back, so a
+  // continuous stream stays steadily lit instead of strobing on overlapping
+  // timers, and the glow clears cleanly shortly after frames stop arriving.
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    const armFlash = () => {
+      setFlash(true);
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+      flashTimer.current = setTimeout(() => setFlash(false), 150);
+    };
     const unlisten = listen<TcPosition & { running?: boolean }>("timecode", (ev) => {
       setPos(ev.payload);
       setRunning(true);
-      setFlash(true);
-      setTimeout(() => setFlash(false), 80);
+      armFlash();
     });
     const unlistenStop = listen("timecode-stopped", () => {
       setRunning(false);
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+      setFlash(false);
     });
     return () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current);
       void unlisten.then((fn) => fn());
       void unlistenStop.then((fn) => fn());
     };

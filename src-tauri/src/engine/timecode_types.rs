@@ -91,9 +91,13 @@ impl fmt::Display for TcRate {
 /// of every non-multiple-of-10 minute are skipped in DF numbering).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TcPosition {
+    #[serde(rename = "h")]
     pub hours:   u8,
+    #[serde(rename = "m")]
     pub minutes: u8,
+    #[serde(rename = "s")]
     pub seconds: u8,
+    #[serde(rename = "f")]
     pub frames:  u8,
     pub rate:    TcRate,
 }

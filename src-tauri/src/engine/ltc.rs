@@ -32,6 +32,8 @@
 //! The encoder/decoder accept any `sample_rate`.  The bit clock divides the
 //! sample buffer into `80 * fps` equal-length bit cells per second.
 
+use std::collections::VecDeque;
+
 use super::timecode_types::{TcPosition, TcRate};
 
 /// Sync word occupying bits 64–79 of every LTC frame (LSB first).
@@ -45,6 +47,8 @@ const SYNC_WORD: u16 = 0xBFFC;
 /// Encode a [`TcPosition`] into a 80-bit LTC frame (as a `[u8; 10]`).
 fn encode_frame_bits(pos: TcPosition) -> [u8; 10] {
     let df  = pos.rate.is_drop_frame() as u8;
+
+    // LTC stores each field as two BCD digits (tens / units), not a binary byte.
     let fr  = pos.frames;
     let sec = pos.seconds;
     let min = pos.minutes;
@@ -54,21 +58,21 @@ fn encode_frame_bits(pos: TcPosition) -> [u8; 10] {
     let mut w = [0u8; 10];
 
     // Byte 0: frame units (bits 0-3) | user bits 1 (bits 4-7, zero)
-    w[0] = fr & 0x0F;
+    w[0] = (fr % 10) & 0x0F;
     // Byte 1: frame tens (bits 8-9) | drop-frame (bit 10) | color-frame (bit 11=0)
-    w[1] = ((fr >> 4) & 0x03) | (df << 2);
+    w[1] = ((fr / 10) & 0x03) | (df << 2);
     // Byte 2: seconds units (bits 16-19)
-    w[2] = sec & 0x0F;
+    w[2] = (sec % 10) & 0x0F;
     // Byte 3: seconds tens (bits 24-26)
-    w[3] = (sec >> 4) & 0x07;
+    w[3] = (sec / 10) & 0x07;
     // Byte 4: minutes units (bits 32-35)
-    w[4] = min & 0x0F;
+    w[4] = (min % 10) & 0x0F;
     // Byte 5: minutes tens (bits 40-42)
-    w[5] = (min >> 4) & 0x07;
+    w[5] = (min / 10) & 0x07;
     // Byte 6: hours units (bits 48-51)
-    w[6] = hr & 0x0F;
+    w[6] = (hr % 10) & 0x0F;
     // Byte 7: hours tens (bits 56-57)
-    w[7] = (hr >> 4) & 0x03;
+    w[7] = (hr / 10) & 0x03;
     // Bytes 8-9: sync word 0xBFFC (bits 64-79)
     w[8] = (SYNC_WORD & 0xFF) as u8;
     w[9] = (SYNC_WORD >> 8) as u8;
@@ -156,26 +160,29 @@ pub struct LtcDecoder {
     sample_rate:    u32,
     /// Running estimate of a half-bit-cell in samples.
     half_cell:      f64,
-    last_cross:     Option<usize>, // sample index of last zero-crossing
+    last_cross:     Option<usize>, // sample index of last threshold crossing
     last_level:     f32,
-    /// Accumulated bits (up to 80).
-    bits:           Vec<u8>,
+    /// `true` after the first half of a '1' bit, awaiting its second half.
+    pending_half:   bool,
+    /// Sliding window of decoded bits (newest at the back), capped so memory is
+    /// bounded.  A frame is aligned when the sync word lands on the last 16 bits.
+    bits:           VecDeque<u8>,
     /// Current sample index (wraps; only relative distances matter).
     sample_idx:     usize,
-    /// Adaptive threshold for zero-crossing detection.
+    /// Threshold for crossing detection (LTC is bipolar around zero).
     threshold:      f32,
 }
 
 impl LtcDecoder {
     pub fn new(sample_rate: u32, fps: u32) -> Self {
-        let half_cell = sample_rate as f64 / (fps as f64 * 80.0 * 2.0)
-            * 1.0; // initial estimate
+        let half_cell = sample_rate as f64 / (fps.max(1) as f64 * 80.0 * 2.0);
         Self {
             sample_rate,
             half_cell,
             last_cross: None,
             last_level: 0.0,
-            bits: Vec::with_capacity(80),
+            pending_half: false,
+            bits: VecDeque::with_capacity(256),
             sample_idx: 0,
             threshold: 0.0,
         }
@@ -211,57 +218,81 @@ impl LtcDecoder {
         let interval = now.wrapping_sub(last) as f64;
         self.last_cross = Some(now);
 
-        // Classify interval as half-cell (one transition) or full-cell (two
-        // transitions = bit boundary only, no mid-bit).
-        let is_half = interval < self.half_cell * 1.6;
-
-        // Adapt the half-cell estimate.
-        self.half_cell = self.half_cell * 0.95 + interval * 0.05;
-
-        if is_half {
-            // Two consecutive half-cells = one '1' bit.
-            // We push a marker; when we see the second half, emit the bit.
-            self.bits.push(1);
-        } else {
-            // Full cell = '0' bit.
-            self.bits.push(0);
+        // Reject implausibly short intervals (noise / double-detection).
+        if interval < self.half_cell * 0.4 {
+            return None;
         }
 
-        if self.bits.len() >= 80 {
-            let result = self.try_decode();
+        // Half-cell = mid-bit transition of a '1'; full-cell = a bit boundary.
+        let is_half = interval < self.half_cell * 1.5;
+
+        // Adapt the half-cell estimate toward the observed half-cell width.
+        let observed_half = if is_half { interval } else { interval * 0.5 };
+        self.half_cell = self.half_cell * 0.95 + observed_half * 0.05;
+
+        // Biphase-mark: a '1' is two consecutive half-cells, a '0' is one full
+        // cell.  Pair the half-cells; emit one bit per logical cell.
+        let bit = if is_half {
+            if self.pending_half {
+                self.pending_half = false;
+                1u8
+            } else {
+                self.pending_half = true;
+                return None;
+            }
+        } else {
+            self.pending_half = false;
+            0u8
+        };
+
+        self.bits.push_back(bit);
+        if self.bits.len() > 160 {
+            self.bits.pop_front();
+        }
+        if self.bits.len() >= 80 && self.sync_word_at_end() {
+            let pos = self.decode_frame_at_end();
+            // Frame boundary is now known: restart accumulation cleanly so the
+            // next sync is found at an exact 80-bit offset (no false re-locks
+            // from a sliding window overlapping the just-decoded frame).
             self.bits.clear();
-            return result;
+            return pos;
         }
         None
     }
 
-    fn try_decode(&self) -> Option<TcPosition> {
-        if self.bits.len() < 80 { return None; }
-
-        // Check for the 16-bit sync word in bits 64..79.
+    /// `true` when the last 16 decoded bits match the LTC sync word.
+    fn sync_word_at_end(&self) -> bool {
+        let base = self.bits.len() - 16;
         let mut sw: u16 = 0;
         for i in 0..16 {
-            sw |= (self.bits[64 + i] as u16) << i;
+            sw |= (self.bits[base + i] as u16) << i;
         }
-        if sw != SYNC_WORD { return None; }
+        sw == SYNC_WORD
+    }
 
-        let frame_u = nibble(&self.bits, 0);
-        let frame_t = self.bits[8] | (self.bits[9] << 1);
-        let df      = self.bits[10] != 0;
-        let sec_u   = nibble(&self.bits, 16);
-        let sec_t   = self.bits[24] | (self.bits[25] << 1) | (self.bits[26] << 2);
-        let min_u   = nibble(&self.bits, 32);
-        let min_t   = self.bits[40] | (self.bits[41] << 1) | (self.bits[42] << 2);
-        let hr_u    = nibble(&self.bits, 48);
-        let hr_t    = self.bits[56] | (self.bits[57] << 1);
+    /// Decode the aligned 80-bit frame ending at the back of the bit window.
+    fn decode_frame_at_end(&self) -> Option<TcPosition> {
+        let base = self.bits.len() - 80;
+        let b = |i: usize| self.bits[base + i];
+        let nib = |o: usize| b(o) | (b(o + 1) << 1) | (b(o + 2) << 2) | (b(o + 3) << 3);
+
+        let frame_u = nib(0);
+        let frame_t = b(8) | (b(9) << 1);
+        let df      = b(10) != 0;
+        let sec_u   = nib(16);
+        let sec_t   = b(24) | (b(25) << 1) | (b(26) << 2);
+        let min_u   = nib(32);
+        let min_t   = b(40) | (b(41) << 1) | (b(42) << 2);
+        let hr_u    = nib(48);
+        let hr_t    = b(56) | (b(57) << 1);
 
         let fr  = (frame_t * 10) + frame_u;
         let sec = (sec_t   * 10) + sec_u;
         let min = (min_t   * 10) + min_u;
         let hr  = (hr_t    * 10) + hr_u;
 
-        // Determine rate from fps estimate.
-        let fps_est = (self.sample_rate as f64 / (self.half_cell * 2.0 * 80.0)) as u32;
+        // Determine rate from the bit-clock estimate.
+        let fps_est = (self.sample_rate as f64 / (self.half_cell * 2.0 * 80.0)).round() as u32;
         let rate = match fps_est {
             0..=24  => TcRate::Fps24,
             25..=26 => TcRate::Fps25,
@@ -271,10 +302,6 @@ impl LtcDecoder {
 
         Some(TcPosition::new(hr, min, sec, fr, rate))
     }
-}
-
-fn nibble(bits: &[u8], offset: usize) -> u8 {
-    bits[offset] | (bits[offset+1] << 1) | (bits[offset+2] << 2) | (bits[offset+3] << 3)
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +350,40 @@ mod tests {
         let bits = encode_frame_bits(pos);
         // Drop-frame flag must be set.
         assert_ne!(bits[1] & 0x04, 0, "drop-frame bit");
+    }
+
+    #[test]
+    fn decoder_locks_onto_encoded_stream() {
+        let rate = TcRate::Fps30;
+        let start = TcPosition::new(1, 2, 3, 4, rate);
+        let mut enc = LtcEncoder::new(start, SR);
+        let spf = enc.samples_per_frame();
+
+        // Encode 16 consecutive frames into one continuous stream.
+        let mut buf = Vec::with_capacity(spf * 16);
+        for _ in 0..16 {
+            let mut frame = vec![0.0_f32; spf];
+            enc.next_frame(&mut frame);
+            buf.extend_from_slice(&frame);
+        }
+
+        let mut dec = LtcDecoder::new(SR, rate.fps());
+        let positions = dec.push(&buf);
+
+        assert!(positions.len() >= 10, "decoder must lock and decode most frames, got {}", positions.len());
+
+        let start_fn = start.to_frame_number();
+        let nums: Vec<u64> = positions.iter().map(|p| p.to_frame_number()).collect();
+        for n in &nums {
+            assert!(*n >= start_fn && *n < start_fn + 16, "decoded {n} out of range");
+        }
+        // Decoded frames are strictly consecutive (the final 1-2 frames may lack
+        // a trailing edge to finalise, so we don't require the very last one).
+        for w in nums.windows(2) {
+            assert_eq!(w[1], w[0] + 1, "frames must increment by exactly 1");
+        }
+        assert!(*nums.last().unwrap() >= start_fn + 14, "must track through nearly the whole stream, last={}", nums.last().unwrap() - start_fn);
+        assert_eq!(positions[0].rate, TcRate::Fps30, "rate detected from bit clock");
     }
 
     #[test]

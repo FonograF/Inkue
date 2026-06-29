@@ -58,7 +58,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
           onChange={(e) => onSave({ tc_type: e.target.value as "mtc" | "ltc" })}
         >
           <option value="mtc">MTC (MIDI Timecode)</option>
-          <option value="ltc">LTC (Linear Audio, v1 placeholder)</option>
+          <option value="ltc">LTC (Linear Audio)</option>
         </Select>
       </div>
 
@@ -116,7 +116,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
             ))}
           </Select>
           <div style={{ marginTop: 4, fontSize: 11, color: "var(--wc-text-muted)" }}>
-            LTC output is planned — currently logs a warning only.
+            LTC audio is generated on the chosen Output Patch's channels.
           </div>
         </div>
       )}
