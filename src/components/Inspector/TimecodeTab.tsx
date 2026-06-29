@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { TimecodeCueData, TcRate } from "../../lib/types";
-import { listTcMidiInputPorts, getOutputPatches } from "../../lib/commands";
+import { listMidiOutputPorts, getOutputPatches } from "../../lib/commands";
 import type { OutputPatch } from "../../lib/types";
 import { Select } from "../common/Select";
 
@@ -38,7 +38,7 @@ export function TimecodeTab({ cue, onSave }: Props) {
   const [outputPatches, setOutputPatches] = useState<OutputPatch[]>([]);
 
   useEffect(() => {
-    listTcMidiInputPorts().then(setMidiPorts).catch(console.error);
+    listMidiOutputPorts().then(setMidiPorts).catch(console.error);
     getOutputPatches().then(setOutputPatches).catch(console.error);
   }, []);
 

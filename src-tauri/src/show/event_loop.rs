@@ -181,6 +181,9 @@ fn tick(
     // ------------------------------------------------------------------
     // 0. Drain incoming timecode events and fire TC-triggered cues.
     // ------------------------------------------------------------------
+    // (list_id, cue_id) pairs whose TC trigger was crossed this tick. Fired via
+    // the real GO path further down, once the engine context is assembled.
+    let mut tc_fire: Vec<(uuid::Uuid, CueId)> = Vec::new();
     if let Some(rx) = tc_rx {
         // Collect all pending TC events without blocking.
         let mut latest_pos = None;
@@ -235,11 +238,10 @@ fn tick(
                         cl.tc_last_triggered_frame = abs_frame;
 
                         for (cue_id, _) in triggers {
-                            // Verify the cue exists, then release the borrow before emitting.
+                            // Verify the cue exists, then queue it for the real GO
+                            // path below (the engine context isn't assembled here).
                             if cl.get_mut_recursive(&cue_id).is_none() { continue };
-                            let _ = handle.emit("cue-state-changed", serde_json::json!({
-                                "cue_id": cue_id, "old_state": "standby", "new_state": "running",
-                            }));
+                            tc_fire.push((cl.id, cue_id));
                         }
                     }
                 }
@@ -575,6 +577,23 @@ fn tick(
             );
             let mut transport = Transport::new(context);
             if let Ok(result) = transport.go(cl) {
+                all_go_triggered.extend(result.triggered);
+                all_go_stopped.extend(result.stopped);
+            }
+        }
+    }
+
+    // 9b. Fire cues whose timecode trigger was crossed this tick (section 0),
+    //     through the same real GO path so playback actually starts and
+    //     Auto-Continue / Auto-Follow chains still work.
+    for (list_id, cue_id) in &tc_fire {
+        if let Some(cl) = ws.cue_list_by_id_mut(*list_id) {
+            let context = make_context(
+                audio_engine, output_engine, dmx_engine, stop_fade_ms,
+                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size,
+            );
+            let mut transport = Transport::new(context);
+            if let Ok(result) = transport.go_by_id(cl, cue_id) {
                 all_go_triggered.extend(result.triggered);
                 all_go_stopped.extend(result.stopped);
             }
