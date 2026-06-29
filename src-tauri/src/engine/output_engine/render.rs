@@ -80,6 +80,15 @@ pub(super) static RENDER_SIGNAL: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLoc
 /// idle mode (mpv does not signal `MPV_RENDER_UPDATE_FRAME` for OSD-only changes).
 pub(super) static TEXT_OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// `true` while the output window is user-visible.
+///
+/// Set by `show()` and cleared by `hide()`.  The render loop must NOT commit
+/// frames before this flag is set: on Wayland a `wl_surface.commit()` with a
+/// buffer permanently maps the surface (the window appears), so emitting even
+/// one frame while the window is "hidden" makes it visible at startup before
+/// the operator opens it.
+pub(super) static OUTPUT_VISIBLE: AtomicBool = AtomicBool::new(false);
+
 /// The winit output window, shared between the event-loop thread, the render
 /// thread, and `OutputEngine` methods (show/hide/position/fullscreen).
 /// macOS holds its `NSWindow` inside `macos_window` instead.
@@ -122,13 +131,19 @@ pub(super) fn set_surface_size(width: u32, height: u32) {
 }
 
 pub(super) fn show() {
+    OUTPUT_VISIBLE.store(true, Ordering::Relaxed);
     #[cfg(not(target_os = "macos"))]
     if let Some(w) = GL_WINDOW.get() { w.set_visible(true); }
     #[cfg(target_os = "macos")]
     super::macos_window::show();
+    // Wake the render loop so it commits the first frame immediately.  On
+    // Wayland the surface is only mapped once a buffer arrives; without this
+    // wake the window would not appear until the next mpv signal (up to 100 ms).
+    wake();
 }
 
 pub(super) fn hide() {
+    OUTPUT_VISIBLE.store(false, Ordering::Relaxed);
     #[cfg(not(target_os = "macos"))]
     if let Some(w) = GL_WINDOW.get() { w.set_visible(false); }
     #[cfg(target_os = "macos")]
@@ -404,13 +419,65 @@ fn build_event_loop() -> Result<EventLoop<()>> {
         .map_err(|e| anyhow!("EventLoop (Windows): {e}"))
 }
 
+/// Probe whether winit's X11 backend can actually run.
+///
+/// winit's X11 backend hard-requires `libxkbcommon-x11` and **panics** (not a
+/// recoverable `build()` error) during window creation if it is absent — common on
+/// Wayland-only installs.  We `dlopen` it up-front so `build_event_loop` can choose
+/// Wayland cleanly instead of taking down the whole output engine.
+#[cfg(target_os = "linux")]
+fn x11_xkb_available() -> bool {
+    use std::ffi::CString;
+    for name in ["libxkbcommon-x11.so.0", "libxkbcommon-x11.so"] {
+        let Ok(c) = CString::new(name) else { continue };
+        // SAFETY: valid C string; the handle is closed again immediately.
+        let h = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY) };
+        if !h.is_null() {
+            unsafe { libc::dlclose(h); }
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(target_os = "linux")]
 fn build_event_loop() -> Result<EventLoop<()>> {
-    use winit::platform::x11::EventLoopBuilderExtX11;
-    EventLoop::builder()
-        .with_any_thread(true)
-        .build()
-        .map_err(|e| anyhow!("EventLoop (Linux/X11): {e}"))
+    // Prefer X11/XWayland over native Wayland for the output window.
+    //
+    // With a *native Wayland* EGL surface, Mesa's `eglSwapBuffers` blocks on the
+    // compositor's frame callback regardless of the swap interval, which serialises
+    // this output window's render-thread GL with WebKitGTK's UI compositing on the
+    // same iGPU — the WinCue UI then crawls for the entire duration of video playback
+    // (the failure the operator reported).  XWayland's X11/DRI EGL path honours
+    // `SwapInterval::DontWait` and keeps the two GL clients decoupled, so the UI stays
+    // fluid while a video plays.
+    //
+    // X11 is selected only when `libxkbcommon-x11` is present (winit panics otherwise);
+    // otherwise we fall back to native Wayland so the app still runs.  Override with
+    // `WINCUE_OUTPUT_BACKEND=wayland` for A/B testing.
+    let force_wayland = std::env::var("WINCUE_OUTPUT_BACKEND").as_deref() == Ok("wayland");
+    let use_x11 = !force_wayland && x11_xkb_available();
+
+    let mut b = EventLoop::builder();
+    if use_x11 {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        b.with_any_thread(true).with_x11();
+        log::info!("[render] output window backend: X11/XWayland (default)");
+        b.build().map_err(|e| anyhow!("EventLoop (Linux/XWayland): {e}"))
+    } else {
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+        EventLoopBuilderExtWayland::with_any_thread(&mut b, true);
+        if force_wayland {
+            log::info!("[render] output window backend: native Wayland (forced via WINCUE_OUTPUT_BACKEND)");
+        } else {
+            log::warn!(
+                "[render] output window backend: native Wayland — XWayland unavailable \
+                 (libxkbcommon-x11 not found); the UI may lag during video playback. \
+                 Install the 'libxkbcommon-x11-0' package to enable the smoother XWayland path."
+            );
+        }
+        b.build().map_err(|e| anyhow!("EventLoop (Linux/Wayland): {e}"))
+    }
 }
 
 /// Unified window creation for Windows and Linux via winit.
@@ -551,10 +618,16 @@ fn render_thread_main(
         .map_err(|e| anyhow!("make_current: {e}")));
 
     // ── 6. vsync ──────────────────────────────────────────────────────────────
-    // mpv's own clock (video-sync=desync) paces playback, not our swap — blocking
-    // on the driver's vblank here just adds a second, redundant sync point. Under
-    // a compositor with a virtualized/emulated vblank (VMs), that block can stall
-    // long enough to visibly stutter the whole desktop, not just this window.
+    // DontWait on every OS. mpv's own clock (video-sync=desync) paces playback, so
+    // our swap is not the timing source — blocking on the driver's vblank only adds
+    // a redundant sync point.
+    //
+    // Do NOT switch Linux to SwapInterval::Wait(1): on Mesa/Wayland with a weak
+    // shared-memory iGPU, blocking inside eglSwapBuffers holds a driver lock for the
+    // whole vblank wait, serialising this render thread's GL with WebKitGTK's
+    // compositing on the main thread — which starved the WinCue UI to ~1 fps for the
+    // entire duration of video playback (regression seen 2026-06; reverted). Under a
+    // VM with an emulated vblank the same block can stall the whole desktop.
     if let Err(e) = surface.set_swap_interval(&ctx, SwapInterval::DontWait) {
         log::warn!("[render] swap_interval: {e:?}");
     }
@@ -603,6 +676,23 @@ fn render_thread_main(
     let mut w_px = handles.width;
     let mut h_px = handles.height;
 
+    // Opt-in output frame-rate cap (Linux).  `WINCUE_OUTPUT_FPS=30` makes the render
+    // loop present at most ~30 fps, halving the output window's GPU compositing load so
+    // a weak shared-memory iGPU keeps headroom for the WebKitGTK UI during playback.
+    // Off by default (0/unset = uncapped) — it trades some video smoothness, so it is a
+    // knob the operator turns on only if the UI still lags after hwdec/XWayland.
+    #[cfg(target_os = "linux")]
+    let min_present_interval: Option<Duration> = std::env::var("WINCUE_OUTPUT_FPS").ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|&fps| fps > 0)
+        .map(|fps| Duration::from_micros(1_000_000 / fps as u64));
+    #[cfg(target_os = "linux")]
+    if let Some(iv) = min_present_interval {
+        log::info!("[render] output FPS cap enabled: ~{} fps", 1_000_000 / iv.as_micros().max(1) as u64);
+    }
+    #[cfg(target_os = "linux")]
+    let mut last_present = std::time::Instant::now();
+
     loop {
         let needs_animation = FADE_STATE.get()
             .and_then(|fs| fs.lock().ok())
@@ -638,6 +728,13 @@ fn render_thread_main(
         let flags     = unsafe { (lib.mpv_render_context_update)(render_ctx) };
         let has_frame = flags & MPV_RENDER_UPDATE_FRAME != 0;
         let text_active = TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed);
+        // Do not commit frames while the output window is hidden.  On Wayland
+        // a wl_surface.commit() with a buffer permanently maps the surface, so
+        // a single frame emitted before show_output() would make the window
+        // appear at startup instead of staying invisible until the operator
+        // opens it.  show() sets this flag and wakes the loop so the first
+        // committed frame arrives immediately when the window is revealed.
+        if !OUTPUT_VISIBLE.load(Ordering::Relaxed) { continue; }
         // Skip rendering when there is nothing to show: no new frame from mpv
         // and the GL fade quad is fully transparent (alpha=0).  Exception:
         // when a Text Cue overlay is active we must render even without a new
@@ -645,6 +742,16 @@ fn render_thread_main(
         // changes in idle mode, so we call render unconditionally to composite
         // the osd-overlay text onto the output surface.
         if !has_frame && alpha == 0 && !text_active { continue; }
+
+        // Opt-in FPS cap: drop video frames arriving faster than the target interval.
+        // Never throttle a fade animation or a Text overlay redraw (must stay smooth);
+        // mpv wakes us again on the next frame, so the latest one still presents.
+        #[cfg(target_os = "linux")]
+        if let Some(iv) = min_present_interval {
+            if !needs_animation && !text_active && last_present.elapsed() < iv {
+                continue;
+            }
+        }
 
         let mut fbo = MpvOpenglFbo { fbo: 0, w: w_px as i32, h: h_px as i32, internal_format: 0 };
         let mut flip = flip_y;
@@ -660,6 +767,8 @@ fn render_thread_main(
 
         if let Err(e) = surface.swap_buffers(&ctx) { log::warn!("[render] swap: {e:?}"); }
         unsafe { (lib.mpv_render_context_report_swap)(render_ctx); }
+        #[cfg(target_os = "linux")]
+        { last_present = std::time::Instant::now(); }
     }
 }
 

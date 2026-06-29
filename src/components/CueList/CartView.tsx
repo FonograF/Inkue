@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTimingStore } from "../../stores/timingStore";
+import { RunningLed } from "../common/RunningLed";
 import type { CueSummary, CueType } from "../../lib/types";
 import {
   addCue, goCue, moveCue, stopCue,
@@ -252,16 +253,7 @@ function CartTile({ cue, onMouseDown, onFire }: TileProps) {
       }}>
         {(isRunning || isPaused) ? (
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            {isRunning && (
-              <span
-                className="wc-led-pulse"
-                style={{
-                  display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-                  background: "#22c55e", flexShrink: 0,
-                  animationDelay: `-${(Date.now() % 1800) / 1000}s`,
-                }}
-              />
-            )}
+            {isRunning && <RunningLed size={7} />}
             {isPaused && (
               <span style={{
                 display: "inline-block", width: 7, height: 7, borderRadius: "50%",

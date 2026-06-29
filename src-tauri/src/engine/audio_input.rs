@@ -84,7 +84,7 @@ pub fn list_input_devices() -> Vec<DeviceInfo> {
                 .unwrap_or((2, 48_000));
             fallback.push(DeviceInfo { id, name, channels, sample_rate });
         }
-        return super::device_manager::linux_devices(true, fallback);
+        super::device_manager::linux_devices(true, fallback)
     }
     #[cfg(not(target_os = "linux"))]
     {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WinCue",
-  "version": "0.9.22",
+  "version": "0.9.26",
   "identifier": "com.wincue.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -22,6 +22,7 @@
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
+        "maximized": false,
         "decorations": false
       },
       {
@@ -64,7 +65,7 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["libmpv2 | libmpv1"]
+        "depends": ["libmpv2 | libmpv1", "libxkbcommon-x11-0"]
       }
     }
   }

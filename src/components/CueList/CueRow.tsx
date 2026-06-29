@@ -1,7 +1,8 @@
 // A single row in the cue list table.
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { PlayheadIndicator } from "./PlayheadIndicator";
+import { RunningLed } from "../common/RunningLed";
 import type { ColumnDef } from "./columns";
 import type { CueColorStyle, CueSummary } from "../../lib/types";
 import { useTimingStore } from "../../stores/timingStore";
@@ -32,62 +33,6 @@ const INLINE_INPUT_STYLE: React.CSSProperties = {
   boxSizing: "border-box",
   height: "100%",
 };
-
-function RunningLed() {
-  const delayRef = useRef<string | null>(null);
-  if (!delayRef.current) {
-    const phase = (Date.now() % 1800) / 1000;
-    delayRef.current = `-${phase.toFixed(3)}s`;
-  }
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: "#22c55e",
-        flexShrink: 0,
-        animation: `wc-led-pulse 1.8s ease-in-out ${delayRef.current} infinite`,
-      }}
-    />
-  );
-}
-
-function StopButton({ onStop }: { onStop: () => void }) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <button
-      title="Stop"
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => { e.stopPropagation(); onStop(); }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: hovered ? "rgba(239,68,68,0.25)" : "rgba(239,68,68,0.12)",
-        border: `1px solid ${hovered ? "#ef4444" : "rgba(239,68,68,0.45)"}`,
-        borderRadius: 4,
-        cursor: "pointer",
-        padding: 0,
-        width: 22,
-        height: 22,
-        flexShrink: 0,
-      }}
-    >
-      <div
-        style={{
-          width: 8,
-          height: 8,
-          background: hovered ? "#fca5a5" : "#ef4444",
-          borderRadius: 1,
-        }}
-      />
-    </button>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -173,7 +118,6 @@ interface Props {
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
-  onStop?: (cueId: string) => void;
   onRefresh?: () => void;
   /** How the cue's colour tag is rendered — left-edge stripe, or the whole row tinted. */
   cueColorStyle?: CueColorStyle;
@@ -203,7 +147,6 @@ export function CueRow({
   onClick,
   onDoubleClick,
   onContextMenu,
-  onStop,
   onRefresh,
   cueColorStyle = "stripe",
 }: Props) {
@@ -328,7 +271,7 @@ export function CueRow({
       case "playhead":
         if (isGroup) {
           return (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", paddingLeft: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", height: "100%", paddingLeft: 6 }}>
               <PlayheadIndicator visible={isAtPlayhead} />
               <button
                 style={{
@@ -346,7 +289,7 @@ export function CueRow({
           );
         }
         return (
-          <div style={{ display: "flex", justifyContent: "flex-start", alignItems: "center", width: "100%", paddingLeft: 6 }}>
+          <div style={{ display: "flex", justifyContent: "flex-start", alignItems: "center", width: "100%", height: "100%", paddingLeft: 6 }}>
             <PlayheadIndicator visible={isAtPlayhead} />
           </div>
         );
@@ -373,9 +316,9 @@ export function CueRow({
                 style={{
                   position: "absolute",
                   inset: 0,
-                  width: `${progressPct}%`,
+                  transform: `scaleX(${progressPct / 100})`,
+                  transformOrigin: "left",
                   background: "rgba(74, 222, 128, 0.28)",
-                  transition: "width 0.05s linear",
                   pointerEvents: "none",
                   zIndex: 0,
                 }}
@@ -494,15 +437,6 @@ export function CueRow({
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {cue.notes || ""}
             </span>
-          </div>
-        );
-
-      case "stop_btn":
-        return (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-            {(isRunning || isPaused) && (
-              <StopButton onStop={() => onStop?.(cue.id)} />
-            )}
           </div>
         );
 

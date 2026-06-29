@@ -140,10 +140,12 @@ function ShowCard({ cue, isArmed, isCompleted }: CardProps) {
             position: "absolute",
             bottom: 0, left: 0,
             height: 2,
-            width: `${progressPct}%`,
+            width: "100%",
+            transform: `scaleX(${progressPct / 100})`,
+            transformOrigin: "left",
             background: "#22c55e",
             borderRadius: "0 1px 0 8px",
-            transition: "width 0.1s linear",
+            willChange: "transform",
           }}
         />
       )}

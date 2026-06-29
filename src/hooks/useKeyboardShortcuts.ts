@@ -1,6 +1,9 @@
 // Global keyboard shortcut handler, mirroring QLab's key bindings.
 
 import { useEffect, useRef } from "react";
+
+const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
+const cmdOrCtrl = (e: KeyboardEvent) => isMac ? e.metaKey : e.ctrlKey;
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   go,
@@ -75,7 +78,7 @@ export function useKeyboardShortcuts(
         }
         case "s":
         case "S": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             onSave?.();
           } else if (selectedCueId) {
@@ -86,7 +89,7 @@ export function useKeyboardShortcuts(
         }
         case "o":
         case "O": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             onOpen?.();
           }
@@ -94,7 +97,7 @@ export function useKeyboardShortcuts(
         }
         case "i":
         case "I": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             onToggleInspector?.();
           }
@@ -103,7 +106,7 @@ export function useKeyboardShortcuts(
         case "p":
         case "P":
         case "[": {
-          if (!e.ctrlKey && selectedCueId) {
+          if (!cmdOrCtrl(e) && selectedCueId) {
             await pauseCue(selectedCueId).catch(console.error);
             onRefresh();
           }
@@ -117,14 +120,14 @@ export function useKeyboardShortcuts(
           break;
         }
         case ",": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             onOpenPreferences?.();
           }
           break;
         }
         case "ArrowUp": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             const { cues, playheadCueId } = useWorkspaceStore.getState();
             const idx = cues.findIndex((c) => c.id === playheadCueId);
@@ -137,7 +140,7 @@ export function useKeyboardShortcuts(
           break;
         }
         case "ArrowDown": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             const { cues, playheadCueId } = useWorkspaceStore.getState();
             const idx = cues.findIndex((c) => c.id === playheadCueId);
@@ -151,7 +154,7 @@ export function useKeyboardShortcuts(
         }
         case "a":
         case "A": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             const { cues, setSelectedCueIds } = useWorkspaceStore.getState();
             setSelectedCueIds(cues.map((c) => c.id));
@@ -160,7 +163,7 @@ export function useKeyboardShortcuts(
         }
         case "g":
         case "G": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             const { selectedCueIds, setSelectedCueId, setSelectedCueIds } =
               useWorkspaceStore.getState();
@@ -172,7 +175,7 @@ export function useKeyboardShortcuts(
                 onRefresh();
               }
             }
-          } else if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+          } else if (!cmdOrCtrl(e) && !e.shiftKey && !e.altKey) {
             e.preventDefault();
             onGoto?.();
           }
@@ -180,7 +183,7 @@ export function useKeyboardShortcuts(
         }
         case "n":
         case "N": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             await addCue("audio").catch(console.error);
             onRefresh();
@@ -189,7 +192,7 @@ export function useKeyboardShortcuts(
         }
         case "d":
         case "D": {
-          if (e.ctrlKey && selectedCueId) {
+          if (cmdOrCtrl(e) && selectedCueId) {
             e.preventDefault();
             const { selectedCueIds } = useWorkspaceStore.getState();
             if (selectedCueIds.length > 1) {
@@ -203,12 +206,12 @@ export function useKeyboardShortcuts(
         }
         case "z":
         case "Z": {
-          if (e.ctrlKey && e.shiftKey) {
+          if (cmdOrCtrl(e) && e.shiftKey) {
             // Ctrl+Shift+Z → Redo (alternative to Ctrl+Y)
             e.preventDefault();
             await redo().catch(console.error);
             onRefresh();
-          } else if (e.ctrlKey) {
+          } else if (cmdOrCtrl(e)) {
             // Ctrl+Z → Undo
             e.preventDefault();
             await undo().catch(console.error);
@@ -218,7 +221,7 @@ export function useKeyboardShortcuts(
         }
         case "y":
         case "Y": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             await redo().catch(console.error);
             onRefresh();
@@ -227,7 +230,7 @@ export function useKeyboardShortcuts(
         }
         case "c":
         case "C": {
-          if (e.ctrlKey && selectedCueId) {
+          if (cmdOrCtrl(e) && selectedCueId) {
             e.preventDefault();
             await copyCue(selectedCueId).catch(console.error);
           }
@@ -235,7 +238,7 @@ export function useKeyboardShortcuts(
         }
         case "v":
         case "V": {
-          if (e.ctrlKey) {
+          if (cmdOrCtrl(e)) {
             e.preventDefault();
             await pasteCue(selectedCueId).catch(console.error);
             onRefresh();
@@ -244,7 +247,7 @@ export function useKeyboardShortcuts(
         }
         case "Delete":
         case "Backspace": {
-          if (selectedCueId && e.ctrlKey === false) {
+          if (selectedCueId && cmdOrCtrl(e) === false) {
             const { selectedCueIds, setSelectedCueId, setSelectedCueIds } =
               useWorkspaceStore.getState();
             if (selectedCueIds.length > 1) {
