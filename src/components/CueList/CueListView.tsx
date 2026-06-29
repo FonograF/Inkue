@@ -1249,7 +1249,6 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 e.stopPropagation();
                 setContextMenu({ x: e.clientX, y: e.clientY, cueId: cue.id, parentGroupId });
               }}
-              onStop={(id) => stopCue(id).catch(console.error)}
               onRefresh={onRefresh}
             />
           </Fragment>

@@ -572,6 +572,7 @@ impl Cue for VideoCue {
             "output_surface_id": self.output_surface_id,
             "output_patch_id": self.output_patch_id,
             "is_disabled": self.is_disabled,
+            "cached_duration_ms": self.cached_duration.map(|d| d.as_millis() as u64),
         })
     }
 }
@@ -672,6 +673,9 @@ impl CueFactory for VideoCueFactory {
         }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
+        }
+        if let Some(ms) = value.get("cached_duration_ms").and_then(|v| v.as_u64()) {
+            cue.cached_duration = Some(Duration::from_millis(ms));
         }
 
         Ok(Box::new(cue))
