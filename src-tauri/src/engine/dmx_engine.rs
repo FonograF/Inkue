@@ -12,7 +12,7 @@
 //! ## Threading
 //!
 //! [`DmxState`] is pure (no sockets, no thread) so the fade maths and LTP/tracking
-//! behaviour are unit-tested directly.  [`DmxEngine`] wraps it in a `wincue-dmx`
+//! behaviour are unit-tested directly.  [`DmxEngine`] wraps it in a `inkue-dmx`
 //! thread that ticks at [`REFRESH_HZ`], publishes a snapshot for the UI monitor,
 //! and transmits each enabled universe (send-on-change + periodic keepalive).
 
@@ -219,7 +219,7 @@ impl DmxEngine {
 
         let snapshot_thread = Arc::clone(&snapshot);
         std::thread::Builder::new()
-            .name("wincue-dmx".into())
+            .name("inkue-dmx".into())
             .spawn(move || dmx_thread(cmd_rx, snapshot_thread))
             .expect("failed to spawn DMX engine thread");
 
@@ -294,7 +294,7 @@ struct ActiveSink {
 
 fn dmx_thread(cmd_rx: crossbeam_channel::Receiver<DmxCommand>, snapshot: Arc<Mutex<DmxSnapshot>>) {
     let cid = *uuid::Uuid::new_v4().as_bytes();
-    let source_name = "WinCue".to_string();
+    let source_name = "Inkue".to_string();
     let frame = Duration::from_millis(1000 / REFRESH_HZ);
 
     let mut state = DmxState::new();

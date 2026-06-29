@@ -211,7 +211,7 @@ fn decode_via_mpv(path: &Path) -> Result<Option<(Vec<f32>, u16, u32)>> {
     let mpv = MpvLib::load().context("libmpv not available for audio fallback")?;
 
     let tmp_path = std::env::temp_dir()
-        .join(format!("wincue_audio_{}.wav", uuid::Uuid::new_v4().simple()));
+        .join(format!("inkue_audio_{}.wav", uuid::Uuid::new_v4().simple()));
 
     let decode_result: Result<()> = (|| {
         unsafe {

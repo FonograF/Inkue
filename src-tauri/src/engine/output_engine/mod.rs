@@ -270,7 +270,7 @@ impl OutputEngine {
             let gsa2   = Arc::clone(&go_sent_at);
             let ae     = Arc::clone(&audio_engine);
             std::thread::Builder::new()
-                .name("wincue-output-mpv-events".into())
+                .name("inkue-output-mpv-events".into())
                 .spawn(move || {
                     mpv_events::mpv_event_loop(lib2, ctx2, voice2, tx2, hwnd, gsa2, ae)
                 })

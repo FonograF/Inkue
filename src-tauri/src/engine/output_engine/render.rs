@@ -20,9 +20,9 @@
 //!
 //! | Thread                    | Role |
 //! |---------------------------|------|
-//! | `wincue-output-window`    | (Windows/Linux only) winit EventLoop + window events |
-//! | `wincue-output-render`    | glutin context + mpv RenderContext + render loop |
-//! | `wincue-output-mpv-events`| mpv_wait_event (PLAYBACK_RESTART, EOF, …) |
+//! | `inkue-output-window`    | (Windows/Linux only) winit EventLoop + window events |
+//! | `inkue-output-render`    | glutin context + mpv RenderContext + render loop |
+//! | `inkue-output-mpv-events`| mpv_wait_event (PLAYBACK_RESTART, EOF, …) |
 
 use std::ffi::{CStr, CString, c_void};
 use std::num::NonZeroU32;
@@ -211,7 +211,7 @@ pub(super) fn init(
     // watch for errors on a background watcher thread.
     #[cfg(target_os = "macos")]
     std::thread::Builder::new()
-        .name("wincue-render-watcher".into())
+        .name("inkue-render-watcher".into())
         .spawn(move || match ready_rx.recv() {
             Ok(Ok(())) => log::info!("[render] macOS GL context ready"),
             Ok(Err(e)) => log::error!("[render] macOS GL init failed: {e}"),
@@ -318,7 +318,7 @@ impl ApplicationHandler for OutputApp {
         if self.window.is_some() { return; }
 
         let attrs = WindowAttributes::default()
-            .with_title("WinCue Output")
+            .with_title("Inkue Output")
             .with_visible(false)
             .with_decorations(false)
             .with_resizable(true)
@@ -447,15 +447,15 @@ fn build_event_loop() -> Result<EventLoop<()>> {
     // With a *native Wayland* EGL surface, Mesa's `eglSwapBuffers` blocks on the
     // compositor's frame callback regardless of the swap interval, which serialises
     // this output window's render-thread GL with WebKitGTK's UI compositing on the
-    // same iGPU — the WinCue UI then crawls for the entire duration of video playback
+    // same iGPU — the Inkue UI then crawls for the entire duration of video playback
     // (the failure the operator reported).  XWayland's X11/DRI EGL path honours
     // `SwapInterval::DontWait` and keeps the two GL clients decoupled, so the UI stays
     // fluid while a video plays.
     //
     // X11 is selected only when `libxkbcommon-x11` is present (winit panics otherwise);
     // otherwise we fall back to native Wayland so the app still runs.  Override with
-    // `WINCUE_OUTPUT_BACKEND=wayland` for A/B testing.
-    let force_wayland = std::env::var("WINCUE_OUTPUT_BACKEND").as_deref() == Ok("wayland");
+    // `INKUE_OUTPUT_BACKEND=wayland` for A/B testing.
+    let force_wayland = std::env::var("INKUE_OUTPUT_BACKEND").as_deref() == Ok("wayland");
     let use_x11 = !force_wayland && x11_xkb_available();
 
     let mut b = EventLoop::builder();
@@ -468,7 +468,7 @@ fn build_event_loop() -> Result<EventLoop<()>> {
         use winit::platform::wayland::EventLoopBuilderExtWayland;
         EventLoopBuilderExtWayland::with_any_thread(&mut b, true);
         if force_wayland {
-            log::info!("[render] output window backend: native Wayland (forced via WINCUE_OUTPUT_BACKEND)");
+            log::info!("[render] output window backend: native Wayland (forced via INKUE_OUTPUT_BACKEND)");
         } else {
             log::warn!(
                 "[render] output window backend: native Wayland — XWayland unavailable \
@@ -488,7 +488,7 @@ fn create_native_window(
     let (tx, rx) = std::sync::mpsc::channel::<Result<SendableHandles>>();
 
     std::thread::Builder::new()
-        .name("wincue-output-window".into())
+        .name("inkue-output-window".into())
         .spawn(move || {
             let event_loop = match build_event_loop() {
                 Ok(el) => el,
@@ -539,7 +539,7 @@ fn spawn_render_thread(
     ready_tx: std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
     std::thread::Builder::new()
-        .name("wincue-output-render".into())
+        .name("inkue-output-render".into())
         .spawn(move || {
             if let Err(e) = render_thread_main(handles, lib, mpv_ctx, ready_tx) {
                 log::error!("[render] fatal: {e}");
@@ -625,7 +625,7 @@ fn render_thread_main(
     // Do NOT switch Linux to SwapInterval::Wait(1): on Mesa/Wayland with a weak
     // shared-memory iGPU, blocking inside eglSwapBuffers holds a driver lock for the
     // whole vblank wait, serialising this render thread's GL with WebKitGTK's
-    // compositing on the main thread — which starved the WinCue UI to ~1 fps for the
+    // compositing on the main thread — which starved the Inkue UI to ~1 fps for the
     // entire duration of video playback (regression seen 2026-06; reverted). Under a
     // VM with an emulated vblank the same block can stall the whole desktop.
     if let Err(e) = surface.set_swap_interval(&ctx, SwapInterval::DontWait) {
@@ -676,13 +676,13 @@ fn render_thread_main(
     let mut w_px = handles.width;
     let mut h_px = handles.height;
 
-    // Opt-in output frame-rate cap (Linux).  `WINCUE_OUTPUT_FPS=30` makes the render
+    // Opt-in output frame-rate cap (Linux).  `INKUE_OUTPUT_FPS=30` makes the render
     // loop present at most ~30 fps, halving the output window's GPU compositing load so
     // a weak shared-memory iGPU keeps headroom for the WebKitGTK UI during playback.
     // Off by default (0/unset = uncapped) — it trades some video smoothness, so it is a
     // knob the operator turns on only if the UI still lags after hwdec/XWayland.
     #[cfg(target_os = "linux")]
-    let min_present_interval: Option<Duration> = std::env::var("WINCUE_OUTPUT_FPS").ok()
+    let min_present_interval: Option<Duration> = std::env::var("INKUE_OUTPUT_FPS").ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
         .filter(|&fps| fps > 0)
         .map(|fps| Duration::from_micros(1_000_000 / fps as u64));

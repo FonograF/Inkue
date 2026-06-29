@@ -37,7 +37,7 @@ pub type InputPatchId = Uuid;
 ///
 /// A [`MicCue`](crate::cue::mic_cue::MicCue) references an `InputPatch` (plus the
 /// channels it wants from it) rather than a device directly, so re-patching a
-/// show changes only one place.  Stored in the workspace (`.wincue`).
+/// show changes only one place.  Stored in the workspace (`.inkue`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputPatch {
     pub id: InputPatchId,

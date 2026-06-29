@@ -8,7 +8,7 @@ import { useState, useEffect } from "react";
  * UI surface every display refresh (~60 fps) for the whole lifetime of the
  * animation.  On a weak shared-memory iGPU that monopolises the compositor and
  * starves the UI's own paint while a Video Cue's output window is also presenting —
- * the WinCue UI froze to ~0 fps during video playback.  A discrete opacity toggle
+ * the Inkue UI froze to ~0 fps during video playback.  A discrete opacity toggle
  * repaints only a few times per second and leaves the UI surface idle in between,
  * so the compositor has room for both the UI and the video output.
  */

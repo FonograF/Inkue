@@ -41,7 +41,7 @@ pub fn restore_recovery(
         .map_err(|e| e.to_string())?;
     drop(registry);
 
-    // Re-target the original `.wincue` file (if the show had been saved) and
+    // Re-target the original `.inkue` file (if the show had been saved) and
     // mark dirty — the snapshot holds edits not yet written to that file.
     let doc: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| e.to_string())?;

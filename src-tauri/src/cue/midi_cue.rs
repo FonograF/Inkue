@@ -68,7 +68,7 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
     if messages.is_empty() {
         return;
     }
-    let mut midi_out = match midir::MidiOutput::new("WinCue") {
+    let mut midi_out = match midir::MidiOutput::new("Inkue") {
         Ok(m) => m,
         Err(e) => {
             log::warn!("MIDI: failed to create output: {e}");
@@ -93,7 +93,7 @@ pub fn send_midi_messages(messages: &[MidiMessage]) {
             continue;
         };
 
-        match midi_out.connect(&port, "wincue") {
+        match midi_out.connect(&port, "inkue") {
             Ok(mut conn) => {
                 if let Err(e) = conn.send(&msg.to_bytes()) {
                     log::warn!("MIDI send failed on '{}': {e}", msg.port_name);

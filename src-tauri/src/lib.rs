@@ -1,4 +1,4 @@
-//! WinCue library root.  All modules are declared here and re-exported as needed.
+//! Inkue library root.  All modules are declared here and re-exported as needed.
 
 pub mod bundled_fonts;
 pub mod commands;
@@ -165,7 +165,7 @@ pub fn run() {
                 let monitor_handle = app.handle().clone();
                 let dmx = Arc::clone(&dmx_engine);
                 std::thread::Builder::new()
-                    .name("wincue-dmx-monitor".to_string())
+                    .name("inkue-dmx-monitor".to_string())
                     .spawn(move || {
                         use tauri::Emitter;
                         let mut last: Vec<commands::light_cmds::DmxUniverseSnapshot> = Vec::new();
@@ -195,7 +195,7 @@ pub fn run() {
                 .and_then(|opt| opt.as_ref().map(|r| r.subscribe()));
 
             std::thread::Builder::new()
-                .name("wincue-event-loop".to_string())
+                .name("inkue-event-loop".to_string())
                 .spawn(move || {
                     crate::show::event_loop::run(handle, a_engine, o_engine, d_engine, workspace, tc_event_rx);
                 })
@@ -207,7 +207,7 @@ pub fn run() {
             {
                 let ws = app.state::<AppState>().workspace.clone();
                 std::thread::Builder::new()
-                    .name("wincue-autosave".to_string())
+                    .name("inkue-autosave".to_string())
                     .spawn(move || {
                         enum Action { Write(String), Clear, Idle }
                         // u64::MAX forces a first evaluation; the pristine
@@ -267,7 +267,7 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 std::thread::Builder::new()
-                    .name("wincue-log-emitter".to_string())
+                    .name("inkue-log-emitter".to_string())
                     .spawn(move || {
                         use std::sync::atomic::Ordering;
                         use tauri::Emitter;
@@ -294,7 +294,7 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let engine = app.state::<AppState>().audio_engine.clone();
                 std::thread::Builder::new()
-                    .name("wincue-device-watchdog".to_string())
+                    .name("inkue-device-watchdog".to_string())
                     .spawn(move || {
                         use std::sync::atomic::Ordering;
                         use tauri::Emitter;
@@ -506,7 +506,7 @@ pub fn run() {
             remove_fixture_group,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running WinCue");
+        .expect("error while running Inkue");
 }
 
 /// Show a blocking error dialog — used when a fatal startup error occurs in
@@ -518,7 +518,7 @@ fn show_fatal_error(message: &str) {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-    let title: Vec<u16> = OsStr::new("WinCue — Startup Error")
+    let title: Vec<u16> = OsStr::new("Inkue — Startup Error")
         .encode_wide()
         .chain(once(0))
         .collect();

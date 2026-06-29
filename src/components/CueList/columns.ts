@@ -65,7 +65,7 @@ export const DEFAULT_COLUMN_CONFIG: ColumnConfig = {
   order: DEFAULT_ORDER,
 };
 
-const LS_KEY = "wincue_column_config_v2";
+const LS_KEY = "inkue_column_config_v2";
 
 export function loadColumnConfig(): ColumnConfig {
   try {

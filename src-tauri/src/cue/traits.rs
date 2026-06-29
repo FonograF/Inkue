@@ -1,4 +1,4 @@
-//! The [`Cue`] trait — the universal contract for every cue type in WinCue.
+//! The [`Cue`] trait — the universal contract for every cue type in Inkue.
 //!
 //! All cue types (Audio, Memo, Wait, Group, …) implement this trait so that the
 //! Show Engine can drive them uniformly through `dyn Cue`.  The trait is
@@ -517,7 +517,7 @@ pub trait Cue: Send {
     // Serialisation
     // -----------------------------------------------------------------------
 
-    /// Serialise this cue to a JSON [`Value`] for `.wincue` file persistence.
+    /// Serialise this cue to a JSON [`Value`] for `.inkue` file persistence.
     /// The returned object must include a `"type"` field matching
     /// [`CueType`]'s serialised form.
     fn serialize(&self) -> Value;

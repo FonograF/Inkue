@@ -1,4 +1,4 @@
-# WinCue — Architecture reference
+# Inkue — Architecture reference
 
 Companion to `CLAUDE.md`. Read this when modifying the output engine, audio pipeline, event loop, or preferences system.
 
@@ -19,9 +19,9 @@ The legacy Win32 + D3D11 `--wid` path (`win32_window.rs`) compiles only behind t
 
 | Thread | Role |
 |---|---|
-| `wincue-output-window` | **(Windows/Linux only)** winit `EventLoop` — window events (drag, resize, double-click fullscreen). macOS has no such thread: the `NSWindow` is built on the main thread during `.setup()` and AppKit handles its events |
-| `wincue-output-render` | glutin GL context + `mpv_render_context` + render loop; draws the fade quad |
-| `wincue-output-mpv-events` | `mpv_wait_event` (`PLAYBACK_RESTART`, EOF, …) |
+| `inkue-output-window` | **(Windows/Linux only)** winit `EventLoop` — window events (drag, resize, double-click fullscreen). macOS has no such thread: the `NSWindow` is built on the main thread during `.setup()` and AppKit handles its events |
+| `inkue-output-render` | glutin GL context + `mpv_render_context` + render loop; draws the fade quad |
+| `inkue-output-mpv-events` | `mpv_wait_event` (`PLAYBACK_RESTART`, EOF, …) |
 
 **Key statics:**
 - `render::GL_WINDOW` — `Arc<winit::window::Window>` (**Windows/Linux only**), shared so `OutputEngine` show/hide/position/fullscreen call winit's cross-platform API from any thread. On macOS the `*mut NSWindow` lives in `macos_window::MAC_WINDOW` and control calls marshal onto the main thread via `run_on_main_thread`
@@ -47,7 +47,7 @@ The legacy Win32 + D3D11 `--wid` path (`win32_window.rs`) compiles only behind t
 
 The timer is rendered via mpv's OSD (`osd-msg1` property), not a separate child window. mpv composites the OSD into the same framebuffer it renders the video into, so the timer always sits above the picture regardless of the compositor (DWM on Windows, etc.).
 
-**Thread**: `wincue-timer-refresh` in `show/event_loop.rs`, runs every 16 ms. Does `try_lock` on workspace (skips frame if busy), reads `cue.action_elapsed()` directly (always `Instant::now() - start`, no stale data), formats, calls `output_engine.set_output_timer()`. Independent of the 30 fps main tick.
+**Thread**: `inkue-timer-refresh` in `show/event_loop.rs`, runs every 16 ms. Does `try_lock` on workspace (skips frame if busy), reads `cue.action_elapsed()` directly (always `Instant::now() - start`, no stale data), formats, calls `output_engine.set_output_timer()`. Independent of the 30 fps main tick.
 
 **Format**: `MM:SS` or `MM:SS.mmm` — minutes always zero-padded.
 
@@ -168,14 +168,14 @@ Two threads:
 
 | Thread | Interval | Responsibility |
 |---|---|---|
-| `wincue-event-loop` | 33 ms (30 fps) | Drain audio/output status, tick cues, detect completions, Auto-Continue/Follow, emit Tauri events (`cue-time-update`, `cue-state-changed`, `master-level`) |
-| `wincue-timer-refresh` | 16 ms (60 fps) | Update OSD timer text only — no Tauri events |
+| `inkue-event-loop` | 33 ms (30 fps) | Drain audio/output status, tick cues, detect completions, Auto-Continue/Follow, emit Tauri events (`cue-time-update`, `cue-state-changed`, `master-level`) |
+| `inkue-timer-refresh` | 16 ms (60 fps) | Update OSD timer text only — no Tauri events |
 
 Both use `workspace.try_lock()` — skip the frame rather than block if a command handler holds the lock.
 
 ## Preferences system
 
-`AppPreferences` is persisted inside the `.wincue` workspace file under `"preferences"`. Machine-specific audio config (`MachineAudioConfig`) lives separately in a per-OS config dir resolved by `machine_config::config_path()`: `%APPDATA%\WinCue\` (Windows), `~/.config/WinCue/` (Linux), `~/Library/Application Support/WinCue/` (macOS).
+`AppPreferences` is persisted inside the `.inkue` workspace file under `"preferences"`. Machine-specific audio config (`MachineAudioConfig`) lives separately in a per-OS config dir resolved by `machine_config::config_path()`: `%APPDATA%\Inkue\` (Windows), `~/.config/Inkue/` (Linux), `~/Library/Application Support/Inkue/` (macOS).
 
 `update_display_preferences` (Tauri command) persists fields to workspace **and** immediately applies timer style to mpv via `set_timer_style`. It also clears any active preview (`set_timer_preview(None)`).
 

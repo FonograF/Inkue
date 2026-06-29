@@ -513,7 +513,7 @@ export interface TcMachineConfig {
 
 export type AudioBackend = "wasapi_shared" | "wasapi_exclusive" | "asio";
 
-/** Hardware-specific settings — stored in %APPDATA%\WinCue\audio.json, not in the workspace. */
+/** Hardware-specific settings — stored in %APPDATA%\Inkue\audio.json, not in the workspace. */
 export interface MachineAudioConfig {
   backend: AudioBackend;
   device_id: string | null;
@@ -536,7 +536,7 @@ export const DEFAULT_MACHINE_AUDIO_CONFIG: MachineAudioConfig = {
   asio_out_pair: 0,
 };
 
-/** Show-specific audio defaults — travel with the .wincue workspace file. */
+/** Show-specific audio defaults — travel with the .inkue workspace file. */
 export interface AudioPreferences {
   default_volume_db: number;
   default_fade_out_ms: number;

@@ -1,6 +1,6 @@
-# WinCue
+# Inkue
 
-A professional, cross-platform show-control application (Windows, macOS, Linux), inspired by QLab (macOS). WinCue manages cue lists for live events — theatre, concerts, corporate shows — with a focus on reliability, low latency, and an extensible cue architecture.
+A professional, cross-platform show-control application (Windows, macOS, Linux), inspired by QLab (macOS). Inkue manages cue lists for live events — theatre, concerts, corporate shows — with a focus on reliability, low latency, and an extensible cue architecture.
 
 Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v2](https://tauri.app/).
 
@@ -42,21 +42,21 @@ Built with **Rust** (backend) and **React + TypeScript** (frontend) via [Tauri v
 
 ### OSC remote control
 
-WinCue listens on UDP port 53001 (configurable). Supported receive addresses:
+Inkue listens on UDP port 53001 (configurable). Supported receive addresses:
 
 | Address | Action |
 |---|---|
-| `/wincue/go` | Advance playhead and fire GO |
-| `/wincue/stop` | Stop all (soft fade) |
-| `/wincue/hardstop` | Hard stop all |
-| `/wincue/pause` | Pause all running cues |
-| `/wincue/resume` | Resume all paused cues |
-| `/wincue/pause_toggle` | Pause if anything is running, resume if anything is paused |
-| `/wincue/select/next` | Move playhead to next cue (no fire) |
-| `/wincue/select/previous` | Move playhead to previous cue (no fire) |
-| `/wincue/cue/{number}/go` | Jump to cue number and fire |
-| `/wincue/cue/{number}/select` | Move playhead to cue number (no fire) |
-| `/wincue/cue/{number}/stop` | Stop specific cue |
+| `/inkue/go` | Advance playhead and fire GO |
+| `/inkue/stop` | Stop all (soft fade) |
+| `/inkue/hardstop` | Hard stop all |
+| `/inkue/pause` | Pause all running cues |
+| `/inkue/resume` | Resume all paused cues |
+| `/inkue/pause_toggle` | Pause if anything is running, resume if anything is paused |
+| `/inkue/select/next` | Move playhead to next cue (no fire) |
+| `/inkue/select/previous` | Move playhead to previous cue (no fire) |
+| `/inkue/cue/{number}/go` | Jump to cue number and fire |
+| `/inkue/cue/{number}/select` | Move playhead to cue number (no fire) |
+| `/inkue/cue/{number}/stop` | Stop specific cue |
 
 Configure in **Preferences → Network**. An activity dot in the transport bar flashes on every received packet. The **OSC Monitor** (click the dot) shows all incoming packets in real time with address, arguments, and match status. A built-in dedup cache (50 ms window) eliminates duplicate UDP packets from Windows loopback and OSC controllers that transmit each packet twice.
 
@@ -96,7 +96,7 @@ src-tauri/src/
 │   ├── cue_list.rs         # ordered list + playhead
 │   ├── event_loop.rs       # 30 fps tick (completions, auto-continue, time events)
 │   │                       # + 60 fps timer-refresh thread for OSD
-│   ├── workspace.rs        # save / load .wincue JSON
+│   ├── workspace.rs        # save / load .inkue JSON
 │   └── undo_stack.rs
 ├── commands/       # Tauri IPC handlers (transport, cues, workspace, devices, prefs, osc)
 ├── state/          # AppState — engines, registry, undo, clipboard, last-GO timestamp
@@ -120,7 +120,7 @@ src/
 **Key invariants:**
 - The audio callback has zero allocations, zero locks, zero I/O — all comms via lock-free ring buffers.
 - The `Cue` trait is the only interface the transport layer uses. Adding a new cue type never requires touching `transport.rs`, `cue_list.rs`, or the CueList UI.
-- Machine-specific settings (audio device, OSC config) live in the per-OS config dir (`%APPDATA%\WinCue\` on Windows, `~/.config/WinCue` on Linux, `~/Library/Application Support/WinCue` on macOS); show-specific settings travel in the `.wincue` file.
+- Machine-specific settings (audio device, OSC config) live in the per-OS config dir (`%APPDATA%\Inkue\` on Windows, `~/.config/Inkue` on Linux, `~/Library/Application Support/Inkue` on macOS); show-specific settings travel in the `.inkue` file.
 
 ---
 
@@ -177,11 +177,11 @@ cd src-tauri && cargo test   # cue registry, OSC types/server/dedup, SR conversi
 
 ## QLab Terminology
 
-WinCue uses QLab's vocabulary throughout:
+Inkue uses QLab's vocabulary throughout:
 
 | Term | Meaning |
 |---|---|
-| **Workspace** | The project file (`.wincue`) |
+| **Workspace** | The project file (`.inkue`) |
 | **Cue List** | Ordered sequence of cues |
 | **Playhead** | Marker for the next cue triggered by GO |
 | **GO** | Trigger the cue at the playhead |

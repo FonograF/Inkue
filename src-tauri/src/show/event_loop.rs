@@ -56,7 +56,7 @@ pub fn run(
         let ws2 = Arc::clone(&workspace);
         let oe2 = Arc::clone(&output_engine);
         std::thread::Builder::new()
-            .name("wincue-timer-refresh".into())
+            .name("inkue-timer-refresh".into())
             .spawn(move || timer_refresh_loop(ws2, oe2))
             .expect("Failed to spawn timer refresh thread");
     }

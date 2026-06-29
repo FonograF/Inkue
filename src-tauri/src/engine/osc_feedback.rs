@@ -38,12 +38,12 @@ const MAX_RUNNING: usize = 8;
 ///
 /// `cues` is ordered (first = topmost running cue in the list).
 /// Addresses sent:
-///   `/wincue/cue/count          <int>`       — number of running cues
-///   `/wincue/cue/number         <string>`    — first cue number (compat)
-///   `/wincue/cue/name           <string>`    — first cue name   (compat)
-///   `/wincue/cue/active         <1 | 0>`     — 1 if any running
-///   `/wincue/cue/N/number       <string>`    — Nth cue number (N = 0..MAX)
-///   `/wincue/cue/N/name         <string>`    — Nth cue name
+///   `/inkue/cue/count          <int>`       — number of running cues
+///   `/inkue/cue/number         <string>`    — first cue number (compat)
+///   `/inkue/cue/name           <string>`    — first cue name   (compat)
+///   `/inkue/cue/active         <1 | 0>`     — 1 if any running
+///   `/inkue/cue/N/number       <string>`    — Nth cue number (N = 0..MAX)
+///   `/inkue/cue/N/name         <string>`    — Nth cue name
 pub fn send_running(cues: &[(String, String)]) {
     let count = cues.len().min(MAX_RUNNING);
     let first_num  = cues.first().map(|(n, _)| n.as_str()).unwrap_or("");
@@ -61,19 +61,19 @@ pub fn send_running(cues: &[(String, String)]) {
         .collect::<Vec<_>>()
         .join("\n");
 
-    msgs.push(("/wincue/cue/count".into(),  rosc::OscType::Int(count as i32)));
-    msgs.push(("/wincue/cue/list".into(),   rosc::OscType::String(list)));
-    msgs.push(("/wincue/cue/number".into(), rosc::OscType::String(first_num.to_owned())));
-    msgs.push(("/wincue/cue/name".into(),   rosc::OscType::String(first_name.to_owned())));
-    msgs.push(("/wincue/cue/active".into(), rosc::OscType::Int(if count > 0 { 1 } else { 0 })));
+    msgs.push(("/inkue/cue/count".into(),  rosc::OscType::Int(count as i32)));
+    msgs.push(("/inkue/cue/list".into(),   rosc::OscType::String(list)));
+    msgs.push(("/inkue/cue/number".into(), rosc::OscType::String(first_num.to_owned())));
+    msgs.push(("/inkue/cue/name".into(),   rosc::OscType::String(first_name.to_owned())));
+    msgs.push(("/inkue/cue/active".into(), rosc::OscType::Int(if count > 0 { 1 } else { 0 })));
 
     // Indexed slots — fill active, clear unused.
     for i in 0..MAX_RUNNING {
         let (num, name) = cues.get(i)
             .map(|(n, m)| (n.as_str(), m.as_str()))
             .unwrap_or(("", ""));
-        msgs.push((format!("/wincue/cue/{i}/number"), rosc::OscType::String(num.to_owned())));
-        msgs.push((format!("/wincue/cue/{i}/name"),   rosc::OscType::String(name.to_owned())));
+        msgs.push((format!("/inkue/cue/{i}/number"), rosc::OscType::String(num.to_owned())));
+        msgs.push((format!("/inkue/cue/{i}/name"),   rosc::OscType::String(name.to_owned())));
     }
 
     let refs: Vec<(&str, rosc::OscType)> = msgs.iter()
@@ -90,7 +90,7 @@ static PENDING_LIST_REQUEST: AtomicBool = AtomicBool::new(false);
 static PENDING_PLAYHEAD_REQUEST: AtomicBool = AtomicBool::new(false);
 
 /// Request an immediate send of the full cue list on the next event-loop tick.
-/// Called by the OSC server when `/wincue/cues/request` is received.
+/// Called by the OSC server when `/inkue/cues/request` is received.
 pub fn request_cue_list() {
     PENDING_LIST_REQUEST.store(true, Ordering::Relaxed);
 }
@@ -101,7 +101,7 @@ pub fn is_cue_list_requested() -> bool {
 }
 
 /// Request an immediate send of the current playhead state on the next event-loop tick.
-/// Called by the OSC server when `/wincue/playhead/request` is received.
+/// Called by the OSC server when `/inkue/playhead/request` is received.
 pub fn request_playhead() {
     PENDING_PLAYHEAD_REQUEST.store(true, Ordering::Relaxed);
 }
@@ -115,8 +115,8 @@ pub fn is_playhead_requested() -> bool {
 ///
 /// `cues` is the complete flat list `(number, name)` in display order.
 /// Addresses sent:
-///   `/wincue/cues/count    <int>`    — total number of cues
-///   `/wincue/cues/options  <string>` — JSON `[["num","num — name"],...]`
+///   `/inkue/cues/count    <int>`    — total number of cues
+///   `/inkue/cues/options  <string>` — JSON `[["num","num — name"],...]`
 ///                                      ready for use as a `dropdown` values
 ///                                      property in Open Stage Control.
 pub fn send_cue_list(cues: &[(String, String)]) {
@@ -138,20 +138,20 @@ pub fn send_cue_list(cues: &[(String, String)]) {
     let json = format!("[{}]", entries.join(","));
 
     send_messages(&[
-        ("/wincue/cues/count",   rosc::OscType::Int(cues.len() as i32)),
-        ("/wincue/cues/options", rosc::OscType::String(json)),
+        ("/inkue/cues/count",   rosc::OscType::Int(cues.len() as i32)),
+        ("/inkue/cues/options", rosc::OscType::String(json)),
     ]);
 }
 
 /// Send the playhead (next cue to GO) info to the configured destination.
 ///
 /// Addresses:
-///   `/wincue/playhead/number  <string>`
-///   `/wincue/playhead/name    <string>`
+///   `/inkue/playhead/number  <string>`
+///   `/inkue/playhead/name    <string>`
 pub fn send_playhead(number: &str, name: &str) {
     send_messages(&[
-        ("/wincue/playhead/number", rosc::OscType::String(number.to_owned())),
-        ("/wincue/playhead/name",   rosc::OscType::String(name.to_owned())),
+        ("/inkue/playhead/number", rosc::OscType::String(number.to_owned())),
+        ("/inkue/playhead/name",   rosc::OscType::String(name.to_owned())),
     ]);
 }
 

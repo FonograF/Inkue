@@ -2,7 +2,7 @@
 //!
 //! **MTC** sends a continuous stream of MIDI quarter-frame messages (one per
 //! output-frame quarter, i.e., 4 × fps messages/s) to a MIDI output port.
-//! A dedicated `wincue-tc-gen` thread owns the MIDI connection and times
+//! A dedicated `inkue-tc-gen` thread owns the MIDI connection and times
 //! quarter-frame messages using `std::thread::sleep`.
 //!
 //! **LTC** fills a `Vec<f32>` ring via [`super::ltc::LtcEncoder`] and feeds
@@ -82,7 +82,7 @@ impl MtcGenerator {
         let stop2 = Arc::clone(&stop);
 
         std::thread::Builder::new()
-            .name("wincue-tc-gen".into())
+            .name("inkue-tc-gen".into())
             .spawn(move || mtc_gen_thread(start_pos, port_name, stop2))
             .ok()?;
 
@@ -102,7 +102,7 @@ fn mtc_gen_thread(
     stop: Arc<AtomicBool>,
 ) {
     // Open the MIDI output connection.
-    let midi_out = match midir::MidiOutput::new("WinCue-TC-Gen") {
+    let midi_out = match midir::MidiOutput::new("Inkue-TC-Gen") {
         Ok(m) => m,
         Err(e) => { log::error!("TC gen: failed to create MIDI output: {e}"); return; }
     };
@@ -122,7 +122,7 @@ fn mtc_gen_thread(
     };
 
     let port_name_display = midi_out.port_name(&port).unwrap_or_default();
-    let mut conn = match midi_out.connect(&port, "wincue-tc") {
+    let mut conn = match midi_out.connect(&port, "inkue-tc") {
         Ok(c) => c,
         Err(e) => { log::error!("TC gen: failed to connect to '{port_name_display}': {:?}", e.kind()); return; }
     };

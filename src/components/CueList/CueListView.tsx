@@ -351,7 +351,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   const smoothedVelRef = useRef(0);
 
   // ---------- New-cue drag state (toolbar buttons dragged into list) ----------
-  // Driven by a CustomEvent "wincue:cue-drag-start" dispatched by external buttons.
+  // Driven by a CustomEvent "inkue:cue-drag-start" dispatched by external buttons.
   const [newCueDragType,     setNewCueDragType]     = useState<import("../../lib/types").CueType | null>(null);
   const [newCueDragInsertIdx, setNewCueDragInsertIdx] = useState<number | null>(null);
 
@@ -723,12 +723,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup",   onUp);
     document.addEventListener("keydown",   onKeyDown);
-    document.addEventListener("wincue:cue-drag-start", onNewCueDragStart);
+    document.addEventListener("inkue:cue-drag-start", onNewCueDragStart);
     return () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup",   onUp);
       document.removeEventListener("keydown",   onKeyDown);
-      document.removeEventListener("wincue:cue-drag-start", onNewCueDragStart);
+      document.removeEventListener("inkue:cue-drag-start", onNewCueDragStart);
     };
   }, []);
 

@@ -26,7 +26,7 @@ import type { CueSummary } from "./lib/types";
 // Recent files
 // ---------------------------------------------------------------------------
 
-const RECENT_FILES_KEY = "wincue_recent_files";
+const RECENT_FILES_KEY = "inkue_recent_files";
 const MAX_RECENT = 8;
 
 function loadRecentFiles(): string[] {
@@ -198,7 +198,7 @@ function RecoveryDialog({
           Recover Unsaved Work
         </div>
         <div style={{ fontSize: 13, color: "var(--wc-text-secondary)", marginBottom: 6 }}>
-          WinCue did not close properly.
+          Inkue did not close properly.
         </div>
         <div style={{ fontSize: 13, color: "var(--wc-text)", marginBottom: 24 }}>
           Recover unsaved work from{" "}
@@ -446,7 +446,7 @@ function FileMenu({
     { type: "separator" },
     { type: "item", label: "Preferences",     shortcut: "Ctrl+,",          action: act(onPreferences) },
     { type: "separator" },
-    { type: "item", label: "About WinCue",                                 action: act(onAbout) },
+    { type: "item", label: "About Inkue",                                 action: act(onAbout) },
     { type: "separator" },
     { type: "item", label: "Quit",                                         action: handleQuit },
   ];
@@ -582,7 +582,7 @@ function ViewMenu({ items }: { items: ViewMenuItem[] }) {
 // Persisted UI layout (panel visibility) — mirrors the column-config pattern.
 // ---------------------------------------------------------------------------
 
-const LS_LAYOUT_KEY = "wincue_ui_layout";
+const LS_LAYOUT_KEY = "inkue_ui_layout";
 
 interface UiLayout {
   showCueListTabs: boolean;
@@ -803,11 +803,11 @@ export default function App() {
    *  Returns true if the save completed, false if the user cancelled. */
   const handleSaveAs = useCallback(async (): Promise<boolean> => {
     const path = await saveDialog({
-      filters: [{ name: "WinCue Workspace", extensions: ["wincue"] }],
-      defaultPath: (workspaceInfo?.name ?? "Untitled") + ".wincue",
+      filters: [{ name: "Inkue Workspace", extensions: ["inkue"] }],
+      defaultPath: (workspaceInfo?.name ?? "Untitled") + ".inkue",
     });
     if (typeof path !== "string") return false;
-    const filePath = path.endsWith(".wincue") ? path : path + ".wincue";
+    const filePath = path.endsWith(".inkue") ? path : path + ".inkue";
     await saveWorkspace(filePath).catch(console.error);
     await refreshWorkspaceInfo();
     setRecentFiles(pushRecentFile(filePath));
@@ -834,7 +834,7 @@ export default function App() {
   const handleOpen = useCallback(async () => {
     const path = await openDialog({
       multiple: false,
-      filters: [{ name: "WinCue Workspace", extensions: ["wincue"] }],
+      filters: [{ name: "Inkue Workspace", extensions: ["inkue", "wincue"] }],
     });
     if (typeof path === "string") {
       await openWorkspacePath(path);
@@ -1036,7 +1036,7 @@ export default function App() {
   const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
-      new CustomEvent("wincue:cue-drag-start", {
+      new CustomEvent("inkue:cue-drag-start", {
         detail: { cueType, startX: e.clientX, startY: e.clientY },
       }),
     );
@@ -1044,7 +1044,7 @@ export default function App() {
 
   const titleBarName = workspaceInfo
     ? `${workspaceInfo.name}${workspaceInfo.is_modified ? " •" : ""}`
-    : "WinCue";
+    : "Inkue";
 
   return (
     <div
@@ -1124,7 +1124,7 @@ export default function App() {
           full-width drag area; Row 2 holds the cue toolbar.  Splitting them means
           the toolbar can never squeeze the drag area down to an ungrabbable sliver
           when the window is narrow (the previous single-row layout collapsed it to
-          ~40px, so only the "WinCue" label was draggable).  No drag-region on the
+          ~40px, so only the "Inkue" label was draggable).  No drag-region on the
           row containers so menus/buttons keep working on Linux/WebKitGTK. */}
       <div
         style={{
@@ -1167,7 +1167,7 @@ export default function App() {
             data-tauri-drag-region
             style={{ fontWeight: 700, fontSize: 13, color: "var(--wc-text-bright)", flexShrink: 0 }}
           >
-            WinCue
+            Inkue
           </span>
           <span
             data-tauri-drag-region

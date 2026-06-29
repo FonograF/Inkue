@@ -3,7 +3,7 @@
 //! All mpv symbols are resolved at runtime from `libmpv-2.dll`.
 //! The build script (`build.rs`) copies the DLL next to the compiled binary.
 //!
-//! Only the subset of the mpv API that WinCue actually uses is exposed here.
+//! Only the subset of the mpv API that Inkue actually uses is exposed here.
 
 #![allow(dead_code)]
 

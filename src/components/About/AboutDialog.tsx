@@ -26,7 +26,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
-          <span style={{ fontSize: 20, fontWeight: 700, color: "var(--wc-text-bright)" }}>WinCue</span>
+          <span style={{ fontSize: 20, fontWeight: 700, color: "var(--wc-text-bright)" }}>Inkue</span>
           <span style={{ fontSize: 13, color: "var(--wc-text-muted)" }}>v{version}</span>
         </div>
 
@@ -50,19 +50,19 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         >
           <strong style={{ color: "var(--wc-text-secondary)" }}>libmpv</strong> is licensed under the{" "}
           <strong>GNU Lesser General Public License v2.1+</strong> (LGPL-2.1-or-later).
-          WinCue loads it at runtime as an unmodified shared library.
+          Inkue loads it at runtime as an unmodified shared library.
           Source: <span style={{ fontFamily: "monospace" }}>mpv.io</span>
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <a
-            href="https://github.com/FonograF/wincue"
+            href="https://github.com/FonograF/inkue"
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: 12, color: "var(--wc-accent)", textDecoration: "none" }}
             onClick={(e) => e.stopPropagation()}
           >
-            github.com/FonograF/wincue
+            github.com/FonograF/inkue
           </a>
           <button
             onClick={onClose}

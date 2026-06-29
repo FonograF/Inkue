@@ -774,9 +774,9 @@ function OscContent({
         </Row>
         <Row label="Address reference">
           <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", lineHeight: 1.6 }}>
-            <code style={{ fontFamily: "monospace" }}>/wincue/go</code> · <code>/wincue/stop</code> · <code>/wincue/hardstop</code><br />
-            <code>/wincue/pause</code> · <code>/wincue/resume</code><br />
-            <code>/wincue/cue/&#123;n&#125;/go</code> · <code>/wincue/cue/&#123;n&#125;/select</code> · <code>/wincue/cue/&#123;n&#125;/stop</code>
+            <code style={{ fontFamily: "monospace" }}>/inkue/go</code> · <code>/inkue/stop</code> · <code>/inkue/hardstop</code><br />
+            <code>/inkue/pause</code> · <code>/inkue/resume</code><br />
+            <code>/inkue/cue/&#123;n&#125;/go</code> · <code>/inkue/cue/&#123;n&#125;/select</code> · <code>/inkue/cue/&#123;n&#125;/stop</code>
           </div>
         </Row>
       </Section>
@@ -819,9 +819,9 @@ function OscContent({
             </Row>
             <Row label="Messages sent">
               <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", lineHeight: 1.7 }}>
-                <code style={{ fontFamily: "monospace" }}>/wincue/cue/number</code> — cue number (string)<br />
-                <code style={{ fontFamily: "monospace" }}>/wincue/cue/name</code> &nbsp;&nbsp;&nbsp;— cue name (string)<br />
-                <code style={{ fontFamily: "monospace" }}>/wincue/cue/active</code> &nbsp;— 1 running / 0 stopped (int)<br />
+                <code style={{ fontFamily: "monospace" }}>/inkue/cue/number</code> — cue number (string)<br />
+                <code style={{ fontFamily: "monospace" }}>/inkue/cue/name</code> &nbsp;&nbsp;&nbsp;— cue name (string)<br />
+                <code style={{ fontFamily: "monospace" }}>/inkue/cue/active</code> &nbsp;— 1 running / 0 stopped (int)<br />
                 <span style={{ color: "var(--wc-text-faint)" }}>Sent on every active-cue change (GO, stop, auto-follow).</span>
               </div>
             </Row>

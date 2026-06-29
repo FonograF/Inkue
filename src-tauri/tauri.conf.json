@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "WinCue",
+  "productName": "Inkue",
   "version": "0.9.26",
-  "identifier": "com.wincue.app",
+  "identifier": "com.inkue.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "WinCue",
+        "title": "Inkue",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -38,7 +38,7 @@
       },
       {
         "label": "float-timer",
-        "title": "WinCue Timer",
+        "title": "Inkue Timer",
         "width": 420,
         "height": 110,
         "decorations": false,

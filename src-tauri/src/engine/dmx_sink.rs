@@ -195,7 +195,7 @@ mod tests {
         let mut dmx = [0u8; DMX_UNIVERSE_SIZE];
         dmx[0] = 255;
         dmx[511] = 7;
-        let p = encode_sacn(&cid, "WinCue", 1, 100, 42, &dmx);
+        let p = encode_sacn(&cid, "Inkue", 1, 100, 42, &dmx);
 
         assert_eq!(p.len(), 638);
         assert_eq!(&p[0..2], &[0x00, 0x10]); // preamble size
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(&p[22..38], &cid); // CID
         assert_eq!(&p[38..40], &[0x72, 0x58]); // framing flags+length (0x7000|600)
         assert_eq!(&p[40..44], &[0, 0, 0, 2]); // framing vector
-        assert_eq!(&p[44..50], b"WinCue"); // source name
+        assert_eq!(&p[44..49], b"Inkue"); // source name
         assert_eq!(p[108], 100); // priority
         assert_eq!(p[111], 42); // sequence
         assert_eq!(&p[113..115], &[0, 1]); // universe

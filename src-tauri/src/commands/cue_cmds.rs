@@ -642,7 +642,7 @@ pub fn set_audio_file(
     let file_path_buf = std::path::PathBuf::from(file_path);
 
     std::thread::Builder::new()
-        .name("wincue-preload".into())
+        .name("inkue-preload".into())
         .spawn(move || {
             // Run at below-normal OS priority so decoding never starves the
             // audio callback thread or causes fan spin-up on the host machine.
@@ -832,7 +832,7 @@ pub fn set_video_file(
         let loading_cues = state.loading_cues.clone();
         let handle2 = app_handle.clone();
         std::thread::Builder::new()
-            .name("wincue-video-load".into())
+            .name("inkue-video-load".into())
             .spawn(move || {
                 let lib = output_engine.mpv_lib();
                 let duration = crate::engine::OutputEngine::probe_duration(lib, &path);

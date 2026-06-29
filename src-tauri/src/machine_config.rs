@@ -1,6 +1,6 @@
-//! Persistence for machine-level configs in `%APPDATA%\WinCue\`.
+//! Persistence for machine-level configs in `%APPDATA%\Inkue\`.
 //!
-//! These files are intentionally separate from the workspace (`.wincue`)
+//! These files are intentionally separate from the workspace (`.inkue`)
 //! because hardware settings are machine-specific — the workspace travels
 //! with the show while these stay on the machine.
 
@@ -41,7 +41,7 @@ pub(crate) fn config_base_dir() -> PathBuf {
 
 /// Absolute path to the machine audio config file.
 fn config_path() -> PathBuf {
-    config_base_dir().join("WinCue").join("audio.json")
+    config_base_dir().join("Inkue").join("audio.json")
 }
 
 /// Load the machine audio config from disk.  Returns [`MachineAudioConfig::default`]
@@ -54,7 +54,7 @@ pub fn load() -> MachineAudioConfig {
         .unwrap_or_default()
 }
 
-/// Persist the machine audio config to disk, creating `%APPDATA%\WinCue\` if needed.
+/// Persist the machine audio config to disk, creating `%APPDATA%\Inkue\` if needed.
 pub fn save(config: &MachineAudioConfig) -> anyhow::Result<()> {
     let path = config_path();
     if let Some(dir) = path.parent() {
@@ -70,7 +70,7 @@ pub fn save(config: &MachineAudioConfig) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 fn osc_config_path() -> PathBuf {
-    config_base_dir().join("WinCue").join("osc.json")
+    config_base_dir().join("Inkue").join("osc.json")
 }
 
 /// Load the OSC receive config from disk.  Returns the default config on first
@@ -83,7 +83,7 @@ pub fn load_osc() -> OscReceiveConfig {
         .unwrap_or_default()
 }
 
-/// Persist the OSC receive config to disk, creating `%APPDATA%\WinCue\` if needed.
+/// Persist the OSC receive config to disk, creating `%APPDATA%\Inkue\` if needed.
 pub fn save_osc(config: &OscReceiveConfig) -> anyhow::Result<()> {
     let path = osc_config_path();
     if let Some(dir) = path.parent() {
@@ -110,7 +110,7 @@ pub struct TcMachineConfig {
 
 
 fn tc_config_path() -> std::path::PathBuf {
-    config_base_dir().join("WinCue").join("timecode.json")
+    config_base_dir().join("Inkue").join("timecode.json")
 }
 
 pub fn load_tc_config() -> TcMachineConfig {

@@ -1,6 +1,6 @@
 //! [`AudioCue`] — plays an audio file through the audio engine.
 //!
-//! This is the primary cue type for WinCue.  It decodes an audio file using
+//! This is the primary cue type for Inkue.  It decodes an audio file using
 //! symphonia and submits a [`Voice`](crate::engine::voice::Voice) to the
 //! [`AudioEngine`](crate::engine::AudioEngine) when triggered.
 

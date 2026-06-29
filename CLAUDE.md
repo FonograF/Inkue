@@ -1,4 +1,4 @@
-# CLAUDE.md — WinCue
+# CLAUDE.md — Inkue
 
 Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Tauri v2 + Rust backend + React/TS frontend.
 **Read `PROGRESS.md` before any implementation work** — it is the ground truth for what is done and what is broken. `ARCHITECTURE.md` documents engine internals (output window, timer, audio pipeline); `PORTAGE.md` is the ground truth for the cross-platform architecture and its per-OS pitfalls.
@@ -12,7 +12,7 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 
 ## Architecture rules — DO NOT VIOLATE
 
-**Cross-platform**: WinCue runs on Windows, macOS and Linux. Every feature must compile and work on all three — design for this from the start, never bolt it on. No per-OS API without `#[cfg(target_os)]` and a working path for the other OSes. Known pitfalls (full detail in `PORTAGE.md`): touch WebView/windows only via `AppHandle::run_on_main_thread` (off-main-thread GTK calls crash on Linux); resolve config/data paths via per-OS dirs (`~/.config`, `~/Library/Application Support`, `%APPDATA%`) — never hardcode `%APPDATA%`; audio via generic `cpal` (no direct WASAPI-specific calls); no winit on macOS (its `EventLoop` needs the AppKit main run loop Tauri already owns).
+**Cross-platform**: Inkue runs on Windows, macOS and Linux. Every feature must compile and work on all three — design for this from the start, never bolt it on. No per-OS API without `#[cfg(target_os)]` and a working path for the other OSes. Known pitfalls (full detail in `PORTAGE.md`): touch WebView/windows only via `AppHandle::run_on_main_thread` (off-main-thread GTK calls crash on Linux); resolve config/data paths via per-OS dirs (`~/.config`, `~/Library/Application Support`, `%APPDATA%`) — never hardcode `%APPDATA%`; audio via generic `cpal` (no direct WASAPI-specific calls); no winit on macOS (its `EventLoop` needs the AppKit main run loop Tauri already owns).
 
 **Cue extensibility**: every cue type implements `Cue` trait (`cue/traits.rs`). Adding a new cue type must **never** require touching `show/transport.rs`, `show/cue_list.rs`, or `components/CueList/`.
 
@@ -39,7 +39,7 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 
 - Stop on audio cue = short fade-out (default 0.5 s). Hard Stop = immediate cut.
 - Double-Escape = Hard Stop All.
-- File paths in `.wincue` are always relative to the workspace file.
+- File paths in `.inkue` are always relative to the workspace file.
 - Cue Number is a `String`, not an integer.
 - Selection (inspector) is independent from Playhead (GO target).
 

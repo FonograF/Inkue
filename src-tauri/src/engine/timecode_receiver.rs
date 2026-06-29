@@ -192,7 +192,7 @@ impl TcFlywheel {
 
 /// Enumerate available MIDI input port names (for UI dropdowns).
 pub fn list_midi_input_ports() -> Vec<String> {
-    match midir::MidiInput::new("WinCue-tc-list") {
+    match midir::MidiInput::new("Inkue-tc-list") {
         Ok(inp) => inp
             .ports()
             .iter()
@@ -280,7 +280,7 @@ impl TimecodeReceiver {
         match config.source {
             TcSource::Mtc => {
                 std::thread::Builder::new()
-                    .name("wincue-tc-mtc".into())
+                    .name("inkue-tc-mtc".into())
                     .spawn(move || mtc_thread(config.midi_port, tx, shutdown, flywheel))
                     .expect("failed to spawn MTC receiver thread");
             }
@@ -311,7 +311,7 @@ fn mtc_thread(
 ) {
     let assembler = MtcAssembler::default();
 
-    let Ok(midi_in) = midir::MidiInput::new("WinCue-tc") else {
+    let Ok(midi_in) = midir::MidiInput::new("Inkue-tc") else {
         log::error!("TC: failed to create MIDI input");
         return;
     };
@@ -346,7 +346,7 @@ fn mtc_thread(
 
     let _conn = midi_in.connect(
         port,
-        "wincue-tc",
+        "inkue-tc",
         move |_stamp, message, _| {
             if shutdown2.load(Ordering::Relaxed) { return; }
             let Some(pos) = decode_mtc_message(message, &asm2) else { return };

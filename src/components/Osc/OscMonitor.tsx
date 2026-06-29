@@ -4,15 +4,15 @@ import { useEffect, useRef } from "react";
 import { useTransportStore } from "../../stores/transportStore";
 
 const KNOWN_ADDRS = new Set([
-  "/wincue/go", "/wincue/stop", "/wincue/hardstop",
-  "/wincue/pause", "/wincue/resume",
-  "/wincue/select/next", "/wincue/select/previous",
-  "/wincue/pause_toggle",
+  "/inkue/go", "/inkue/stop", "/inkue/hardstop",
+  "/inkue/pause", "/inkue/resume",
+  "/inkue/select/next", "/inkue/select/previous",
+  "/inkue/pause_toggle",
 ]);
 
 function isKnown(addr: string): boolean {
   if (KNOWN_ADDRS.has(addr)) return true;
-  return /^\/wincue\/cue\/.+\/(go|select|stop)$/.test(addr);
+  return /^\/inkue\/cue\/.+\/(go|select|stop)$/.test(addr);
 }
 
 export function OscMonitor({ onClose }: { onClose: () => void }) {

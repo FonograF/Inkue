@@ -1,6 +1,6 @@
-# WinCue — Light Cue / contrôleur DMX
+# Inkue — Light Cue / contrôleur DMX
 
-Objectif : faire de WinCue un **contrôleur lumière complet** (pas seulement un
+Objectif : faire de Inkue un **contrôleur lumière complet** (pas seulement un
 déclencheur de console externe) — sortie DMX-over-IP directe vers des projecteurs,
 avec un modèle de fixtures et des fades temporisés.
 
@@ -37,7 +37,7 @@ engine/dmx_engine.rs (M1/M2 ✅)  DmxEngine : buffers d'univers, interpolation d
 engine/dmx_sink.rs   (M1 ✅)  Encodeurs sACN + Art-Net + sink UDP.
 ```
 
-- **Patch fixtures** (M3 ✅) → `fixtures` + `universe_outputs` sérialisés dans le `.wincue`, comme les patches OSC.
+- **Patch fixtures** (M3 ✅) → `fixtures` + `universe_outputs` sérialisés dans le `.inkue`, comme les patches OSC.
 - **`CueContext`** (M4 ✅) porte `dmx_engine: Arc<DmxEngine>` + `fixtures`, à côté de `audio_engine` / `output_engine`.
 - **Réutilise** `FadeCurve` (`engine::ring_command`) pour les courbes de fade (conversion depuis `cue::types::FadeCurve` au bord, comme `audio_cue`).
 
@@ -92,7 +92,7 @@ LightCue { …champs de cue…, targets: [ParamTarget], fade: FadeSpec }
 | Priorité | champ priorité (défaut 100) | — |
 | Identité source | CID 16 octets (UUID au démarrage) | — |
 
-Émission : thread `wincue-dmx` à **~40 Hz**, send-on-change + **keepalive 800 ms**, n° de séquence par univers.
+Émission : thread `inkue-dmx` à **~40 Hz**, send-on-change + **keepalive 800 ms**, n° de séquence par univers.
 
 ---
 
@@ -116,11 +116,11 @@ LightCue { …champs de cue…, targets: [ParamTarget], fade: FadeSpec }
 - `engine/dmx_engine.rs` — `DmxState` (pur, testable) + `DmxEngine` (handle + thread). Commandes : `submit_fade`, `set_channel`, `set_blackout`, `set_outputs`, `snapshot`.
 - `engine/mod.rs` — exporte `DmxEngine`.
 - `state/app_state.rs` — champ `dmx_engine: Arc<DmxEngine>` + `LightCueFactory` enregistrée.
-- `lib.rs` — création au démarrage + thread `wincue-dmx-monitor` qui émet l'event `dmx-monitor` (~20 fps, on-change, jamais de polling) + `dmx_engine` passé à l'event loop.
+- `lib.rs` — création au démarrage + thread `inkue-dmx-monitor` qui émet l'event `dmx-monitor` (~20 fps, on-change, jamais de polling) + `dmx_engine` passé à l'event loop.
 - `engine/fixture.rs` (M3) — `ParamKind`, `FixtureParam`, `FixtureType`, `PatchedFixture` (type **embarqué** → workspace auto-suffisant), `builtin_fixture_types()` (Dimmer, RGB, RGBW, RGBA, PAR Dimmer+RGB, tête mobile 16-bit), `footprint()`, `resolve_channel()` (1-based → 0-based), `find_conflicts()`. 5 tests.
 - `cue/light_cue.rs` (M4) — `LightCue` + `ParamTarget` ; `go()` résout `fixture → (universe, canal, width)` et soumet un fade par target au `DmxEngine` ; `duration()` = temps du fade (progress + auto-continue) ; stop = tracking (ne touche pas aux lumières). `fixture_id` stocké en `String` (placeholder vide toléré → une target non configurée ne casse pas la désérialisation de toute la liste). Factory + roundtrip. 3 tests.
 - `cue/context.rs` (M4) — `dmx_engine: Arc<DmxEngine>` + `fixtures: Arc<Vec<PatchedFixture>>` + `resolve_fixture()`. Câblé dans `transport_cmds` et `event_loop`.
-- `show/workspace.rs` (M3) — `universe_outputs` **et** `fixtures` sérialisés dans le `.wincue` ; `load_workspace`/`new_workspace` repoussent les sorties vers le moteur (source de vérité = workspace, plus localStorage).
+- `show/workspace.rs` (M3) — `universe_outputs` **et** `fixtures` sérialisés dans le `.inkue` ; `load_workspace`/`new_workspace` repoussent les sorties vers le moteur (source de vérité = workspace, plus localStorage).
 - `commands/light_cmds.rs` — DMX : `dmx_set_outputs` (persiste au workspace), `dmx_get_outputs`, `dmx_set_channel`, `dmx_set_blackout`, `dmx_get_blackout`, `dmx_get_snapshot`. Fixtures : `list_builtin_fixture_types`, `list_fixtures`, `add_fixture`, `update_fixture`, `remove_fixture`, `get_fixture_conflicts`, `dmx_test_fixture` (identify). **Dashboard** : `dmx_set_fixture_param` (set live width-aware), `dmx_clear_fixtures`, `capture_live_targets` (lit le snapshot moteur → renvoie les targets ; ne mute pas la cue — le front applique via `update_cue`).
 
 **Frontend**
@@ -158,7 +158,7 @@ Le hardware (un node Art-Net USB + un PAR LED) n'est utile que pour la vérif «
 
 Objectif : variation lumineuse **automatique et continue** (sinus d'intensité, vagues,
 chases, twinkle, ballyhoo) — ce que les Light Cue de QLab ne savent PAS faire (QLab se
-limite aux courbes de fade ondulées + chaînage de cues). C'est là que WinCue dépasse QLab
+limite aux courbes de fade ondulées + chaînage de cues). C'est là que Inkue dépasse QLab
 plutôt que de le copier.
 
 ### Insight central : un effet n'est pas un fade

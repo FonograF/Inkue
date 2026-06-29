@@ -1,4 +1,4 @@
-# WinCue — Timecode (design + plan)
+# Inkue — Timecode (design + plan)
 
 Objectif : **parité QLab** sur le timecode — déclenchement de cues à une position (esclave)
 **et** génération de timecode pour asservir d'autres machines (maître). Formats **MTC + LTC**.
@@ -21,15 +21,15 @@ Le design verrouillé ci-dessous reste la référence pour v2.
 Un timecode est une horloge continue `HH:MM:SS:FF` à une cadence (24/25/29.97/30 fps),
 diffusée pour que plusieurs machines partagent **une seule ligne de temps**. Il transforme une
 liste de cues *pilotée à la main* en **show verrouillé sur une timeline**, répétable à la frame
-près, et permet à WinCue de s'insérer dans un écosystème pro.
+près, et permet à Inkue de s'insérer dans un écosystème pro.
 
 | Scénario | Sans TC | Avec TC |
 |---|---|---|
 | Vidéo + son + lumière sur un film/playback | GO « à peu près » | frame-accurate, identique à chaque représentation |
 | Concert avec click/bande | dérive humaine | les cues tombent pile sur la musique |
-| Corporate avec roll-ins vidéo | risque de décalage | serveur vidéo et WinCue sur la même horloge |
+| Corporate avec roll-ins vidéo | risque de décalage | serveur vidéo et Inkue sur la même horloge |
 | Broadcast / parc / install permanente | impossible sans opérateur | show déterministe, lancé une fois |
-| Piloter console lumière / DAW | déclenchements séparés | WinCue **maître** envoie le TC, tout suit |
+| Piloter console lumière / DAW | déclenchements séparés | Inkue **maître** envoie le TC, tout suit |
 
 ---
 
@@ -85,7 +85,7 @@ pattern thread+snapshot+event de `dmx_engine.rs`, serveur UDP existant si besoin
 
 ---
 
-## Formats — coût dans l'archi WinCue
+## Formats — coût dans l'archi Inkue
 
 | Brique | Implémentation | Coût |
 |---|---|---|
@@ -152,7 +152,7 @@ la complétude / parité, pas d'étape intermédiaire « MTC seul »).
 - Encodeur LTC : layout biphase-mark + sync word `0011111111111101` (golden test sur quelques frames).
 - Décodeur LTC : round-trip encodeur→décodeur sur un buffer audio synthétique.
 - MTC : quarter-frame (8 messages = 2 frames) + full-frame, sens montant/descendant.
-- Roundtrip serde : trigger de cue + `TimecodeCue` dans `.wincue`.
+- Roundtrip serde : trigger de cue + `TimecodeCue` dans `.inkue`.
 
 ---
 

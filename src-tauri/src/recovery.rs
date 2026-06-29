@@ -1,7 +1,7 @@
 //! Crash-recovery snapshot of the in-memory workspace.
 //!
 //! While a show has unsaved changes, the autosave thread (`lib.rs`) writes the
-//! current workspace to `recovery.wincue` in the per-user config dir every few
+//! current workspace to `recovery.inkue` in the per-user config dir every few
 //! seconds.  A clean exit (window close) deletes it, so its **presence at
 //! startup means the previous session ended abnormally** (crash / power loss)
 //! and the unsaved work can be offered back to the operator.
@@ -16,7 +16,7 @@ use crate::machine_config::config_base_dir;
 
 /// Absolute path to the recovery snapshot file.
 fn recovery_path() -> PathBuf {
-    config_base_dir().join("WinCue").join("recovery.wincue")
+    config_base_dir().join("Inkue").join("recovery.inkue")
 }
 
 /// Metadata shown in the "recover unsaved work?" prompt — parsed from the
@@ -25,7 +25,7 @@ fn recovery_path() -> PathBuf {
 pub struct RecoveryInfo {
     /// Workspace name (file stem, or "Untitled" if never saved).
     pub name: String,
-    /// Original `.wincue` path, if the show had been saved before the crash.
+    /// Original `.inkue` path, if the show had been saved before the crash.
     pub original_path: Option<String>,
     /// ISO-8601 timestamp of the last edit captured in the snapshot.
     pub modified_at: Option<String>,

@@ -1,4 +1,4 @@
-# WinCue — Project state as of 2026-06-26
+# Inkue — Project state as of 2026-06-26
 
 ## Current version: 0.9.26
 
@@ -26,7 +26,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 | Group | ✅ **Functional** | Sequential and parallel modes; holds playhead in sequential mode; GO absorption for mid-sequence resume; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
 | Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues); audio fade (gain interpolation at 30 fps); visual fade for Video/Image (overlay alpha interpolation at 30 fps, `set_overlay_alpha_direct`); configurable curve; optional Stop at End; context-aware inspector (volume dB for audio/video, brightness % for image, both for video) |
-| OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /wincue/pause_toggle; /wincue/select/next\|previous |
+| OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /inkue/pause_toggle; /inkue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
 | Mic      | ✅ **Functional** | (see 0.9.5) |
@@ -115,7 +115,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ### ✅ RESOLVED (0.9.26): Linux UI froze while a video cue plays — continuous UI animation
 
-**Symptom.** On the operator's Linux box (`pnpm tauri dev`), WinCue's WebKitGTK **UI** froze
+**Symptom.** On the operator's Linux box (`pnpm tauri dev`), Inkue's WebKitGTK **UI** froze
 to ~0 fps *while a video cue plays* — GO/Stop only registered after ~5 s. The **video itself
 stayed fluid**. Audio cues never caused it; only video. A **production build was fluid** with
 the same clip, which is what finally localised the cause.
@@ -139,7 +139,7 @@ Audio cues put no load on the GPU, so the same continuous repaints were free →
 lagged. Dev React (StrictMode double-render, unminified) widened the gap; a production build
 had just enough compositor headroom to stay fluid.
 
-**Confirmation.** Capping the output present rate (`WINCUE_OUTPUT_FPS=10`) lifted the UI from
+**Confirmation.** Capping the output present rate (`INKUE_OUTPUT_FPS=10`) lifted the UI from
 0 → ~20 fps (proves the output window was starving it); disabling the LED lifted it further
 (0 → 6 fps interactive). With both UI fixes below, **dev mode + a video cue went from 0 fps
 (frozen, GO/Stop after ~5 s) to 30+ fps (responsive)**.
@@ -154,7 +154,7 @@ had just enough compositor headroom to stay fluid.
   continuous `transition`**, so each timing update is one discrete cheap commit.
 
 No backend change was needed. The output render path is already cheap (mpv render call ~3 ms,
-swap ~0.6 ms). On Linux, `WINCUE_OUTPUT_BACKEND=wayland` additionally renders a correct-size
+swap ~0.6 ms). On Linux, `INKUE_OUTPUT_BACKEND=wayland` additionally renders a correct-size
 (smaller) output FBO instead of the XWayland-scaled one, for extra headroom on weak iGPUs if
 ever needed.
 
@@ -176,7 +176,7 @@ fix, not the full investigation.
 
 ### 0.9.26 (2026-06-29) — Linux UI froze during video: continuous UI animation (frontend)
 
-The recurring "WinCue UI freezes while a video cue plays" on the weak Linux box (Intel HD 520,
+The recurring "Inkue UI freezes while a video cue plays" on the weak Linux box (Intel HD 520,
 `pnpm tauri dev`) is **fixed**. Root-caused by measuring the UI thread directly (an in-UI
 `requestAnimationFrame` meter): during the freeze the GTK main loop stayed responsive (~150 µs)
 but WebKitGTK's paint clock sat at 0 fps — i.e. **GPU/compositor contention**, not CPU and not
@@ -209,7 +209,7 @@ hardened the two frontend fixes that were genuinely too weak.
 **Can't drag the narrow window — real root cause + robust fix.** 0.9.24 only set
 `minWidth: 40` on the single-row drag region. With 14 cue-toolbar buttons at
 `flexShrink: 0`, the toolbar keeps full width and the flex algorithm collapses the
-drag region to that 40px minimum — so only the "WinCue" label is grabbable (exactly
+drag region to that 40px minimum — so only the "Inkue" label is grabbable (exactly
 the symptom). Fix: split the custom title bar into **two rows** — Row 1 = window
 controls + File/View menus + a full-width draggable title; Row 2 = the cue toolbar
 (`flexWrap: wrap`, so every button stays reachable when narrow). The drag area can no
@@ -223,8 +223,8 @@ restored state *after* the window maps. Fix: the mount effect now calls
 reliably winning the race and covering both maximized and fullscreen restore.
 `src/App.tsx`.
 
-**Video playback froze WinCue's UI to ~1 fps (clicks delayed by seconds) — REGRESSION
-REVERTED.** The operator clarified: the *video plays fine*, but WinCue's WebKitGTK UI
+**Video playback froze Inkue's UI to ~1 fps (clicks delayed by seconds) — REGRESSION
+REVERTED.** The operator clarified: the *video plays fine*, but Inkue's WebKitGTK UI
 drops to ~1 fps while it plays (front **or** behind the output window — so not occlusion),
 single screen, and "it worked fine a few days ago." File mtimes confirmed it: the
 known-good commit was 11:33, but `render.rs` was edited at 12:16 the same day with the
@@ -255,7 +255,7 @@ runs on a *native Wayland* EGL surface (winit defaults to Wayland on a Wayland s
 which is the lag. Fix (`engine/output_engine/render.rs`, `build_event_loop`): **force the
 X11/XWayland backend** on Linux (`with_x11()`) — XWayland's X11/DRI EGL path honours
 `SwapInterval::DontWait`, decoupling the two GL clients so the UI stays fluid during video.
-`WINCUE_OUTPUT_BACKEND=wayland` is an opt-in escape hatch (logged at startup; glutin keeps
+`INKUE_OUTPUT_BACKEND=wayland` is an opt-in escape hatch (logged at startup; glutin keeps
 the `wayland` feature so it links). Windows/macOS untouched (`build_event_loop` is
 per-`cfg`). `render.rs` otherwise equals the known-good baseline plus the `OUTPUT_VISIBLE`
 gate.
@@ -267,7 +267,7 @@ with the earlier cap freeing the UI). Two Linux levers: (1) `hwdec` `auto-copy` 
 (direct VAAPI↔GL interop, zero-copy) so the decoded surface is imported as a DMA-BUF/
 EGLImage instead of round-tripping GPU→RAM→GPU — halves memory-bus traffic on the shared
 iGPU, no video-smoothness cost (`engine/output_engine/fade.rs`). (2) An **opt-in** output
-FPS cap `WINCUE_OUTPUT_FPS` (default off/uncapped; `render.rs`) the operator can set to e.g.
+FPS cap `INKUE_OUTPUT_FPS` (default off/uncapped; `render.rs`) the operator can set to e.g.
 30 if the UI still lags — it halves the output's present rate (UI headroom) at the cost of
 video smoothness, so it stays off by default. Windows/macOS unaffected (both `cfg(linux)`).
 
@@ -382,7 +382,7 @@ Completion stays correct: an AudioCue completes on the engine's `AudioStatus::Co
 
 The 0.9.14 watchdog never fired on a real unplug: the cpal error callback only set `stream_failed` after **50** `DeviceNotAvailable` errors, but a WASAPI device removal fires it once or twice — so the flag never tripped and no banner appeared. Fixed in `engine/audio_engine.rs`:
 - `stream_failed` is now set on the **first** `DeviceNotAvailable`.
-- Added a kind-agnostic **heartbeat**: a monotonic `output_callbacks` counter incremented in every output callback (shared across restarts). The `wincue-device-watchdog` (`lib.rs`) treats a count that stops advancing for one ~2 s tick as a dead stream — so device loss is detected even if cpal surfaces no error or a different error kind.
+- Added a kind-agnostic **heartbeat**: a monotonic `output_callbacks` counter incremented in every output callback (shared across restarts). The `inkue-device-watchdog` (`lib.rs`) treats a count that stops advancing for one ~2 s tick as a dead stream — so device loss is detected even if cpal surfaces no error or a different error kind.
 - The cpal error log now includes `err.kind()` for diagnosis via the in-app log viewer.
 
 ### 0.9.17 (2026-06-25) — Dismissible health banner
@@ -404,7 +404,7 @@ A device that drops mid-show no longer silently kills the show — it is detecte
 
 - **`health.rs`** (new) — cross-cutting runtime-health registry (keyed `HealthAlert`s + `SEQ`), same pattern as `logger`. Idempotent `set`/`clear` so the watchdog re-asserts every tick for free; only real changes bump `SEQ`.
 - **`engine/audio_engine.rs`** — the per-stream `stream_failed` flag is now stored (replaced on each restart) along with the operator's `desired_config`, the `current_device_id`, and an `in_fallback` flag. New methods: `audio_health()` (enumerates devices **only** while in fallback, so the steady state is just an atomic read), `apply_user_config()` (explicit device change → records desired + clears fallback), `fall_back_to_default()` (auto-switch to default on loss), `restore_desired()` (manual re-switch). The one-shot 500 ms startup watchdog is removed (subsumed by the continuous one).
-- **`lib.rs`** — `wincue-device-watchdog` thread (2 s): on output-device loss falls back to the default device to keep audio alive and raises an error banner; when the desired device returns it switches the banner to a "Rebasculer" action (no automatic re-switch — re-opening the stream glitches audio, never forced onto a critical cue). Emits a throttled `health-changed` event.
+- **`lib.rs`** — `inkue-device-watchdog` thread (2 s): on output-device loss falls back to the default device to keep audio alive and raises an error banner; when the desired device returns it switches the banner to a "Rebasculer" action (no automatic re-switch — re-opening the stream glitches audio, never forced onto a critical cue). Emits a throttled `health-changed` event.
 - **`cue/midi_cue.rs`** — `send_midi_messages` raises a keyed health alert on a missing/unreachable port and clears it on the next successful send to that port (self-healing).
 - **`commands/health_cmds.rs`** (new) — `get_health_alerts`, `restore_audio_device` (resets running cues since the restart kills voices). `update_machine_audio_config` now routes through `apply_user_config` and clears the audio alert.
 - **Frontend** — `HealthBanner` (non-blocking stack under the title bar, per-level colour, action button), `workspaceStore.healthAlerts` + `refreshHealth`, `health-changed` listener in `useTauriEvents`.
@@ -424,8 +424,8 @@ Two professional-readiness items toward 1.0.
 - **Frontend** — `PreflightModal` (issue list + per-file "Localiser…" relink), title-bar ⚠ badge (error count, opens the panel), `workspaceStore.refreshValidation` + `brokenCueIds`, debounced re-validate on `workspace-modified` (`useTauriEvents`). The existing per-row `is_broken`/`is_warning` indicators (media files) are unchanged. File menu → "Check Workspace…".
 
 **In-app log viewer.** Logs are now visible to the operator without a terminal.
-- **`logger.rs`** (new) — custom `log` backend fanning out to stderr + a size-rotated file (`%APPDATA%/WinCue/logs/wincue.log`, one backup) + a 2000-line in-memory ring buffer. Replaces `env_logger` (removed; `log` now carries the `std` feature). `RUST_LOG=debug/trace` still bumps the level.
-- **`commands/log_cmds.rs`** (new) — `get_recent_logs`, `clear_logs`, `open_logs_folder` (per-OS reveal). `lib.rs` spawns a `wincue-log-emitter` thread emitting a throttled `logs-updated` event (event-driven live tail, no frontend polling).
+- **`logger.rs`** (new) — custom `log` backend fanning out to stderr + a size-rotated file (`%APPDATA%/Inkue/logs/inkue.log`, one backup) + a 2000-line in-memory ring buffer. Replaces `env_logger` (removed; `log` now carries the `std` feature). `RUST_LOG=debug/trace` still bumps the level.
+- **`commands/log_cmds.rs`** (new) — `get_recent_logs`, `clear_logs`, `open_logs_folder` (per-OS reveal). `lib.rs` spawns a `inkue-log-emitter` thread emitting a throttled `logs-updated` event (event-driven live tail, no frontend polling).
 - **Frontend** — `LogViewerModal` (level filter, follow/auto-scroll, copy, open folder, clear). File menu → "Logs…".
 
 **Tests** — 143 pass (141 + 2 validation). `cargo clippy --lib` + `tsc --noEmit` clean. Version 0.9.13.
@@ -434,10 +434,10 @@ Two professional-readiness items toward 1.0.
 
 Continuous crash-recovery snapshot so an abnormal exit (crash / power loss) loses at most a few seconds of work — the first reliability item on the road to a professional 1.0.
 
-- **`recovery.rs`** (new) — snapshot lives at `%APPDATA%\WinCue\recovery.wincue` (per-OS config dir, reusing `machine_config::config_base_dir`, so dev writes never trip the source-tree file watcher). Atomic write (`.tmp` + rename) so a crash mid-write never corrupts it. `info()` parses the header for the restore prompt; `exists()/read()/delete()`.
+- **`recovery.rs`** (new) — snapshot lives at `%APPDATA%\Inkue\recovery.inkue` (per-OS config dir, reusing `machine_config::config_base_dir`, so dev writes never trip the source-tree file watcher). Atomic write (`.tmp` + rename) so a crash mid-write never corrupts it. `info()` parses the header for the restore prompt; `exists()/read()/delete()`.
 - **`show/workspace.rs`** — `revision: u64` field bumped by `mark_modified` (the single mutation chokepoint) so the autosave thread only re-serialises when the show actually changed. `to_recovery_json()` keeps media paths **absolute** (the snapshot is not beside the media) and embeds `recovery_original_path`. `load()` refactored to share `from_json_str(content, base_dir, registry)` — `base_dir: None` parses the absolute-path recovery snapshot.
-- **`lib.rs`** — `wincue-autosave` thread (3 s tick): writes the snapshot while `is_modified`, deletes it once the show is saved/pristine. The `WindowEvent::Destroyed` handler deletes the snapshot on any deliberate close, so presence at startup ⇒ previous session crashed.
-- **`commands/recovery_cmds.rs`** (new) — `check_recovery` (→ `RecoveryInfo`), `restore_recovery` (loads the snapshot, re-targets the original `.wincue`, marks dirty), `discard_recovery`. `workspace_cmds::install_workspace` extracted from `load_workspace` and shared with restore. `save_workspace` now drops the snapshot on explicit save.
+- **`lib.rs`** — `inkue-autosave` thread (3 s tick): writes the snapshot while `is_modified`, deletes it once the show is saved/pristine. The `WindowEvent::Destroyed` handler deletes the snapshot on any deliberate close, so presence at startup ⇒ previous session crashed.
+- **`commands/recovery_cmds.rs`** (new) — `check_recovery` (→ `RecoveryInfo`), `restore_recovery` (loads the snapshot, re-targets the original `.inkue`, marks dirty), `discard_recovery`. `workspace_cmds::install_workspace` extracted from `load_workspace` and shared with restore. `save_workspace` now drops the snapshot on explicit save.
 - **Frontend** — `App.tsx` one-time mount prompt via `ask()` (native dialog): restore or discard. `lib/commands.ts` + `lib/types.ts` (`RecoveryInfo`). `capabilities/default.json` gains `dialog:allow-ask`.
 - **mpv_sys.rs** unaffected; version bumped to 0.9.12 across `Cargo.toml`, `tauri.conf.json` (was drifting at 0.9.10), `package.json`.
 
@@ -483,7 +483,7 @@ Compact panel that auto-appears above the cue list whenever one or more cues are
 
 Per-cue-list mode property: **Sequential** (current behavior, playhead-driven) or **Cart** (QLab-style grid of trigger tiles).
 
-- **`show/cue_list.rs`** — `CueListMode` enum (`sequential` | `cart`, default sequential); `mode` field on `CueList`; serialized in `.wincue` (backward-compat default). `to_json` + `from_json` updated.
+- **`show/cue_list.rs`** — `CueListMode` enum (`sequential` | `cart`, default sequential); `mode` field on `CueList`; serialized in `.inkue` (backward-compat default). `to_json` + `from_json` updated.
 - **`show/transport.rs`** — `Transport::go_by_id(cue_list, cue_id)`: parks the Playhead on the given cue and fires via the normal GO path, so Auto-Continue / Auto-Follow still work.
 - **`commands/cue_list_cmds.rs`** — `CueListInfo.mode` added; new `set_cue_list_mode(id, mode)` command.
 - **`commands/transport_cmds.rs`** — new `go_cue(cue_id)` command (same loading guard as `go`, calls `go_by_id`).
@@ -492,7 +492,7 @@ Per-cue-list mode property: **Sequential** (current behavior, playhead-driven) o
 - **`lib/commands.ts`** — `goCue()`, `setCueListMode()`.
 - **`components/CueList/CartView.tsx`** — new component: responsive CSS grid (`auto-fill, minmax(160px, 1fr)`), one tile per top-level cue. Each tile: color stripe (left edge), cue number (top-left), type icon (top-right), name (bold, 2-line clamp), running LED + remaining time + STOP button (footer). Progress bar (bottom edge, green). Running: green border + tint + pulsing LED. Paused: orange border + tint. Completed: dimmed.
   - **Drag to reorder** — mousedown+threshold activates drag; dragged tile is removed from `displayItems` and replaced by a `DropSlot` (dashed accent border) that moves with the cursor as it crosses tile midpoints — grid CSS reflowing naturally around it. On drop: `moveCue(id, insertIndex)` where `insertIndex` is already the after-removal index (no adjustment needed). Floating **DragGhost** follows cursor; rotation driven by exponentially-smoothed horizontal velocity (`smoothedVel = 0.78*prev + 0.22*dx`) giving inertia up to ±13°. System cursor hidden (`cursor:none`) during drag; ghost fade-in via `wc-ghost-appear` keyframe.
-  - **Drag from toolbar** — listens to `wincue:cue-drag-start` CustomEvent (same as sequential mode); inserts `DropSlot` at cursor position; on drop calls `addCue(type, insertIndex)`.
+  - **Drag from toolbar** — listens to `inkue:cue-drag-start` CustomEvent (same as sequential mode); inserts `DropSlot` at cursor position; on drop calls `addCue(type, insertIndex)`.
   - **File drag-drop** — Tauri `onDragDropEvent`; inserts `DropSlot` at cursor position; creates cues with file assigned and name from filename.
   - **Insert indicator** — `DropSlot` is a dashed-border placeholder cell that flows in the grid (not injected via box-shadow). Color-stripe overlay uses `zIndex: 10` to always appear above cue color stripe.
 - **`components/CueList/CueListTabs.tsx`** — "Switch to Cart Mode / Sequential Mode" in context menu; CART badge on cart-mode tabs.
@@ -517,7 +517,7 @@ Read-only, full-window presentation view — replaces the cue list and inspector
 #### CueList LED indicator
 
 - **`components/CueList/CueRow.tsx`** — `RunningLed` component: 8px green circle, CSS `wc-led-pulse` animation. Sync: `animation-delay` set to `-(Date.now() % 1800) / 1000` seconds at mount (via `useRef`, stable across re-renders) so all concurrent LEDs share the same phase. Playhead triangle left-aligned with `paddingLeft: 6`.
-- **`components/CueList/columns.ts`** — new `"led"` column (20px, fixed, non-resizable), inserted right after `"playhead"`; `loadColumnConfig` migration ensures ordering is correct for existing saved configs; LS key bumped to `wincue_column_config_v2` to force a clean default on the first load.
+- **`components/CueList/columns.ts`** — new `"led"` column (20px, fixed, non-resizable), inserted right after `"playhead"`; `loadColumnConfig` migration ensures ordering is correct for existing saved configs; LS key bumped to `inkue_column_config_v2` to force a clean default on the first load.
 - **`index.html`** — `@keyframes wc-led-pulse` (1.8 s ease-in-out, opacity 0.2 → 1 with a green glow at 50 %).
 
 ### 0.9.7 (2026-06-23) — cpal 0.15.3 → 0.18.1 upgrade (Mic Cue crash root-fix)
@@ -557,11 +557,11 @@ resolves the same bug cluster natively (no more vendored fork to maintain).
 **Architecture** — trois couches propres, rien dans `transport.rs` / `cue_list.rs` :
 
 - **`engine/timecode_types.rs`** — `TcPosition` / `TcRate` (24/25/29.97/29.97df/30), conversions SMPTE ↔ frames (drop-frame 29.97 inclus), Real-Time (ms) ↔ frames, `TcTrigger`, `TcEvent`, `CueListTcConfig`, `TcOnStop`. 13 tests.
-- **`engine/timecode_receiver.rs`** — `TimecodeReceiver` (thread `wincue-tc-mtc`, `midir::MidiInput`), `MtcAssembler` (quarter-frame state machine + full-frame SysEx), `TcFlywheel` (interpolation + freewheel). 4 tests.
+- **`engine/timecode_receiver.rs`** — `TimecodeReceiver` (thread `inkue-tc-mtc`, `midir::MidiInput`), `MtcAssembler` (quarter-frame state machine + full-frame SysEx), `TcFlywheel` (interpolation + freewheel). 4 tests.
 - **`engine/ltc.rs`** — `LtcEncoder` / `LtcDecoder` biphase-mark : encode `TcPosition → [f32]`, decode `[f32] → TcPosition`. Sync word vérification. 3 tests.
-- **`engine/timecode_generator.rs`** — `MtcGenerator` (thread `wincue-tc-gen` : quarter-frames à 4×fps, full-frame jam-sync au démarrage). 3 tests.
+- **`engine/timecode_generator.rs`** — `MtcGenerator` (thread `inkue-tc-gen` : quarter-frames à 4×fps, full-frame jam-sync au démarrage). 3 tests.
 - **`cue/timecode_cue.rs`** — `TimecodeCue` : génère MTC sur GO (`MtcGenerator`), start/end frame (durée calculée), plusieurs flux simultanés, `CueType::Timecode`, registry. 3 tests.
-- **`show/cue_list.rs`** — `CueList.tc_config: CueListTcConfig` + `tc_triggers: HashMap<CueId, TcTrigger>` + garde monotone `tc_last_triggered_frame`. Sérialisé dans `.wincue`.
+- **`show/cue_list.rs`** — `CueList.tc_config: CueListTcConfig` + `tc_triggers: HashMap<CueId, TcTrigger>` + garde monotone `tc_last_triggered_frame`. Sérialisé dans `.inkue`.
 - **Dispatcher** — `event_loop.rs` reçoit `TcEvent` via channel, franchissement monotone + ré-armement sur saut arrière, émet `timecode` event Tauri pour l'UI.
 - **`engine/timecode_receiver.rs`** — `TcReceiverConfig`, `TimecodeReceiver.reconfigure()` (comme `OscServer`). `machine_config.rs` : `TcMachineConfig` + `load/save_tc_config`.
 - **Commands** — `timecode_cmds.rs` : `get/set_tc_config`, `get_tc_position`, `list_tc_midi_input_ports`, `get/set_cue_tc_trigger`, `get/set_cuelist_tc_config`.
@@ -573,7 +573,7 @@ resolves the same bug cluster natively (no more vendored fork to maintain).
 
 ### 0.9.5 (2026-06-23) — Input Patches + Mic Cue (live audio input)
 
-WinCue can now route a **live audio input** through the engine — QLab's Mic Cue.
+Inkue can now route a **live audio input** through the engine — QLab's Mic Cue.
 Full design in `INPUT.md`.
 
 - **Live input capture** — `engine/audio_input.rs`: `InputPatch` (named device + channels, workspace-stored, mirror of `OutputPatch`), input-device enumeration, and a **persistent** cpal input stream per device (F32/I16/I32) → lock-free ring. The stream stays open so a Mic Cue GO is instant (no cold-start).
@@ -592,7 +592,7 @@ Full design in `INPUT.md`.
 macOS now joins the unified mpv OpenGL Render API path (`output_gl`, shared with
 Windows/Linux) instead of the previous cocoa-cb mpv-managed window (`vo=gpu`). This
 makes the dip-to-black fade work on macOS (it was a silent no-op before) and renders
-mpv into a framebuffer WinCue controls — the prerequisite for future video transforms /
+mpv into a framebuffer Inkue controls — the prerequisite for future video transforms /
 projection mapping on all three OS.
 
 - **New `engine/output_engine/macos_window.rs`** — borderless `NSWindow` created on the
@@ -615,10 +615,10 @@ projection mapping on all three OS.
 
 #### DMX lighting: fixture patch + Light Cue (M1–M4)
 
-Full design + status in `LIGHT.md`. WinCue is now a direct DMX-over-IP controller,
+Full design + status in `LIGHT.md`. Inkue is now a direct DMX-over-IP controller,
 not just a console trigger.
 
-- **DMX engine (M1/M2)** — `engine/dmx_sink.rs` (byte-exact sACN E1.31 + Art-Net encoders, UDP sink) and `engine/dmx_engine.rs` (`DmxState`: per-universe buffers, timed fades with **LTP + tracking + 8/16-bit**, blackout; `DmxEngine` handle + `wincue-dmx` thread at ~40 Hz, send-on-change + 800 ms keepalive). Live monitor via the `dmx-monitor` event. `AppState.dmx_engine`.
+- **DMX engine (M1/M2)** — `engine/dmx_sink.rs` (byte-exact sACN E1.31 + Art-Net encoders, UDP sink) and `engine/dmx_engine.rs` (`DmxState`: per-universe buffers, timed fades with **LTP + tracking + 8/16-bit**, blackout; `DmxEngine` handle + `inkue-dmx` thread at ~40 Hz, send-on-change + 800 ms keepalive). Live monitor via the `dmx-monitor` event. `AppState.dmx_engine`.
 - **Fixture patch (M3)** — `engine/fixture.rs`: `ParamKind` / `FixtureParam` / `FixtureType` / `PatchedFixture` (type **embedded** in each fixture → portable, self-contained workspace), `builtin_fixture_types()` (Dimmer, RGB, RGBW, RGBA, PAR Dimmer+RGB, 16-bit moving head), `resolve_channel()` (1-based address → 0-based engine channel), `find_conflicts()` (address-clash detection). Stored in the workspace alongside `universe_outputs` (`show/workspace.rs`); both pushed to the engine on load/new. Commands: `add/update/remove/list_fixtures`, `list_builtin_fixture_types`, `get_fixture_conflicts`, `dmx_test_fixture` (identify), `dmx_get/set_outputs`.
 - **Light Cue (M4)** — `cue/light_cue.rs`: stores only the params it changes (`targets: [ParamTarget]`) + a `FadeSpec`; `go()` resolves each target's `(universe, channel, width)` from the patch and submits a fade to the engine; `duration()` = fade time (progress bar + Auto-Continue/Follow); stop is tracking (lights hold). A target's `fixture_id` is a `String` (an empty placeholder while configuring must not poison the whole list on the `update_cue` round-trip; resolved/parsed at GO). `CueContext` gained `dmx_engine` + `fixtures` (+ `resolve_fixture`), threaded through `transport_cmds` and `event_loop`. Registered in the `CueRegistry`.
 - **Frontend** — `components/Lighting/{LightingPanel,FixturePatch}.tsx` (outputs now workspace-backed; Fixtures section with add/edit/identify/clash warnings), `components/Inspector/LightTab.tsx` (targets + fade), `+ Light` toolbar button (`App.tsx`), 💡 icon (`CueRow.tsx`, `InspectorPanel.tsx`). Types/commands in `lib/{types,commands}.ts`.
@@ -648,7 +648,7 @@ not just a console trigger.
 
 ### 0.9.2 (2026-06-20)
 
-- **Transport-bar Pause/Resume button** — light-blue PAUSE toggle next to GO/STOP; same semantics as OSC `/wincue/pause_toggle` (pause all running, else resume all paused; disabled when idle). `TransportBar.tsx`.
+- **Transport-bar Pause/Resume button** — light-blue PAUSE toggle next to GO/STOP; same semantics as OSC `/inkue/pause_toggle` (pause all running, else resume all paused; disabled when idle). `TransportBar.tsx`.
 - **Floating timer drag + counter fixed** — the `float-timer` window had no Tauri v2 capability, so `startDragging` and `listen("float-timer-text")` were silently denied. Added `capabilities/float-timer.json` (`core:default` + `core:window:allow-start-dragging`); needs a rebuild.
 - **Floating timer Linux crash fixed** — `set_floating_timer_visible` called `WebviewWindow::show()/hide()` directly from a Tauri command thread; on Linux that touches GTK off the main thread → crash (it also fired in OSD mode because the prefs-apply path always hides the floating window). Now routed through `app_handle.run_on_main_thread()`, so show/hide is main-thread-safe on all 3 OS. `output_engine/mod.rs`.
 - **Windows output → winit/GL by default** — the GL Render API path (`render.rs`) is now the Windows default; the old Win32+D3D11+`wid`+layered-overlay path is gated behind `legacy-win32-output` (off). `build.rs` emits `output_winit` / `output_win32` cfg aliases. `build.rs`, `output_engine/{mod,fade,render,mpv_events,types}.rs`.
@@ -703,11 +703,11 @@ not just a console trigger.
 ### 0.6.1 (2026-06-09) — Pause/Resume + OSC
 
 - Elapsed time freezes on pause (`elapsed_before_pause` accumulators); progress bar freezes orange; seek allowed while paused.
-- OSC: `/wincue/pause_toggle`, `/wincue/select/next|previous`; 50 ms dedup cache; OSC Monitor; per-message Test-send; double-GO protection (`double_go_protection_ms`, default 500 ms).
+- OSC: `/inkue/pause_toggle`, `/inkue/select/next|previous`; 50 ms dedup cache; OSC Monitor; per-message Test-send; double-GO protection (`double_go_protection_ms`, default 500 ms).
 
 ### 0.6.0 (2026-06-09) — OSC Send Cue + receive server
 
-- OSC Send Cue (multiple messages per cue, workspace-level patches, inspector Messages tab) and a UDP receive server (IP allowlist, `/wincue/*` address scheme, activity dot). Design/implementation detail archived in `docs/archive/OSCPLAN.md`.
+- OSC Send Cue (multiple messages per cue, workspace-level patches, inspector Messages tab) and a UDP receive server (IP allowlist, `/inkue/*` address scheme, activity dot). Design/implementation detail archived in `docs/archive/OSCPLAN.md`.
 
 ### 0.5.1 — Group Cue polish
 
@@ -723,7 +723,7 @@ not just a console trigger.
 
 ### 0.4.0 (2026-05-28) — Unified OutputEngine (Win32 + libmpv)
 
-- One persistent `WS_POPUP` window for all visual cues replaced the old two-window approach (Tauri WebviewWindow for images + Win32 for video) that caused windows to disappear/reposition between cues. libmpv renders both video and images; per-cue fade overlay; Hard Stop always cuts; first-GO freeze removed (mpv created at engine init); F9 toggles visibility. Old `.wincue` fields (`ImageStopMode`, per-cue `screen_index`) load silently via serde.
+- One persistent `WS_POPUP` window for all visual cues replaced the old two-window approach (Tauri WebviewWindow for images + Win32 for video) that caused windows to disappear/reposition between cues. libmpv renders both video and images; per-cue fade overlay; Hard Stop always cuts; first-GO freeze removed (mpv created at engine init); F9 toggles visibility. Old `.inkue` fields (`ImageStopMode`, per-cue `screen_index`) load silently via serde.
 
 ### 0.3.2 (2026-04-28) — Unified output surface *(Tauri WebviewWindow era, superseded by 0.4.0)*
 

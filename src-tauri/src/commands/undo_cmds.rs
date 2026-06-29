@@ -191,7 +191,7 @@ pub fn redo(
 
 /// Copy a cue into the in-app clipboard by serialising it to JSON.
 ///
-/// The clipboard is internal to WinCue — it does not interact with the OS
+/// The clipboard is internal to Inkue — it does not interact with the OS
 /// clipboard.  Only one cue is stored at a time; copying a new one replaces
 /// the previous entry.
 #[tauri::command]
@@ -300,7 +300,7 @@ pub fn paste_cue(
         let loading_cues = state.loading_cues.clone();
         let app_handle2 = app_handle.clone();
         std::thread::Builder::new()
-            .name("wincue-preload-paste".into())
+            .name("inkue-preload-paste".into())
             .spawn(move || {
                 #[cfg(windows)]
                 // SAFETY: only changes the scheduling priority of this thread.
