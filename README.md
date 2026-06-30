@@ -12,6 +12,7 @@ Runs on **Windows, macOS and Linux**.
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#download)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB.svg)](https://tauri.app/)
 [![CI](https://github.com/FonograF/Inkue/actions/workflows/ci.yml/badge.svg)](https://github.com/FonograF/Inkue/actions/workflows/ci.yml)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/FonograF)
 
 </div>
 
@@ -113,10 +114,9 @@ cache eliminates duplicate UDP packets from controllers and Windows loopback.
 - **libmpv** — required for video/image cues (~113 MB, not versioned in git):
   - Windows: place `libmpv-2.dll` in `src-tauri/vendor/mpv/` — get it from the baseline
     `mpv-dev-x86_64` build at [sourceforge.net/projects/mpv-player-windows](https://sourceforge.net/projects/mpv-player-windows/files/libmpv/)
-    (the release CI pins the exact build; see [`docs/RELEASING.md`](docs/RELEASING.md))
+    (the release CI pins the exact build)
   - macOS: `brew install mpv`
   - Linux: install the `libmpv2` (or `libmpv1`) + `libmpv-dev` system packages
-  - Full per-OS detail in [`PORTAGE.md`](PORTAGE.md).
 - *(Optional, Windows)* The **Steinberg ASIO SDK** is already bundled in
   `vendor/asiosdk/` under its GPLv3 option (see [ASIO support](#asio-support)).
 
@@ -171,7 +171,7 @@ src/
 └── lib/         # types.ts, commands.ts (typed Tauri invoke wrappers)
 ```
 
-**Key invariants** (see [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`PORTAGE.md`](PORTAGE.md)):
+**Key invariants:**
 
 - The audio callback has **zero allocations, zero locks, zero I/O** — all comms via lock-free ring buffers.
 - Every cue type implements the `Cue` trait; adding a new type never touches `transport.rs`, `cue_list.rs` or the CueList UI.
@@ -195,7 +195,15 @@ Inkue uses QLab's vocabulary throughout: **Workspace** (the `.inkue` file) ·
 Issues and pull requests are welcome. By contributing you agree that your
 contributions are licensed under the GPL-3.0-or-later, the same license as the project.
 Before a large change, please open an issue to discuss the design — the layering rules
-above and in [`ARCHITECTURE.md`](ARCHITECTURE.md) are strict on purpose.
+above are strict on purpose.
+
+---
+
+## Support
+
+Inkue is free and developed in the open. If it is useful to you, you can support
+its development through **[GitHub Sponsors](https://github.com/sponsors/FonograF)**.
+Thank you 💚
 
 ---
 

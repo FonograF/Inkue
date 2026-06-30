@@ -38,15 +38,16 @@ Thumbs.db
 # Claude Code local config
 .claude/
 
-# Internal/dev-only docs — kept locally, not part of the public repo.
-/CLAUDE.md
-/PROGRESS.md
-/WHATSNEXT.md
-/RENAME.md
-/docs/archive/
+# Markdown docs are kept local-only — the public repo ships just the README.
+# (ARCHITECTURE, PORTAGE, CHANGELOG, INPUT, LIGHT, TIMECODE, RELEASING, PROGRESS,
+#  WHATSNEXT, RENAME, CLAUDE… all stay on your machine. vendor/asiosdk/README.md
+#  is already tracked and stays.)
+*.md
+!README.md
 
-# Figma redesign reference mock-up (kept locally, not part of the app build).
+# Figma redesign reference mock-up + archived docs (local only, not the app build).
 /App.tsx
+/docs/archive/
 
 
 # Logs

@@ -61,15 +61,26 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <a
-            href="https://github.com/FonograF/Inkue"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ fontSize: 12, color: "var(--wc-accent)", textDecoration: "none" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            github.com/FonograF/Inkue
-          </a>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <a
+              href="https://github.com/FonograF/Inkue"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 12, color: "var(--wc-text-secondary)", textDecoration: "none" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              github.com/FonograF/Inkue
+            </a>
+            <a
+              href="https://github.com/sponsors/FonograF"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 12, color: "var(--wc-accent)", textDecoration: "none", fontWeight: 600 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              ♥ Sponsor
+            </a>
+          </div>
           <button
             onClick={onClose}
             style={{
