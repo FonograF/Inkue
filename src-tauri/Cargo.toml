@@ -2,7 +2,7 @@
 name = "inkue"
 version = "1.0.0"
 edition = "2021"
-description = "Professional, cross-platform show-control application (QLab-inspired)"
+description = "Professional, cross-platform show-control application for live events"
 authors = ["Inkue contributors"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/FonograF/Inkue"

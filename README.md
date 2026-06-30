@@ -2,7 +2,7 @@
 
 # Inkue
 
-**A professional, cross-platform show-control application — inspired by [QLab](https://qlab.app/).**
+**A professional, cross-platform show-control application.**
 
 Cue lists for live events — theatre, concerts, corporate shows — with a focus on
 reliability, low latency, and an extensible cue architecture.
@@ -39,8 +39,8 @@ Grab the latest installer for your platform from the **[Releases page](https://g
 Inkue drives the playback side of a live show from a single ordered **cue list**.
 The operator presses **GO**; Inkue fires the cue at the **playhead** — play a
 sound, roll a video, fade a light, send an OSC/MIDI message — and advances.
-The vocabulary, keyboard flow and behaviour follow QLab as closely as possible,
-so QLab operators feel at home immediately.
+Its vocabulary, keyboard flow and behaviour follow established show-control
+conventions, so experienced operators feel at home immediately.
 
 It is built with **Rust** (real-time audio/video engine + show logic) and
 **React + TypeScript** (UI) via [Tauri v2](https://tauri.app/), which keeps the
@@ -88,7 +88,7 @@ binary small and the audio path native and low-latency.
 Inspector with per-type tabs · waveform start/end trim · drag-and-drop reordering
 and grouping · drop media from the file manager · toolbar-drag insert · multi-select
 (edit/delete/duplicate/color) · full undo/redo · copy/paste · resizable/reorderable
-columns · QLab-compatible color tags · consistent dark theme on all three OSes.
+columns · color tags · consistent dark theme on all three OSes.
 
 ### OSC remote control
 
@@ -181,9 +181,9 @@ src/
 
 ---
 
-## QLab terminology
+## Terminology
 
-Inkue uses QLab's vocabulary throughout: **Workspace** (the `.inkue` file) ·
+Inkue uses standard show-control vocabulary: **Workspace** (the `.inkue` file) ·
 **Cue List** · **Playhead** (next GO target) · **GO** · **Pre-Wait / Post-Wait** ·
 **Auto-Continue / Auto-Follow** · **Cue Number** (a string —
 `"1"`, `"1.5"`, `"Intro"` are all valid).
@@ -219,5 +219,4 @@ Third-party components:
 - **DSEG** 7-segment font — SIL Open Font License 1.1.
 - Rust crates: cpal, symphonia, winit, glutin, glow, rosc, midir and others under their respective MIT/Apache-2.0/MPL-2.0 licenses.
 
-Inkue is an independent project and is **not affiliated with or endorsed by**
-Figure 53 (QLab) or Steinberg.
+Inkue is an independent project and is **not affiliated with or endorsed by** Steinberg.
