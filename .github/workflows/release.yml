@@ -139,16 +139,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing (optional — skip if secrets are not set)
-          APPLE_CERTIFICATE:           ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD:  ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY:      ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID:                    ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD:              ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID:               ${{ secrets.APPLE_TEAM_ID }}
-          # Updater signing (optional)
-          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Code signing is intentionally OFF until certificates are configured.
+          # Passing empty APPLE_* secrets makes tauri attempt `security import` and
+          # fail the macOS build, so the signing env vars are omitted on purpose.
+          # To enable signing later: set the repository secrets listed in the header
+          # comment, then restore the APPLE_* / TAURI_SIGNING_* env vars here.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Inkue ${{ github.ref_name }}
