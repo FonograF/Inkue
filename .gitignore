@@ -1,7 +1,8 @@
 # Rust / Cargo
 target/
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock is committed (this is an application, not a library) so CI and
+# release builds use the exact dependency versions developed/tested against.
 
 # Node / pnpm
 node_modules/
