@@ -45,6 +45,9 @@ Thumbs.db
 /RENAME.md
 /docs/archive/
 
+# Figma redesign reference mock-up (kept locally, not part of the app build).
+/App.tsx
+
 
 # Logs
 *.log

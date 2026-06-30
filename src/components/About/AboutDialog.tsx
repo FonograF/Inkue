@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { InkueMark } from "../common/InkueMark";
 
 export function AboutDialog({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState("…");
@@ -25,7 +26,8 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
           boxShadow: "0 16px 48px rgba(0,0,0,0.8)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <InkueMark size={28} />
           <span style={{ fontSize: 20, fontWeight: 700, color: "var(--wc-text-bright)" }}>Inkue</span>
           <span style={{ fontSize: 13, color: "var(--wc-text-muted)" }}>v{version}</span>
         </div>

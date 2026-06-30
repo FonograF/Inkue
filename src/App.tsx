@@ -16,10 +16,11 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists, checkRecovery, restoreRecovery, discardRecovery } from "./lib/commands";
 import { AboutDialog } from "./components/About/AboutDialog";
+import { InkueMark } from "./components/common/InkueMark";
 import { PreflightModal } from "./components/Preflight/PreflightModal";
 import { LogViewerModal } from "./components/Logs/LogViewerModal";
 import { HealthBanner } from "./components/Health/HealthBanner";
-import type { CollectReport, RecoveryInfo } from "./lib/types";
+import type { CollectReport, RecoveryInfo, CueType } from "./lib/types";
 import type { CueSummary } from "./lib/types";
 import { CUE_TYPE_COLORS } from "./lib/types";
 
@@ -1194,11 +1195,14 @@ export default function App() {
         {/* Drag region: app name + workspace name */}
         <div
           data-tauri-drag-region
-          style={{ flex: 1, minWidth: 40, display: "flex", alignItems: "center", gap: 10, overflow: "hidden" }}
+          style={{ flex: 1, minWidth: 40, display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}
         >
+          <div data-tauri-drag-region style={{ flexShrink: 0, pointerEvents: "none", display: "flex" }}>
+            <InkueMark size={18} />
+          </div>
           <span
             data-tauri-drag-region
-            style={{ fontWeight: 700, fontSize: 13, color: "var(--wc-text-bright)", flexShrink: 0 }}
+            style={{ fontWeight: 700, fontSize: 13, color: "var(--wc-text-bright)", flexShrink: 0, letterSpacing: "-0.01em" }}
           >
             Inkue
           </span>
@@ -1233,110 +1237,84 @@ export default function App() {
           style={{ display: showMode ? "none" : "flex", flexWrap: "wrap", gap: 6, padding: "0 12px 6px", alignItems: "center" }}
           onClick={(e) => { const btn = (e.target as HTMLElement).closest("button"); if (btn) pulseButton(btn); }}
         >
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.audio, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddAudio}
-            onMouseDown={(e) => dispatchCueDrag("audio", e)}
+          <CueToolbarButton
+            type="audio" label="Audio"
             title="Add Audio Cue after selection (Ctrl+N) · Drag to insert at position"
-          >
-            + Audio
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.video, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddVideo}
-            onMouseDown={(e) => dispatchCueDrag("video", e)}
+            onAdd={handleAddAudio}
+            onDragStart={(e) => dispatchCueDrag("audio", e)}
+          />
+          <CueToolbarButton
+            type="video" label="Video"
             title="Add Video Cue after selection · Drag to insert at position"
-          >
-            + Video
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.image, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddImage}
-            onMouseDown={(e) => dispatchCueDrag("image", e)}
+            onAdd={handleAddVideo}
+            onDragStart={(e) => dispatchCueDrag("video", e)}
+          />
+          <CueToolbarButton
+            type="image" label="Image"
             title="Add Image Cue after selection · Drag to insert at position"
-          >
-            + Image
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.stop, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddStop}
-            onMouseDown={(e) => dispatchCueDrag("stop", e)}
+            onAdd={handleAddImage}
+            onDragStart={(e) => dispatchCueDrag("image", e)}
+          />
+          <CueToolbarButton
+            type="stop" label="Stop"
             title="Add Stop Cue after selection · Drag to insert at position"
-          >
-            + Stop
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.fade, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddFade}
-            onMouseDown={(e) => dispatchCueDrag("fade", e)}
+            onAdd={handleAddStop}
+            onDragStart={(e) => dispatchCueDrag("stop", e)}
+          />
+          <CueToolbarButton
+            type="fade" label="Fade"
             title="Add Fade Cue after selection · Drag to insert at position"
-          >
-            + Fade
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.wait, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddWait}
-            onMouseDown={(e) => dispatchCueDrag("wait", e)}
+            onAdd={handleAddFade}
+            onDragStart={(e) => dispatchCueDrag("fade", e)}
+          />
+          <CueToolbarButton
+            type="wait" label="Wait"
             title="Add Wait Cue after selection · Drag to insert at position"
-          >
-            + Wait
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.group, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddGroup}
-            onMouseDown={(e) => dispatchCueDrag("group", e)}
+            onAdd={handleAddWait}
+            onDragStart={(e) => dispatchCueDrag("wait", e)}
+          />
+          <CueToolbarButton
+            type="group" label="Group"
             title="Add Group Cue after selection · Drag to insert at position"
-          >
-            + Group
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.midi, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddMidi}
-            onMouseDown={(e) => dispatchCueDrag("midi", e)}
+            onAdd={handleAddGroup}
+            onDragStart={(e) => dispatchCueDrag("group", e)}
+          />
+          <CueToolbarButton
+            type="midi" label="MIDI"
             title="Add MIDI Cue after selection · Drag to insert at position"
-          >
-            + MIDI
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.osc, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddOsc}
-            onMouseDown={(e) => dispatchCueDrag("osc", e)}
+            onAdd={handleAddMidi}
+            onDragStart={(e) => dispatchCueDrag("midi", e)}
+          />
+          <CueToolbarButton
+            type="osc" label="OSC"
             title="Add OSC Cue after selection · Drag to insert at position"
-          >
-            + OSC
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.light, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddLight}
-            onMouseDown={(e) => dispatchCueDrag("light", e)}
+            onAdd={handleAddOsc}
+            onDragStart={(e) => dispatchCueDrag("osc", e)}
+          />
+          <CueToolbarButton
+            type="light" label="Light"
             title="Add Light Cue after selection · Drag to insert at position"
-          >
-            + Light
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.mic, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddMic}
-            onMouseDown={(e) => dispatchCueDrag("mic", e)}
+            onAdd={handleAddLight}
+            onDragStart={(e) => dispatchCueDrag("light", e)}
+          />
+          <CueToolbarButton
+            type="mic" label="Mic"
             title="Add Mic Cue after selection · Drag to insert at position"
-          >
-            + Mic
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.timecode, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddTimecode}
-            onMouseDown={(e) => dispatchCueDrag("timecode", e)}
+            onAdd={handleAddMic}
+            onDragStart={(e) => dispatchCueDrag("mic", e)}
+          />
+          <CueToolbarButton
+            type="timecode" label="TC"
             title="Add Timecode Cue after selection · Drag to insert at position"
-          >
-            + TC
-          </button>
-          <button
-            style={{ ...toolbarBtn, color: CUE_TYPE_COLORS.text, cursor: "pointer", userSelect: "none" }}
-            onClick={handleAddText}
-            onMouseDown={(e) => dispatchCueDrag("text", e)}
+            onAdd={handleAddTimecode}
+            onDragStart={(e) => dispatchCueDrag("timecode", e)}
+          />
+          <CueToolbarButton
+            type="text" label="Text"
             title="Add Text Cue after selection · Drag to insert at position"
-          >
-            + Text
-          </button>
+            onAdd={handleAddText}
+            onDragStart={(e) => dispatchCueDrag("text", e)}
+          />
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector
           </button>
@@ -1430,3 +1408,36 @@ const toolbarBtn: React.CSSProperties = {
   padding: "3px 10px", background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
   borderRadius: 4, color: "var(--wc-text)", cursor: "pointer", fontSize: 12,
 };
+
+/** Toolbar "+ <type>" button: neutral by default with only the "+" tinted in the
+ *  cue-type color; the whole button illuminates in that color on hover. */
+function CueToolbarButton({ type, label, title, onAdd, onDragStart }: {
+  type: CueType;
+  label: string;
+  title: string;
+  onAdd: () => void;
+  onDragStart: (e: React.MouseEvent) => void;
+}) {
+  const color = CUE_TYPE_COLORS[type];
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      style={{
+        ...toolbarBtn,
+        display: "inline-flex", alignItems: "center", gap: 5, userSelect: "none",
+        color: hover ? color : "var(--wc-text-secondary)",
+        borderColor: hover ? color : "var(--wc-border-strong)",
+        background: hover ? "var(--wc-bg-hover)" : "var(--wc-bg-surface)",
+        transition: "color 0.12s, border-color 0.12s, background 0.12s",
+      }}
+      onClick={onAdd}
+      onMouseDown={onDragStart}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+    >
+      <span style={{ color, fontWeight: 700, fontSize: 11 }}>+</span>
+      {label}
+    </button>
+  );
+}

@@ -1,0 +1,19 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#52D48A"/>
+      <stop offset="100%" stop-color="#1F8F4A"/>
+    </linearGradient>
+    <linearGradient id="triGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3DBA6F"/>
+      <stop offset="100%" stop-color="#A8F0C6"/>
+    </linearGradient>
+    <clipPath id="clip">
+      <rect x="0" y="0" width="512" height="512" rx="102.4"/>
+    </clipPath>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="102.4" fill="#0d0d10"/>
+  <ellipse cx="256" cy="450.56" rx="163.84" ry="30.72" fill="#3DBA6F" opacity="0.08" clip-path="url(#clip)"/>
+  <rect x="151" y="148" width="56" height="216" rx="10.08" fill="url(#barGrad)"/>
+  <polygon points="219,148 219,364 363,256" fill="url(#triGrad)" clip-path="url(#clip)"/>
+</svg>

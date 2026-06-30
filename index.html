@@ -2,33 +2,36 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/inkue-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Inkue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
     <style>
       /* ── Theme tokens ─────────────────────────────────────────────────────── */
       :root, :root[data-theme="dark"] {
-        --wc-bg-deepest:   #0d0b0a;
-        --wc-bg-app:       #181614;
-        --wc-bg-surface:   #221f1c;
-        --wc-bg-input:     #131210;
-        --wc-bg-hover:     #2d2926;
-        --wc-bg-selected:  rgba(245, 158, 11, 0.15);
-        --wc-bg-running:   #132010;
-        --wc-bg-paused:    #231505;
-        --wc-bg-group:     #0f0d0b;
-        --wc-bg-drag-over: #1a2211;
-        --wc-border:        #2a2622;
-        --wc-border-strong: #3d3936;
-        --wc-text-bright:    #ede8e3;
-        --wc-text:           #e0d8d0;
-        --wc-text-secondary: #8a8480;
-        --wc-text-muted:     #6a6460;
-        --wc-text-faint:     #504c48;
-        --wc-accent:       #22c55e;
-        --wc-accent-hover: #16a34a;
-        --wc-accent-fg:    #071a0e;
-        --wc-accent-dim:   rgba(34, 197, 94, 0.15);
+        --wc-bg-deepest:   #0a0a0d;
+        --wc-bg-app:       #0d0d10;
+        --wc-bg-surface:   #16151a;
+        --wc-bg-input:     #131217;
+        --wc-bg-hover:     #1c1b22;
+        --wc-bg-selected:  rgba(61, 186, 111, 0.14);
+        --wc-bg-running:   #112016;
+        --wc-bg-paused:    #221604;
+        --wc-bg-group:     #0b0a0e;
+        --wc-bg-drag-over: #112016;
+        --wc-border:        #222130;
+        --wc-border-strong: #2a2838;
+        --wc-text-bright:    #f2f0f7;
+        --wc-text:           #e8e6f0;
+        --wc-text-secondary: #7a788a;
+        --wc-text-muted:     #56546a;
+        --wc-text-faint:     #3a3848;
+        --wc-accent:       #3dba6f;
+        --wc-accent-hover: #34a862;
+        --wc-accent-fg:    #06140c;
+        --wc-accent-dim:   rgba(61, 186, 111, 0.15);
         color-scheme: dark;
       }
       :root[data-theme="navy"] {
@@ -83,7 +86,10 @@
       /* ── Base reset ───────────────────────────────────────────────────────── */
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html, body, #root { width: 100%; height: 100%; overflow: hidden; }
-      body { background: var(--wc-bg-app); }
+      body {
+        background: var(--wc-bg-app);
+        font-family: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
       input[type="range"], input[type="checkbox"] { accent-color: var(--wc-accent); }
 
       /* ── Scrollbars ───────────────────────────────────────────────────────── */
