@@ -29,7 +29,7 @@ Grab the latest installer for your platform from the **[Releases page](https://g
 | Platform | File | Notes |
 |---|---|---|
 | **Windows 10 / 11** | `Inkue_x.y.z_x64-setup.exe` or `.msi` | libmpv is bundled — nothing else to install |
-| **macOS** (Apple Silicon + Intel) | `Inkue_x.y.z_universal.dmg` | requires `libmpv` (`brew install mpv`) |
+| **macOS** (Apple Silicon + Intel) | `Inkue_x.y.z_universal.dmg` | self-contained — libmpv bundled |
 | **Linux** (x86-64) | `.deb` / `.AppImage` | `.deb` pulls in `libmpv` automatically |
 
 > Inkue is young software. If something breaks during a show-critical moment,
