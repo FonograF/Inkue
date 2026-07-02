@@ -14,6 +14,10 @@ Runs on **Windows, macOS and Linux**.
 [![CI](https://github.com/FonograF/Inkue/actions/workflows/ci.yml/badge.svg)](https://github.com/FonograF/Inkue/actions/workflows/ci.yml)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/FonograF)
 
+<br>
+
+<img src="docs/screenshot.png" alt="Inkue running a theatre cue list — cue list with color-coded cue types, inspector panel and GO / STOP / PAUSE transport" width="900" />
+
 </div>
 
 ---
