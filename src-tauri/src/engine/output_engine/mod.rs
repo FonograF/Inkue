@@ -670,6 +670,46 @@ impl OutputEngine {
         }
     }
 
+    /// Panic: unconditionally cut whatever the output surface is doing.
+    ///
+    /// Unlike [`Self::stop_content`] / [`Self::hard_stop_current`], this does
+    /// not consult the voice bookkeeping at all — it always issues `mpv stop`
+    /// and paints the black quad, so it silences the surface even when a cue
+    /// lost track of its voice (double-Escape backstop).
+    pub fn panic_stop(&self) {
+        *self.current_voice.lock().unwrap() = None;
+        if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
+            *cv.lock().unwrap() = None;
+        }
+        self.voices.lock().unwrap().clear();
+
+        unsafe {
+            let stop = cs("stop");
+            let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
+            (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+        }
+        fade::set_overlay_alpha(255);
+
+        if let Some(m) = OUTPUT_CURRENT_FADE_OUT_MS.get() {
+            *m.lock().unwrap() = 0;
+        }
+        if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
+            *m.lock().unwrap() = None;
+        }
+        *self.go_sent_at.lock().unwrap() = None;
+
+        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
+            let audio_id = av.lock().unwrap().take();
+            if let Some(aid) = audio_id {
+                let _ = self.audio_engine.stop_voice(
+                    aid,
+                    0,
+                    crate::engine::ring_command::FadeCurve::Linear,
+                );
+            }
+        }
+    }
+
     /// Return the current overlay alpha (0 = transparent, 255 = black).
     pub fn get_overlay_alpha(&self) -> u8 {
         FADE_STATE.get()

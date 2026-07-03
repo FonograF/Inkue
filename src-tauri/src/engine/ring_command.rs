@@ -64,6 +64,9 @@ pub enum AudioCommand {
     SetMasterGain { gain: f32 },
     /// Instantly seek a voice to the given frame position.
     Seek { voice_id: VoiceId, frame_pos: u64 },
+    /// Panic: immediately silence every voice in the pool, whatever its state.
+    /// Backstop for desynced cue bookkeeping — must never depend on voice IDs.
+    StopAll,
 }
 
 /// Status updates sent *from* the audio thread to the application layer.

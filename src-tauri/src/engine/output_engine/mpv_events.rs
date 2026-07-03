@@ -208,12 +208,20 @@ pub(super) fn mpv_event_loop(
                             MPV_END_FILE_REASON_EOF => {
                                 stop_paired_audio(&audio_engine);
                                 *go_sent_at.lock().unwrap() = None;
+                                // Natural end: mpv goes idle (keep-open=no) but does
+                                // not reliably emit a final render update, so the GL
+                                // loop would keep the last decoded frame on screen
+                                // (same class of bug as the hard-cut stop, 0.9.2).
+                                // Paint the opaque black quad over it — identical end
+                                // state to an operator stop.
+                                super::fade::set_overlay_alpha(255);
                                 let _ = status_tx
                                     .send(OutputStatus::Completed { voice_id: vid });
                             }
                             MPV_END_FILE_REASON_ERROR => {
                                 stop_paired_audio(&audio_engine);
                                 *go_sent_at.lock().unwrap() = None;
+                                super::fade::set_overlay_alpha(255);
                                 let msg = format!("mpv error (code {})", end_data.error);
                                 let _ = status_tx.send(OutputStatus::Error {
                                     voice_id: vid, message: msg,

@@ -288,7 +288,14 @@ impl Transport {
         Ok(())
     }
 
-    /// Hard-stop all running cues (no fades).
+    /// Panic stop (double-Escape): hard-stop all running cues, then cut
+    /// everything the engines are outputting regardless of cue bookkeeping.
+    ///
+    /// The per-cue pass alone is not enough: a cue whose state desynced from
+    /// its engine voice (state says Standby/Completed but the voice still
+    /// plays) is invisible to the `is_running()` filter and unstoppable
+    /// through its own `hard_stop()`.  The engine-level backstop silences
+    /// those too, and the final reset pass clears their stale bookkeeping.
     pub fn hard_stop_all(&mut self, cue_list: &mut CueList) -> Result<()> {
         let running_ids: Vec<CueId> = cue_list
             .cues
@@ -301,6 +308,13 @@ impl Transport {
             if let Some(cue) = cue_list.get_mut(&id) {
                 let _ = cue.hard_stop(&self.context);
             }
+        }
+
+        let _ = self.context.audio_engine.panic_stop_all();
+        self.context.output_engine.panic_stop();
+
+        for cue in cue_list.cues.iter_mut() {
+            let _ = cue.reset();
         }
         Ok(())
     }

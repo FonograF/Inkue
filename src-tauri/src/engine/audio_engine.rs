@@ -475,6 +475,16 @@ impl AudioEngine {
         self.send_command(AudioCommand::Stop { voice_id, fade_ms, fade_curve })
     }
 
+    /// Panic: silence every voice immediately, bypassing per-voice IDs.
+    ///
+    /// One ring-buffer command stops the whole pool inside a single RT
+    /// callback, so it works even for voices whose owning cue lost track of
+    /// them (desynced bookkeeping) and cannot overflow the command ring the
+    /// way N individual `Stop`s could.
+    pub fn panic_stop_all(&self) -> Result<()> {
+        self.send_command(AudioCommand::StopAll)
+    }
+
     pub fn pause_voice(&self, voice_id: VoiceId) -> Result<()> {
         self.send_command(AudioCommand::Pause { voice_id })
     }
@@ -1150,6 +1160,11 @@ fn apply_command(
             }
         }
         AudioCommand::SetMasterGain { .. } => {}
+        AudioCommand::StopAll => {
+            for v in voices {
+                v.set_stopped();
+            }
+        }
         AudioCommand::Seek { voice_id, frame_pos } => {
             if let Some(v) = voices.iter().find(|v| v.id == voice_id) {
                 v.frame_pos.store(frame_pos, std::sync::atomic::Ordering::Relaxed);
