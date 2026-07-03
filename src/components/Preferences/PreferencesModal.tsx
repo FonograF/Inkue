@@ -32,6 +32,7 @@ import {
 import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 import { InputPatchesPanel } from "../InputPatches/InputPatchesPanel";
 import { TcPreferences } from "../Timecode/TcPreferences";
+import { NetworkInterfaceSection } from "./NetworkInterfaceSection";
 import { listInputDevices } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
@@ -1203,6 +1204,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                 )}
                 {category === "network" && (
                   <>
+                    <NetworkInterfaceSection />
                     <OscContent
                       config={oscConfig}
                       onChange={async (c) => {

@@ -200,6 +200,9 @@ enum DmxCommand {
     },
     SetBlackout(bool),
     SetOutputs(Vec<UniverseOutput>),
+    /// Rebuild the sinks from the current outputs (e.g. after the selected
+    /// network interface changed) without touching the render state.
+    RebindSinks,
     Shutdown,
 }
 
@@ -266,6 +269,11 @@ impl DmxEngine {
         let _ = self.cmd_tx.send(DmxCommand::SetOutputs(outputs));
     }
 
+    /// Rebind all sink sockets to the currently-selected network interface.
+    pub fn rebind_sinks(&self) {
+        let _ = self.cmd_tx.send(DmxCommand::RebindSinks);
+    }
+
     /// Current output bytes per universe (for the monitor view).
     pub fn snapshot(&self) -> DmxSnapshot {
         self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
@@ -299,6 +307,7 @@ fn dmx_thread(cmd_rx: crossbeam_channel::Receiver<DmxCommand>, snapshot: Arc<Mut
 
     let mut state = DmxState::new();
     let mut sinks: Vec<ActiveSink> = Vec::new();
+    let mut outputs: Vec<UniverseOutput> = Vec::new();
 
     loop {
         // Drain all pending commands without blocking.
@@ -309,7 +318,11 @@ fn dmx_thread(cmd_rx: crossbeam_channel::Receiver<DmxCommand>, snapshot: Arc<Mut
                     state.submit_fade(universe, channel, width, target_norm, dur, curve, Instant::now());
                 }
                 Ok(DmxCommand::SetBlackout(b)) => state.set_blackout(b),
-                Ok(DmxCommand::SetOutputs(outputs)) => {
+                Ok(DmxCommand::SetOutputs(new_outputs)) => {
+                    sinks = build_sinks(&new_outputs, cid, &source_name);
+                    outputs = new_outputs;
+                }
+                Ok(DmxCommand::RebindSinks) => {
                     sinks = build_sinks(&outputs, cid, &source_name);
                 }
                 Err(TryRecvError::Empty) => break,

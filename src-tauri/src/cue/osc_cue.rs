@@ -4,7 +4,6 @@
 //! instantly (duration = `None`), emitting `ActionStarted` + `ActionCompleted`
 //! synchronously inside `go()`.
 
-use std::net::UdpSocket;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -181,7 +180,7 @@ fn send_osc(target: &str, address: &str, args: &[OscArg]) -> Result<()> {
         args: osc_args,
     });
     let bytes = rosc::encoder::encode(&packet)?;
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    let socket = crate::engine::net_interface::udp_send_socket()?;
     socket.send_to(&bytes, target)?;
     Ok(())
 }

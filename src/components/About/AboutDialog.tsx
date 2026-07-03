@@ -1,13 +1,31 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { InkueMark } from "../common/InkueMark";
+import { openExternalUrl } from "../../lib/commands";
+import { useUpdateStore } from "../../stores/updateStore";
 
 export function AboutDialog({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState("…");
+  const updateStatus = useUpdateStore((s) => s.status);
+  const updateVersion = useUpdateStore((s) => s.version);
+  const updateError = useUpdateStore((s) => s.error);
+  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
 
   useEffect(() => {
-    void getVersion().then(setVersion).catch(() => setVersion("1.0.0"));
+    void getVersion().then(setVersion).catch(() => setVersion("1.1.0"));
   }, []);
+
+  const updateStatusText = (() => {
+    switch (updateStatus) {
+      case "checking":    return "Checking…";
+      case "up-to-date":  return "Inkue is up to date.";
+      case "available":   return `Version ${updateVersion} is available.`;
+      case "downloading":
+      case "installing":  return "Installing update…";
+      case "error":       return `Update check failed: ${updateError}`;
+      default:            return null;
+    }
+  })();
 
   return (
     <div
@@ -30,7 +48,36 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
           <InkueMark size={28} />
           <span style={{ fontSize: 20, fontWeight: 700, color: "var(--wc-text-bright)" }}>Inkue</span>
           <span style={{ fontSize: 13, color: "var(--wc-text-muted)" }}>v{version}</span>
+          <button
+            onClick={() => void checkForUpdates()}
+            disabled={updateStatus === "checking"}
+            style={{
+              marginLeft: "auto",
+              background: "transparent", border: "1px solid var(--wc-border-strong)",
+              borderRadius: 6, color: "var(--wc-text-secondary)",
+              cursor: updateStatus === "checking" ? "default" : "pointer",
+              fontSize: 11, padding: "4px 10px",
+              opacity: updateStatus === "checking" ? 0.5 : 1,
+            }}
+          >
+            Check for Updates
+          </button>
         </div>
+
+        {updateStatusText && (
+          <div
+            style={{
+              fontSize: 11, marginBottom: 6,
+              color: updateStatus === "error"
+                ? "#ef4444"
+                : updateStatus === "available"
+                  ? "var(--wc-accent)"
+                  : "var(--wc-text-muted)",
+            }}
+          >
+            {updateStatusText}
+          </div>
+        )}
 
         <div style={{ fontSize: 12, color: "var(--wc-text-secondary)", marginBottom: 20 }}>
           Professional show control — cross-platform, open source.
@@ -62,24 +109,18 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <a
-              href="https://github.com/FonograF/Inkue"
-              target="_blank"
-              rel="noopener noreferrer"
+            <ExternalLink
+              url="https://github.com/FonograF/Inkue"
               style={{ fontSize: 12, color: "var(--wc-text-secondary)", textDecoration: "none" }}
-              onClick={(e) => e.stopPropagation()}
             >
               github.com/FonograF/Inkue
-            </a>
-            <a
-              href="https://github.com/sponsors/FonograF"
-              target="_blank"
-              rel="noopener noreferrer"
+            </ExternalLink>
+            <ExternalLink
+              url="https://github.com/sponsors/FonograF"
               style={{ fontSize: 12, color: "var(--wc-accent)", textDecoration: "none", fontWeight: 600 }}
-              onClick={(e) => e.stopPropagation()}
             >
               ♥ Sponsor
-            </a>
+            </ExternalLink>
           </div>
           <button
             onClick={onClose}
@@ -94,6 +135,32 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function ExternalLink({
+  url,
+  style,
+  children,
+}: {
+  url: string;
+  style: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={url}
+      style={{ ...style, cursor: "pointer" }}
+      onClick={(e) => {
+        // The WebView has no browser to hand target="_blank" to — route the
+        // click through the OS default browser instead.
+        e.preventDefault();
+        e.stopPropagation();
+        openExternalUrl(url).catch(console.error);
+      }}
+    >
+      {children}
+    </a>
   );
 }
 

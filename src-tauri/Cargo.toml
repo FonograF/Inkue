@@ -1,6 +1,6 @@
 [package]
 name = "inkue"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Professional, cross-platform show-control application for live events"
 authors = ["Inkue contributors"]
@@ -73,6 +73,11 @@ winit = "0.30"
 
 # Thin safe wrapper around OpenGL for the fade quad shader.
 glow = "0.13"
+if-addrs = "0.15.0"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
+socket2 = "0.6.4"
 
 # glutin 0.32 — platform-specific features avoid unnecessary DLL dependencies.
 # On Windows we only enable WGL (opengl32 + gdi32, always present).

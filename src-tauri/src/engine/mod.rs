@@ -23,6 +23,7 @@ pub mod dmx_engine;
 pub mod dmx_sink;
 pub mod fixture;
 pub mod mpv_sys;
+pub mod net_interface;
 pub mod osc_feedback;
 pub mod osc_patch;
 pub mod osc_server;

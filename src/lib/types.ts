@@ -384,6 +384,19 @@ export interface OscReceiveConfig {
   feedback_port: number;
 }
 
+/** One IPv4-capable network interface (Preferences → Network). */
+export interface NetworkInterfaceInfo {
+  name: string;
+  ip: string;
+  is_loopback: boolean;
+}
+
+/** Machine-level network interface selection. All-null = Automatic. */
+export interface NetworkInterfaceConfig {
+  interface_name: string | null;
+  interface_ip: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // DMX / Lighting
 // ---------------------------------------------------------------------------

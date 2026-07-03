@@ -141,9 +141,10 @@ pub struct DmxSink {
 }
 
 impl DmxSink {
-    /// Bind a socket and resolve the destination for `output`.
+    /// Bind a socket (pinned to the selected network interface, if any) and
+    /// resolve the destination for `output`.
     pub fn new(output: &UniverseOutput, cid: [u8; 16], source_name: String) -> Result<Self> {
-        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        let socket = super::net_interface::udp_send_socket()
             .map_err(|e| anyhow!("DMX socket bind failed: {e}"))?;
 
         let ip = match output.destination {
@@ -159,6 +160,23 @@ impl DmxSink {
             OutputProtocol::Sacn => SACN_PORT,
             OutputProtocol::ArtNet => ARTNET_PORT,
         };
+
+        if let IpAddr::V4(dst) = ip {
+            if dst.is_multicast() {
+                // Pin multicast egress to the selected interface (0.0.0.0 lets
+                // the OS pick, which matches the historical behaviour).
+                let egress = super::net_interface::selected_ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED);
+                if let Err(e) = socket2::SockRef::from(&socket).set_multicast_if_v4(&egress) {
+                    log::warn!("[dmx] set_multicast_if_v4({egress}) failed: {e}");
+                }
+            } else {
+                // Art-Net is commonly sent to a (directed) broadcast address;
+                // SO_BROADCAST is required for those and harmless for unicast.
+                if let Err(e) = socket.set_broadcast(true) {
+                    log::warn!("[dmx] set_broadcast failed: {e}");
+                }
+            }
+        }
 
         Ok(Self {
             socket,

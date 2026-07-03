@@ -107,8 +107,8 @@ fn server_loop(
             }
         }
 
-        let addr = format!("0.0.0.0:{}", config.port);
-        let socket = match UdpSocket::bind(&addr) {
+        let addr = std::net::SocketAddr::new(super::net_interface::bind_ip(), config.port);
+        let socket = match UdpSocket::bind(addr) {
             Ok(s) => s,
             Err(e) => {
                 log::error!("OSC server: failed to bind {addr}: {e}");

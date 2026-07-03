@@ -234,6 +234,22 @@ impl Default for OscReceiveConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkPreferences {}
 
+/// Machine-level network interface selection — stored in `network.json`,
+/// not in the workspace file, because it describes the physical machine.
+///
+/// `None` everywhere = Automatic: bind to all interfaces and let the OS
+/// routing table pick the egress interface.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkInterfaceConfig {
+    /// OS name of the selected interface (e.g. `"Ethernet"`, `"en0"`, `"eth0"`).
+    #[serde(default)]
+    pub interface_name: Option<String>,
+    /// IPv4 address of the interface captured at selection time.  Used as the
+    /// bind address, and as a fallback match if the interface was renamed.
+    #[serde(default)]
+    pub interface_ip: Option<String>,
+}
+
 /// How a cue's colour tag is rendered in the Cue List.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

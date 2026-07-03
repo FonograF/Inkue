@@ -22,13 +22,19 @@ name: Release
 #    Without these secrets the build still succeeds but the .app won't be notarized
 #    and Gatekeeper will block it.
 #
-# 3. Tauri updater signing (optional — enables in-app update checks):
-#    a. Generate key pair: pnpm tauri signer generate -w ~/.tauri/inkue.key
-#    b. Add the public key to tauri.conf.json under plugins.updater.pubkey
-#    c. Set these repository secrets:
-#         TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/inkue.key
-#         TAURI_SIGNING_PRIVATE_KEY_PASSWORD key password (empty string if none)
-#    The tauri-action will then sign update bundles and generate latest.json automatically.
+# 3. Tauri updater signing (REQUIRED since 1.1.0 — the in-app auto-updater is
+#    enabled and `bundle.createUpdaterArtifacts` is on, so builds FAIL without
+#    the private key):
+#    The key pair already exists: the public key is in tauri.conf.json
+#    (plugins.updater.pubkey); the private key lives in ~/.tauri/inkue.key on
+#    the maintainer's machine (NEVER commit it).
+#    Set these repository secrets (Settings → Secrets → Actions):
+#      TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/inkue.key
+#      TAURI_SIGNING_PRIVATE_KEY_PASSWORD key password (this key has none — set "")
+#    tauri-action then signs the update bundles and generates latest.json in the
+#    release automatically. The app polls
+#    https://github.com/FonograF/Inkue/releases/latest/download/latest.json —
+#    updates go live the moment the draft release is published.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -139,11 +145,16 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing is intentionally OFF until certificates are configured.
+          # Updater artifact signing (see header comment #3). Required — the
+          # build fails if TAURI_SIGNING_PRIVATE_KEY is missing because
+          # plugins.updater.pubkey + createUpdaterArtifacts are configured.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # OS code signing is intentionally OFF until certificates are configured.
           # Passing empty APPLE_* secrets makes tauri attempt `security import` and
-          # fail the macOS build, so the signing env vars are omitted on purpose.
+          # fail the macOS build, so those signing env vars are omitted on purpose.
           # To enable signing later: set the repository secrets listed in the header
-          # comment, then restore the APPLE_* / TAURI_SIGNING_* env vars here.
+          # comment, then restore the APPLE_* env vars here.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Inkue ${{ github.ref_name }}

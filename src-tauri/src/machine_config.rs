@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::{
-    preferences::{MachineAudioConfig, OscReceiveConfig},
+    preferences::{MachineAudioConfig, NetworkInterfaceConfig, OscReceiveConfig},
     engine::timecode_receiver::TcReceiverConfig,
 };
 
@@ -86,6 +86,36 @@ pub fn load_osc() -> OscReceiveConfig {
 /// Persist the OSC receive config to disk, creating `%APPDATA%\Inkue\` if needed.
 pub fn save_osc(config: &OscReceiveConfig) -> anyhow::Result<()> {
     let path = osc_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(config)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Network interface config
+// ---------------------------------------------------------------------------
+
+fn network_config_path() -> PathBuf {
+    config_base_dir().join("Inkue").join("network.json")
+}
+
+/// Load the network interface config from disk.  Returns the default
+/// (Automatic — all interfaces) on first run or when the file cannot be
+/// read/parsed.
+pub fn load_network() -> NetworkInterfaceConfig {
+    let path = network_config_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the network interface config to disk.
+pub fn save_network(config: &NetworkInterfaceConfig) -> anyhow::Result<()> {
+    let path = network_config_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

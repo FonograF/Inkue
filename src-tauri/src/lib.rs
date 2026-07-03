@@ -44,6 +44,7 @@ use commands::{
         update_fixture_group,
     },
     midi_cmds::{list_midi_output_ports, send_midi_test},
+    network_cmds::{get_network_config, list_network_interfaces, set_network_config},
     osc_cmds::{
         add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
         send_osc_test, set_osc_config, update_osc_patch,
@@ -80,6 +81,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             // When the main window is destroyed, the Win32 output-window thread
             // and the audio / event-loop threads keep the process alive
@@ -119,6 +123,10 @@ pub fn run() {
                         Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
                     })?,
             );
+
+            // Pin all network traffic to the configured interface (must run
+            // before the OSC server and any DMX sink binds a socket).
+            crate::engine::net_interface::apply(&crate::machine_config::load_network());
 
             let osc_config = crate::machine_config::load_osc();
             crate::engine::osc_feedback::apply(
@@ -475,6 +483,10 @@ pub fn run() {
             // MIDI
             list_midi_output_ports,
             send_midi_test,
+            // Network
+            list_network_interfaces,
+            get_network_config,
+            set_network_config,
             // OSC
             list_osc_patches,
             add_osc_patch,

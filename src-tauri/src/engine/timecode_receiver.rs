@@ -480,36 +480,6 @@ mod tests {
     use super::*;
     use crate::engine::timecode_types::TcRate;
 
-    // Build an assembler with all 8 nibbles pre-loaded for a known position.
-    fn make_assembler_for(pos: TcPosition) -> MtcAssembler {
-        let mut asm = MtcAssembler::default();
-        let f = pos.frames;
-        let s = pos.seconds;
-        let m = pos.minutes;
-        let h = pos.hours;
-        let rate_bits: u8 = match pos.rate {
-            TcRate::Fps24    => 0,
-            TcRate::Fps25    => 1,
-            TcRate::Fps2997Df => 2,
-            _                => 3,
-        };
-        // Quarter frames: piece | (value << 4)
-        let qf: [u8; 8] = [
-            (0 << 4) | (f & 0x0F),
-            (1 << 4) | ((f >> 4) & 0x01),
-            (2 << 4) | (s & 0x0F),
-            (3 << 4) | ((s >> 4) & 0x03),
-            (4 << 4) | (m & 0x0F),
-            (5 << 4) | ((m >> 4) & 0x03),
-            (6 << 4) | (h & 0x0F),
-            (7 << 4) | (((h >> 4) & 0x01) | (rate_bits << 1)),
-        ];
-        for byte in qf {
-            asm.push_quarter_frame(byte);
-        }
-        asm
-    }
-
     #[test]
     fn quarter_frame_assembles_known_position() {
         let expected = TcPosition::new(1, 2, 3, 4, TcRate::Fps30);
@@ -520,7 +490,7 @@ mod tests {
         let h = expected.hours;
         let rate_bits: u8 = 3; // Fps30
         let qf: [u8; 8] = [
-            (0 << 4) | (f & 0x0F),
+            f & 0x0F,
             (1 << 4) | ((f >> 4) & 0x01),
             (2 << 4) | (s & 0x0F),
             (3 << 4) | ((s >> 4) & 0x03),

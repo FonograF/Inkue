@@ -96,8 +96,6 @@ pub fn send_osc_test(
     message: OscMessage,
     state: State<'_, AppState>,
 ) -> String {
-    use std::net::UdpSocket;
-
     let id: Uuid = match patch_id.parse() {
         Ok(u) => u,
         Err(e) => return format!("Error: invalid patch_id — {e}"),
@@ -133,7 +131,7 @@ pub fn send_osc_test(
         Err(e) => return format!("Error: OSC encode failed — {e}"),
     };
 
-    match UdpSocket::bind("0.0.0.0:0") {
+    match crate::engine::net_interface::udp_send_socket() {
         Ok(socket) => match socket.send_to(&bytes, &target) {
             Ok(n) => format!("OK: sent {n} bytes → {target}  ({} args)", message.args.len()),
             Err(e) => format!("Error: send_to {target} failed — {e}"),

@@ -2,6 +2,7 @@
 // All backend communication goes through this file.
 
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AppPreferences,
   AudioCueData,
@@ -304,6 +305,23 @@ export const setOscConfig = (config: OscReceiveConfig) =>
   invoke<void>("set_osc_config", { config });
 export const sendOscTest = (patchId: string, message: import("./types").OscMessage) =>
   invoke<string>("send_osc_test", { patchId, message });
+
+// ---------------------------------------------------------------------------
+// Network interface selection
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// External links (tauri-plugin-opener)
+// ---------------------------------------------------------------------------
+
+export const openExternalUrl = (url: string) => openUrl(url);
+
+export const listNetworkInterfaces = () =>
+  invoke<import("./types").NetworkInterfaceInfo[]>("list_network_interfaces");
+export const getNetworkConfig = () =>
+  invoke<import("./types").NetworkInterfaceConfig>("get_network_config");
+export const setNetworkConfig = (config: import("./types").NetworkInterfaceConfig) =>
+  invoke<void>("set_network_config", { config });
 
 // ---------------------------------------------------------------------------
 // MIDI

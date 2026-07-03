@@ -16,6 +16,8 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists, checkRecovery, restoreRecovery, discardRecovery } from "./lib/commands";
 import { AboutDialog } from "./components/About/AboutDialog";
+import { UpdateDialog } from "./components/Update/UpdateDialog";
+import { useUpdateStore } from "./stores/updateStore";
 import { InkueMark } from "./components/common/InkueMark";
 import { PreflightModal } from "./components/Preflight/PreflightModal";
 import { LogViewerModal } from "./components/Logs/LogViewerModal";
@@ -739,6 +741,16 @@ export default function App() {
     saveUiLayout({ showCueListTabs, inspectorOpen, showSearchBar });
   }, [showCueListTabs, inspectorOpen, showSearchBar]);
 
+  // Silent update check shortly after startup (production builds only —
+  // dev builds have no signed update artifacts to compare against).
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+    const timer = window.setTimeout(() => {
+      void useUpdateStore.getState().checkForUpdates({ silent: true });
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   // Apply data-theme whenever display prefs change
   useEffect(() => {
     const root = document.documentElement;
@@ -1150,6 +1162,7 @@ export default function App() {
 
       {/* About dialog */}
       {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
+      <UpdateDialog />
       {preflightOpen && <PreflightModal onClose={() => setPreflightOpen(false)} />}
       {logsOpen && <LogViewerModal onClose={() => setLogsOpen(false)} />}
 

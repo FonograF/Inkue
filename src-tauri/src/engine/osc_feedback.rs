@@ -4,7 +4,6 @@
 //! Useful for driving external displays (Open Stage Control, QLab, …) without
 //! needing to author an OscSendCue for every cue in the show.
 
-use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -162,7 +161,7 @@ fn send_messages(messages: &[(&str, rosc::OscType)]) {
         (g.host.clone(), g.port)
     };
 
-    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else { return };
+    let Ok(socket) = super::net_interface::udp_send_socket() else { return };
     let target = format!("{host}:{port}");
 
     for (addr, arg) in messages {
