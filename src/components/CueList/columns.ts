@@ -7,6 +7,7 @@ export type ColumnId =
   | "name"
   | "notes"
   | "target"
+  | "output"
   | "type"
   | "pre_wait"
   | "duration"
@@ -35,6 +36,7 @@ export const DEFAULT_COLUMNS: ColumnDef[] = [
   { id: "name",      label: "Name",    defaultWidth: 200, minWidth: 80, fixed: true,  resizable: true  },
   { id: "notes",     label: "Notes",   defaultWidth: 220, minWidth: 60, fixed: false, resizable: true  },
   { id: "target",    label: "Target",  defaultWidth: 180, minWidth: 80, fixed: false, resizable: true  },
+  { id: "output",    label: "Output",  defaultWidth: 90,  minWidth: 50, fixed: false, resizable: true  },
   { id: "type",      label: "T",       defaultWidth: 32,  minWidth: 28, fixed: false, resizable: true  },
   { id: "pre_wait",  label: "Pre-W",   defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },
   { id: "duration",  label: "Dur",     defaultWidth: 64,  minWidth: 48, fixed: false, resizable: true  },

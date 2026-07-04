@@ -165,6 +165,7 @@ impl Default for MicCue {
 impl Cue for MicCue {
     fn id(&self) -> CueId { self.id }
     fn cue_type(&self) -> CueType { CueType::Mic }
+    fn output_patch_id(&self) -> Option<Uuid> { self.output_patch_id }
     fn name(&self) -> &str { &self.name }
     fn set_name(&mut self, name: String) { self.name = name; }
     fn number(&self) -> Option<&str> { self.number.as_deref() }

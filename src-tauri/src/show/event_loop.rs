@@ -249,6 +249,10 @@ fn tick(
     let mut master_peak_l = 0.0_f32;
     let mut master_peak_r = 0.0_f32;
     let mut has_master = false;
+    // Per-Output-Patch peaks for the mixer VUs, keyed by patch slot.
+    let mut patch_peaks: [(f32, f32); crate::engine::audio_engine::PATCH_VU_SLOTS] =
+        [(0.0, 0.0); crate::engine::audio_engine::PATCH_VU_SLOTS];
+    let mut has_patch_levels = false;
 
     for s in audio_statuses {
         match s {
@@ -259,6 +263,13 @@ fn tick(
                 master_peak_l = master_peak_l.max(peak_l);
                 master_peak_r = master_peak_r.max(peak_r);
                 has_master = true;
+            }
+            AudioStatus::PatchLevels { slot, peak_l, peak_r } => {
+                if let Some(p) = patch_peaks.get_mut(slot as usize) {
+                    p.0 = p.0.max(peak_l);
+                    p.1 = p.1.max(peak_r);
+                    has_patch_levels = true;
+                }
             }
             _ => {}
         }
@@ -294,6 +305,17 @@ fn tick(
             "master-level",
             serde_json::json!({ "peak_l": master_peak_l, "peak_r": master_peak_r }),
         );
+    }
+
+    // Per-patch levels for the mixer VUs (slot = index in ws.output_patches).
+    if has_patch_levels {
+        let levels: Vec<serde_json::Value> = patch_peaks
+            .iter()
+            .enumerate()
+            .filter(|(_, (l, r))| *l > 0.0 || *r > 0.0)
+            .map(|(slot, (l, r))| serde_json::json!({ "slot": slot, "peak_l": l, "peak_r": r }))
+            .collect();
+        let _ = handle.emit("patch-levels", serde_json::json!({ "levels": levels }));
     }
 
     // ------------------------------------------------------------------

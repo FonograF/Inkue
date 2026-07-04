@@ -91,6 +91,17 @@ function ActiveCueRow({ cue }: { cue: CueSummary }) {
         {cue.name || "(untitled)"}
       </span>
 
+      {cue.output_patch_name && (
+        <span style={{
+          flexShrink: 0, fontSize: 10, fontWeight: 700,
+          color: isPaused ? "#fb923c" : "#4ade80",
+          letterSpacing: "0.04em",
+          maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          OUTPUT: {cue.output_patch_name}
+        </span>
+      )}
+
       <span style={{
         flexShrink: 0, fontSize: 10, fontWeight: 700,
         color: isPaused ? "#fb923c" : "#4ade80",

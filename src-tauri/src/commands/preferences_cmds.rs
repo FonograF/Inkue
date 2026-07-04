@@ -132,6 +132,10 @@ pub fn update_machine_audio_config(
         ws.preferences.audio.audio_buffer_size = new_buffer_size;
     }
 
+    // The output-device universe changed (backend and/or device): tell the
+    // Output Patches panel to refetch its device list immediately, so patches
+    // pointing into the old universe show their warning without a reopen.
+    let _ = app_handle.emit("device-changed", serde_json::json!({}));
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }

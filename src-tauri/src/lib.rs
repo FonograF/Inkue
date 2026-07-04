@@ -28,7 +28,11 @@ use commands::{
         add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list,
         set_active_cue_list, set_cue_list_mode,
     },
-    device_cmds::{get_output_patches, list_input_devices, list_output_devices, refresh_devices, set_output_patch},
+    device_cmds::{
+        get_output_patches, list_input_devices, list_output_devices, refresh_devices,
+        open_mixer_window, remove_output_patch, set_default_output_patch, set_output_patch,
+        set_output_patch_gain,
+    },
     input_cmds::{add_input_patch, list_input_patches, remove_input_patch, update_input_patch},
     timecode_cmds::{
         get_tc_config, set_tc_config, get_tc_position,
@@ -463,6 +467,10 @@ pub fn run() {
             remove_input_patch,
             get_output_patches,
             set_output_patch,
+            remove_output_patch,
+            set_default_output_patch,
+            set_output_patch_gain,
+            open_mixer_window,
             refresh_devices,
             // Preferences
             get_preferences,

@@ -315,6 +315,13 @@ pub trait Cue: Send {
     /// window).  Non-video cues can ignore this call (default no-op).
     fn set_runtime_duration(&mut self, _duration: std::time::Duration) {}
 
+    /// The Output Patch this cue routes audio through, when it has one
+    /// assigned.  `None` = no patch (audio-producing cues then use the
+    /// workspace default patch).  Used by the cue list's Output column.
+    fn output_patch_id(&self) -> Option<uuid::Uuid> {
+        None
+    }
+
     /// If `true`, [`Transport::go`] will automatically stop this cue when the
     /// next GO fires.  Default: `false`.  Image cues override this based on
     /// their configured stop mode.

@@ -24,7 +24,11 @@ use crate::{
 ///
 /// `stop_fade_ms` comes from `ws.preferences.audio.default_fade_out_ms` and
 /// is used by [`AudioCue::stop`] when no per-cue fade-out spec is set.
-fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
+///
+/// Note: when the caller already holds the workspace lock, the `try_lock`
+/// below fails and the context falls back to empty patch tables — fine for
+/// stop paths, which only need the engines and `stop_fade_ms`.
+pub(super) fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
     let (patches, default_patch_id, output_screen, osc_patches, fixtures, groups, input_patches, audio_buffer_size) = state
         .workspace

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import type { AudioCueData, VideoCueData } from "../../lib/types";
-import { getNormalizeDb } from "../../lib/commands";
+import type { AudioCueData, OutputPatch, VideoCueData } from "../../lib/types";
+import { getNormalizeDb, getOutputPatches } from "../../lib/commands";
 import { Field, inputStyle } from "./Field";
+import { Select } from "../common/Select";
 
 export function LevelsTab({
   cue,
@@ -16,6 +17,11 @@ export function LevelsTab({
   const [pan, setPan] = useState(isAudio ? (cue as AudioCueData).pan : 0);
   const [normalizing, setNormalizing] = useState(false);
   const [normalizeError, setNormalizeError] = useState<string | null>(null);
+  const [patches, setPatches] = useState<OutputPatch[]>([]);
+
+  useEffect(() => {
+    getOutputPatches().then(setPatches).catch(console.error);
+  }, []);
 
   // Sync when the selected cue changes or after an external save
   useEffect(() => {
@@ -50,6 +56,22 @@ export function LevelsTab({
 
   return (
     <>
+      <Field label="Output Patch">
+        <Select
+          style={{ ...inputStyle, cursor: "pointer" }}
+          value={cue.output_patch_id ?? ""}
+          onChange={(e) => onSave({ output_patch_id: e.target.value || null })}
+        >
+          <option value="">Default patch</option>
+          {patches.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+          {cue.output_patch_id && !patches.some((p) => p.id === cue.output_patch_id) && (
+            <option value={cue.output_patch_id}>(deleted patch — using default)</option>
+          )}
+        </Select>
+      </Field>
+
       <Field label="Volume (dB)">
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input

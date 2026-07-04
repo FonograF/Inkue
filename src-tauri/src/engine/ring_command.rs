@@ -64,6 +64,9 @@ pub enum AudioCommand {
     SetMasterGain { gain: f32 },
     /// Instantly seek a voice to the given frame position.
     Seek { voice_id: VoiceId, frame_pos: u64 },
+    /// Set the patch-gain multiplier (mixer fader) on every voice routed
+    /// through the given Output Patch.
+    SetPatchGain { patch_id: uuid::Uuid, gain: f32 },
     /// Panic: immediately silence every voice in the pool, whatever its state.
     /// Backstop for desynced cue bookkeeping — must never depend on voice IDs.
     StopAll,
@@ -92,4 +95,7 @@ pub enum AudioStatus {
     },
     /// Master output peak levels.
     MasterLevels { peak_l: f32, peak_r: f32 },
+    /// Peak levels of all voices routed through one Output Patch slot
+    /// (`Voice::patch_slot`) during the last callback block.
+    PatchLevels { slot: u8, peak_l: f32, peak_r: f32 },
 }

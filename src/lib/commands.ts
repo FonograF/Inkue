@@ -243,13 +243,31 @@ export const openPreferencesWindow = () => invoke<void>("open_preferences_window
 
 export const listOutputDevices = () =>
   invoke<DeviceInfo[]>("list_output_devices");
-export const getOutputPatches = () => invoke<OutputPatch[]>("get_output_patches");
+
+/** Workspace Output Patch table + default patch id. */
+export interface OutputPatchTable {
+  patches: OutputPatch[];
+  default_patch_id: string | null;
+}
+
+export const getOutputPatchTable = () =>
+  invoke<OutputPatchTable>("get_output_patches");
+/** Flat patch list — convenience for patch-selector dropdowns. */
+export const getOutputPatches = () =>
+  getOutputPatchTable().then((t) => t.patches);
 export const setOutputPatch = (
   patchId: string | null,
   name: string,
   deviceId: string,
   channels: number[]
 ) => invoke<string>("set_output_patch", { patchId, name, deviceId, channels });
+export const removeOutputPatch = (patchId: string) =>
+  invoke<void>("remove_output_patch", { patchId });
+export const setOutputPatchGain = (patchId: string, gainDb: number) =>
+  invoke<void>("set_output_patch_gain", { patchId, gainDb });
+export const openMixerWindow = () => invoke<void>("open_mixer_window");
+export const setDefaultOutputPatch = (patchId: string | null) =>
+  invoke<void>("set_default_output_patch", { patchId });
 export const refreshDevices = () => invoke<void>("refresh_devices");
 
 // ---------------------------------------------------------------------------

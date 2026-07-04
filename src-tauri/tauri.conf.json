@@ -37,6 +37,19 @@
         "center": true
       },
       {
+        "label": "mixer",
+        "title": "Inkue Mixer",
+        "width": 480,
+        "height": 460,
+        "minWidth": 240,
+        "minHeight": 360,
+        "decorations": false,
+        "visible": false,
+        "resizable": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      },
+      {
         "label": "float-timer",
         "title": "Inkue Timer",
         "width": 420,

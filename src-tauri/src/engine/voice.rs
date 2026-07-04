@@ -117,6 +117,11 @@ pub struct VoiceInner {
     /// Playback rate multiplier (f32 bits).  1.0 = normal speed.
     /// Written once before play_voice(); read by the RT callback.
     pub rate_bits: AtomicU32,
+    /// Linear gain multiplier of the voice's Output Patch (f32 bits).  1.0
+    /// when the voice has no patch.  Written by `SetPatchGain` commands
+    /// (mixer fader) and at submission; multiplied into the mix on top of
+    /// the voice's own gain.
+    pub patch_gain_bits: AtomicU32,
     /// Active fade, if any.  Mutated exclusively from inside the callback.
     /// SAFETY: only ever accessed from the single RT callback thread.
     pub fade: UnsafeCell<Option<FadeState>>,
@@ -147,6 +152,12 @@ impl VoiceInner {
     }
     pub fn set_rate(&self, r: f32) {
         self.rate_bits.store(f32::to_bits(r), Ordering::Relaxed);
+    }
+    pub fn patch_gain(&self) -> f32 {
+        f32::from_bits(self.patch_gain_bits.load(Ordering::Relaxed))
+    }
+    pub fn set_patch_gain(&self, g: f32) {
+        self.patch_gain_bits.store(f32::to_bits(g), Ordering::Relaxed);
     }
 }
 
@@ -247,6 +258,17 @@ pub struct Voice {
     /// When `Some`, this is a live (Mic Cue) voice that reads from an input feed
     /// instead of `samples`.  `None` for ordinary file/decoded voices.
     pub live: Option<Arc<LiveSource>>,
+
+    /// `true` when an Output Patch set `out_l`/`out_r` explicitly.  Unpatched
+    /// voices are shifted to the engine's default output offset (the selected
+    /// ASIO pair) at submission.  Written once before `play_voice()`.
+    pub patched: bool,
+    /// Output Patch this voice was routed through, for live mixer-fader
+    /// updates (`SetPatchGain`).  Written once before `play_voice()`.
+    pub patch_id: Option<Uuid>,
+    /// Index of the patch in the workspace table at GO time — the per-patch
+    /// VU accumulator slot (`PATCH_VU_SLOTS`-bounded).  `None` = unmetered.
+    pub patch_slot: Option<u8>,
 }
 
 // AtomicU64 is not in std for 32-bit targets, but for our Windows x64 target it is fine.
@@ -273,12 +295,16 @@ impl Voice {
                 pan_bits: AtomicU32::new(f32::to_bits(pan)),
                 loops_remaining: AtomicU32::new(0),
                 rate_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
+                patch_gain_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
                 fade: UnsafeCell::new(None),
                 end_frame: UnsafeCell::new(None),
             }),
             out_l: 0,
             out_r: 1,
             live: None,
+            patched: false,
+            patch_id: None,
+            patch_slot: None,
         }
     }
 
@@ -299,12 +325,16 @@ impl Voice {
                 pan_bits: AtomicU32::new(f32::to_bits(pan)),
                 loops_remaining: AtomicU32::new(0),
                 rate_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
+                patch_gain_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
                 fade: UnsafeCell::new(None),
                 end_frame: UnsafeCell::new(None),
             }),
             out_l: 0,
             out_r: 1,
             live: Some(Arc::new(live)),
+            patched: false,
+            patch_id: None,
+            patch_slot: None,
         }
     }
 

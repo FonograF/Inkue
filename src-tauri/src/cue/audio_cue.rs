@@ -200,9 +200,11 @@ impl AudioCue {
             }
         }
 
-        // Apply Output Patch channel routing.  Look up the cue's assigned patch
+        // Apply Output Patch routing.  Look up the cue's assigned patch
         // (falling back to the workspace default); if found, map its first two
-        // channel indices to the voice's L/R output slots.
+        // channel indices to the voice's L/R output slots and target its
+        // device (the engine opens an aux stream for non-main devices).
+        let mut patch_device: Option<String> = None;
         if let Some(patch) = context.resolve_patch(self.output_patch_id) {
             if let Some(&ch_l) = patch.channels.first() {
                 voice.out_l = ch_l as usize;
@@ -213,9 +215,18 @@ impl AudioCue {
                 // Mono patch — route both L and R to the same channel.
                 voice.out_r = ch_l as usize;
             }
+            voice.patched = true;
+            voice.patch_id = Some(patch.id);
+            voice.patch_slot = context
+                .output_patches
+                .iter()
+                .position(|p| p.id == patch.id)
+                .map(|i| i as u8);
+            voice.inner.set_patch_gain(crate::cue::types::db_to_linear(patch.gain_db as f64) as f32);
+            patch_device = Some(patch.device_id.clone());
         }
 
-        let voice_id = context.audio_engine.play_voice(voice)?;
+        let voice_id = context.audio_engine.play_voice_routed(voice, patch_device.as_deref())?;
         self.active_voice_id = Some(voice_id);
         self.action_started_at = Some(Instant::now());
         self.in_pre_wait = false;
@@ -246,6 +257,7 @@ impl Default for AudioCue {
 impl Cue for AudioCue {
     fn id(&self) -> CueId { self.id }
     fn cue_type(&self) -> CueType { CueType::Audio }
+    fn output_patch_id(&self) -> Option<uuid::Uuid> { self.output_patch_id }
     fn name(&self) -> &str { &self.name }
     fn set_name(&mut self, name: String) { self.name = name; }
     fn number(&self) -> Option<&str> { self.number.as_deref() }

@@ -86,12 +86,38 @@ impl InputFeed {
 }
 
 
+/// One additional cpal output stream opened for an Output Patch that targets
+/// a different device than the main stream.
+///
+/// Owns its own voice pool (mixed only by its own callback — per-stream pools
+/// keep RT `try_lock` contention identical to the single-stream design) and
+/// its own command/status rings.  Live (Mic) voices never land here: input
+/// feeds are drained exclusively by the main stream's callback, so aux
+/// streams get a permanently empty feed list.
+struct AuxStream {
+    /// OS device id this stream is open on.
+    device_id: String,
+    /// Output channel count of this stream (for channel-bounds alerts).
+    channels: u32,
+    voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    cmd_prod: ringbuf::HeapProd<AudioCommand>,
+    status_cons: ringbuf::HeapCons<AudioStatus>,
+    /// Set by the cpal error callback on DeviceNotAvailable.
+    failed: Arc<std::sync::atomic::AtomicBool>,
+    _stream: Stream,
+}
+
 /// The audio engine.
 pub struct AudioEngine {
     pub device_manager: Mutex<DeviceManager>,
     cmd_prod: Mutex<ringbuf::HeapProd<AudioCommand>>,
     status_cons: Mutex<ringbuf::HeapCons<AudioStatus>>,
     voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    /// Additional per-device streams for Output Patches targeting a device
+    /// other than the main one.  Opened lazily at the first GO that needs the
+    /// device, kept open afterwards so later GOs start with zero device-open
+    /// latency.  Never contains the main device.
+    aux_streams: Mutex<Vec<AuxStream>>,
     /// Live input feeds (one per captured device), shared with the output
     /// callback which drains them each block.
     input_feeds: Arc<Mutex<Vec<InputFeed>>>,
@@ -106,6 +132,9 @@ pub struct AudioEngine {
     output_callbacks: Arc<std::sync::atomic::AtomicU64>,
     /// Total output channel count of the current stream (updated on restart).
     output_channels: std::sync::atomic::AtomicU32,
+    /// Output-channel offset applied to unpatched voices at submission — the
+    /// selected ASIO output pair (0 on other backends).
+    default_out_offset: std::sync::atomic::AtomicU32,
     master_gain: Arc<std::sync::atomic::AtomicU32>,
     /// Failure flag of the **current** stream (replaced on every restart).  Set by
     /// the cpal error callback after repeated `DeviceNotAvailable`; read by the
@@ -183,10 +212,12 @@ impl AudioEngine {
             cmd_prod: Mutex::new(sr.cmd_prod),
             status_cons: Mutex::new(sr.status_cons),
             voices: shared_voices,
+            aux_streams: Mutex::new(Vec::new()),
             input_feeds,
             _stream: Mutex::new(Some(sr.stream)),
             sample_rate: std::sync::atomic::AtomicU32::new(sr.sample_rate),
             output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
+            default_out_offset: std::sync::atomic::AtomicU32::new(sr.default_out_offset),
             master_gain,
             output_period,
             output_callbacks,
@@ -300,8 +331,22 @@ impl AudioEngine {
         self.master_gain.store(f32::to_bits(gain), std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Shift an unpatched voice's L/R outputs to the default output offset
+    /// (the selected ASIO pair).  Patched voices route exactly where their
+    /// Output Patch says.
+    fn apply_default_offset(&self, voice: &mut Voice) {
+        if voice.patched {
+            return;
+        }
+        let offset = self.default_out_offset.load(std::sync::atomic::Ordering::Relaxed) as usize;
+        voice.out_l += offset;
+        voice.out_r += offset;
+    }
+
     /// Add a pre-decoded voice to the pool and issue a Play command.
-    pub fn play_voice(&self, voice: Voice) -> Result<VoiceId> {
+    pub fn play_voice(&self, mut voice: Voice) -> Result<VoiceId> {
+        self.apply_default_offset(&mut voice);
+        self.check_channel_bounds(&voice, self.output_channels());
         let id = voice.id;
         let arc = Arc::new(voice);
         arc.set_playing();
@@ -322,7 +367,9 @@ impl AudioEngine {
     /// is submitted paused at GO, then resumed (via [`resume_voice`]) the moment
     /// the video's first frame is presented, so audio and video start together
     /// with no A/V offset.
-    pub fn play_voice_paused(&self, voice: Voice) -> Result<VoiceId> {
+    pub fn play_voice_paused(&self, mut voice: Voice) -> Result<VoiceId> {
+        self.apply_default_offset(&mut voice);
+        self.check_channel_bounds(&voice, self.output_channels());
         let id = voice.id;
         let arc = Arc::new(voice);
         arc.set_paused();
@@ -335,6 +382,148 @@ impl AudioEngine {
         // No Play command — the callback only mixes Playing/FadingOut voices, so
         // this stays silent until resume_voice() is called.
         Ok(id)
+    }
+
+    // ── Output Patch device routing ───────────────────────────────────────────
+
+    /// `true` when `device_id` should play on the main stream: no device
+    /// requested, or it is the device the main stream is already open on
+    /// (including when "main" is the system default and the patch names that
+    /// same device explicitly — no duplicate stream on one device).
+    fn routes_to_main(&self, device_id: Option<&str>) -> bool {
+        let Some(dev) = device_id.filter(|d| !d.is_empty()) else { return true };
+        let main = self.current_device_id.lock().ok().and_then(|c| c.clone());
+        let default_dev = match main {
+            Some(_) => None,
+            None => self
+                .device_manager
+                .lock()
+                .ok()
+                .and_then(|m| m.default_device().map(|d| d.id.clone())),
+        };
+        resolves_to_main_device(dev, main.as_deref(), default_dev.as_deref())
+    }
+
+    /// Play `voice` on the device an Output Patch routes to.
+    ///
+    /// `None` / empty / the main device → the normal main-stream path.  Any
+    /// other device → a dedicated aux stream (opened on first use).  If the
+    /// device cannot be opened the voice falls back to the main stream — a
+    /// mis-patched cue must stay audible in a show — and a health alert tells
+    /// the operator.
+    pub fn play_voice_routed(&self, voice: Voice, device_id: Option<&str>) -> Result<VoiceId> {
+        if self.routes_to_main(device_id) {
+            // Routing is healthy again — retire any stale device alert so the
+            // banner always matches the latest GO.
+            crate::health::clear("output-patch-device");
+            return self.play_voice(voice);
+        }
+        // routes_to_main returned false, so device_id is Some(non-empty).
+        let dev = device_id.unwrap_or_default();
+        match self.submit_to_aux(voice, dev, true) {
+            Ok(id) => Ok(id),
+            Err((voice, e)) => {
+                log::warn!("[audio] patch device '{dev}' unavailable ({e}) — playing on main output");
+                crate::health::set(crate::health::HealthAlert::new(
+                    "output-patch-device",
+                    crate::health::HealthLevel::Warning,
+                    format!("Patch output device unavailable — audio routed to the main output ({e})"),
+                ));
+                self.play_voice(voice)
+            }
+        }
+    }
+
+    /// [`Self::play_voice_paused`] with Output Patch device routing.
+    /// Used for a video's audio track when its patch targets another device.
+    pub fn play_voice_paused_routed(&self, voice: Voice, device_id: Option<&str>) -> Result<VoiceId> {
+        if self.routes_to_main(device_id) {
+            crate::health::clear("output-patch-device");
+            return self.play_voice_paused(voice);
+        }
+        let dev = device_id.unwrap_or_default();
+        match self.submit_to_aux(voice, dev, false) {
+            Ok(id) => Ok(id),
+            Err((voice, e)) => {
+                log::warn!("[audio] patch device '{dev}' unavailable ({e}) — playing on main output");
+                crate::health::set(crate::health::HealthAlert::new(
+                    "output-patch-device",
+                    crate::health::HealthLevel::Warning,
+                    format!("Patch output device unavailable — audio routed to the main output ({e})"),
+                ));
+                self.play_voice_paused(voice)
+            }
+        }
+    }
+
+    /// Push `voice` into the aux stream for `device_id` (opening it if
+    /// needed).  `start` issues the Play command; `false` submits paused.
+    /// On failure the voice is handed back so the caller can fall back to
+    /// the main stream.
+    fn submit_to_aux(
+        &self,
+        voice: Voice,
+        device_id: &str,
+        start: bool,
+    ) -> std::result::Result<VoiceId, (Voice, anyhow::Error)> {
+        let mut aux = match self.aux_streams.lock() {
+            Ok(g) => g,
+            Err(_) => return Err((voice, anyhow!("aux_streams mutex poisoned"))),
+        };
+
+        // Drop a dead stream for this device so it is reopened fresh below.
+        aux.retain(|s| {
+            !(s.device_id == device_id && s.failed.load(std::sync::atomic::Ordering::Relaxed))
+        });
+
+        if !aux.iter().any(|s| s.device_id == device_id) {
+            let buffer_size = self
+                .desired_config
+                .lock()
+                .map(|c| c.buffer_size)
+                .unwrap_or(256);
+            match open_aux_stream(device_id, buffer_size, Arc::clone(&self.master_gain)) {
+                Ok(s) => {
+                    log::info!("[audio] aux output stream opened on '{device_id}'");
+                    crate::health::clear("output-patch-device");
+                    aux.push(s);
+                }
+                Err(e) => return Err((voice, e)),
+            }
+        }
+
+        // Both branches above guarantee the stream exists here.
+        let Some(stream) = aux.iter_mut().find(|s| s.device_id == device_id) else {
+            return Err((voice, anyhow!("aux stream vanished")));
+        };
+
+        self.check_channel_bounds(&voice, stream.channels);
+        let id = voice.id;
+        let mut pool = match stream.voices.lock() {
+            Ok(p) => p,
+            Err(_) => return Err((voice, anyhow!("aux voice pool poisoned"))),
+        };
+        let arc = Arc::new(voice);
+        if start { arc.set_playing(); } else { arc.set_paused(); }
+        pool.push(arc);
+        drop(pool);
+        if start {
+            let _ = stream.cmd_prod.try_push(AudioCommand::Play { voice_id: id });
+        }
+        Ok(id)
+    }
+
+    /// Send `cmd` to the main stream and every aux stream.  Streams that do
+    /// not own the referenced voice ignore the command, so broadcasting keeps
+    /// the public API device-agnostic.
+    fn broadcast_command(&self, cmd: AudioCommand) -> Result<()> {
+        let main = self.send_command(cmd.clone());
+        if let Ok(mut aux) = self.aux_streams.lock() {
+            for s in aux.iter_mut() {
+                let _ = s.cmd_prod.try_push(cmd.clone());
+            }
+        }
+        main
     }
 
     /// Ensure an input capture exists for `device_id` (or the default input when
@@ -447,6 +636,9 @@ impl AudioEngine {
         let mut voice = Voice::new_live(live, self.sample_rate(), gain, pan);
         voice.out_l = out_l;
         voice.out_r = out_r;
+        // Mic routing is always explicit (Input Patch → Output Patch channels);
+        // never shift it by the default ASIO pair offset.
+        voice.patched = true;
         if fade_in_ms > 0 {
             let total = fade_in_ms as u64 * self.sample_rate() as u64 / 1000;
             // SAFETY: written once before the voice is shared with the callback.
@@ -472,17 +664,18 @@ impl AudioEngine {
     }
 
     pub fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32, fade_curve: FadeCurve) -> Result<()> {
-        self.send_command(AudioCommand::Stop { voice_id, fade_ms, fade_curve })
+        self.broadcast_command(AudioCommand::Stop { voice_id, fade_ms, fade_curve })
     }
 
     /// Panic: silence every voice immediately, bypassing per-voice IDs.
     ///
-    /// One ring-buffer command stops the whole pool inside a single RT
-    /// callback, so it works even for voices whose owning cue lost track of
-    /// them (desynced bookkeeping) and cannot overflow the command ring the
-    /// way N individual `Stop`s could.
+    /// One ring-buffer command per stream stops its whole pool inside a
+    /// single RT callback, so it works even for voices whose owning cue lost
+    /// track of them (desynced bookkeeping) and cannot overflow the command
+    /// ring the way N individual `Stop`s could.  Broadcast to every aux
+    /// stream so patch-routed voices are silenced too.
     pub fn panic_stop_all(&self) -> Result<()> {
-        self.send_command(AudioCommand::StopAll)
+        self.broadcast_command(AudioCommand::StopAll)
     }
 
     pub fn pause_voice(&self, voice_id: VoiceId) -> Result<()> {
@@ -490,30 +683,89 @@ impl AudioEngine {
     }
 
     pub fn resume_voice(&self, voice_id: VoiceId) -> Result<()> {
-        self.send_command(AudioCommand::Resume { voice_id })
+        self.broadcast_command(AudioCommand::Resume { voice_id })
     }
 
     pub fn set_voice_gain(&self, voice_id: VoiceId, gain: f32) -> Result<()> {
-        self.send_command(AudioCommand::SetGain { voice_id, gain })
+        self.broadcast_command(AudioCommand::SetGain { voice_id, gain })
     }
 
     pub fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()> {
-        self.send_command(AudioCommand::SetPan { voice_id, pan })
+        self.broadcast_command(AudioCommand::SetPan { voice_id, pan })
     }
 
     /// Seek a voice to the given decoded-audio frame position.
     pub fn seek_voice(&self, voice_id: VoiceId, frame_pos: u64) -> Result<()> {
-        self.send_command(AudioCommand::Seek { voice_id, frame_pos })
+        self.broadcast_command(AudioCommand::Seek { voice_id, frame_pos })
+    }
+
+    /// Live mixer fader: set the patch-gain multiplier on every playing voice
+    /// routed through `patch_id` (all streams).  New voices pick the gain up
+    /// from the patch table at GO.
+    pub fn set_patch_gain(&self, patch_id: Uuid, gain: f32) -> Result<()> {
+        self.broadcast_command(AudioCommand::SetPatchGain { patch_id, gain })
+    }
+
+    /// Close every aux stream and clear routing alerts.
+    ///
+    /// Called on any event that changes the routing universe — main device /
+    /// backend change, Output Patch edits — so no stream keeps playing on an
+    /// output the operator just re-configured away from, and no stale banner
+    /// contradicts the new reality.  The next GO reopens what it needs.
+    pub fn close_all_aux(&self) {
+        if let Ok(mut aux) = self.aux_streams.lock() {
+            if !aux.is_empty() {
+                log::info!("[audio] closing {} aux output stream(s) (routing changed)", aux.len());
+            }
+            aux.clear();
+        }
+        crate::health::clear("output-patch-device");
+        crate::health::clear("output-patch-channels");
+    }
+
+    /// Raise or clear the "patch routes to a channel the device does not
+    /// have" alert for one submitted voice.  Reflects the **latest** GO, so
+    /// the banner always matches what the operator just heard (or didn't).
+    fn check_channel_bounds(&self, voice: &Voice, device_channels: u32) {
+        let highest = voice.out_l.max(voice.out_r);
+        if highest >= device_channels as usize {
+            crate::health::set(crate::health::HealthAlert::new(
+                "output-patch-channels",
+                crate::health::HealthLevel::Warning,
+                format!(
+                    "Cue routed to output channel {} but the device has only {} — audio is dropped. Fix the Output Patch channels.",
+                    highest + 1,
+                    device_channels
+                ),
+            ));
+        } else {
+            crate::health::clear("output-patch-channels");
+        }
+    }
+
+    /// Run `f` on the voice with `voice_id`, searching the main pool then
+    /// every aux pool.  Returns `None` when the voice is not found.
+    fn with_voice<T>(&self, voice_id: VoiceId, f: impl Fn(&Arc<Voice>) -> T) -> Option<T> {
+        if let Ok(pool) = self.voices.lock() {
+            if let Some(v) = pool.iter().find(|v| v.id == voice_id) {
+                return Some(f(v));
+            }
+        }
+        let aux = self.aux_streams.lock().ok()?;
+        for s in aux.iter() {
+            if let Ok(pool) = s.voices.lock() {
+                if let Some(v) = pool.iter().find(|v| v.id == voice_id) {
+                    return Some(f(v));
+                }
+            }
+        }
+        None
     }
 
     /// Read the current linear gain of a voice.
     /// Returns 1.0 if the voice is not found.
     pub fn get_voice_gain(&self, voice_id: VoiceId) -> f32 {
-        self.voices
-            .lock()
-            .ok()
-            .and_then(|g| g.iter().find(|v| v.id == voice_id).map(|v| v.inner.gain()))
-            .unwrap_or(1.0)
+        self.with_voice(voice_id, |v| v.inner.gain()).unwrap_or(1.0)
     }
 
     /// Seek a voice to the given position in milliseconds.
@@ -522,28 +774,32 @@ impl AudioEngine {
     /// frame position, then sends a [`AudioCommand::Seek`] to the RT callback.
     /// Used by [`OutputEngine::seek`] which only knows wall-clock position.
     pub fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64) -> Result<()> {
-        let frame_pos = {
-            let voices = self.voices.lock().map_err(|_| anyhow!("voices mutex poisoned"))?;
-            voices
-                .iter()
-                .find(|v| v.id == voice_id)
-                .map(|v| position_ms * v.sample_rate as u64 / 1000)
-        };
+        let frame_pos = self.with_voice(voice_id, |v| position_ms * v.sample_rate as u64 / 1000);
         if let Some(fp) = frame_pos {
-            self.send_command(AudioCommand::Seek { voice_id, frame_pos: fp })?;
+            self.broadcast_command(AudioCommand::Seek { voice_id, frame_pos: fp })?;
         }
         Ok(())
     }
 
-    /// Drain the status ring buffer and return all pending status messages.
+    /// Drain the status ring buffers (main + aux) and return all pending
+    /// status messages.
     pub fn drain_status(&self) -> Vec<AudioStatus> {
-        let mut cons = match self.status_cons.lock() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
         let mut out = Vec::new();
-        while let Some(s) = cons.try_pop() {
-            out.push(s);
+        if let Ok(mut cons) = self.status_cons.lock() {
+            while let Some(s) = cons.try_pop() {
+                out.push(s);
+            }
+        }
+        if let Ok(mut aux) = self.aux_streams.lock() {
+            for s in aux.iter_mut() {
+                while let Some(msg) = s.status_cons.try_pop() {
+                    // Aux master-level meters would fight the main stream's on
+                    // the VU display; only voice-scoped statuses pass through.
+                    if !matches!(msg, AudioStatus::MasterLevels { .. }) {
+                        out.push(msg);
+                    }
+                }
+            }
         }
         out
     }
@@ -569,6 +825,23 @@ impl AudioEngine {
         if let Ok(mut feeds) = self.input_feeds.lock() {
             feeds.retain(|f| in_use.contains(&f.id));
         }
+        drop(voices);
+
+        // Aux pools: same sweep.  A healthy aux stream stays open even when
+        // idle (zero device-open latency on the next GO); a failed one is
+        // dropped once empty so the next GO retries a fresh open.
+        if let Ok(mut aux) = self.aux_streams.lock() {
+            for s in aux.iter() {
+                if let Ok(mut pool) = s.voices.lock() {
+                    pool.retain(|v| !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle));
+                }
+            }
+            aux.retain(|s| {
+                let empty = s.voices.lock().map(|p| p.is_empty()).unwrap_or(true);
+                let failed = s.failed.load(std::sync::atomic::Ordering::Relaxed);
+                !(failed && empty)
+            });
+        }
     }
 
     /// Stop the current stream and re-open according to `config`.
@@ -588,6 +861,13 @@ impl AudioEngine {
             *sg = None;
         }
 
+        // Close ALL aux streams: they belong to the previous device universe
+        // (a WASAPI aux on the interface ASIO is about to grab exclusively
+        // would make this restart fail), and stale ones would keep playing on
+        // outputs the operator just re-configured away from.  The next GO
+        // through a patch reopens exactly what the new universe needs.
+        self.close_all_aux();
+
         let new_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sr = open_stream_inner(
             config,
@@ -604,6 +884,7 @@ impl AudioEngine {
         *self._stream.lock().map_err(|_| anyhow!("stream poisoned"))? = Some(sr.stream);
         self.sample_rate.store(sr.sample_rate, std::sync::atomic::Ordering::Relaxed);
         self.output_channels.store(sr.channels, std::sync::atomic::Ordering::Relaxed);
+        self.default_out_offset.store(sr.default_out_offset, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut f) = self.stream_failed.lock() { *f = new_failed; }
         if let Ok(mut d) = self.current_device_id.lock() { *d = config.device_id.clone(); }
 
@@ -629,6 +910,9 @@ struct StreamResult {
     stream: Stream,
     sample_rate: u32,
     channels: u32,
+    /// Default output-channel offset for unpatched voices (the selected ASIO
+    /// pair × 2; always 0 on non-ASIO backends).
+    default_out_offset: u32,
     cmd_prod: ringbuf::HeapProd<AudioCommand>,
     status_cons: ringbuf::HeapCons<AudioStatus>,
 }
@@ -731,8 +1015,13 @@ fn open_stream_inner(
         buffer_size: buf_size,
     };
 
-    // ASIO: route the stereo mix to the selected output pair.
-    let pair_offset = (config.asio_out_pair as usize * 2).min(total_ch.saturating_sub(2));
+    // ASIO: default output pair for voices that have no Output Patch.
+    // Applied at voice submission (play_voice), not in the callback.
+    let pair_offset = if matches!(config.backend, AudioBackend::Asio) {
+        (config.asio_out_pair as usize * 2).min(total_ch.saturating_sub(2))
+    } else {
+        0
+    };
 
     let (cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
     let (mut status_prod, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
@@ -764,8 +1053,12 @@ fn open_stream_inner(
         }
     };
 
+    // Both formats mix **full-width** (all device channels) so Output Patch
+    // channel routing reaches every physical output — essential on ASIO where
+    // one driver exposes all of the interface's outs.  Unpatched voices are
+    // shifted to `pair_offset` at submission (see `play_voice`), not here.
     let stream = match default_config.sample_format() {
-        cpal::SampleFormat::F32 if pair_offset == 0 => device.build_output_stream(
+        cpal::SampleFormat::F32 => device.build_output_stream(
             stream_cfg,
             move |data: &mut [f32], _| {
                 cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -775,30 +1068,10 @@ fn open_stream_inner(
             make_err_fn(),
             None,
         )?,
-        cpal::SampleFormat::F32 => {
-            // Route stereo mix to the selected ASIO pair; zero the rest.
-            let mut scratch = vec![0.0f32; 4096 * 2].into_boxed_slice();
-            device.build_output_stream(
-                stream_cfg,
-                move |data: &mut [f32], _| {
-                    cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let frames = data.len() / total_ch;
-                    cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
-                    let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
-                    data.fill(0.0);
-                    for f in 0..frames {
-                        data[f * total_ch + pair_offset]     = scratch[f * 2];
-                        data[f * total_ch + pair_offset + 1] = scratch[f * 2 + 1];
-                    }
-                },
-                make_err_fn(),
-                None,
-            )?
-        }
         cpal::SampleFormat::I32 => {
-            // Pre-allocate stereo scratch — no alloc inside the RT callback.
-            let scratch_len = (config.buffer_size as usize * 2).max(4096 * 2);
+            // Pre-allocate a full-width f32 scratch — no alloc inside the RT
+            // callback (4096 frames covers every period cpal will request).
+            let scratch_len = (config.buffer_size as usize).max(4096) * total_ch;
             let mut scratch = vec![0.0f32; scratch_len].into_boxed_slice();
             device.build_output_stream(
                 stream_cfg,
@@ -806,12 +1079,10 @@ fn open_stream_inner(
                     cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let frames = data.len() / total_ch;
                     cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
-                    let n = (frames * 2).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], 2, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
-                    data.fill(0);
-                    for f in 0..frames {
-                        data[f * total_ch + pair_offset]     = (scratch[f * 2].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
-                        data[f * total_ch + pair_offset + 1] = (scratch[f * 2 + 1].clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
+                    let n = (frames * total_ch).min(scratch.len());
+                    fill_buffer(&mut scratch[..n], total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
+                    for (dst, src) in data.iter_mut().zip(scratch[..n].iter()) {
+                        *dst = (src.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
                     }
                 },
                 make_err_fn(),
@@ -831,7 +1102,80 @@ fn open_stream_inner(
         buf_size,
     );
 
-    Ok(StreamResult { stream, sample_rate, channels: channels as u32, cmd_prod, status_cons })
+    Ok(StreamResult {
+        stream,
+        sample_rate,
+        channels: channels as u32,
+        default_out_offset: pair_offset as u32,
+        cmd_prod,
+        status_cons,
+    })
+}
+
+/// Pure routing decision: does an explicitly-requested patch device match the
+/// device the main stream is open on?  `main` is the main stream's device id
+/// (`None` = system default, compared via `default_dev`).
+fn resolves_to_main_device(requested: &str, main: Option<&str>, default_dev: Option<&str>) -> bool {
+    match main {
+        Some(cur) => cur == requested,
+        None => default_dev == Some(requested),
+    }
+}
+
+/// Open an additional output stream on `device_id` for Output Patch routing.
+///
+/// Reuses [`open_stream_inner`] with a synthetic config: generic default host
+/// (WASAPI shared on Windows, CoreAudio on macOS, ALSA/PipeWire on Linux — no
+/// ASIO, which is exclusive and single-device by design), fresh voice pool,
+/// permanently empty input-feed list (live voices stay on the main stream),
+/// and the shared master gain so the master fader applies everywhere.
+fn open_aux_stream(
+    device_id: &str,
+    buffer_size: u32,
+    master_gain: Arc<std::sync::atomic::AtomicU32>,
+) -> Result<AuxStream> {
+    use crate::preferences::AudioBackend;
+
+    // WasapiShared on Windows selects BufferSize::Default (WASAPI shared mode
+    // owns its engine period); SystemDefault elsewhere applies the configured
+    // buffer like the main stream does on CoreAudio/ALSA.
+    #[cfg(windows)]
+    let backend = AudioBackend::WasapiShared;
+    #[cfg(not(windows))]
+    let backend = AudioBackend::SystemDefault;
+
+    let config = MachineAudioConfig {
+        backend,
+        device_id: Some(device_id.to_string()),
+        device_name: None,
+        input_device_id: None,
+        buffer_size,
+        asio_out_pair: 0,
+    };
+
+    let voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
+    let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
+    let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let sr = open_stream_inner(
+        &config,
+        Arc::clone(&voices),
+        feeds,
+        master_gain,
+        Arc::new(std::sync::atomic::AtomicU32::new(256)),
+        Arc::clone(&failed),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    )?;
+
+    Ok(AuxStream {
+        device_id: device_id.to_string(),
+        channels: sr.channels,
+        voices,
+        cmd_prod: sr.cmd_prod,
+        status_cons: sr.status_cons,
+        failed,
+        _stream: sr.stream,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +1225,9 @@ fn fill_buffer(
     let frames = output.len() / channels;
     let mut peak_l = 0.0_f32;
     let mut peak_r = 0.0_f32;
+    // Per-Output-Patch peaks, indexed by Voice::patch_slot (fixed-size — no
+    // allocation in the RT callback).
+    let mut patch_peaks = [0.0_f32; PATCH_VU_SLOTS * 2];
 
     for voice in voices_guard.iter() {
         let state = voice.voice_state();
@@ -888,15 +1235,21 @@ fn fill_buffer(
             continue;
         }
 
+        let mut voice_peak_l = 0.0_f32;
+        let mut voice_peak_r = 0.0_f32;
+
         // Live (Mic Cue) voice — resample from its input feed instead of samples.
         if voice.live.is_some() {
             if let Some(feeds) = feeds_guard.as_deref() {
-                mix_live(output, channels, output_sample_rate, voice, feeds, status_prod, &mut peak_l, &mut peak_r, output_period);
+                mix_live(output, channels, output_sample_rate, voice, feeds, status_prod, &mut voice_peak_l, &mut voice_peak_r, output_period);
             }
+            accumulate_peaks(voice, voice_peak_l, voice_peak_r, &mut peak_l, &mut peak_r, &mut patch_peaks);
             continue;
         }
 
+        let patch_gain = voice.inner.patch_gain();
         let (gain_l, gain_r) = voice.pan_gains();
+        let (gain_l, gain_r) = (gain_l * patch_gain, gain_r * patch_gain);
         let voice_channels = voice.channels as usize;
         let total_frames = voice.total_frames();
         // Frame advance step: user rate × (source SR / output SR).
@@ -984,14 +1337,16 @@ fn fill_buffer(
             if voice.out_l < channels { output[out_base + voice.out_l] += out_l; }
             if voice.out_r < channels { output[out_base + voice.out_r] += out_r; }
 
-            peak_l = peak_l.max(out_l.abs());
-            peak_r = peak_r.max(out_r.abs());
+            voice_peak_l = voice_peak_l.max(out_l.abs());
+            voice_peak_r = voice_peak_r.max(out_r.abs());
 
             frame_pos_f += rate;
         }
 
         // Store integer floor; sub-frame precision is re-established each callback.
         voice.frame_pos.store(frame_pos_f as u64, std::sync::atomic::Ordering::Relaxed);
+
+        accumulate_peaks(voice, voice_peak_l, voice_peak_r, &mut peak_l, &mut peak_r, &mut patch_peaks);
     }
 
     // Apply master gain.
@@ -1001,6 +1356,42 @@ fn fill_buffer(
         peak_l: peak_l * master,
         peak_r: peak_r * master,
     });
+    for slot in 0..PATCH_VU_SLOTS {
+        let (l, r) = (patch_peaks[slot * 2], patch_peaks[slot * 2 + 1]);
+        if l > 0.0 || r > 0.0 {
+            let _ = status_prod.try_push(AudioStatus::PatchLevels {
+                slot: slot as u8,
+                peak_l: l * master,
+                peak_r: r * master,
+            });
+        }
+    }
+}
+
+/// Number of Output Patches metered by the per-patch VU (fixed so the RT
+/// callback can accumulate into a stack array — patches beyond this many are
+/// simply unmetered in the mixer).
+pub const PATCH_VU_SLOTS: usize = 16;
+
+/// Fold one voice's block peaks into the master meters and, when the voice is
+/// routed through a metered Output Patch, into that patch's VU slot.
+fn accumulate_peaks(
+    voice: &Arc<Voice>,
+    voice_peak_l: f32,
+    voice_peak_r: f32,
+    peak_l: &mut f32,
+    peak_r: &mut f32,
+    patch_peaks: &mut [f32; PATCH_VU_SLOTS * 2],
+) {
+    *peak_l = (*peak_l).max(voice_peak_l);
+    *peak_r = (*peak_r).max(voice_peak_r);
+    if let Some(slot) = voice.patch_slot {
+        let slot = slot as usize;
+        if slot < PATCH_VU_SLOTS {
+            patch_peaks[slot * 2] = patch_peaks[slot * 2].max(voice_peak_l);
+            patch_peaks[slot * 2 + 1] = patch_peaks[slot * 2 + 1].max(voice_peak_r);
+        }
+    }
 }
 
 /// Mix one live (Mic Cue) voice from its input feed into `output`.
@@ -1055,7 +1446,9 @@ fn mix_live(
     let correction = ((lag - target_lag) / target_lag).clamp(-0.02, 0.02);
     let ratio = base_ratio * (1.0 + correction);
 
+    let patch_gain = voice.inner.patch_gain();
     let (gain_l, gain_r) = voice.pan_gains();
+    let (gain_l, gain_r) = (gain_l * patch_gain, gain_r * patch_gain);
     // SAFETY: `fade` is only mutated from this callback thread.
     let fade_ptr = voice.inner.fade.get();
     // Oldest frame still resident in the circular staging buffer.
@@ -1160,6 +1553,11 @@ fn apply_command(
             }
         }
         AudioCommand::SetMasterGain { .. } => {}
+        AudioCommand::SetPatchGain { patch_id, gain } => {
+            for v in voices.iter().filter(|v| v.patch_id == Some(patch_id)) {
+                v.inner.set_patch_gain(gain);
+            }
+        }
         AudioCommand::StopAll => {
             for v in voices {
                 v.set_stopped();
@@ -1233,6 +1631,49 @@ mod tests {
     fn assert_frame_pos(actual: u64, expected: u64, msg: &str) {
         let diff = (actual as i64 - expected as i64).unsigned_abs();
         assert!(diff <= 1, "{msg}: expected {expected} ± 1, got {actual}");
+    }
+
+    #[test]
+    fn routing_no_device_goes_to_main() {
+        // Decision covered by routes_to_main's early return; the pure helper
+        // only sees explicitly-requested devices.
+        assert!(resolves_to_main_device("dev-a", Some("dev-a"), None));
+    }
+
+    #[test]
+    fn routing_matching_main_device() {
+        assert!(resolves_to_main_device("focusrite", Some("focusrite"), None));
+        assert!(!resolves_to_main_device("hdmi-out", Some("focusrite"), None));
+    }
+
+    #[test]
+    fn routing_matching_system_default() {
+        // Main stream on the system default: a patch naming that same device
+        // explicitly must not open a duplicate aux stream.
+        assert!(resolves_to_main_device("speakers", None, Some("speakers")));
+        assert!(!resolves_to_main_device("hdmi-out", None, Some("speakers")));
+        // Default device unknown — be conservative and open the aux stream.
+        assert!(!resolves_to_main_device("hdmi-out", None, None));
+    }
+
+    #[test]
+    fn stop_all_command_silences_every_voice() {
+        let v1 = make_voice(1000, 2, 48000, 1.0);
+        let v2 = make_voice(1000, 2, 48000, 1.0);
+        let pool: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(vec![v1, v2]));
+        let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
+        let (mut cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
+        let (mut status_prod, _) = HeapRb::<AudioStatus>::new(16).split();
+        let master = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let period = Arc::new(std::sync::atomic::AtomicU32::new(64));
+        cmd_prod.try_push(AudioCommand::StopAll).unwrap();
+
+        let mut output = vec![0.0f32; 64 * 2];
+        fill_buffer(&mut output, 2, 48000, &pool, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
+
+        for v in pool.lock().unwrap().iter() {
+            assert_eq!(v.voice_state(), VoiceState::Stopped);
+        }
     }
 
     #[test]

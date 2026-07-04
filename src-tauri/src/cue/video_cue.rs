@@ -194,6 +194,7 @@ impl VideoCue {
             }
         }
 
+        let mut patch_device: Option<String> = None;
         if let Some(patch) = context.resolve_patch(self.output_patch_id) {
             if let Some(&ch_l) = patch.channels.first() {
                 voice.out_l = ch_l as usize;
@@ -203,9 +204,18 @@ impl VideoCue {
             } else if let Some(&ch_l) = patch.channels.first() {
                 voice.out_r = ch_l as usize;
             }
+            voice.patched = true;
+            voice.patch_id = Some(patch.id);
+            voice.patch_slot = context
+                .output_patches
+                .iter()
+                .position(|p| p.id == patch.id)
+                .map(|i| i as u8);
+            voice.inner.set_patch_gain(crate::cue::types::db_to_linear(patch.gain_db as f64) as f32);
+            patch_device = Some(patch.device_id.clone());
         }
 
-        Ok(Some(context.audio_engine.play_voice_paused(voice)?))
+        Ok(Some(context.audio_engine.play_voice_paused_routed(voice, patch_device.as_deref())?))
     }
 
     /// Kick off video playback.  Called directly from `go()` when there is no
@@ -259,6 +269,7 @@ impl Cue for VideoCue {
 
     fn id(&self) -> CueId { self.id }
     fn cue_type(&self) -> CueType { CueType::Video }
+    fn output_patch_id(&self) -> Option<uuid::Uuid> { self.output_patch_id }
     fn name(&self) -> &str { &self.name }
     fn set_name(&mut self, name: String) { self.name = name; }
     fn number(&self) -> Option<&str> { self.number.as_deref() }

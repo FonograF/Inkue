@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { PreferencesStandalone } from "./components/Preferences/PreferencesStandalone";
 import { FloatTimerWindow } from "./windows/FloatTimer";
+import { MixerWindow } from "./windows/MixerWindow";
 
 // Synchronously read window label from Tauri internals — no function call,
 // no async, no crash if the object isn't present (e.g. pure browser dev).
@@ -17,6 +18,8 @@ root.render(
       <PreferencesStandalone />
     ) : tauriLabel === "float-timer" ? (
       <FloatTimerWindow />
+    ) : tauriLabel === "mixer" ? (
+      <MixerWindow />
     ) : (
       <App />
     )}

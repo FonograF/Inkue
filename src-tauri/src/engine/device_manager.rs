@@ -1,12 +1,8 @@
-//! [`DeviceManager`] enumerates audio output devices and manages Output Patches.
-//!
-//! An Output Patch is a named mapping from a human-readable label to a
-//! specific WASAPI/ASIO device and a set of channels — identical to QLab's
-//! Output Patch concept.
+//! [`DeviceManager`] enumerates audio output devices; [`OutputPatch`] is the
+//! named device+channels mapping (QLab's Output Patch concept) stored in the
+//! workspace and resolved by cues at GO time.
 
-use std::collections::HashMap;
-
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -41,6 +37,10 @@ pub struct OutputPatch {
     pub device_id: String,
     /// Zero-based channel indices on the target device (e.g. [0, 1] for stereo L/R).
     pub channels: Vec<u16>,
+    /// Mixer fader for this patch, in dB (0 = unity).  Applied as a gain
+    /// multiplier to every voice routed through the patch.
+    #[serde(default)]
+    pub gain_db: f32,
 }
 
 impl OutputPatch {
@@ -51,13 +51,17 @@ impl OutputPatch {
             name: name.into(),
             device_id: device_id.into(),
             channels,
+            gain_db: 0.0,
         }
     }
 }
 
-/// Manages device enumeration and the Output Patch table.
+/// Manages device enumeration.
+///
+/// The Output Patch table itself lives in the workspace
+/// (`Workspace::output_patches`) — persisted with the show and read by
+/// `CueContext::resolve_patch` at GO time.
 pub struct DeviceManager {
-    patches: HashMap<OutputPatchId, OutputPatch>,
     /// Cached list of available devices; refreshed on demand.
     cached_devices: Vec<DeviceInfo>,
 }
@@ -66,7 +70,6 @@ impl DeviceManager {
     /// Create a new manager and immediately enumerate available devices.
     pub fn new() -> Self {
         let mut mgr = Self {
-            patches: HashMap::new(),
             cached_devices: Vec::new(),
         };
         // Best-effort: ignore errors during initial enumeration.
@@ -114,62 +117,6 @@ impl DeviceManager {
         self.cached_devices.iter().find(|d| d.id == default_id)
     }
 
-    // -----------------------------------------------------------------------
-    // Output Patches
-    // -----------------------------------------------------------------------
-
-    /// Add or replace a patch in the table.
-    pub fn upsert_patch(&mut self, patch: OutputPatch) {
-        self.patches.insert(patch.id, patch);
-    }
-
-    /// Remove a patch by ID.
-    pub fn remove_patch(&mut self, id: &OutputPatchId) {
-        self.patches.remove(id);
-    }
-
-    /// Look up a patch by ID.
-    pub fn patch(&self, id: &OutputPatchId) -> Option<&OutputPatch> {
-        self.patches.get(id)
-    }
-
-    /// Return all patches.
-    pub fn patches(&self) -> Vec<&OutputPatch> {
-        self.patches.values().collect()
-    }
-
-    /// Resolve an Output Patch to the underlying cpal [`cpal::Device`].
-    /// Returns `Err` if the patch does not exist or the device is not found.
-    pub fn resolve_device(&self, patch_id: &OutputPatchId) -> Result<cpal::Device> {
-        let patch = self
-            .patches
-            .get(patch_id)
-            .ok_or_else(|| anyhow!("Output patch {:?} not found", patch_id))?;
-
-        let host = cpal::default_host();
-        for device in host.output_devices()? {
-            if device.id().ok().map(|id| id.id() == patch.device_id).unwrap_or(false) {
-                return Ok(device);
-            }
-        }
-        Err(anyhow!(
-            "Audio device '{}' not found (patch '{}')",
-            patch.device_id,
-            patch.name
-        ))
-    }
-
-    /// Create a sensible default patch pointing at the system default device.
-    pub fn create_default_patch(&mut self) -> Option<OutputPatchId> {
-        let device_id = cpal::default_host()
-            .default_output_device()
-            .and_then(|d| d.id().ok().map(|i| i.id().to_string()))?;
-
-        let patch = OutputPatch::new("Default Output", device_id, vec![0, 1]);
-        let id = patch.id;
-        self.upsert_patch(patch);
-        Some(id)
-    }
 }
 
 impl Default for DeviceManager {

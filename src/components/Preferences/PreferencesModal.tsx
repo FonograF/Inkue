@@ -31,6 +31,7 @@ import {
 } from "../../lib/commands";
 import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 import { InputPatchesPanel } from "../InputPatches/InputPatchesPanel";
+import { OutputPatchesPanel } from "../OutputPatches/OutputPatchesPanel";
 import { TcPreferences } from "../Timecode/TcPreferences";
 import { NetworkInterfaceSection } from "./NetworkInterfaceSection";
 import { listInputDevices } from "../../lib/commands";
@@ -298,6 +299,9 @@ function AudioContent({
           </Select>
         </Row>
         <div style={{ marginTop: 8 }}>
+          <OutputPatchesPanel />
+        </div>
+        <div style={{ marginTop: 12 }}>
           <InputPatchesPanel />
         </div>
       </Section>
@@ -877,6 +881,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const [availableBackends, setAvailableBackends] = useState<string[]>(["wasapi_shared", "wasapi_exclusive"]);
   const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [], feedback_enabled: false, feedback_host: "127.0.0.1", feedback_port: 53000 });
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [justApplied, setJustApplied] = useState(false);
 
   // Drag state
   const posRef = useRef({ x: Math.round((window.innerWidth - MODAL_W) / 2), y: Math.round((window.innerHeight - MODAL_H) / 2) });
@@ -1033,7 +1038,10 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       setTimerMargin(draftTimerMargin);
       setTimerFloating(draftTimerFloating);
       setTheme(draftTheme);
-      onClose();
+      // Stay open: the operator often iterates (backend switch → re-patch →
+      // test).  Show a brief confirmation instead of closing.
+      setJustApplied(true);
+      window.setTimeout(() => setJustApplied(false), 1600);
     } catch (e) {
       setApplyError(String(e));
     }
@@ -1233,15 +1241,20 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
             </div>
           )}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "8px 16px" }}>
-            <button onClick={handleCancel} style={{ ...btnStyle, padding: "5px 16px", fontSize: 12 }}>
-              Cancel
-            </button>
+            {justApplied && (
+              <span style={{ fontSize: 11, color: "#4ade80", marginRight: 4 }}>
+                ✓ Applied
+              </span>
+            )}
             <button
               onClick={() => void handleApply()}
               disabled={draft === null}
               style={{ ...btnStyle, padding: "5px 16px", fontSize: 12, background: "var(--wc-accent)", border: "1px solid var(--wc-accent-hover)", color: "var(--wc-accent-fg)", opacity: draft === null ? 0.5 : 1 }}
             >
               Apply
+            </button>
+            <button onClick={handleCancel} style={{ ...btnStyle, padding: "5px 16px", fontSize: 12 }}>
+              Close
             </button>
           </div>
         </div>

@@ -1,7 +1,7 @@
 // Bottom transport bar: GO / STOP + running cue info + horizontal VU-meter + volume slider.
 
 import { useEffect, useRef, useState } from "react";
-import { go, stopAll, pauseCue, resumeCue, setMasterVolume, getPreferences } from "../../lib/commands";
+import { go, stopAll, pauseCue, resumeCue, setMasterVolume, getPreferences, openMixerWindow } from "../../lib/commands";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTransportStore } from "../../stores/transportStore";
 import { OscMonitor } from "../Osc/OscMonitor";
@@ -417,11 +417,28 @@ export function TransportBar({ onRefresh }: Props) {
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
               }}
             >
-              {c.state === "paused" ? "⏸" : "▶"}{" "}
-              {c.number ? `[${c.number}] ` : ""}
-              {c.name}
+              {c.output_patch_name && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: c.state === "paused" ? "#f97316" : "#4ade80",
+                    flexShrink: 0,
+                  }}
+                >
+                  Output: {c.output_patch_name}
+                </span>
+              )}
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                {c.state === "paused" ? "⏸" : "▶"}{" "}
+                {c.number ? `[${c.number}] ` : ""}
+                {c.name}
+              </span>
             </div>
           ))
         )}
@@ -467,6 +484,26 @@ export function TransportBar({ onRefresh }: Props) {
         DMX
       </button>
       {lightingOpen && <LightingPanel onClose={() => setLightingOpen(false)} />}
+
+      {/* Floating output mixer */}
+      <button
+        title="Output mixer (per-patch faders + meters)"
+        onClick={() => void openMixerWindow().catch(console.error)}
+        style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: 0.5,
+          padding: "2px 7px",
+          borderRadius: 4,
+          background: "var(--wc-bg-surface)",
+          border: "1px solid var(--wc-border-strong)",
+          color: "var(--wc-text-secondary)",
+          flexShrink: 0,
+          cursor: "pointer",
+        }}
+      >
+        MIX
+      </button>
 
       {/* Meter + slider block */}
       <div

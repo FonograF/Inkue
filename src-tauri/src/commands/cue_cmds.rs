@@ -50,6 +50,11 @@ pub struct CueSummary {
     /// Human-readable description of the warning condition, when `is_warning` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning_message: Option<String>,
+    /// Name of the Output Patch this cue plays through — explicit patch, or
+    /// the workspace default for audio-producing cues with none assigned.
+    /// `None` for cue types with no audio output (Output column stays empty).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_patch_name: Option<String>,
     /// For Group cues: their direct children summaries (recursive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<CueSummary>>,
@@ -111,9 +116,40 @@ fn check_warning(cue: &dyn Cue) -> Option<String> {
     }
 }
 
-fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSummary {
+/// Resolution table for the Output column: the workspace patch list plus the
+/// default patch id, borrowed for the duration of one summary pass.
+struct PatchTable<'a> {
+    patches: &'a [crate::engine::device_manager::OutputPatch],
+    default_id: Option<Uuid>,
+}
+
+impl PatchTable<'_> {
+    /// The patch name a cue plays through, per the Output-column rules.
+    fn name_for(&self, cue: &dyn Cue) -> Option<String> {
+        let name_of = |id: Uuid| {
+            self.patches
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "(missing)".to_string())
+        };
+        match cue.output_patch_id() {
+            Some(id) => Some(name_of(id)),
+            // No explicit patch: audio-producing cues use the default patch.
+            None => match cue.cue_type() {
+                CueType::Audio | CueType::Video | CueType::Mic => {
+                    self.default_id.map(name_of)
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>, patches: &PatchTable) -> CueSummary {
     let warning_message = check_warning(cue);
     CueSummary {
+        output_patch_name: patches.name_for(cue),
         id: cue.id().to_string(),
         cue_type: cue.cue_type(),
         name: cue.name().to_string(),
@@ -133,16 +169,11 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSumma
         warning_message,
         file_duration_ms: cue.file_duration().map(|d| d.as_millis() as u64),
         children: cue.child_cues().map(|ch| {
-            ch.iter().map(|c| summarise_recursive(c.as_ref(), workspace_dir)).collect()
+            ch.iter().map(|c| summarise(c.as_ref(), workspace_dir, patches)).collect()
         }),
         group_mode: cue.group_mode(),
         active_child_id: cue.active_child_id().map(|id| id.to_string()),
     }
-}
-
-/// Recursively build a CueSummary, including children for Group cues.
-fn summarise_recursive(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> CueSummary {
-    summarise(cue, workspace_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -157,12 +188,16 @@ pub fn get_all_cues(state: State<'_, AppState>) -> Result<Vec<CueSummary>, Strin
     let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
     let ws_dir = ws.file_path.as_ref().and_then(|p| p.parent()).map(|p| p.to_owned());
     let ws_dir_ref = ws_dir.as_deref();
+    let patch_table = PatchTable {
+        patches: &ws.output_patches,
+        default_id: ws.default_output_patch_id,
+    };
 
     let summaries: Vec<CueSummary> = cue_list
         .cues
         .iter()
         .map(|c| {
-            let mut s = summarise(c.as_ref(), ws_dir_ref);
+            let mut s = summarise(c.as_ref(), ws_dir_ref, &patch_table);
             s.is_loading = loading.contains(&c.id());
             s
         })
@@ -591,6 +626,21 @@ pub fn get_normalize_db(
     Ok(normalize_db.clamp(-60.0, 12.0))
 }
 
+/// Stop `cue` first when it is currently running or paused.
+///
+/// The file setters replace the cue object wholesale (serialise → rebuild), so
+/// a live cue would otherwise lose its `active_voice_id` and its engine voice
+/// would keep playing with no owner — unreachable by Stop or even Hard Stop
+/// (the rebuilt cue reports Standby, so the transport skips it).  Uses the
+/// soft stop so the operator hears the normal fade-out; the engine completes
+/// the fade autonomously after the cue object is replaced.
+fn stop_if_live(cue: &mut dyn Cue, state: &AppState, stop_fade_ms: u32) {
+    if cue.is_running() || cue.is_paused() {
+        let context = super::transport_cmds::make_context(state, stop_fade_ms);
+        let _ = cue.stop(&context);
+    }
+}
+
 /// Set the file path of an audio cue.
 /// Uses the same JSON-merge-and-rebuild strategy as [`update_cue`].
 #[tauri::command]
@@ -606,6 +656,7 @@ pub fn set_audio_file(
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
     let json = {
@@ -613,6 +664,7 @@ pub fn set_audio_file(
         if cue.cue_type() != CueType::Audio {
             return Err("set_audio_file only applies to Audio Cues".to_string());
         }
+        stop_if_live(cue, &state, stop_fade_ms);
         let mut json = cue.serialize();
         if let Some(obj) = json.as_object_mut() {
             obj.insert("file_path".to_string(), serde_json::json!(file_path));
@@ -798,6 +850,7 @@ pub fn set_video_file(
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
     let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
@@ -805,6 +858,7 @@ pub fn set_video_file(
         return Err("set_video_file only applies to Video Cues".to_string());
     }
 
+    stop_if_live(cue_list.cues[idx].as_mut(), &state, stop_fade_ms);
     let mut json = cue_list.cues[idx].serialize();
     if let Some(obj) = json.as_object_mut() {
         obj.insert("file_path".to_string(), serde_json::json!(file_path));
@@ -911,6 +965,7 @@ pub fn set_image_file(
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
     let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
@@ -918,6 +973,7 @@ pub fn set_image_file(
         return Err("set_image_file only applies to Image Cues".to_string());
     }
 
+    stop_if_live(cue_list.cues[idx].as_mut(), &state, stop_fade_ms);
     let mut json = cue_list.cues[idx].serialize();
     if let Some(obj) = json.as_object_mut() {
         obj.insert("file_path".to_string(), serde_json::json!(file_path));

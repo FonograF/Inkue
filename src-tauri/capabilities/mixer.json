@@ -1,0 +1,11 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
+  "identifier": "mixer",
+  "description": "Permissions for the floating Output Mixer window (drag, hide, invoke, event listen)",
+  "windows": ["mixer"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-hide"
+  ]
+}

@@ -368,6 +368,23 @@ export function CueRow({
           </span>
         );
 
+      case "output":
+        return (
+          <span
+            style={{
+              display: "block",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: "var(--wc-text-muted)",
+              fontSize: 12,
+              paddingLeft: 5,
+            }}
+          >
+            {cue.output_patch_name ?? ""}
+          </span>
+        );
+
       case "type":
         return (
           <span style={{ display: "block", textAlign: "center" }}>

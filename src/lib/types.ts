@@ -73,6 +73,9 @@ export interface CueSummary {
   is_warning: boolean;
   /** Human-readable warning description, present when is_warning is true. */
   warning_message?: string;
+  /** Output Patch name this cue plays through (explicit or workspace default).
+   *  Absent for cue types with no audio output. */
+  output_patch_name?: string;
   /** Duration of one loop iteration in ms (raw file duration, no loop multiplier). null for non-media cues. */
   file_duration_ms: number | null;
   /** For Group cues: direct child cue summaries (recursive). */
@@ -119,6 +122,7 @@ export interface VideoCueData extends CueSummary {
   end_time_ms: number | null;
   loop_count: number;
   output_surface_id: string | null;
+  output_patch_id: string | null;
 }
 
 /** 9-point position grid for TextCue. */
@@ -239,6 +243,8 @@ export interface OutputPatch {
   name: string;
   device_id: string;
   channels: number[];
+  /** Mixer fader in dB (0 = unity). */
+  gain_db: number;
 }
 
 /** A named live-audio input mapping (Mic Cues). Mirror of OutputPatch, stored in the workspace. */
