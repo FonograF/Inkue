@@ -121,7 +121,7 @@ impl Transport {
         // and trigger visual overlay fade for Video/Image targets.
         let fade_spec = cue_list.get(&cue_id).and_then(|c| c.fade_specification());
         if let Some(spec) = fade_spec {
-            let mut voice_infos: Vec<(VoiceId, f32)> = Vec::new();
+            let mut voice_infos: Vec<(VoiceId, f32, f32)> = Vec::new();
             let mut has_visual = false;
 
             for &target_id in &spec.target_cue_ids {
@@ -130,14 +130,16 @@ impl Transport {
                         CueType::Audio => {
                             if let Some(vid) = target.playing_voice_id() {
                                 let gain = self.context.audio_engine.get_voice_gain(vid);
-                                voice_infos.push((vid, gain));
+                                let pan = self.context.audio_engine.get_voice_pan(vid);
+                                voice_infos.push((vid, gain, pan));
                             }
                         }
                         CueType::Video => {
                             // Fade the video's paired audio voice.
                             if let Some(aid) = self.context.output_engine.get_current_audio_voice() {
                                 let gain = self.context.audio_engine.get_voice_gain(aid);
-                                voice_infos.push((aid, gain));
+                                let pan = self.context.audio_engine.get_voice_pan(aid);
+                                voice_infos.push((aid, gain, pan));
                             }
                             has_visual = true;
                         }

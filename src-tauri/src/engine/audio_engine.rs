@@ -867,6 +867,12 @@ impl AudioEngine {
         self.with_voice(voice_id, |v| v.inner.gain()).unwrap_or(1.0)
     }
 
+    /// Read the current stereo pan of a voice (-1 = left, 0 = center, +1 = right).
+    /// Returns 0.0 (center) if the voice is not found.
+    pub fn get_voice_pan(&self, voice_id: VoiceId) -> f32 {
+        self.with_voice(voice_id, |v| v.inner.pan()).unwrap_or(0.0)
+    }
+
     /// Seek a voice to the given position in milliseconds.
     ///
     /// Looks up the voice's decoded sample rate to convert `position_ms` into a

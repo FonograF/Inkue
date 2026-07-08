@@ -195,6 +195,10 @@ export interface FadeCueData extends CueSummary {
   target_volume_db: number;
   /** Target visual brightness in percent (0 = black, 100 = fully visible). Independent from volume. */
   target_brightness_pct: number;
+  /** Target stereo pan (-1 = left, +1 = right); null = leave pan untouched. */
+  target_pan: number | null;
+  /** When true (default) the fade drives volume toward target_volume_db; false = pan-only. */
+  fade_volume: boolean;
   /** Fade duration in milliseconds. */
   fade_duration_ms: number;
   /** Fade curve shape. */

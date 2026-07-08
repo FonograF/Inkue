@@ -56,6 +56,15 @@ pub struct FadeCue {
     /// Target visual brightness in percent (0 = black overlay, 100 = fully visible).
     /// Independent from `target_volume_db`.
     pub target_brightness_pct: f64,
+    /// Target stereo pan (-1 = left, 0 = center, +1 = right). `None` = leave pan
+    /// untouched (a volume/brightness-only fade); `Some` = fade every audio
+    /// target's pan from its current position to this value.
+    pub target_pan: Option<f32>,
+    /// When `true` (default) the fade drives the target volume toward
+    /// `target_volume_db`. Set `false` for a **pan-only** fade that must leave the
+    /// level untouched (mirrors QLab's pan-crosspoint fade, which doesn't move the
+    /// master).
+    pub fade_volume: bool,
     /// Fade duration in milliseconds.
     pub fade_duration_ms: u64,
     /// Fade curve shape.
@@ -65,8 +74,8 @@ pub struct FadeCue {
     is_disabled: bool,
 
     // Runtime — injected by transport after go()
-    /// (audio_voice_id, start_gain) for each audio/video audio-track target.
-    target_voices: Vec<(Uuid, f32)>,
+    /// (audio_voice_id, start_gain, start_pan) for each audio/video audio-track target.
+    target_voices: Vec<(Uuid, f32, f32)>,
     /// True when at least one target is a Video or Image cue.
     has_visual_target: bool,
     /// Overlay alpha at GO time (0 = transparent).
@@ -98,6 +107,8 @@ impl FadeCue {
             target_cue_numbers: Vec::new(),
             target_volume_db: -60.0,
             target_brightness_pct: 0.0,
+            target_pan: None,
+            fade_volume: true,
             fade_duration_ms: 2000,
             fade_curve: FadeCurve::SCurve,
             stop_at_end: false,
@@ -255,12 +266,22 @@ impl Cue for FadeCue {
         let t = if duration_ms <= 0.0 { 1.0_f64 } else { (elapsed_ms / duration_ms).clamp(0.0, 1.0) };
         let curved_t = self.fade_curve.apply(t) as f32;
 
-        let target_gain = db_to_linear(self.target_volume_db) as f32;
+        // Interpolate gain for each audio voice (skipped for a pan-only fade so
+        // the level is left exactly where it was).
+        if self.fade_volume {
+            let target_gain = db_to_linear(self.target_volume_db) as f32;
+            for &(vid, start_gain, _) in &self.target_voices {
+                let gain = start_gain + (target_gain - start_gain) * curved_t;
+                let _ = context.audio_engine.set_voice_gain(vid, gain);
+            }
+        }
 
-        // Interpolate gain for each audio voice.
-        for &(vid, start_gain) in &self.target_voices {
-            let gain = start_gain + (target_gain - start_gain) * curved_t;
-            let _ = context.audio_engine.set_voice_gain(vid, gain);
+        // Interpolate pan for each audio voice when a pan target is set.
+        if let Some(target_pan) = self.target_pan {
+            for &(vid, _, start_pan) in &self.target_voices {
+                let pan = start_pan + (target_pan - start_pan) * curved_t;
+                let _ = context.audio_engine.set_voice_pan(vid, pan);
+            }
         }
 
         // Interpolate overlay alpha for visual targets (direct, no Win32 timer).
@@ -275,7 +296,7 @@ impl Cue for FadeCue {
         if t >= 1.0 && !self.fade_complete {
             self.fade_complete = true;
             if self.stop_at_end {
-                for &(vid, _) in &self.target_voices {
+                for &(vid, _, _) in &self.target_voices {
                     let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.fade_curve));
                 }
                 if self.has_visual_target {
@@ -347,7 +368,7 @@ impl Cue for FadeCue {
 
     fn set_fade_voices(
         &mut self,
-        voices: Vec<(CueId, f32)>,
+        voices: Vec<(CueId, f32, f32)>,
         has_visual: bool,
         visual_start_alpha: u8,
         visual_target_alpha: u8,
@@ -417,6 +438,8 @@ impl Cue for FadeCue {
             "target_cue_numbers": self.target_cue_numbers,
             "target_volume_db": self.target_volume_db,
             "target_brightness_pct": self.target_brightness_pct,
+            "target_pan": self.target_pan,
+            "fade_volume": self.fade_volume,
             "fade_duration_ms": self.fade_duration_ms,
             "fade_curve": self.fade_curve,
             "stop_at_end": self.stop_at_end,
@@ -488,6 +511,10 @@ impl CueFactory for FadeCueFactory {
         if let Some(pct) = value.get("target_brightness_pct").and_then(|v| v.as_f64()) {
             cue.target_brightness_pct = pct;
         }
+        cue.target_pan = value.get("target_pan").and_then(|v| v.as_f64()).map(|x| x as f32);
+        if let Some(b) = value.get("fade_volume").and_then(|v| v.as_bool()) {
+            cue.fade_volume = b;
+        }
         if let Some(ms) = value.get("fade_duration_ms").and_then(|v| v.as_u64()) {
             cue.fade_duration_ms = ms;
         }
@@ -549,6 +576,45 @@ mod tests {
 
         let rebuilt = factory.from_json(json).unwrap();
         assert_eq!(rebuilt.name(), "My Fade");
+    }
+
+    #[test]
+    fn default_fade_has_no_pan_target_and_fades_volume() {
+        let c = FadeCue::new();
+        assert!(c.target_pan.is_none());
+        assert!(c.fade_volume);
+    }
+
+    #[test]
+    fn pan_fade_serialize_roundtrip() {
+        let factory = FadeCueFactory;
+        let mut cue = FadeCue::new();
+        cue.target_pan = Some(1.0);   // full right
+        cue.fade_volume = false;      // pan-only fade
+        let json = cue.serialize();
+        assert_eq!(json["target_pan"], 1.0);
+        assert_eq!(json["fade_volume"], false);
+
+        // Re-parse and re-serialize: the pan target and pan-only flag survive.
+        let rebuilt = factory.from_json(json).unwrap().serialize();
+        assert_eq!(rebuilt["target_pan"], 1.0);
+        assert_eq!(rebuilt["fade_volume"], false);
+    }
+
+    #[test]
+    fn absent_pan_target_deserializes_to_none() {
+        let factory = FadeCueFactory;
+        let json = serde_json::json!({
+            "type": "fade", "cue_type": "fade",
+            "id": Uuid::new_v4().to_string(),
+            "name": "Vol Fade", "notes": "", "color": "pink",
+            "pre_wait_ms": 0u64, "post_wait_ms": 0u64, "continue_mode": "auto_follow",
+            "target_cue_ids": [], "target_cue_numbers": [],
+            "target_volume_db": -6.0, "fade_duration_ms": 1000u64,
+            "fade_curve": "s_curve", "stop_at_end": false, "is_disabled": false,
+        });
+        // No target_pan / fade_volume keys → pan untouched, volume still fades.
+        assert!(factory.from_json(json).unwrap().serialize()["target_pan"].is_null());
     }
 
     #[test]

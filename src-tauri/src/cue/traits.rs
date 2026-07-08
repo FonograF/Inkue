@@ -338,7 +338,7 @@ pub trait Cue: Send {
     /// Inject resolved audio voice IDs (and their current gains) into this cue,
     /// plus visual fade parameters for any Video/Image targets.
     ///
-    /// - `voices`: `(audio_voice_id, start_gain)` for each audio/video target.
+    /// - `voices`: `(audio_voice_id, start_gain, start_pan)` for each audio/video target.
     /// - `has_visual`: true when at least one target is a Video or Image cue.
     /// - `visual_start_alpha`: current overlay alpha at GO time (read from OutputEngine).
     /// - `visual_target_alpha`: desired overlay alpha when fade completes.
@@ -347,7 +347,7 @@ pub trait Cue: Send {
     /// `tick()` knows which voices/overlay to update.
     fn set_fade_voices(
         &mut self,
-        _voices: Vec<(CueId, f32)>,
+        _voices: Vec<(CueId, f32, f32)>,
         _has_visual: bool,
         _visual_start_alpha: u8,
         _visual_target_alpha: u8,

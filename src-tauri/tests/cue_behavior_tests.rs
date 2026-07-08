@@ -238,3 +238,44 @@ fn light_cue_go_with_unpatched_target_is_a_noop_not_a_crash() {
         "an unpatched fixture target must submit no fade"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fade — pan fade (QLab crosspoint fade → Inkue pan fade)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pan_only_fade_moves_voice_pan_and_leaves_gain_untouched() {
+    use inkue_lib::cue::fade_cue::FadeCue;
+    use uuid::Uuid;
+
+    let (ctx, _rx, log) = recording_context();
+    let vid = Uuid::new_v4();
+
+    let mut fade = FadeCue::new();
+    fade.target_cue_ids = vec![Uuid::new_v4()];
+    fade.target_pan = Some(1.0); // pan fully right
+    fade.fade_volume = false;    // pan-only: must NOT move the level
+    fade.fade_duration_ms = 50;
+
+    fade.go(&ctx).unwrap();
+    // Transport injects (voice_id, start_gain, start_pan) after go().
+    fade.set_fade_voices(vec![(vid, 0.5, -1.0)], false, 0, 0);
+
+    std::thread::sleep(Duration::from_millis(80)); // past the fade duration
+    fade.tick(&ctx).unwrap();
+
+    let calls = log.lock().unwrap();
+    let last_pan = calls.iter().rev().find_map(|c| match c {
+        EngineCall::AudioSetPan { pan } => Some(*pan),
+        _ => None,
+    });
+    assert!(last_pan.is_some(), "a pan fade must drive set_voice_pan");
+    assert!(
+        (last_pan.unwrap() - 1.0).abs() < 1e-3,
+        "pan should reach +1 (right), got {last_pan:?}",
+    );
+    assert!(
+        !calls.iter().any(|c| matches!(c, EngineCall::AudioSetGain { .. })),
+        "a pan-only fade must not change the voice gain",
+    );
+}

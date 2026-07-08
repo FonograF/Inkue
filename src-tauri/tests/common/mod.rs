@@ -258,6 +258,7 @@ pub enum EngineCall {
     AudioPauseVoice,
     AudioResumeVoice,
     AudioSetGain { gain: f32 },
+    AudioSetPan { pan: f32 },
     AudioEnsureInputFeed,
     AudioPlayMicVoice,
     AudioPanicStopAll,
@@ -304,6 +305,11 @@ impl AudioEngineApi for RecAudio {
         Ok(())
     }
     fn get_voice_gain(&self, _v: VoiceId) -> f32 { 1.0 }
+    fn set_voice_pan(&self, _v: VoiceId, pan: f32) -> Result<()> {
+        record(&self.0, EngineCall::AudioSetPan { pan });
+        Ok(())
+    }
+    fn get_voice_pan(&self, _v: VoiceId) -> f32 { 0.0 }
     fn sample_rate(&self) -> u32 { 48_000 }
     fn ensure_input_feed(&self, _d: Option<&str>, _b: u32) -> Result<Uuid> {
         record(&self.0, EngineCall::AudioEnsureInputFeed);

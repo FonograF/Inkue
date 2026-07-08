@@ -37,6 +37,8 @@ pub trait AudioEngineApi: Send + Sync {
     fn seek_voice(&self, voice_id: VoiceId, frame_pos: u64) -> Result<()>;
     fn set_voice_gain(&self, voice_id: VoiceId, gain: f32) -> Result<()>;
     fn get_voice_gain(&self, voice_id: VoiceId) -> f32;
+    fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()>;
+    fn get_voice_pan(&self, voice_id: VoiceId) -> f32;
     fn sample_rate(&self) -> u32;
     fn ensure_input_feed(&self, device_id: Option<&str>, buffer_size: u32) -> Result<Uuid>;
     fn register_synthetic_feed(
@@ -84,6 +86,12 @@ impl AudioEngineApi for AudioEngine {
     }
     fn get_voice_gain(&self, voice_id: VoiceId) -> f32 {
         AudioEngine::get_voice_gain(self, voice_id)
+    }
+    fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()> {
+        AudioEngine::set_voice_pan(self, voice_id, pan)
+    }
+    fn get_voice_pan(&self, voice_id: VoiceId) -> f32 {
+        AudioEngine::get_voice_pan(self, voice_id)
     }
     fn sample_rate(&self) -> u32 {
         AudioEngine::sample_rate(self)

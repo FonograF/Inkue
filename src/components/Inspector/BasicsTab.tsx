@@ -180,6 +180,9 @@ export function BasicsTab({
         const showBrightness = hasVisual || (!hasAudio && !hasVisual);
         const volDb: number = cue.target_volume_db ?? -60;
         const brightnessPercent: number = cue.target_brightness_pct ?? 0;
+        const fadeVolume: boolean = cue.fade_volume ?? true;
+        const panEnabled: boolean = cue.target_pan != null;
+        const panValue: number = cue.target_pan ?? 0;
         return (
           <>
             <Field label="Targets">
@@ -196,18 +199,56 @@ export function BasicsTab({
               />
             </Field>
             {showVolume && (
-              <Field label="Target Volume (dB)">
-                <input
-                  style={inputStyle}
-                  type="number"
-                  step="0.5"
-                  min="-60"
-                  max="12"
-                  key={`fade-vol-${volDb}`}
-                  defaultValue={volDb}
-                  onBlur={(e) => onSave({ target_volume_db: parseFloat(e.target.value) })}
-                />
-              </Field>
+              <>
+                <Field label="Fade Volume">
+                  <input
+                    type="checkbox"
+                    checked={fadeVolume}
+                    onChange={(e) => onSave({ fade_volume: e.target.checked })}
+                    style={{ width: 16, height: 16, cursor: "pointer" }}
+                  />
+                </Field>
+                {fadeVolume && (
+                  <Field label="Target Volume (dB)">
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      step="0.5"
+                      min="-60"
+                      max="12"
+                      key={`fade-vol-${volDb}`}
+                      defaultValue={volDb}
+                      onBlur={(e) => onSave({ target_volume_db: parseFloat(e.target.value) })}
+                    />
+                  </Field>
+                )}
+                <Field label="Fade Pan">
+                  <input
+                    type="checkbox"
+                    checked={panEnabled}
+                    onChange={(e) => onSave({ target_pan: e.target.checked ? panValue : null })}
+                    style={{ width: 16, height: 16, cursor: "pointer" }}
+                  />
+                </Field>
+                {panEnabled && (
+                  <Field label="Target Pan">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                      <input
+                        type="range"
+                        min="-1"
+                        max="1"
+                        step="0.01"
+                        value={panValue}
+                        onChange={(e) => onSave({ target_pan: parseFloat(e.target.value) })}
+                        style={{ flex: 1 }}
+                      />
+                      <span style={{ width: 44, textAlign: "right", fontFamily: "monospace", fontSize: 12 }}>
+                        {panValue === 0 ? "C" : `${panValue > 0 ? "R" : "L"}${Math.round(Math.abs(panValue) * 100)}`}
+                      </span>
+                    </div>
+                  </Field>
+                )}
+              </>
             )}
             {showBrightness && (
               <Field label="Target Brightness (%)">
