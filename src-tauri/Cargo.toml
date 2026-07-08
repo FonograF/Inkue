@@ -62,7 +62,7 @@ midir = "0.11"
 # Logging
 log = { version = "0.4", features = ["std"] }
 
-symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "isomp4"] }
+symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "aiff", "pcm", "isomp4"] }
 
 # GL context management for the unified mpv Render API output path.
 # Direct dep on rwh 0.6 — same as Tauri 2.x and glutin 0.32 (no duplicate).

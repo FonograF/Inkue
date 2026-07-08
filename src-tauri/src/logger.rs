@@ -51,12 +51,27 @@ struct InkueLogger {
     level: LevelFilter,
 }
 
+/// Whether a record from `target` at `level` should be kept, given the app's
+/// configured `own_level` for Inkue's own logs.
+///
+/// Audio demuxers/decoders (`symphonia`) log per-frame/byte and can emit
+/// *millions* of `WARN` lines on an unexpected or malformed stream (e.g. an AIFF
+/// probed by the MP3 demuxer). That flood stalls the app — file writes, the UI
+/// log-tail event, the ring buffer — so those are capped at `Error`.
+fn record_allowed(target: &str, level: Level, own_level: LevelFilter) -> bool {
+    if target.starts_with("inkue") {
+        return level <= own_level;
+    }
+    if target.starts_with("symphonia") {
+        return level <= Level::Error;
+    }
+    // Other dependencies: warnings and errors (a dep blowing up isn't hidden).
+    level <= Level::Warn
+}
+
 impl Log for InkueLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        // Inkue's own records up to the configured level, plus warnings/errors
-        // from anywhere (so a dependency blowing up is never silently dropped).
-        (metadata.level() <= self.level && metadata.target().starts_with("inkue"))
-            || metadata.level() <= Level::Warn
+        record_allowed(metadata.target(), metadata.level(), self.level)
     }
 
     fn log(&self, record: &Record) {
@@ -162,5 +177,42 @@ pub fn clear() {
                 .open(log_path())
                 .ok();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symphonia_warnings_are_suppressed() {
+        // The exact flood that stalled the app: a malformed-stream WARN from the
+        // MP3 demuxer must be dropped so it can never reach the file / UI / ring.
+        assert!(!record_allowed(
+            "symphonia_bundle_mp3::demuxer",
+            Level::Warn,
+            LevelFilter::Info,
+        ));
+    }
+
+    #[test]
+    fn symphonia_errors_still_pass() {
+        assert!(record_allowed(
+            "symphonia_bundle_mp3::demuxer",
+            Level::Error,
+            LevelFilter::Info,
+        ));
+    }
+
+    #[test]
+    fn inkue_records_follow_configured_level() {
+        assert!(record_allowed("inkue_lib::cue", Level::Info, LevelFilter::Info));
+        assert!(!record_allowed("inkue_lib::cue", Level::Debug, LevelFilter::Info));
+    }
+
+    #[test]
+    fn other_deps_keep_warnings() {
+        assert!(record_allowed("wgpu_core::device", Level::Warn, LevelFilter::Info));
+        assert!(!record_allowed("wgpu_core::device", Level::Info, LevelFilter::Info));
     }
 }
