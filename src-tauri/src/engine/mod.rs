@@ -21,6 +21,7 @@ pub use timecode_types::{TcPosition, TcRate, TcTrigger, TcEvent,
 pub use timecode_receiver::TcSource;
 pub mod dmx_engine;
 pub mod dmx_sink;
+pub mod engine_traits;
 pub mod fixture;
 pub mod mpv_sys;
 pub mod net_interface;
@@ -33,6 +34,7 @@ pub mod voice;
 
 pub use audio_engine::AudioEngine;
 pub use dmx_engine::DmxEngine;
+pub use engine_traits::{AudioEngineApi, DmxEngineApi, OutputEngineApi};
 pub use osc_patch::OscPatch;
 pub use osc_server::OscServer;
 pub use output_engine::OutputEngine;

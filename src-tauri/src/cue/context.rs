@@ -8,7 +8,7 @@ use crossbeam_channel::Sender;
 
 use crate::engine::{
     audio_input::InputPatch, device_manager::OutputPatch, fixture::{FixtureGroup, PatchedFixture},
-    osc_patch::OscPatch, output_engine::OutputEngine, AudioEngine, DmxEngine,
+    osc_patch::OscPatch, AudioEngineApi, DmxEngineApi, OutputEngineApi,
 };
 
 /// Events emitted by cues to the Show Engine during execution.
@@ -32,9 +32,10 @@ pub enum CueEvent {
 #[derive(Clone)]
 pub struct CueContext {
     /// The audio engine, used by [`AudioCue`](crate::cue::audio_cue::AudioCue).
-    pub audio_engine: Arc<AudioEngine>,
+    /// A trait object so tests can inject a double (see `engine::engine_traits`).
+    pub audio_engine: Arc<dyn AudioEngineApi>,
     /// The unified output engine, used by video and image cues.
-    pub output_engine: Arc<OutputEngine>,
+    pub output_engine: Arc<dyn OutputEngineApi>,
     /// Channel for signalling events back to the Show Engine / transport layer.
     pub event_sender: Sender<CueEvent>,
     /// Duration (ms) of the soft fade-out applied on Stop when the cue has no
@@ -51,7 +52,7 @@ pub struct CueContext {
     /// Snapshot of the workspace's OSC Patch table.
     pub osc_patches: Arc<Vec<OscPatch>>,
     /// The DMX lighting engine, used by [`LightCue`](crate::cue::light_cue::LightCue).
-    pub dmx_engine: Arc<DmxEngine>,
+    pub dmx_engine: Arc<dyn DmxEngineApi>,
     /// Snapshot of the workspace's fixture patch.  Light Cues resolve their
     /// targets' `(universe, channel, width)` here at GO time.
     pub fixtures: Arc<Vec<PatchedFixture>>,
@@ -70,15 +71,15 @@ impl CueContext {
     /// Create a new context.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        audio_engine: Arc<AudioEngine>,
-        output_engine: Arc<OutputEngine>,
+        audio_engine: Arc<dyn AudioEngineApi>,
+        output_engine: Arc<dyn OutputEngineApi>,
         event_sender: Sender<CueEvent>,
         stop_fade_ms: u32,
         output_patches: Vec<OutputPatch>,
         default_patch_id: Option<uuid::Uuid>,
         output_screen: Option<u32>,
         osc_patches: Vec<OscPatch>,
-        dmx_engine: Arc<DmxEngine>,
+        dmx_engine: Arc<dyn DmxEngineApi>,
         fixtures: Vec<PatchedFixture>,
         fixture_groups: Vec<FixtureGroup>,
         input_patches: Vec<InputPatch>,
