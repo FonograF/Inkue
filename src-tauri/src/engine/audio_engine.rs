@@ -320,6 +320,26 @@ impl AudioEngine {
         // falls back to the default device and surfaces a banner — no one-shot
         // startup watchdog needed.
 
+        // Warm the device cache off the main thread.  `DeviceManager::new()` no
+        // longer enumerates (that blocked app startup on a slow/hung Windows
+        // audio driver, cpal #867); a one-shot bounded refresh fills it here
+        // without stalling `.setup()`.
+        {
+            let engine_bg = Arc::clone(&engine);
+            let _ = std::thread::Builder::new()
+                .name("inkue-device-warmup".to_string())
+                .spawn(move || {
+                    let devices = crate::engine::device_manager::run_bounded(
+                        crate::engine::device_manager::ENUM_TIMEOUT,
+                        crate::engine::device_manager::enumerate_output_devices,
+                    )
+                    .unwrap_or_default();
+                    if let Ok(mut mgr) = engine_bg.device_manager.lock() {
+                        mgr.replace_cache(devices);
+                    }
+                });
+        }
+
         Ok(engine)
     }
 
@@ -355,12 +375,18 @@ impl AudioEngine {
         // state the watchdog stays free (just an atomic read of `failed`).
         let desired_present = match (&in_fallback, &desired_id) {
             (true, Some(id)) => {
+                // Enumerate off the manager lock (bounded) so a slow WASAPI query
+                // never stalls a concurrent main-thread reader of the cache.
+                let devices = crate::engine::device_manager::run_bounded(
+                    crate::engine::device_manager::ENUM_TIMEOUT,
+                    crate::engine::device_manager::enumerate_output_devices,
+                )
+                .unwrap_or_default();
+                let present = devices.iter().any(|d| &d.id == id);
                 if let Ok(mut mgr) = self.device_manager.lock() {
-                    let _ = mgr.refresh_devices();
-                    mgr.devices().iter().any(|d| &d.id == id)
-                } else {
-                    true
+                    mgr.replace_cache(devices);
                 }
+                present
             }
             _ => true,
         };
@@ -961,7 +987,10 @@ impl AudioEngine {
         if let Ok(mut f) = self.stream_failed.lock() { *f = new_failed; }
         if let Ok(mut d) = self.current_device_id.lock() { *d = config.device_id.clone(); }
 
-        if let Ok(mut mgr) = self.device_manager.lock() { let _ = mgr.refresh_devices(); }
+        // The device set does not change on a restart (same hardware, different
+        // selection), so we do not re-enumerate here — that would add a slow,
+        // possibly hanging WASAPI query to this main-thread path.  The cache is
+        // kept fresh by the startup warm-up and every Preferences enumeration.
 
         Ok(())
     }

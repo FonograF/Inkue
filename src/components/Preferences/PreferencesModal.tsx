@@ -100,6 +100,16 @@ const BACKEND_LABELS: Record<string, string> = {
   system_default:   "System Default (CoreAudio / ALSA)",
 };
 
+// Reject with `message` if `promise` has not settled within `ms`.  The backend
+// already bounds device enumeration, but this is a belt-and-suspenders guard so
+// a wedged IPC round-trip can never leave the panel spinning on "Loading…".
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Audio content
 // ---------------------------------------------------------------------------
@@ -132,10 +142,14 @@ function AudioContent({
     setDevicesLoading(true);
     setDevicesError(null);
     try {
-      const list = await listAudioDevices(backend);
+      const list = await withTimeout(
+        listAudioDevices(backend),
+        8000,
+        "Timed out enumerating audio devices. A device or driver may be unresponsive — click ↺ to retry.",
+      );
       setDevices(list);
     } catch (e) {
-      setDevicesError(String(e));
+      setDevicesError(e instanceof Error ? e.message : String(e));
       setDevices([]);
     } finally {
       setDevicesLoading(false);
@@ -187,7 +201,16 @@ function AudioContent({
           {devicesLoading ? (
             <span style={{ fontSize: 12, color: "var(--wc-text-muted)" }}>Loading…</span>
           ) : devicesError ? (
-            <span style={{ fontSize: 12, color: "#ef4444" }}>{devicesError}</span>
+            <>
+              <span style={{ fontSize: 12, color: "#ef4444", flex: 1 }}>{devicesError}</span>
+              <button
+                style={btnStyle}
+                onClick={() => void loadDevices(machineConfig.backend)}
+                title="Retry device enumeration"
+              >
+                ↺ Retry
+              </button>
+            </>
           ) : (
             <>
               <Select
@@ -882,14 +905,19 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [], feedback_enabled: false, feedback_host: "127.0.0.1", feedback_port: 53000 });
   const [applyError, setApplyError] = useState<string | null>(null);
   const [justApplied, setJustApplied] = useState(false);
+  const [initFailed, setInitFailed] = useState(false);
 
   // Drag state
   const posRef = useRef({ x: Math.round((window.innerWidth - MODAL_W) / 2), y: Math.round((window.innerHeight - MODAL_H) / 2) });
   const [pos, setPos] = useState(posRef.current);
   const dragRef = useRef<{ startMouseX: number; startMouseY: number; startPosX: number; startPosY: number } | null>(null);
 
-  useEffect(() => {
-    getPreferences().then((p) => {
+  const loadInitial = useCallback(() => {
+    setInitFailed(false);
+    // The panel is gated on `draft` being non-null, so a getPreferences() that
+    // never settles would spin "Loading…" forever — bound it and surface a
+    // retry instead.
+    withTimeout(getPreferences(), 12000, "Timed out loading preferences").then((p) => {
       setPrefs(p);
       setDraft(p);
       const t = { ...DEFAULT_DISPLAY_PREFS, ...p.display };
@@ -919,12 +947,14 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       const floating = p.display.timer_floating ?? false;
       setTimerFloating(floating);
       setDraftTimerFloating(floating);
-    }).catch(console.error);
+    }).catch((e) => { console.error(e); setInitFailed(true); });
     getMachineAudioConfig().then((c) => { setMachineConfig(c); setDraftMachineConfig(c); }).catch(console.error);
     getAvailableBackends().then(setAvailableBackends).catch(console.error);
     getOutputScreen().then((s) => { setOutputScreen_(s); setDraftOutputScreen(s); }).catch(console.error);
     getOscConfig().then(setOscConfig_).catch(console.error);
   }, []);
+
+  useEffect(() => { loadInitial(); }, [loadInitial]);
 
   // In standalone mode: apply theme preview to this window's document as the
   // user changes the theme selector so the preferences panel itself repaints.
@@ -1158,8 +1188,15 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
           {/* Content */}
           <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
             {draft === null ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--wc-text-muted)", fontSize: 13 }}>
-                Loading…
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", justifyContent: "center", height: "100%", color: "var(--wc-text-muted)", fontSize: 13 }}>
+                {initFailed ? (
+                  <>
+                    <span style={{ color: "#ef4444" }}>Failed to load preferences.</span>
+                    <button style={btnStyle} onClick={() => loadInitial()}>Retry</button>
+                  </>
+                ) : (
+                  "Loading…"
+                )}
               </div>
             ) : (
               <>

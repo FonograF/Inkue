@@ -331,12 +331,16 @@ pub fn list_system_fonts() -> Vec<String> {
 }
 
 /// Return all available audio output devices for the given backend.
+///
+/// Enumeration runs **off the main thread** (async command → `spawn_blocking`)
+/// and is **time-bounded** (see [`ENUM_TIMEOUT`](crate::engine::device_manager::ENUM_TIMEOUT)),
+/// so a slow or hung WASAPI device (cpal #867) can never leave the Preferences
+/// panel stuck on "Loading…" — the historical Windows failure mode.
 #[tauri::command]
-pub fn list_audio_devices(
+pub async fn list_audio_devices(
     backend: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<DeviceInfo>, String> {
-    use cpal::traits::{DeviceTrait, HostTrait};
     use crate::preferences::AudioBackend;
 
     #[allow(unused_variables)] // used only in #[cfg(feature = "asio-support")] block
@@ -347,44 +351,29 @@ pub fn list_audio_devices(
     };
 
     // For ASIO: cpal's output_devices() is unreliable (COM/thread issues).
-    // Read driver names directly from the Windows registry instead.
+    // Read driver names directly from the Windows registry instead — fast, no
+    // cpal, so this stays on the calling thread.
     #[cfg(all(windows, feature = "asio-support"))]
     if matches!(ab, AudioBackend::Asio) {
         return Ok(list_asio_drivers_from_registry());
     }
 
-    let host = cpal::default_host();
-
-    let mut devices = Vec::new();
-    if let Ok(iter) = host.output_devices() {
-        for device in iter {
-            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
-            let name = device.to_string();
-            let (channels, sample_rate) = device
-                .default_output_config()
-                .map(|c| (c.channels(), c.sample_rate()))
-                .unwrap_or((2, 44100));
-            devices.push(DeviceInfo { id, name, channels, sample_rate });
+    // WASAPI / CoreAudio / ALSA enumeration is the slow path: run it on a
+    // blocking-pool thread, bounded, then warm the engine's shared cache.
+    let engine = state.audio_engine.clone();
+    let devices = tauri::async_runtime::spawn_blocking(move || {
+        let devices = crate::engine::device_manager::run_bounded(
+            crate::engine::device_manager::ENUM_TIMEOUT,
+            crate::engine::device_manager::enumerate_output_devices,
+        )
+        .unwrap_or_default();
+        if let Ok(mut mgr) = engine.device_manager.lock() {
+            mgr.replace_cache(devices.clone());
         }
-    }
-
-    // Fallback: if enumeration returned nothing, use the default device.
-    if devices.is_empty() {
-        if let Some(device) = host.default_output_device() {
-            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
-            let name = device.to_string();
-            let (channels, sample_rate) = device
-                .default_output_config()
-                .map(|c| (c.channels(), c.sample_rate()))
-                .unwrap_or((2, 44100));
-            devices.push(DeviceInfo { id, name, channels, sample_rate });
-        }
-    }
-
-    // Update engine's device manager cache.
-    if let Ok(mut mgr) = state.audio_engine.device_manager.lock() {
-        mgr.refresh_devices().ok();
-    }
+        devices
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "linux")]
     return Ok(crate::engine::device_manager::linux_devices(false, devices));

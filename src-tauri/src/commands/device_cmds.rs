@@ -59,9 +59,22 @@ pub fn list_output_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>
 }
 
 /// Return all available audio **input** devices (for Mic Cues / live capture).
+///
+/// Like output enumeration, the cpal input query is slow-to-hanging on Windows,
+/// so it runs off the main thread and is time-bounded — the Preferences panel
+/// never freezes on it.
 #[tauri::command]
-pub fn list_input_devices() -> Result<Vec<DeviceInfo>, String> {
-    Ok(audio_input::list_input_devices())
+pub async fn list_input_devices() -> Result<Vec<DeviceInfo>, String> {
+    let devices = tauri::async_runtime::spawn_blocking(|| {
+        crate::engine::device_manager::run_bounded(
+            crate::engine::device_manager::ENUM_TIMEOUT,
+            audio_input::list_input_devices,
+        )
+        .unwrap_or_default()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(devices)
 }
 
 /// Return the workspace's Output Patch table plus the default patch id.
@@ -214,25 +227,33 @@ pub fn open_mixer_window(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Refresh the cached device list (call after hotplug events).
+///
+/// Enumeration is bounded and runs off the main thread, so a stuck device can
+/// never freeze the UI on a manual refresh.
 #[tauri::command]
-pub fn refresh_devices(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    use crate::engine::device_manager::linux_devices;
+pub async fn refresh_devices(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let engine = state.audio_engine.clone();
+    let enumerated = tauri::async_runtime::spawn_blocking(move || {
+        let devices = crate::engine::device_manager::run_bounded(
+            crate::engine::device_manager::ENUM_TIMEOUT,
+            crate::engine::device_manager::enumerate_output_devices,
+        )
+        .unwrap_or_default();
+        if let Ok(mut mgr) = engine.device_manager.lock() {
+            mgr.replace_cache(devices.clone());
+        }
+        devices
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let fallback = {
-        let mut mgr = state
-            .audio_engine
-            .device_manager
-            .lock()
-            .map_err(|e| e.to_string())?;
-        mgr.refresh_devices().map_err(|e| e.to_string())?;
-        mgr.devices().to_vec()
-    };
-
     #[cfg(target_os = "linux")]
-    let devices = linux_devices(false, fallback);
+    let devices = crate::engine::device_manager::linux_devices(false, enumerated);
     #[cfg(not(target_os = "linux"))]
-    let devices = fallback;
+    let devices = enumerated;
 
     let _ = app_handle.emit("device-changed", serde_json::json!({ "devices": devices }));
     Ok(())
