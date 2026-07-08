@@ -623,9 +623,19 @@ fn tick(
     // ------------------------------------------------------------------
     // 10. Detect running-cue-set / playhead changes for OSC feedback
     //     (active cue list only — matches QLab OSC behavior).
+    //
+    // This is the ONLY consumer of the per-tick cue-list flatten + fingerprint,
+    // which is O(cues) and, in a large show (200+ cues), a real 30 fps drag.
+    // Skip it entirely unless OSC feedback is on (or a one-shot refresh was
+    // requested) — the common case pays nothing.
     // ------------------------------------------------------------------
+    // Non-consuming peek — the inner block still consumes the flags when it sends.
+    let osc_feedback_active = crate::engine::osc_feedback::is_enabled()
+        || crate::engine::osc_feedback::any_request_pending();
     let (running_payload, playhead_payload, cue_list_payload) =
-        if let Some(active_cl) = ws.cue_list_by_id(active_list_id) {
+        if !osc_feedback_active {
+            (None, None, None)
+        } else if let Some(active_cl) = ws.cue_list_by_id(active_list_id) {
             let running_now: Vec<(CueId, String, String)> = all_running_cues_info(&active_cl.cues);
             let playhead_now = active_cl
                 .playhead_cue_id

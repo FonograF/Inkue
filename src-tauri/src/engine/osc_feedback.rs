@@ -15,6 +15,11 @@ struct Cfg {
 
 static CFG: OnceLock<Mutex<Cfg>> = OnceLock::new();
 
+/// Lock-free mirror of `Cfg::enabled` for hot-path readers (the 30 fps event
+/// loop checks this every tick to decide whether to compute feedback payloads at
+/// all — see [`is_enabled`]).
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
 fn cfg() -> &'static Mutex<Cfg> {
     CFG.get_or_init(|| {
         Mutex::new(Cfg { enabled: false, host: String::new(), port: 0 })
@@ -28,6 +33,13 @@ pub fn apply(enabled: bool, host: String, port: u16) {
         g.host    = host;
         g.port    = port;
     }
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether OSC feedback is currently enabled.  A relaxed atomic read — cheap
+/// enough to call every event-loop tick to skip building feedback payloads.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
 }
 
 /// Maximum number of simultaneously-running cues tracked via OSC feedback.
@@ -108,6 +120,14 @@ pub fn request_playhead() {
 /// Returns `true` if an OSC client requested the playhead state since the last send.
 pub fn is_playhead_requested() -> bool {
     PENDING_PLAYHEAD_REQUEST.swap(false, Ordering::Relaxed)
+}
+
+/// Non-consuming peek: is either an on-demand cue-list or playhead send pending?
+/// Used by the event loop's fast-path guard so it does not clear the flags (the
+/// real sends do that) — unlike [`is_playhead_requested`], which consumes.
+pub fn any_request_pending() -> bool {
+    PENDING_LIST_REQUEST.load(Ordering::Relaxed)
+        || PENDING_PLAYHEAD_REQUEST.load(Ordering::Relaxed)
 }
 
 /// Send the full ordered cue list to the configured destination.
