@@ -911,13 +911,21 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const posRef = useRef({ x: Math.round((window.innerWidth - MODAL_W) / 2), y: Math.round((window.innerHeight - MODAL_H) / 2) });
   const [pos, setPos] = useState(posRef.current);
   const dragRef = useRef<{ startMouseX: number; startMouseY: number; startPosX: number; startPosY: number } | null>(null);
+  // Cold-start retry counter for the initial preferences fetch (see loadInitial).
+  const initAttemptsRef = useRef(0);
 
   const loadInitial = useCallback(() => {
     setInitFailed(false);
-    // The panel is gated on `draft` being non-null, so a getPreferences() that
-    // never settles would spin "Loading…" forever — bound it and surface a
-    // retry instead.
+    // The preferences window is pre-created at startup (visible:false), so this
+    // fetch fires during boot — while the backend main thread may still be
+    // finishing a slow startup (e.g. software-OpenGL init on a VM), which would
+    // otherwise trip the timeout on the very first attempt. Retry a few times
+    // with backoff before surfacing failure; the Retry button stays the last
+    // resort. Retries are safe — they only run while `draft` is still null, so
+    // no user edits can be discarded.
+    const attempt = () => {
     withTimeout(getPreferences(), 12000, "Timed out loading preferences").then((p) => {
+      initAttemptsRef.current = 0;
       setPrefs(p);
       setDraft(p);
       const t = { ...DEFAULT_DISPLAY_PREFS, ...p.display };
@@ -947,7 +955,18 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       const floating = p.display.timer_floating ?? false;
       setTimerFloating(floating);
       setDraftTimerFloating(floating);
-    }).catch((e) => { console.error(e); setInitFailed(true); });
+    }).catch((e) => {
+      console.error(e);
+      if (initAttemptsRef.current < 5) {
+        initAttemptsRef.current += 1;
+        window.setTimeout(attempt, 1500 * initAttemptsRef.current);
+      } else {
+        setInitFailed(true);
+      }
+    });
+    };
+    initAttemptsRef.current = 0;
+    attempt();
     getMachineAudioConfig().then((c) => { setMachineConfig(c); setDraftMachineConfig(c); }).catch(console.error);
     getAvailableBackends().then(setAvailableBackends).catch(console.error);
     getOutputScreen().then((s) => { setOutputScreen_(s); setDraftOutputScreen(s); }).catch(console.error);
