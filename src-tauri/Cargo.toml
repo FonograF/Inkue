@@ -1,6 +1,6 @@
 [package]
 name = "inkue"
-version = "1.1.0"
+version = "1.1.5"
 edition = "2021"
 description = "Professional, cross-platform show-control application for live events"
 authors = ["Inkue contributors"]
