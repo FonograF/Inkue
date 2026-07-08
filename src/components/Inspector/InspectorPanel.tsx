@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import type { AudioCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
+import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS } from "../../lib/mediaTypes";
 import { WaveformModal } from "../WaveformModal";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BasicsTab } from "./BasicsTab";
@@ -112,7 +113,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     const result = await open({
       multiple: false,
       filters: [
-        { name: "Audio Files", extensions: ["wav", "mp3", "flac", "ogg", "aac"] },
+        { name: "Audio Files", extensions: [...AUDIO_EXTENSIONS] },
       ],
     });
     if (typeof result === "string") {
@@ -126,7 +127,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     const result = await open({
       multiple: false,
       filters: [
-        { name: "Video Files", extensions: ["mp4", "m4v", "webm", "mov", "mkv", "avi", "ogv"] },
+        { name: "Video Files", extensions: [...VIDEO_EXTENSIONS] },
       ],
     });
     if (typeof result === "string") {
@@ -140,7 +141,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     const result = await open({
       multiple: false,
       filters: [
-        { name: "Image Files", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] },
+        { name: "Image Files", extensions: [...IMAGE_EXTENSIONS] },
       ],
     });
     if (typeof result === "string") {

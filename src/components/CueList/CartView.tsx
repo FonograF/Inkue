@@ -11,6 +11,7 @@ import {
   addCue, goCue, moveCue, stopCue,
   setAudioFile, setVideoFile, setImageFile, updateCue,
 } from "../../lib/commands";
+import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, extensionOf } from "../../lib/mediaTypes";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,13 +43,9 @@ function formatDuration(ms: number): string {
   return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
-const AUDIO_EXTS = new Set(["wav", "mp3", "flac", "ogg", "aac", "m4a"]);
-const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "mov", "mkv", "avi", "ogv"]);
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
-
-const isAudioPath = (p: string) => AUDIO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
-const isVideoPath = (p: string) => VIDEO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
-const isImagePath = (p: string) => IMAGE_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
+const isAudioPath = (p: string) => AUDIO_EXTS.has(extensionOf(p));
+const isVideoPath = (p: string) => VIDEO_EXTS.has(extensionOf(p));
+const isImagePath = (p: string) => IMAGE_EXTS.has(extensionOf(p));
 function cueTypeForPath(p: string): "video" | "image" | "audio" {
   if (isVideoPath(p)) return "video";
   if (isImagePath(p)) return "image";

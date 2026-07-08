@@ -25,6 +25,7 @@ import {
 } from "./columns";
 import type { CueSummary, CueType } from "../../lib/types";
 import { CUE_TYPE_COLORS } from "../../lib/types";
+import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, extensionOf } from "../../lib/mediaTypes";
 import {
   addCue,
   removeCue,
@@ -47,9 +48,6 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const AUDIO_EXTS = new Set(["wav", "mp3", "flac", "ogg", "aac", "m4a"]);
-const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "mov", "mkv", "avi", "ogv"]);
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 
 // Every cue type that can be created, in toolbar order. Colors come from the
 // shared CUE_TYPE_COLORS map so the context menu and the Row 2 toolbar buttons
@@ -80,13 +78,13 @@ const FILE_FILTERS: Partial<Record<CueType, { name: string; extensions: string[]
 };
 
 function isAudioPath(p: string) {
-  return AUDIO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
+  return AUDIO_EXTS.has(extensionOf(p));
 }
 function isVideoPath(p: string) {
-  return VIDEO_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
+  return VIDEO_EXTS.has(extensionOf(p));
 }
 function isImagePath(p: string) {
-  return IMAGE_EXTS.has(p.split(".").pop()?.toLowerCase() ?? "");
+  return IMAGE_EXTS.has(extensionOf(p));
 }
 function cueTypeForPath(p: string): "video" | "image" | "audio" {
   if (isVideoPath(p)) return "video";
