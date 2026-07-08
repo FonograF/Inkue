@@ -8,7 +8,7 @@
 // sync via an onScroll handler. This way the header always aligns with the
 // rows regardless of window width.
 
-import { useEffect, useRef, useState, useMemo, Fragment } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback, Fragment } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -1086,7 +1086,9 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   // ---------------------------------------------------------------------------
 
   // Common grid style used by both header and rows.
-  const gridStyle: React.CSSProperties = {
+  // Memoized so its reference is stable across renders — a fresh object here
+  // would defeat React.memo on every CueRow (they all take gridStyle).
+  const gridStyle: React.CSSProperties = useMemo(() => ({
     display: "grid",
     gridTemplateColumns: gridCols,
     gap: "0 8px",
@@ -1095,7 +1097,66 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     // the container is narrower than the total column width. The scroll containers
     // handle the overflow.
     minWidth: "max-content",
-  };
+  }), [gridCols]);
+
+  // --- Stable per-row callbacks (so React.memo(CueRow) can skip unchanged rows) ---
+  // The row handlers need values that change every render (flatItems, selection).
+  // Reading them through refs lets the handlers stay referentially stable while
+  // never going stale — the key to memoizing a large cue list.
+  // flatItemsRef is already defined above (kept in sync via useEffect).
+  const selectedCueSetRef = useRef(selectedCueSet); selectedCueSetRef.current = selectedCueSet;
+  const selectedCueIdsRef = useRef(selectedCueIds); selectedCueIdsRef.current = selectedCueIds;
+  const startCueDragRef = useRef(startCueDrag);  startCueDragRef.current = startCueDrag;
+  const toggleGroupExpandRef = useRef(toggleGroupExpand); toggleGroupExpandRef.current = toggleGroupExpand;
+  const onCueDoubleClickRef = useRef(onCueDoubleClick); onCueDoubleClickRef.current = onCueDoubleClick;
+
+  const handleRowToggleExpand = useCallback((id: string) => toggleGroupExpandRef.current(id), []);
+  const handleRowDragStart = useCallback(
+    (id: string, index: number, e: React.MouseEvent) => startCueDragRef.current(e, id, index),
+    [],
+  );
+  const handleRowDoubleClick = useCallback((cue: CueSummary) => onCueDoubleClickRef.current(cue), []);
+  const handleRowRefresh = useCallback(() => onRefreshRef.current(), []);
+  const handleRowContextMenu = useCallback(
+    (id: string, parentGroupId: string | null, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({ x: e.clientX, y: e.clientY, cueId: id, parentGroupId });
+    },
+    [],
+  );
+  const handleRowClick = useCallback(
+    (id: string, index: number, parentGroupId: string | null, e: React.MouseEvent) => {
+      if (justDroppedRef.current) return;
+      setContextMenu(null);
+      const items = flatItemsRef.current;
+      if (e.shiftKey && anchorCueIdRef.current) {
+        const anchorIdx = items.findIndex((fi) => fi.cue.id === anchorCueIdRef.current);
+        const [lo, hi] = anchorIdx <= index ? [anchorIdx, index] : [index, anchorIdx];
+        setSelectedCueIds(items.slice(lo, hi + 1).map((fi) => fi.cue.id));
+        selectionEndRef.current = id;
+      } else if (e.ctrlKey) {
+        const selIds = selectedCueIdsRef.current;
+        const next = selectedCueSetRef.current.has(id)
+          ? selIds.filter((x) => x !== id)
+          : [...selIds, id];
+        setSelectedCueIds(next);
+        setSelectedCueId(id);
+        anchorCueIdRef.current = id;
+        selectionEndRef.current = id;
+      } else {
+        setSelectedCueId(id);
+        setSelectedCueIds([id]);
+        // Park the Playhead on this exact cue (backend routes a child of a
+        // Sequential group to its ancestor group). Optimistically reflect it.
+        setPlayheadCueId(parentGroupId ?? id);
+        setPlayhead(id).catch(console.error);
+        anchorCueIdRef.current = id;
+        selectionEndRef.current = id;
+      }
+    },
+    [setSelectedCueIds, setSelectedCueId, setPlayheadCueId],
+  );
 
   return (
     <div
@@ -1251,7 +1312,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
               depth={depth}
               isGroup={cue.cue_type === "group"}
               isGroupExpanded={expandedGroupIds.has(cue.id)}
-              onToggleExpand={() => toggleGroupExpand(cue.id)}
+              onToggleExpand={handleRowToggleExpand}
               isSelected={selectedCueSet.has(cue.id)}
               isAtPlayhead={playheadCueId === cue.id || innerPlayheadIds.has(cue.id)}
               isDragOver={dragOverCueId === cue.id}
@@ -1264,48 +1325,11 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 draggingCueId !== null &&
                 (cueDragRef.current?.ids.includes(cue.id) ?? false)
               }
-              onCueDragStart={(e) => {
-                startCueDrag(e, cue.id, flatIndex);
-              }}
-              onClick={(e) => {
-                if (justDroppedRef.current) return;
-                setContextMenu(null);
-
-                if (e.shiftKey && anchorCueIdRef.current) {
-                  const anchorIdx = flatItems.findIndex((fi) => fi.cue.id === anchorCueIdRef.current);
-                  const [lo, hi] = anchorIdx <= flatIndex
-                    ? [anchorIdx, flatIndex]
-                    : [flatIndex, anchorIdx];
-                  setSelectedCueIds(flatItems.slice(lo, hi + 1).map((fi) => fi.cue.id));
-                  selectionEndRef.current = cue.id;
-                } else if (e.ctrlKey) {
-                  const next = selectedCueSet.has(cue.id)
-                    ? selectedCueIds.filter((id) => id !== cue.id)
-                    : [...selectedCueIds, cue.id];
-                  setSelectedCueIds(next);
-                  setSelectedCueId(cue.id);
-                  anchorCueIdRef.current = cue.id;
-                  selectionEndRef.current = cue.id;
-                } else {
-                  setSelectedCueId(cue.id);
-                  setSelectedCueIds([cue.id]);
-                  // Park the Playhead on this exact cue. The backend routes a
-                  // child of a Sequential group to its ancestor group and points
-                  // the group's inner sequence at the child, so GO fires it.
-                  // Optimistically reflect the outer Playhead (the group for a child).
-                  setPlayheadCueId(parentGroupId ?? cue.id);
-                  setPlayhead(cue.id).catch(console.error);
-                  anchorCueIdRef.current = cue.id;
-                  selectionEndRef.current = cue.id;
-                }
-              }}
-              onDoubleClick={() => onCueDoubleClick(cue)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setContextMenu({ x: e.clientX, y: e.clientY, cueId: cue.id, parentGroupId });
-              }}
-              onRefresh={onRefresh}
+              onCueDragStart={handleRowDragStart}
+              onClick={handleRowClick}
+              onDoubleClick={handleRowDoubleClick}
+              onContextMenu={handleRowContextMenu}
+              onRefresh={handleRowRefresh}
             />
           </Fragment>
         ))}

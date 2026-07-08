@@ -1,6 +1,6 @@
 // A single row in the cue list table.
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import { PlayheadIndicator } from "./PlayheadIndicator";
 import { RunningLed } from "../common/RunningLed";
 import type { ColumnDef } from "./columns";
@@ -108,16 +108,16 @@ interface Props {
   /** Whether the group is currently expanded. */
   isGroupExpanded?: boolean;
   /** Toggle the group's expand/collapse state. */
-  onToggleExpand?: () => void;
+  onToggleExpand?: (id: string) => void;
   /** True when a cue is being dragged over the middle of this group row (drop-into-group). */
   isGroupDropTarget?: boolean;
   /** ID of the parent group, if this cue is a child. Used for within-group insert detection. */
   parentGroupId?: string | null;
   /** Called on mousedown to start a cue drag operation. */
-  onCueDragStart: (e: React.MouseEvent) => void;
-  onClick: (e: React.MouseEvent) => void;
-  onDoubleClick: () => void;
-  onContextMenu: (e: React.MouseEvent) => void;
+  onCueDragStart: (id: string, index: number, e: React.MouseEvent) => void;
+  onClick: (id: string, index: number, parentGroupId: string | null, e: React.MouseEvent) => void;
+  onDoubleClick: (cue: CueSummary) => void;
+  onContextMenu: (id: string, parentGroupId: string | null, e: React.MouseEvent) => void;
   onRefresh?: () => void;
   /** How the cue's colour tag is rendered — left-edge stripe, or the whole row tinted. */
   cueColorStyle?: CueColorStyle;
@@ -127,7 +127,7 @@ interface Props {
 // Component
 // ---------------------------------------------------------------------------
 
-export function CueRow({
+function CueRowImpl({
   cue,
   cueIndex,
   gridStyle,
@@ -281,7 +281,7 @@ export function CueRow({
                   flexShrink: 0,
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); onToggleExpand?.(); }}
+                onClick={(e) => { e.stopPropagation(); onToggleExpand?.(cue.id); }}
               >
                 {isGroupExpanded ? "▼" : "▶"}
               </button>
@@ -470,10 +470,10 @@ export function CueRow({
       data-is-group={isGroup ? "true" : undefined}
       data-cue-depth={depth}
       data-parent-group-id={parentGroupId ?? undefined}
-      onMouseDown={onCueDragStart}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
-      onContextMenu={onContextMenu}
+      onMouseDown={(e) => onCueDragStart(cue.id, cueIndex, e)}
+      onClick={(e) => onClick(cue.id, cueIndex, parentGroupId ?? null, e)}
+      onDoubleClick={() => onDoubleClick(cue)}
+      onContextMenu={(e) => onContextMenu(cue.id, parentGroupId ?? null, e)}
     >
       {/* Color indicator strip — shifts right with nesting depth (4 px per level).
           z-index 0 keeps it below column content (playhead indicator, etc.).
@@ -515,3 +515,8 @@ export function CueRow({
     </div>
   );
 }
+
+// Memoized: with stable props from CueListView (all callbacks + gridStyle are
+// stable), a large cue list only re-renders the rows whose data actually
+// changed, instead of all of them on every state/selection change.
+export const CueRow = memo(CueRowImpl);
