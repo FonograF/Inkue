@@ -1,6 +1,8 @@
 //! Tauri commands for workspace save / load / new.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -135,58 +137,121 @@ pub(crate) fn install_workspace(
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
 
-    // Spawn a background preload thread for every audio cue that has a file.
-    for (cue_id, file_path, cue_type) in cues_to_preload {
-        let workspace = state.workspace.clone();
-        let loading_cues = state.loading_cues.clone();
-        let app_handle2 = app_handle.clone();
-        let is_audio = matches!(cue_type, CueType::Audio);
+    // Background media preload. A show can hold dozens of audio cues (a 58-cue
+    // QLab import melted the machine): spawning one decode thread per cue was a
+    // thundering herd — every thread fought for the workspace lock and emitted
+    // `workspace-modified`, and each of those triggers a full UI refresh.
+    //
+    // Three fixes: (1) dedup by file — many cues point at the same file (a Canon
+    // reuses one clip across sections), so decode each distinct file once and
+    // share the decoded buffer (`Arc`) across every cue that uses it; (2) drain
+    // the work with a small bounded pool; (3) let one coordinator coalesce the UI
+    // refresh to a few times a second instead of once per cue.
+    let mut cues_by_path: HashMap<PathBuf, Vec<(uuid::Uuid, bool)>> = HashMap::new();
+    for (id, path, cue_type) in cues_to_preload {
+        cues_by_path
+            .entry(path)
+            .or_default()
+            .push((id, matches!(cue_type, CueType::Audio)));
+    }
 
-        std::thread::Builder::new()
-            .name("inkue-preload".into())
-            .spawn(move || {
-                match crate::cue::media_decode::decode_audio_track(&file_path) {
-                    Ok(Some((samples, channels, sample_rate))) => {
-                        let duration = Duration::from_secs_f64(
-                            samples.len() as f64
-                                / channels.max(1) as f64
-                                / sample_rate.max(1) as f64,
-                        );
-                        let samples = Arc::new(samples);
-                        // Search all cue lists — the cue may not be in the active one.
-                        if let Ok(mut ws) = workspace.lock() {
-                            'store: {
-                                for cl in ws.cue_lists.iter_mut() {
-                                    if let Some(cue) = cl.get_mut_recursive(&cue_id) {
-                                        cue.accept_preloaded_audio(
-                                            samples, channels, sample_rate, duration,
-                                        );
-                                        break 'store;
+    let job_count = cues_by_path.len();
+    if job_count > 0 {
+        let (tx, rx) = crossbeam_channel::unbounded::<(PathBuf, Vec<(uuid::Uuid, bool)>)>();
+        for job in cues_by_path {
+            let _ = tx.send(job);
+        }
+        drop(tx); // close the queue so workers exit once it is drained
+
+        let remaining = Arc::new(AtomicUsize::new(job_count));
+        let dirty = Arc::new(AtomicBool::new(false));
+
+        // Leave a core free for the audio callback + UI; cap peak decode memory.
+        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+        let workers = cpus.saturating_sub(1).clamp(1, 4).min(job_count);
+
+        for _ in 0..workers {
+            let rx = rx.clone();
+            let workspace = state.workspace.clone();
+            let loading_cues = state.loading_cues.clone();
+            let dirty = Arc::clone(&dirty);
+            let remaining = Arc::clone(&remaining);
+            std::thread::Builder::new()
+                .name("inkue-preload".into())
+                .spawn(move || {
+                    while let Ok((file_path, cues)) = rx.recv() {
+                        match crate::cue::media_decode::decode_audio_track(&file_path) {
+                            Ok(Some((samples, channels, sample_rate))) => {
+                                let duration = Duration::from_secs_f64(
+                                    samples.len() as f64
+                                        / channels.max(1) as f64
+                                        / sample_rate.max(1) as f64,
+                                );
+                                let samples = Arc::new(samples);
+                                // Store the shared buffer into every cue using this
+                                // file (searching all lists — a cue may be in a
+                                // non-active list). Voices read the buffer read-only,
+                                // so sharing one Arc across simultaneous plays is safe.
+                                if let Ok(mut ws) = workspace.lock() {
+                                    for (cue_id, _) in &cues {
+                                        'store: for cl in ws.cue_lists.iter_mut() {
+                                            if let Some(cue) = cl.get_mut_recursive(cue_id) {
+                                                cue.accept_preloaded_audio(
+                                                    Arc::clone(&samples), channels, sample_rate, duration,
+                                                );
+                                                break 'store;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Decoded fine — retire any stale decode-failure banners.
+                                for (cue_id, is_audio) in &cues {
+                                    if *is_audio {
+                                        super::clear_decode_failure(*cue_id);
+                                    }
+                                }
+                            }
+                            Ok(None) => {} // silent video — nothing to preload
+                            Err(e) => {
+                                log::warn!("Preload failed for {}: {e}", file_path.display());
+                                // An Audio cue that can't decode would be a silent
+                                // no-op at GO — surface it instead of only logging.
+                                for (cue_id, is_audio) in &cues {
+                                    if *is_audio {
+                                        super::surface_decode_failure(*cue_id, &file_path);
                                     }
                                 }
                             }
                         }
-                        // Decoded fine — retire any stale decode-failure banner.
-                        if is_audio {
-                            super::clear_decode_failure(cue_id);
+                        if let Ok(mut loading) = loading_cues.lock() {
+                            for (cue_id, _) in &cues {
+                                loading.remove(cue_id);
+                            }
                         }
+                        dirty.store(true, Ordering::Relaxed);
+                        remaining.fetch_sub(1, Ordering::Relaxed);
                     }
-                    Ok(None) => {} // silent video — nothing to preload
-                    Err(e) => {
-                        log::warn!("Preload failed for cue {cue_id}: {e}");
-                        // An Audio cue that can't decode would be a silent no-op
-                        // at GO — surface it instead of only logging.
-                        if is_audio {
-                            super::surface_decode_failure(cue_id, &file_path);
-                        }
-                    }
+                })
+                .expect("Failed to spawn preload worker");
+        }
+
+        // Coordinator: emit one coalesced `workspace-modified` at most ~4×/s while
+        // preloads land, plus a final one when the batch is done. This replaces the
+        // per-cue emit storm that re-rendered the whole cue list dozens of times.
+        let app_handle2 = app_handle.clone();
+        std::thread::Builder::new()
+            .name("inkue-preload-coord".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let done = remaining.load(Ordering::Relaxed) == 0;
+                if dirty.swap(false, Ordering::Relaxed) || done {
+                    let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
                 }
-                if let Ok(mut loading) = loading_cues.lock() {
-                    loading.remove(&cue_id);
+                if done {
+                    break;
                 }
-                let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
             })
-            .expect("Failed to spawn preload thread");
+            .expect("Failed to spawn preload coordinator");
     }
 
     Ok(())
