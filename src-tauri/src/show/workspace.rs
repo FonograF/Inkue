@@ -109,6 +109,23 @@ fn remap_paths(value: &mut serde_json::Value, path_map: &HashMap<PathBuf, String
     }
 }
 
+/// Count how many cues a `cues` JSON array *intends* to contain, descending
+/// recursively into group `children`.  Each array element is one intended cue.
+fn count_intended_cues(cues: Option<&serde_json::Value>) -> usize {
+    let Some(arr) = cues.and_then(|v| v.as_array()) else { return 0 };
+    arr.iter()
+        .map(|item| 1 + count_intended_cues(item.get("children")))
+        .sum()
+}
+
+/// Count how many cues actually loaded, descending into group children — the
+/// symmetric counterpart to [`count_intended_cues`].
+fn count_loaded_cues(cues: &[Box<dyn Cue>]) -> usize {
+    cues.iter()
+        .map(|c| 1 + c.child_cues().map(count_loaded_cues).unwrap_or(0))
+        .sum()
+}
+
 fn sanitize_for_filename(name: &str) -> String {
     let s: String = name
         .chars()
@@ -225,6 +242,11 @@ pub struct Workspace {
     /// autosave thread snapshots the workspace only when this changes, so an
     /// idle show is never re-serialised.  Not persisted.
     pub revision: u64,
+    /// Number of cues that were present in the file but could **not** be loaded
+    /// (unknown type or corrupt data) and were therefore skipped.  Transient
+    /// (never serialised); read once after load so the operator can be warned
+    /// that part of the show is missing instead of it vanishing silently.
+    pub cues_skipped_on_load: usize,
 }
 
 impl Workspace {
@@ -247,6 +269,7 @@ impl Workspace {
             file_path: None,
             is_modified: false,
             revision: 0,
+            cues_skipped_on_load: 0,
         }
     }
 
@@ -610,6 +633,17 @@ impl Workspace {
             .filter(|id| cue_lists.iter().any(|cl| cl.id == *id))
             .unwrap_or_else(|| cue_lists[0].id);
 
+        // How many cues did the file intend to contain vs. how many actually
+        // loaded?  The difference was dropped by the registry (unknown type or
+        // corrupt data) — record it so the caller can warn the operator.
+        let intended: usize = doc
+            .get("cue_lists")
+            .and_then(|v| v.as_array())
+            .map(|lists| lists.iter().map(|cl| count_intended_cues(cl.get("cues"))).sum())
+            .unwrap_or(0);
+        let loaded: usize = cue_lists.iter().map(|cl| count_loaded_cues(&cl.cues)).sum();
+        let cues_skipped_on_load = intended.saturating_sub(loaded);
+
         Ok(Self {
             metadata,
             cue_lists,
@@ -625,6 +659,7 @@ impl Workspace {
             file_path: None,
             is_modified: false,
             revision: 0,
+            cues_skipped_on_load,
         })
     }
 }

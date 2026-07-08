@@ -736,6 +736,8 @@ pub fn set_audio_file(
                     if let Ok(mut loading) = loading_cues.lock() {
                         loading.remove(&id);
                     }
+                    // Decoded fine — retire any prior decode-failure banner.
+                    super::clear_decode_failure(id);
                     // Update duration column in the UI.
                     let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
                 }
@@ -744,6 +746,9 @@ pub fn set_audio_file(
                         loading.remove(&id);
                     }
                     log::warn!("Background preload failed for {:?}: {e}", file_path_buf);
+                    // Persistent banner (the event above is transient) so a cue
+                    // that will silently no-op at GO stays visible until fixed.
+                    super::surface_decode_failure(id, &file_path_buf);
                     let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
                     let _ = app_handle2.emit("cue-load-error", serde_json::json!({
                         "cue_id": id.to_string(),

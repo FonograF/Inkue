@@ -13,15 +13,20 @@ use crate::{
     state::AppState,
 };
 
-/// Recursively collect (id, path) pairs for every Audio and Video cue,
-/// including those nested inside groups at any depth.
-fn collect_media_cues(cues: &[Box<dyn crate::cue::traits::Cue>], out: &mut Vec<(uuid::Uuid, PathBuf)>) {
+/// Recursively collect (id, path, type) tuples for every Audio and Video cue,
+/// including those nested inside groups at any depth.  The type lets the preload
+/// worker surface a decode *failure* for Audio cues only (a video without an
+/// audio track, or whose track fails, still plays — no operator warning).
+fn collect_media_cues(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+    out: &mut Vec<(uuid::Uuid, PathBuf, CueType)>,
+) {
     for cue in cues {
         if matches!(cue.cue_type(), CueType::Audio | CueType::Video) {
             let json = cue.serialize();
             if let Some(p) = json.get("file_path").and_then(|v| v.as_str()) {
                 if !p.is_empty() {
-                    out.push((cue.id(), PathBuf::from(p)));
+                    out.push((cue.id(), PathBuf::from(p), cue.cue_type()));
                 }
             }
         }
@@ -42,6 +47,8 @@ pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -
     state.output_engine.set_floating_timer_visible(false);
     // A fresh workspace has no DMX outputs — clear any from the previous show.
     state.dmx_engine.set_outputs(outputs);
+    // Starting clean — retire any load-skip banner from the previous show.
+    crate::health::clear("workspace-load-skips");
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
@@ -85,13 +92,26 @@ pub(crate) fn install_workspace(
 ) -> Result<(), String> {
     // Collect audio + video cue IDs + file paths before storing the workspace.
     // Scan ALL cue lists so non-active lists are also preloaded on open.
-    let cues_to_preload: Vec<(uuid::Uuid, PathBuf)> = {
+    let cues_to_preload: Vec<(uuid::Uuid, PathBuf, CueType)> = {
         let mut result = Vec::new();
         for cl in &loaded.cue_lists {
             collect_media_cues(&cl.cues, &mut result);
         }
         result
     };
+
+    // Warn the operator when the file carried cues that could not be loaded
+    // (unknown type / corrupt data) — otherwise they vanish with no signal.
+    if loaded.cues_skipped_on_load > 0 {
+        let n = loaded.cues_skipped_on_load;
+        crate::health::set(crate::health::HealthAlert::new(
+            "workspace-load-skips",
+            crate::health::HealthLevel::Warning,
+            format!("{n} cue(s) could not be loaded (unknown type or corrupt data) and were skipped."),
+        ));
+    } else {
+        crate::health::clear("workspace-load-skips");
+    }
 
     // Store the new workspace and apply display preferences.
     let show_floating = loaded.preferences.display.show_output_timer && loaded.preferences.display.timer_floating;
@@ -108,7 +128,7 @@ pub(crate) fn install_workspace(
         let mut loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
         // Clear any stale entries from a previous workspace.
         loading.clear();
-        for (id, _) in &cues_to_preload {
+        for (id, _, _) in &cues_to_preload {
             loading.insert(*id);
         }
     }
@@ -116,10 +136,11 @@ pub(crate) fn install_workspace(
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
 
     // Spawn a background preload thread for every audio cue that has a file.
-    for (cue_id, file_path) in cues_to_preload {
+    for (cue_id, file_path, cue_type) in cues_to_preload {
         let workspace = state.workspace.clone();
         let loading_cues = state.loading_cues.clone();
         let app_handle2 = app_handle.clone();
+        let is_audio = matches!(cue_type, CueType::Audio);
 
         std::thread::Builder::new()
             .name("inkue-preload".into())
@@ -145,9 +166,20 @@ pub(crate) fn install_workspace(
                                 }
                             }
                         }
+                        // Decoded fine — retire any stale decode-failure banner.
+                        if is_audio {
+                            super::clear_decode_failure(cue_id);
+                        }
                     }
                     Ok(None) => {} // silent video — nothing to preload
-                    Err(e) => log::warn!("Preload failed for cue {cue_id}: {e}"),
+                    Err(e) => {
+                        log::warn!("Preload failed for cue {cue_id}: {e}");
+                        // An Audio cue that can't decode would be a silent no-op
+                        // at GO — surface it instead of only logging.
+                        if is_audio {
+                            super::surface_decode_failure(cue_id, &file_path);
+                        }
+                    }
                 }
                 if let Ok(mut loading) = loading_cues.lock() {
                     loading.remove(&cue_id);
