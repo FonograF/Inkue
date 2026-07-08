@@ -46,6 +46,9 @@ libloading = "0.8"
 # Lock-free comms
 ringbuf = "0.4"
 crossbeam-channel = "0.5"
+# Wait-free voice-list snapshot read by the real-time audio callback (no lock,
+# no allocation, no dealloc on the RT thread — see VoicePool in audio_engine).
+arc-swap = "1"
 
 # Image encoding (base64 data URLs for image surface windows)
 base64 = "0.22"

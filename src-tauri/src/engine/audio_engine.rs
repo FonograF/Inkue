@@ -4,9 +4,11 @@
 //! allocate, block, or do I/O.  All state mutations happen via the command ring
 //! buffer; all outgoing data goes through the status ring buffer.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
+use arc_swap::ArcSwap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
@@ -86,6 +88,87 @@ impl InputFeed {
 }
 
 
+/// Number of retired voice-list generations kept alive on the non-RT side so
+/// the real-time callback never holds the last reference to one — and therefore
+/// never runs a `Vec`/`Voice`/samples destructor.  A single output callback
+/// (a few ms) can never outlive this many publishes (each driven by a GO / GC),
+/// so 3 is a comfortable margin.
+const VOICE_POOL_RETAIN: usize = 3;
+
+/// A voice pool published **wait-free** to the real-time audio callback.
+///
+/// The RT callback reads a snapshot via [`ArcSwap::load`] — no lock, so it can
+/// never be starved into emitting a block of silence (the old `try_lock`
+/// failure mode).  Non-RT threads mutate `master` (a plain `Mutex`, only ever
+/// contended among themselves) and then [`publish`](VoicePool::publish) a fresh
+/// immutable snapshot.  Retired snapshots are held in `retained` for a few
+/// generations so their destructors always run on a non-RT thread — the RT
+/// thread allocates and frees nothing.
+struct VoicePool {
+    /// Editable master list — locked only by non-RT threads.
+    master: Mutex<Vec<Arc<Voice>>>,
+    /// Immutable snapshot the RT callback loads.
+    rt: Arc<ArcSwap<Vec<Arc<Voice>>>>,
+    /// Keep-alive ring of recent snapshots so the RT thread never deallocs one.
+    retained: Mutex<VecDeque<Arc<Vec<Arc<Voice>>>>>,
+}
+
+impl VoicePool {
+    fn new() -> Self {
+        Self {
+            master: Mutex::new(Vec::new()),
+            rt: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            retained: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// The handle the RT callback reads from (`load()` each block).
+    fn rt_handle(&self) -> Arc<ArcSwap<Vec<Arc<Voice>>>> {
+        Arc::clone(&self.rt)
+    }
+
+    /// Publish the current master list as a new immutable snapshot, retaining a
+    /// few prior generations so the RT thread never drops the last reference.
+    fn publish(&self, master: &[Arc<Voice>]) {
+        let snap = Arc::new(master.to_vec());
+        self.rt.store(Arc::clone(&snap));
+        if let Ok(mut ret) = self.retained.lock() {
+            ret.push_back(snap);
+            while ret.len() > VOICE_POOL_RETAIN {
+                ret.pop_front(); // dropped here, on this non-RT thread
+            }
+        }
+    }
+
+    /// Append a voice and publish.  On a poisoned lock the voice is handed back
+    /// (`Err`) so a caller can recover it — e.g. fall the cue back to the main
+    /// output instead of losing it.
+    fn push(&self, voice: Arc<Voice>) -> std::result::Result<(), Arc<Voice>> {
+        match self.master.lock() {
+            Ok(mut m) => {
+                m.push(voice);
+                self.publish(&m);
+                Ok(())
+            }
+            Err(_) => Err(voice),
+        }
+    }
+
+    /// Run `f` over the current voices (non-RT read; locks `master`).
+    fn with<T>(&self, f: impl FnOnce(&[Arc<Voice>]) -> T) -> Option<T> {
+        self.master.lock().ok().map(|m| f(&m))
+    }
+
+    /// Retain voices matching `keep`, then publish.  Removed `Arc<Voice>`s are
+    /// dropped on this (non-RT) thread.
+    fn retain(&self, keep: impl Fn(&Arc<Voice>) -> bool) {
+        if let Ok(mut m) = self.master.lock() {
+            m.retain(|v| keep(v));
+            self.publish(&m);
+        }
+    }
+}
+
 /// One additional cpal output stream opened for an Output Patch that targets
 /// a different device than the main stream.
 ///
@@ -99,7 +182,7 @@ struct AuxStream {
     device_id: String,
     /// Output channel count of this stream (for channel-bounds alerts).
     channels: u32,
-    voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    voices: VoicePool,
     cmd_prod: ringbuf::HeapProd<AudioCommand>,
     status_cons: ringbuf::HeapCons<AudioStatus>,
     /// Set by the cpal error callback on DeviceNotAvailable.
@@ -112,7 +195,7 @@ pub struct AudioEngine {
     pub device_manager: Mutex<DeviceManager>,
     cmd_prod: Mutex<ringbuf::HeapProd<AudioCommand>>,
     status_cons: Mutex<ringbuf::HeapCons<AudioStatus>>,
-    voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    voices: VoicePool,
     /// Additional per-device streams for Output Patches targeting a device
     /// other than the main one.  Opened lazily at the first GO that needs the
     /// device, kept open afterwards so later GOs start with zero device-open
@@ -171,7 +254,8 @@ impl AudioEngine {
     /// Open an output device according to `config` and start the audio callback.
     pub fn new(config: &MachineAudioConfig) -> Result<Arc<Self>> {
         let master_gain = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0_f32)));
-        let shared_voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
+        let voices = VoicePool::new();
+        let voices_rt = voices.rt_handle();
         let input_feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let output_period = Arc::new(std::sync::atomic::AtomicU32::new(256));
         let output_callbacks = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -181,7 +265,7 @@ impl AudioEngine {
         let open = |cfg: &MachineAudioConfig| {
             open_stream_inner(
                 cfg,
-                Arc::clone(&shared_voices),
+                Arc::clone(&voices_rt),
                 Arc::clone(&input_feeds),
                 Arc::clone(&master_gain),
                 Arc::clone(&output_period),
@@ -211,7 +295,7 @@ impl AudioEngine {
             device_manager: Mutex::new(DeviceManager::new()),
             cmd_prod: Mutex::new(sr.cmd_prod),
             status_cons: Mutex::new(sr.status_cons),
-            voices: shared_voices,
+            voices,
             aux_streams: Mutex::new(Vec::new()),
             input_feeds,
             _stream: Mutex::new(Some(sr.stream)),
@@ -351,10 +435,7 @@ impl AudioEngine {
         let arc = Arc::new(voice);
         arc.set_playing();
 
-        self.voices
-            .lock()
-            .map_err(|_| anyhow!("voices mutex poisoned"))?
-            .push(Arc::clone(&arc));
+        self.voices.push(Arc::clone(&arc)).map_err(|_| anyhow!("voices mutex poisoned"))?;
 
         self.send_command(AudioCommand::Play { voice_id: id })?;
         Ok(id)
@@ -374,10 +455,7 @@ impl AudioEngine {
         let arc = Arc::new(voice);
         arc.set_paused();
 
-        self.voices
-            .lock()
-            .map_err(|_| anyhow!("voices mutex poisoned"))?
-            .push(Arc::clone(&arc));
+        self.voices.push(Arc::clone(&arc)).map_err(|_| anyhow!("voices mutex poisoned"))?;
 
         // No Play command — the callback only mixes Playing/FadingOut voices, so
         // this stays silent until resume_voice() is called.
@@ -499,14 +577,15 @@ impl AudioEngine {
 
         self.check_channel_bounds(&voice, stream.channels);
         let id = voice.id;
-        let mut pool = match stream.voices.lock() {
-            Ok(p) => p,
-            Err(_) => return Err((voice, anyhow!("aux voice pool poisoned"))),
-        };
         let arc = Arc::new(voice);
         if start { arc.set_playing(); } else { arc.set_paused(); }
-        pool.push(arc);
-        drop(pool);
+        if let Err(arc) = stream.voices.push(arc) {
+            // Poisoned aux pool — recover the (still sole-owned) Voice so the
+            // caller can fall the cue back to the main output.
+            let voice = Arc::try_unwrap(arc)
+                .unwrap_or_else(|_| unreachable!("push failure keeps the only ref"));
+            return Err((voice, anyhow!("aux voice pool poisoned")));
+        }
         if start {
             let _ = stream.cmd_prod.try_push(AudioCommand::Play { voice_id: id });
         }
@@ -655,10 +734,7 @@ impl AudioEngine {
         let id = voice.id;
         let arc = Arc::new(voice);
         arc.set_playing();
-        self.voices
-            .lock()
-            .map_err(|_| anyhow!("voices mutex poisoned"))?
-            .push(Arc::clone(&arc));
+        self.voices.push(Arc::clone(&arc)).map_err(|_| anyhow!("voices mutex poisoned"))?;
         self.send_command(AudioCommand::Play { voice_id: id })?;
         Ok(id)
     }
@@ -746,17 +822,14 @@ impl AudioEngine {
     /// Run `f` on the voice with `voice_id`, searching the main pool then
     /// every aux pool.  Returns `None` when the voice is not found.
     fn with_voice<T>(&self, voice_id: VoiceId, f: impl Fn(&Arc<Voice>) -> T) -> Option<T> {
-        if let Ok(pool) = self.voices.lock() {
-            if let Some(v) = pool.iter().find(|v| v.id == voice_id) {
-                return Some(f(v));
-            }
+        let find = |pool: &[Arc<Voice>]| pool.iter().find(|v| v.id == voice_id).map(&f);
+        if let Some(Some(t)) = self.voices.with(find) {
+            return Some(t);
         }
         let aux = self.aux_streams.lock().ok()?;
         for s in aux.iter() {
-            if let Ok(pool) = s.voices.lock() {
-                if let Some(v) = pool.iter().find(|v| v.id == voice_id) {
-                    return Some(f(v));
-                }
+            if let Some(Some(t)) = s.voices.with(find) {
+                return Some(t);
             }
         }
         None
@@ -811,33 +884,33 @@ impl AudioEngine {
     /// Locks `voices` then `input_feeds`, matching the RT callback's order so the
     /// two never deadlock.
     pub fn gc_voices(&self) {
-        let Ok(mut voices) = self.voices.lock() else { return };
-        voices.retain(|v| !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle));
+        self.voices
+            .retain(|v| !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle));
 
         // Feed ids still referenced by a surviving live voice.
-        let in_use: std::collections::HashSet<Uuid> = voices
-            .iter()
-            .filter_map(|v| v.live.as_ref().map(|l| l.feed_id))
-            .collect();
+        let in_use: std::collections::HashSet<Uuid> = self
+            .voices
+            .with(|pool| {
+                pool.iter().filter_map(|v| v.live.as_ref().map(|l| l.feed_id)).collect()
+            })
+            .unwrap_or_default();
 
         // Drop unreferenced feeds — dropping an InputFeed drops its cpal input
         // stream, releasing the device.
         if let Ok(mut feeds) = self.input_feeds.lock() {
             feeds.retain(|f| in_use.contains(&f.id));
         }
-        drop(voices);
 
         // Aux pools: same sweep.  A healthy aux stream stays open even when
         // idle (zero device-open latency on the next GO); a failed one is
         // dropped once empty so the next GO retries a fresh open.
         if let Ok(mut aux) = self.aux_streams.lock() {
             for s in aux.iter() {
-                if let Ok(mut pool) = s.voices.lock() {
-                    pool.retain(|v| !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle));
-                }
+                s.voices
+                    .retain(|v| !matches!(v.voice_state(), VoiceState::Stopped | VoiceState::Idle));
             }
             aux.retain(|s| {
-                let empty = s.voices.lock().map(|p| p.is_empty()).unwrap_or(true);
+                let empty = s.voices.with(|p| p.is_empty()).unwrap_or(true);
                 let failed = s.failed.load(std::sync::atomic::Ordering::Relaxed);
                 !(failed && empty)
             });
@@ -871,7 +944,7 @@ impl AudioEngine {
         let new_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sr = open_stream_inner(
             config,
-            Arc::clone(&self.voices),
+            self.voices.rt_handle(),
             Arc::clone(&self.input_feeds),
             Arc::clone(&self.master_gain),
             Arc::clone(&self.output_period),
@@ -924,7 +997,7 @@ struct StreamResult {
 /// after a restart).
 fn open_stream_inner(
     config: &MachineAudioConfig,
-    cb_voices: Arc<Mutex<Vec<Arc<Voice>>>>,
+    cb_voices: Arc<ArcSwap<Vec<Arc<Voice>>>>,
     cb_feeds: Arc<Mutex<Vec<InputFeed>>>,
     cb_mg: Arc<std::sync::atomic::AtomicU32>,
     cb_period: Arc<std::sync::atomic::AtomicU32>,
@@ -1153,13 +1226,13 @@ fn open_aux_stream(
         asio_out_pair: 0,
     };
 
-    let voices: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(Vec::new()));
+    let voices = VoicePool::new();
     let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
     let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let sr = open_stream_inner(
         &config,
-        Arc::clone(&voices),
+        voices.rt_handle(),
         feeds,
         master_gain,
         Arc::new(std::sync::atomic::AtomicU32::new(256)),
@@ -1187,7 +1260,7 @@ fn fill_buffer(
     output: &mut [f32],
     channels: usize,
     output_sample_rate: u32,
-    voices: &Arc<Mutex<Vec<Arc<Voice>>>>,
+    voices: &ArcSwap<Vec<Arc<Voice>>>,
     input_feeds: &Arc<Mutex<Vec<InputFeed>>>,
     cmd_cons: &mut ringbuf::HeapCons<AudioCommand>,
     status_prod: &mut ringbuf::HeapProd<AudioStatus>,
@@ -1196,12 +1269,11 @@ fn fill_buffer(
 ) {
     output.fill(0.0);
 
-    // FIXME: try_lock is acceptable for the prototype.  Replace with a
-    // seqlock or atomic-swap voice list for true lock-free RT in production.
-    let voices_guard = match voices.try_lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
+    // Wait-free snapshot of the voice list — no lock, so the callback can never
+    // be starved into emitting a block of silence (the old `try_lock` failure
+    // mode).  The snapshot's producer (VoicePool) retains recent generations so
+    // dropping this guard never runs a destructor on the RT thread.
+    let voices_guard = voices.load();
 
     // Process incoming commands first.
     while let Some(cmd) = cmd_cons.try_pop() {
@@ -1610,10 +1682,15 @@ mod tests {
         Arc::new(v)
     }
 
+    /// An RT voice-list handle (the ArcSwap the callback reads) holding `voices`.
+    fn rt_pool(voices: Vec<Arc<Voice>>) -> Arc<ArcSwap<Vec<Arc<Voice>>>> {
+        Arc::new(ArcSwap::from_pointee(voices))
+    }
+
     /// Call fill_buffer for `output_frames` output frames and return the
     /// resulting frame_pos stored in the voice.
     fn run_fill(voice: Arc<Voice>, output_frames: usize, output_sr: u32) -> u64 {
-        let pool: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(vec![voice]));
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
         let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let (_, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
         let (mut status_prod, _) = HeapRb::<AudioStatus>::new(16).split();
@@ -1621,8 +1698,7 @@ mod tests {
         let period  = Arc::new(std::sync::atomic::AtomicU32::new(output_frames as u32));
         let mut output = vec![0.0f32; output_frames * 2];
         fill_buffer(&mut output, 2, output_sr, &pool, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
-        let pos = pool.lock().unwrap().first().map(|v| v.frame_pos.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
-        pos
+        voice.frame_pos.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     // The SR ratio (e.g. 44100/48000) is not exactly representable in f64, so
@@ -1660,7 +1736,7 @@ mod tests {
     fn stop_all_command_silences_every_voice() {
         let v1 = make_voice(1000, 2, 48000, 1.0);
         let v2 = make_voice(1000, 2, 48000, 1.0);
-        let pool: Arc<Mutex<Vec<Arc<Voice>>>> = Arc::new(Mutex::new(vec![v1, v2]));
+        let pool = rt_pool(vec![Arc::clone(&v1), Arc::clone(&v2)]);
         let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
         let (mut cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
         let (mut status_prod, _) = HeapRb::<AudioStatus>::new(16).split();
@@ -1671,7 +1747,7 @@ mod tests {
         let mut output = vec![0.0f32; 64 * 2];
         fill_buffer(&mut output, 2, 48000, &pool, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
 
-        for v in pool.lock().unwrap().iter() {
+        for v in [&v1, &v2] {
             assert_eq!(v.voice_state(), VoiceState::Stopped);
         }
     }
@@ -1777,5 +1853,157 @@ mod tests {
         let target_lag = 3.0 * 256.0_f64;
         let expected = (feeds[0].write_frame as f64 - target_lag) + 256.0;
         assert!((read - expected).abs() < 5.0, "read {read} vs expected {expected}");
+    }
+
+    // ── End-of-file / loop / simultaneous / seek (RT completion logic) ──────
+
+    /// A voice whose PCM is a steady 0.5 tone (non-silent) for contrast tests.
+    fn make_tone_voice(n_frames: usize, sr: u32) -> Arc<Voice> {
+        let samples = Arc::new(vec![0.5f32; n_frames * 2]);
+        let v = Voice::new(samples, 2, sr, 1.0, 0.0);
+        v.set_playing();
+        Arc::new(v)
+    }
+
+    /// Run one 256-frame callback over `pool`; return the (drained) statuses.
+    fn run_block(pool: &Arc<ArcSwap<Vec<Arc<Voice>>>>, cmd: Option<AudioCommand>) -> Vec<AudioStatus> {
+        use ringbuf::traits::Consumer;
+        let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
+        let (mut cmd_prod, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
+        if let Some(c) = cmd {
+            cmd_prod.try_push(c).unwrap();
+        }
+        let (mut status_prod, mut status_cons) = HeapRb::<AudioStatus>::new(64).split();
+        let master = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let period = Arc::new(std::sync::atomic::AtomicU32::new(256));
+        let mut out = vec![0.0f32; 256 * 2];
+        fill_buffer(&mut out, 2, 48_000, pool, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
+        let mut statuses = Vec::new();
+        while let Some(s) = status_cons.try_pop() {
+            statuses.push(s);
+        }
+        statuses
+    }
+
+    #[test]
+    fn eof_stops_voice_and_emits_completed() {
+        // 100 source frames, 256-frame block at matched SR → runs past the end.
+        let voice = make_voice(100, 2, 48_000, 1.0);
+        let id = voice.id;
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        let statuses = run_block(&pool, None);
+
+        assert_eq!(voice.voice_state(), VoiceState::Stopped, "voice must stop at EOF");
+        assert!(
+            statuses.iter().any(|s| matches!(s, AudioStatus::Completed { voice_id } if *voice_id == id)),
+            "EOF must emit exactly one Completed for the voice"
+        );
+    }
+
+    #[test]
+    fn finite_loop_wraps_and_decrements_without_stopping() {
+        // 200 frames, loop once (loops_remaining=1); 256-frame block wraps once
+        // (dec to 0) then keeps playing from the top — must NOT stop yet.
+        let voice = make_voice(200, 2, 48_000, 1.0);
+        voice.inner.loops_remaining.store(1, std::sync::atomic::Ordering::Relaxed);
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        let statuses = run_block(&pool, None);
+
+        assert_eq!(
+            voice.inner.loops_remaining.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "one wrap must decrement the finite loop counter"
+        );
+        assert_eq!(voice.voice_state(), VoiceState::Playing, "still playing mid-loop");
+        assert!(
+            !statuses.iter().any(|s| matches!(s, AudioStatus::Completed { .. })),
+            "a wrap must not emit Completed"
+        );
+        let pos = voice.frame_pos.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(pos < 100, "after wrapping 200-frame file within 256 frames, pos≈56, got {pos}");
+    }
+
+    #[test]
+    fn infinite_loop_never_completes() {
+        // loops_remaining = u32::MAX; play 4000 frames (20× past a 200-frame file).
+        let voice = make_voice(200, 2, 48_000, 1.0);
+        voice.inner.loops_remaining.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        for _ in 0..16 {
+            let statuses = run_block(&pool, None);
+            assert!(
+                !statuses.iter().any(|s| matches!(s, AudioStatus::Completed { .. })),
+                "infinite loop must never emit Completed"
+            );
+        }
+        assert_eq!(
+            voice.inner.loops_remaining.load(std::sync::atomic::Ordering::Relaxed),
+            u32::MAX,
+            "infinite loop counter must not decrement"
+        );
+        assert_eq!(voice.voice_state(), VoiceState::Playing);
+    }
+
+    #[test]
+    fn simultaneous_voices_all_advance() {
+        let v1 = make_voice(100_000, 2, 48_000, 1.0);
+        let v2 = make_voice(100_000, 2, 48_000, 1.0);
+        let pool = rt_pool(vec![Arc::clone(&v1), Arc::clone(&v2)]);
+        run_block(&pool, None);
+        for v in [&v1, &v2] {
+            let pos = v.frame_pos.load(std::sync::atomic::Ordering::Relaxed);
+            assert!((pos as i64 - 256).abs() <= 1, "each simultaneous voice advances ~256, got {pos}");
+        }
+    }
+
+    #[test]
+    fn seek_command_repositions_before_mixing() {
+        // Seek is applied before the voice loop, so pos = seek_target + block.
+        let voice = make_voice(100_000, 2, 48_000, 1.0);
+        let id = voice.id;
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        run_block(&pool, Some(AudioCommand::Seek { voice_id: id, frame_pos: 5_000 }));
+        let pos = voice.frame_pos.load(std::sync::atomic::Ordering::Relaxed);
+        assert!((pos as i64 - 5_256).abs() <= 1, "seek(5000)+256 frames → ~5256, got {pos}");
+    }
+
+    #[test]
+    fn voice_pool_publishes_snapshots_and_bounds_retention() {
+        // FINDING A1 (fixed): the RT callback reads a wait-free ArcSwap snapshot
+        // instead of try_lock'ing the pool.  A publish is immediately visible to
+        // the RT handle, and the keep-alive ring stays bounded so retired
+        // generations are dropped on the non-RT side (never the RT thread).
+        let pool = VoicePool::new();
+        assert!(pool.rt.load().is_empty());
+
+        assert!(pool.push(make_tone_voice(1000, 48_000)).is_ok(), "push");
+        assert_eq!(pool.rt.load().len(), 1, "a published voice is visible to the RT handle");
+
+        // Several publishes; the retained ring never exceeds its cap.
+        for _ in 0..10 {
+            assert!(pool.push(make_tone_voice(1000, 48_000)).is_ok(), "push");
+        }
+        assert!(pool.retained.lock().unwrap().len() <= VOICE_POOL_RETAIN);
+
+        pool.retain(|_| false);
+        assert!(pool.rt.load().is_empty(), "retain(none) republishes an empty snapshot");
+    }
+
+    #[test]
+    fn callback_mixes_the_published_snapshot_with_no_lock() {
+        // Replaces the old A1 proof: there is no longer a lock the callback can be
+        // starved on, so a freshly published tone always reaches the output —
+        // the "block of silence on contention" failure mode is gone.
+        let pool = VoicePool::new();
+        assert!(pool.push(make_tone_voice(100_000, 48_000)).is_ok(), "push");
+
+        let feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
+        let (_p, mut cmd_cons) = HeapRb::<AudioCommand>::new(16).split();
+        let (mut status_prod, _sc) = HeapRb::<AudioStatus>::new(16).split();
+        let master = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let period = Arc::new(std::sync::atomic::AtomicU32::new(256));
+        let mut out = vec![0.0f32; 256 * 2];
+        fill_buffer(&mut out, 2, 48_000, &pool.rt, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
+        assert!(out.iter().any(|s| s.abs() > 0.1), "the published tone must reach the output");
     }
 }
