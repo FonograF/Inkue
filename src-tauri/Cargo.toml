@@ -142,3 +142,16 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
+# `pnpm tauri dev` is otherwise fully unoptimized, which makes CPU-heavy work —
+# audio decoding (symphonia) and the 30fps event loop over a large show — slow
+# enough to feel laggy. Optimize all dependencies at full speed (they rarely
+# change, so it's a one-time compile cost that's then cached) and give our own
+# crate a light opt-level that keeps incremental rebuilds fast while speeding up
+# the hot loops. This makes dev builds usable for real shows without needing a
+# full release build to iterate.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
