@@ -56,14 +56,21 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             rust-targets: ''
+            # ASIO is Windows-only (cpal/asio). The Steinberg SDK is vendored in
+            # the repo (vendor/asiosdk) and CPAL_ASIO_DIR is set in
+            # src-tauri/.cargo/config.toml, so enabling the feature here is all
+            # that's needed for public builds to expose the ASIO backend.
+            tauri-args: '--features asio-support'
 
           - platform: macos-latest
             target: universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri-args: ''
 
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             rust-targets: ''
+            tauri-args: ''
 
     runs-on: ${{ matrix.platform }}
 
@@ -140,6 +147,20 @@ jobs:
             libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev \
             libasound2-dev libmpv-dev
 
+      # ── ASIO: libclang for bindgen (Windows) ─────────────────────────────────
+      # asio-sys generates bindings from the vendored SDK headers via bindgen,
+      # which needs libclang. LLVM is preinstalled on the windows runner image;
+      # point bindgen at it (and install as a fallback if the image ever drops
+      # it). The SDK download step is unnecessary — it's committed in the repo.
+      - name: Set up libclang for ASIO bindgen (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Program Files\LLVM\bin\libclang.dll')) {
+            choco install llvm --no-progress -y
+          }
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
       # ── Build + publish ───────────────────────────────────────────────────────
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
@@ -160,4 +181,4 @@ jobs:
           releaseName: Inkue ${{ github.ref_name }}
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ matrix.tauri-args }}
