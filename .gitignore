@@ -1,5 +1,7 @@
 # Rust / Cargo
 target/
+# Isolated target dir used to validate while `pnpm tauri dev` holds target/.
+src-tauri/target-check/
 **/*.rs.bk
 # Cargo.lock is committed (this is an application, not a library) so CI and
 # release builds use the exact dependency versions developed/tested against.
@@ -19,6 +21,7 @@ src-tauri/WixTools/
 
 # Loose user data at repo root (Open Stage Control sessions, runtime config) —
 # personal test artifacts, never source.
+/fixtures/
 /Inkue.config
 /Wincue.config
 /Export control.json
@@ -39,12 +42,15 @@ Thumbs.db
 # Claude Code local config
 .claude/
 
-# Markdown docs are kept local-only — the public repo ships just the README.
-# (ARCHITECTURE, PORTAGE, CHANGELOG, INPUT, LIGHT, TIMECODE, RELEASING, PROGRESS,
-#  WHATSNEXT, RENAME, CLAUDE… all stay on your machine. vendor/asiosdk/README.md
-#  is already tracked and stays.)
+# Markdown docs are local-only by default — the public repo ships the README
+# plus the two living project documents (CLAUDE.md = contributor/agent guide,
+# PROGRESS.md = ground-truth project state). Everything else (ARCHITECTURE,
+# PORTAGE, CHANGELOG, RELEASING, WHATSNEXT, RENAME, release notes…) stays on
+# the maintainer's machine. vendor/asiosdk/README.md is already tracked.
 *.md
 !README.md
+!CLAUDE.md
+!PROGRESS.md
 
 # Figma redesign reference mock-up + archived docs (local only, not the app build).
 /App.tsx
