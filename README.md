@@ -12,6 +12,7 @@ Runs on **Windows, macOS and Linux**.
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#download)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB.svg)](https://tauri.app/)
 [![CI](https://github.com/FonograF/Inkue/actions/workflows/ci.yml/badge.svg)](https://github.com/FonograF/Inkue/actions/workflows/ci.yml)
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/3NVGVKfJ7U)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/FonograF)
 
 <br>
@@ -35,6 +36,16 @@ Grab the latest installer for your platform from the **[Releases page](https://g
 > Inkue is young software. If something breaks during a show-critical moment,
 > please [open an issue](https://github.com/FonograF/Inkue/issues) with the log
 > (File → Logs… → Open folder).
+
+---
+
+## Community
+
+Questions, help, showcases and release announcements live on Discord:
+
+**[👉 Join the Inkue Discord](https://discord.gg/3NVGVKfJ7U)**
+
+For confirmed bugs and feature requests, use the [issue tracker](https://github.com/FonograF/Inkue/issues).
 
 ---
 
