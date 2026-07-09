@@ -77,6 +77,8 @@ export const moveCue = (cueId: CueId, newPosition: number) =>
   invoke<void>("move_cue", { cueId, newPosition });
 export const moveCues = (ids: CueId[], beforeId: CueId | null) =>
   invoke<void>("move_cues", { ids, beforeId });
+export const renumberCues = () =>
+  invoke<void>("renumber_cues");
 export const groupCues = (ids: CueId[]) =>
   invoke<CueId>("group_cues", { ids });
 export const ungroup = (groupId: CueId) =>

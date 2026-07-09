@@ -280,6 +280,16 @@ impl Workspace {
         self.metadata.modified_at = Utc::now();
     }
 
+    /// Push the `auto_renumber_on_reorder` preference onto every cue list's
+    /// runtime `auto_renumber` flag. Call after loading a workspace or changing
+    /// the preference; structural mutations then read the already-synced flag.
+    pub fn sync_auto_renumber(&mut self) {
+        let auto = self.preferences.general.auto_renumber_on_reorder;
+        for cl in &mut self.cue_lists {
+            cl.auto_renumber = auto;
+        }
+    }
+
     /// The active cue list, identified by `active_cue_list_id`.
     pub fn active_cue_list(&self) -> Option<&CueList> {
         self.cue_lists.iter().find(|cl| cl.id == self.active_cue_list_id)

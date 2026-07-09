@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
+import { ActionMenu } from "./components/CueList/ActionMenu";
 import { CartView } from "./components/CueList/CartView";
 import { ShowModeView } from "./components/ShowMode/ShowModeView";
 import { ActiveCuesView } from "./components/ActiveCues/ActiveCuesView";
@@ -1328,6 +1329,7 @@ export default function App() {
             onAdd={handleAddText}
             onDragStart={(e) => dispatchCueDrag("text", e)}
           />
+          <ActionMenu buttonStyle={toolbarBtn} onDone={handleRefresh} />
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector
           </button>

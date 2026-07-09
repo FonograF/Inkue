@@ -167,6 +167,14 @@ pub struct GeneralPreferences {
     /// Height of each row in the cue list table.
     #[serde(default)]
     pub cue_row_height: CueRowHeight,
+
+    /// When true, reordering/adding/removing cues rewrites every cue number to
+    /// match its position (1, 2, 3…). When false (default, QLab-style), cue
+    /// numbers are stable: reordering never touches them, so manually-set or
+    /// imported numbers — and blank memo numbers — are preserved. Resequencing
+    /// is then an explicit action (Action → Renumber All Cues).
+    #[serde(default)]
+    pub auto_renumber_on_reorder: bool,
 }
 
 impl GeneralPreferences {
@@ -181,6 +189,7 @@ impl Default for GeneralPreferences {
             confirm_before_delete: false,
             auto_scroll_to_playhead: Self::default_auto_scroll_to_playhead(),
             cue_row_height: CueRowHeight::default(),
+            auto_renumber_on_reorder: false,
         }
     }
 }

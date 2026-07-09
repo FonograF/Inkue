@@ -166,6 +166,8 @@ pub fn update_general_preferences(
 ) -> Result<(), String> {
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.preferences.general = prefs;
+    // Keep each cue list's runtime auto-renumber flag in sync with the pref.
+    ws.sync_auto_renumber();
     ws.mark_modified();
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())

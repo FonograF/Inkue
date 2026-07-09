@@ -113,6 +113,11 @@ pub struct CueList {
     /// A trigger at frame `tf` fires when `last < tf <= current`. `0` means
     /// nothing has been covered yet, so every trigger is still armed.
     pub tc_last_triggered_frame: u64,
+    /// Runtime mirror of `GeneralPreferences::auto_renumber_on_reorder`
+    /// (not persisted). When `false` (default), structural mutations leave cue
+    /// numbers untouched; when `true`, they resequence via [`renumber_all`].
+    /// Kept in sync by the workspace whenever preferences load or change.
+    pub auto_renumber: bool,
 }
 
 impl CueList {
@@ -127,6 +132,7 @@ impl CueList {
             tc_config: CueListTcConfig::default(),
             tc_triggers: HashMap::new(),
             tc_last_triggered_frame: 0,
+            auto_renumber: false,
         }
     }
 
@@ -243,15 +249,34 @@ impl CueList {
     // Mutation
     // -----------------------------------------------------------------------
 
-    /// Assign sequential cue numbers to every cue in the list, recursively.
+    /// Resequence **every** cue number to its position, recursively:
+    /// top-level cues get "1", "2", "3"…; children of group "3" get "3.1",
+    /// "3.2"…; deeper nesting continues ("3.2.1"…).
     ///
-    /// Top-level cues get "1", "2", "3", …
-    /// Children of a group numbered "3" get "3.1", "3.2", "3.3", …
-    /// Deeply nested groups continue the pattern: "3.2.1", "3.2.2", …
-    ///
-    /// Called automatically after any structural mutation (add, remove, move).
+    /// Unconditional — the explicit "Renumber All Cues" action calls this.
+    /// Structural mutations use [`maybe_renumber`](Self::maybe_renumber) instead.
     pub fn renumber_all(&mut self) {
         renumber_recursive(&mut self.cues, "");
+    }
+
+    /// Renumber after a structural mutation **only if** auto-renumber is on.
+    /// With it off (the QLab-style default) numbers are left untouched.
+    fn maybe_renumber(&mut self) {
+        if self.auto_renumber {
+            renumber_recursive(&mut self.cues, "");
+        }
+    }
+
+    /// Next free top-level integer cue number as a string (max existing +1).
+    /// Used to number a freshly-created cue without disturbing the others.
+    pub fn next_available_number(&self) -> String {
+        let max = self
+            .cues
+            .iter()
+            .filter_map(|c| c.number().and_then(|n| n.parse::<u64>().ok()))
+            .max()
+            .unwrap_or(0);
+        (max + 1).to_string()
     }
 
     /// Append a cue to the end of the list.
@@ -261,7 +286,7 @@ impl CueList {
             self.playhead_cue_id = Some(cue.id());
         }
         self.cues.push(cue);
-        self.renumber_all();
+        self.maybe_renumber();
     }
 
     /// Insert a cue at the given index (0-based).
@@ -272,7 +297,7 @@ impl CueList {
         if self.playhead_cue_id.is_none() {
             self.playhead_cue_id = Some(id);
         }
-        self.renumber_all();
+        self.maybe_renumber();
     }
 
     /// Remove the cue with the given ID.  If the removed cue was at the
@@ -293,7 +318,7 @@ impl CueList {
                 .map(|c| c.id());
         }
 
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(removed)
     }
 
@@ -303,7 +328,7 @@ impl CueList {
         let cue = self.cues.remove(from);
         let to = to_index.min(self.cues.len());
         self.cues.insert(to, cue);
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -340,7 +365,7 @@ impl CueList {
         let all = std::mem::take(&mut self.cues);
         self.cues = all.into_iter().filter(|c| !ids_set.contains(&c.id())).collect();
         self.playhead_cue_id = new_playhead;
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -354,7 +379,7 @@ impl CueList {
         }
         let removed = extract_cue_anywhere(&mut self.cues, id)
             .ok_or_else(|| anyhow!("Cue {:?} not found", id))?;
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(removed)
     }
 
@@ -378,7 +403,7 @@ impl CueList {
             extract_cue_anywhere(&mut self.cues, id);
         }
         if top_level.is_empty() {
-            self.renumber_all();
+            self.maybe_renumber();
         } else {
             self.remove_many(&top_level)?;
         }
@@ -411,7 +436,7 @@ impl CueList {
         }
         insert(&mut self.cues, anchor_id, cue)
             .map_err(|_| anyhow!("Anchor cue {:?} not found", anchor_id))?;
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -453,7 +478,7 @@ impl CueList {
         result.extend(moving);
         result.extend(staying);
         self.cues = result;
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -499,7 +524,7 @@ impl CueList {
 
         staying.insert(insert_at.min(staying.len()), Box::new(group));
         self.cues = staying;
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(group_id)
     }
 
@@ -524,7 +549,7 @@ impl CueList {
             self.cues.insert(idx + i, child);
         }
 
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -546,7 +571,7 @@ impl CueList {
 
         match add_child_to_group_anywhere(&mut self.cues, group_id, cue, position)? {
             None => {
-                self.renumber_all();
+                self.maybe_renumber();
                 Ok(())
             }
             Some(_) => Err(anyhow!("Group {:?} not found", group_id)),
@@ -562,7 +587,7 @@ impl CueList {
 
         let child = self.cues[group_idx].remove_child(cue_id)?;
         self.cues.insert(group_idx + 1, child);
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -585,7 +610,7 @@ impl CueList {
             .unwrap_or(self.cues.len());
 
         self.cues.insert(insert_at, cue);
-        self.renumber_all();
+        self.maybe_renumber();
         Ok(())
     }
 
@@ -754,6 +779,7 @@ impl CueList {
             tc_config,
             tc_triggers,
             tc_last_triggered_frame: 0,
+            auto_renumber: false,
         })
     }
 }
@@ -765,6 +791,83 @@ mod tests {
 
     fn memo() -> Box<dyn Cue> {
         Box::new(MemoCue::new())
+    }
+
+    fn numbered_memo(n: Option<&str>) -> Box<dyn Cue> {
+        let mut m = MemoCue::new();
+        m.set_number(n.map(|s| s.to_string()));
+        Box::new(m)
+    }
+
+    fn numbers(list: &CueList) -> Vec<Option<String>> {
+        list.cues.iter().map(|c| c.number().map(|s| s.to_string())).collect()
+    }
+
+    #[test]
+    fn reorder_preserves_numbers_when_auto_off() {
+        // Default (auto off, QLab-style): moving cues must NOT touch any number —
+        // a blank memo stays blank, a custom "Intro" stays "Intro".
+        let mut list = CueList::new("Test");
+        let intro = numbered_memo(Some("Intro"));
+        let blank = numbered_memo(None);
+        let one = numbered_memo(Some("1"));
+        let (intro_id, blank_id) = (intro.id(), blank.id());
+        list.push(intro);
+        list.push(blank);
+        list.push(one);
+
+        // Move the blank memo to the front.
+        list.move_before(&[blank_id], Some(intro_id)).unwrap();
+
+        assert_eq!(
+            numbers(&list),
+            vec![None, Some("Intro".into()), Some("1".into())],
+            "reorder with auto-renumber off must leave every number untouched",
+        );
+    }
+
+    #[test]
+    fn reorder_renumbers_when_auto_on() {
+        let mut list = CueList::new("Test");
+        list.auto_renumber = true;
+        list.push(numbered_memo(Some("Intro")));
+        list.push(numbered_memo(None));
+        let last = numbered_memo(Some("x"));
+        let last_id = last.id();
+        list.push(last);
+
+        // Move the last cue to the front; auto-renumber rewrites all to position.
+        let first_id = list.cues[0].id();
+        list.move_before(&[last_id], Some(first_id)).unwrap();
+
+        assert_eq!(
+            numbers(&list),
+            vec![Some("1".into()), Some("2".into()), Some("3".into())],
+            "with auto-renumber on, reorder resequences every number by position",
+        );
+    }
+
+    #[test]
+    fn renumber_all_is_explicit_and_unconditional() {
+        // Even with auto off, the explicit action resequences everything.
+        let mut list = CueList::new("Test");
+        list.push(numbered_memo(Some("Intro")));
+        list.push(numbered_memo(None));
+        list.push(numbered_memo(Some("99")));
+
+        list.renumber_all();
+
+        assert_eq!(numbers(&list), vec![Some("1".into()), Some("2".into()), Some("3".into())]);
+    }
+
+    #[test]
+    fn next_available_number_is_max_plus_one() {
+        let mut list = CueList::new("Test");
+        assert_eq!(list.next_available_number(), "1"); // empty
+        list.push(numbered_memo(Some("1")));
+        list.push(numbered_memo(Some("4")));
+        list.push(numbered_memo(None)); // non-numeric ignored
+        assert_eq!(list.next_available_number(), "5");
     }
 
     #[test]

@@ -732,6 +732,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           // Suppress the spurious onClick that fires after mouseup.
           justDroppedRef.current = true;
           setTimeout(() => { justDroppedRef.current = false; }, 0);
+          maybeShowRenumberHint();
         }
         cueDragRef.current = null;
         document.body.style.cursor = "";
@@ -1158,6 +1159,19 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     [setSelectedCueIds, setSelectedCueId, setPlayheadCueId],
   );
 
+  // One-time, non-blocking hint the first time the operator reorders cues while
+  // auto-renumber is off — so the new stable-numbers behaviour is discoverable
+  // without a modal interrupting the drag.
+  const [showRenumberHint, setShowRenumberHint] = useState(false);
+  const maybeShowRenumberHint = () => {
+    // Read the pref fresh from the store — this runs from a document event
+    // handler whose closure could otherwise hold a stale value.
+    if (useWorkspaceStore.getState().generalPrefs.auto_renumber_on_reorder) return;
+    if (localStorage.getItem("inkue.renumberHintSeen")) return;
+    localStorage.setItem("inkue.renumberHintSeen", "1");
+    setShowRenumberHint(true);
+  };
+
   return (
     <div
       style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, outline: "none", position: "relative" }}
@@ -1371,6 +1385,33 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           </div>
         )}
       </div>
+
+      {/* ── First-reorder hint (numbers stay fixed) ──────────────────────── */}
+      {showRenumberHint && (
+        <div
+          style={{
+            position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)",
+            zIndex: 2000, maxWidth: 520,
+            display: "flex", alignItems: "center", gap: 12,
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+            borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", padding: "10px 14px",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--wc-text)", lineHeight: 1.5 }}>
+            Cue numbers stay fixed when you reorder. Use <strong>Action → Renumber All Cues</strong> to
+            resequence, or enable auto-renumber in Preferences → General.
+          </span>
+          <button
+            onClick={() => setShowRenumberHint(false)}
+            style={{
+              flexShrink: 0, background: "var(--wc-accent)", border: "none", borderRadius: 4,
+              color: "var(--wc-accent-fg)", fontSize: 12, cursor: "pointer", padding: "4px 12px",
+            }}
+          >
+            Got it
+          </button>
+        </div>
+      )}
 
       {/* ── Row drag ghost ───────────────────────────────────────────────── */}
       {draggingCueId !== null && ghostState !== null && (() => {

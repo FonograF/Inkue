@@ -398,6 +398,17 @@ function GeneralContent({ prefs, onChange }: {
             style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
           />
         </Row>
+        <Row label="Auto-Renumber on Reorder">
+          <input
+            type="checkbox"
+            checked={prefs.auto_renumber_on_reorder}
+            onChange={(e) => onChange({ ...prefs, auto_renumber_on_reorder: e.target.checked })}
+            style={{ accentColor: "var(--wc-accent)", width: 14, height: 14 }}
+          />
+          <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
+            Off (default): numbers stay fixed when you reorder — renumber from the Action menu.
+          </span>
+        </Row>
         <Row label="Row Height">
           <Select
             style={selectStyle}

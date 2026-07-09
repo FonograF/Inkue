@@ -29,7 +29,8 @@ pub fn add_cue_list(
     name: String,
 ) -> Result<String, String> {
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-    let new_list = CueList::new(&name);
+    let mut new_list = CueList::new(&name);
+    new_list.auto_renumber = ws.preferences.general.auto_renumber_on_reorder;
     let new_id = new_list.id;
     ws.cue_lists.push(new_list);
     ws.active_cue_list_id = new_id;

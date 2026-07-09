@@ -121,6 +121,8 @@ pub(crate) fn install_workspace(
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
         *ws = loaded;
+        // Mirror the (just-loaded) auto-renumber preference onto the cue lists.
+        ws.sync_auto_renumber();
         cue_list_cmds::emit_cue_lists_changed(app_handle, &ws);
     }
     state.output_engine.set_floating_timer_visible(show_floating);

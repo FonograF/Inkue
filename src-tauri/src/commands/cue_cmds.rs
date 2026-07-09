@@ -231,9 +231,16 @@ pub fn add_cue(
     let id = cue.id().to_string();
     drop(registry);
 
+    let mut cue = cue;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+
+    // With auto-renumber off, push/insert won't number the new cue — assign the
+    // next free number so it isn't blank (auto-renumber on: the resequence does it).
+    if !cue_list.auto_renumber {
+        cue.set_number(Some(cue_list.next_available_number()));
+    }
 
     if position < 0 || position as usize >= cue_list.cues.len() {
         cue_list.push(cue);
@@ -321,6 +328,23 @@ pub fn move_cues(
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     cue_list.move_before(&ids, before_id).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Explicitly resequence every cue number in the active list (1, 2, 3…; nested
+/// 3.1…). This is the on-demand "Renumber All Cues" action; it runs regardless
+/// of the auto-renumber preference and is undoable.
+#[tauri::command]
+pub fn renumber_cues(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list.renumber_all();
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }

@@ -592,6 +592,9 @@ export interface GeneralPreferences {
   confirm_before_delete: boolean;
   auto_scroll_to_playhead: boolean;
   cue_row_height: CueRowHeight;
+  /** When true, reordering cues rewrites all numbers to position; when false
+   * (default), numbers are stable and resequencing is an explicit action. */
+  auto_renumber_on_reorder: boolean;
 }
 
 export const DEFAULT_GENERAL_PREFS: GeneralPreferences = {
@@ -599,6 +602,7 @@ export const DEFAULT_GENERAL_PREFS: GeneralPreferences = {
   confirm_before_delete: false,
   auto_scroll_to_playhead: true,
   cue_row_height: "normal",
+  auto_renumber_on_reorder: false,
 };
 
 export type TimerPosition = "center" | "top_left" | "top_right" | "bottom_left" | "bottom_right";
