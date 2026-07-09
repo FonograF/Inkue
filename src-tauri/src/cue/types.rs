@@ -146,6 +146,15 @@ pub enum GroupMode {
     /// Auto-Continue chains after Post-Wait, Auto-Follow chains at action start,
     /// Do Not Continue stops the sequence.
     Sequential,
+    /// Like Sequential, but starting a child stops any other still-playing child
+    /// in the group (exclusive — never two children audible at once). With group
+    /// loop enabled it wraps from the last child back to the first instead of
+    /// ending. QLab's "Playlist" mode.
+    Playlist,
+    /// Each GO fires one randomly-chosen child. Every child plays once before any
+    /// child repeats (shuffle-bag; refilled + reshuffled when it empties). QLab's
+    /// "Start random" mode.
+    StartRandom,
 }
 
 /// Parameters passed from a Fade Cue to the transport so it can resolve

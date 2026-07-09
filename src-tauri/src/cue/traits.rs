@@ -263,6 +263,18 @@ pub trait Cue: Send {
         None
     }
 
+    /// Every audio voice this cue currently controls, **recursively**.
+    ///
+    /// For a leaf cue this is just its own [`playing_voice_id`](Self::playing_voice_id)
+    /// (the default). A [`GroupCue`](crate::cue::group_cue::GroupCue) overrides this
+    /// to flatten the voices of all its children (at any depth), so a single Group
+    /// can be a first-class target for volume/pan Fades and Stops — the transport
+    /// asks "what voices does this target own?" instead of assuming one voice on a
+    /// top-level cue.
+    fn all_voice_ids(&self) -> Vec<CueId> {
+        self.playing_voice_id().into_iter().collect()
+    }
+
     /// Monotonically increasing counter incremented on every `go()` call.
     /// Reserved for diagnostics / future use.  Default: 0.
     fn play_generation(&self) -> u64 {
@@ -365,6 +377,14 @@ pub trait Cue: Send {
         None
     }
 
+    /// Fade Cue only: drain the cue ids whose cues should be hard-stopped now
+    /// that a `stop_at_end` fade has finished.  The event loop calls this every
+    /// tick and stops the returned cues (the Fade cannot reach the cue list from
+    /// `tick`).  Default: nothing to stop.
+    fn take_fade_stop_targets(&mut self) -> Vec<CueId> {
+        Vec::new()
+    }
+
     /// Resolve stop/fade targets from cue-number strings to UUIDs.
     ///
     /// Called once per cue after the whole cue list is loaded, allowing cues
@@ -449,6 +469,15 @@ pub trait Cue: Send {
 
     /// Update the Group mode.  No-op for non-Group cues.
     fn set_group_mode(&mut self, _mode: GroupMode) {}
+
+    /// Whether this Playlist Group loops (wraps last child → first).  `None` for
+    /// non-Group cues and irrelevant for other modes.
+    fn playlist_loop(&self) -> Option<bool> {
+        None
+    }
+
+    /// Enable/disable Playlist looping.  No-op for non-Group cues.
+    fn set_playlist_loop(&mut self, _on: bool) {}
 
     /// Returns `true` if this cue wants to consume the next outer GO press
     /// without the transport advancing the Playhead.

@@ -159,6 +159,50 @@ fn collect_time_snapshots(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(Cue
     result
 }
 
+/// Collect the ids of `cue` and every descendant that is Running or Paused.
+/// Used when a Fade force-stops a target so the UI can be told which cues
+/// (including group children) are no longer active.
+fn collect_running_ids(cue: &dyn crate::cue::traits::Cue, out: &mut Vec<CueId>) {
+    if cue.state() == CueState::Running || cue.state() == CueState::Paused {
+        out.push(cue.id());
+    }
+    if let Some(children) = cue.child_cues() {
+        for ch in children {
+            collect_running_ids(ch.as_ref(), out);
+        }
+    }
+}
+
+/// Reset any RUNNING group child whose audio voice has completed.
+///
+/// The top-level completion detector (step 6) does not descend into group
+/// children, and audio cues never self-complete, so a group must reap its own
+/// children.  A group can only detect a child via wall-clock `duration()`, which
+/// is `None` while the child is still preloading (its buffer is played but
+/// `cached_duration` isn't set yet).  Such a child would linger in Running
+/// forever — stalling the group.  This closes the gap by resetting children
+/// whose voice the engine reported completed, at any nesting depth.
+fn reap_voice_completed_children(
+    cues: &mut [Box<dyn crate::cue::traits::Cue>],
+    completed: &[CueId],
+) {
+    for cue in cues.iter_mut() {
+        if let Some(children) = cue.child_cues_mut() {
+            for child in children.iter_mut() {
+                let voice_done = child.state() == CueState::Running
+                    && child
+                        .playing_voice_id()
+                        .map(|v| completed.contains(&v))
+                        .unwrap_or(false);
+                if voice_done {
+                    let _ = child.reset();
+                }
+            }
+            reap_voice_completed_children(children, completed);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn tick(
     handle: &tauri::AppHandle,
@@ -446,6 +490,31 @@ fn tick(
             }
         }
 
+        // 5a. A `stop_at_end` Fade that just finished asks (via take_fade_stop_targets)
+        //     for its target CUES to be stopped — stopping voices alone leaves the
+        //     targets (and group children) in the Running state.  hard_stop resets
+        //     their state and recurses into groups.  We record every id that was
+        //     running (target + descendants) so step 11 emits `cue-state-changed`
+        //     for them; otherwise the UI keeps showing them RUNNING until the next
+        //     GO forces a full refresh.
+        let mut fade_stopped_ids: Vec<CueId> = Vec::new();
+        let fade_stop_targets: Vec<CueId> = ws
+            .cue_list_by_id_mut(list_id)
+            .map(|cl| cl.cues.iter_mut().flat_map(|c| c.take_fade_stop_targets()).collect())
+            .unwrap_or_default();
+        if !fade_stop_targets.is_empty() {
+            if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+                for tid in fade_stop_targets {
+                    if let Some(target) = cl.get_mut_recursive(&tid) {
+                        if target.is_running() || target.is_paused() {
+                            collect_running_ids(target, &mut fade_stopped_ids);
+                            let _ = target.hard_stop(&tick_ctx);
+                        }
+                    }
+                }
+            }
+        }
+
         // 5b. Release the outer Playhead once a Sequential group has fired its
         //     last child (overlapping children may still be playing out).  This
         //     covers Auto-Continue/Follow reaching the last child without a GO;
@@ -468,6 +537,10 @@ fn tick(
         let mut advance_playhead_ids: Vec<CueId> = Vec::new();
 
         if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
+            // Reap nested children whose voice completed first, so a group whose
+            // last child just finished can be detected complete this same tick.
+            reap_voice_completed_children(&mut cl.cues, &completed_voice_ids);
+
             let current_playhead = cl.playhead_cue_id;
             for cue in cl.cues.iter_mut() {
                 if cue.state() != CueState::Running {
@@ -489,6 +562,17 @@ fn tick(
                     let _ = cue.reset();
                     newly_completed.push((id, cm, pw));
                 }
+            }
+        }
+
+        // Fade-stopped cues (target + descendants) are reported as completed so
+        // the UI clears them.  DoNotContinue so they never chain a follow-on cue.
+        if !fade_stopped_ids.is_empty() {
+            // Force a full cue-list refresh so nested state + green playhead
+            // highlights resync (they derive from the whole cue tree).
+            group_child_changed = true;
+            for id in fade_stopped_ids {
+                newly_completed.push((id, ContinueMode::DoNotContinue, Duration::ZERO));
             }
         }
 

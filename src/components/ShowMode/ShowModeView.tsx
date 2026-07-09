@@ -38,9 +38,11 @@ function computeArmedIds(cues: CueSummary[], playheadId: string | null): Set<str
       const atPlayhead = cue.id === playheadId;
       const running    = cue.state === "running";
       if (cue.cue_type === "group") {
-        if (cue.group_mode === "sequential") {
+        if (cue.group_mode === "sequential" || cue.group_mode === "playlist") {
+          // One armed child (the next GO target). Start Random has none.
           if ((atPlayhead || running) && cue.active_child_id) result.add(cue.active_child_id);
-        } else {
+        } else if (cue.group_mode === "simultaneous") {
+          // Every child fires together — arm them all.
           if (atPlayhead || running) for (const child of cue.children ?? []) result.add(child.id);
         }
         if (cue.children?.length) walk(cue.children);

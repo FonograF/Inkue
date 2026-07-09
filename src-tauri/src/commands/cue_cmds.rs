@@ -61,6 +61,9 @@ pub struct CueSummary {
     /// For Group cues: the playback mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_mode: Option<GroupMode>,
+    /// For Playlist Group cues: whether the playlist loops (wraps last → first).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist_loop: Option<bool>,
     /// For running Sequential Group cues: ID of the currently active child
     /// (running right now or next to fire on GO after a DoNotContinue pause).
     /// `None` for Simultaneous groups and non-Group cues.
@@ -172,6 +175,7 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>, patches: &P
             ch.iter().map(|c| summarise(c.as_ref(), workspace_dir, patches)).collect()
         }),
         group_mode: cue.group_mode(),
+        playlist_loop: cue.playlist_loop(),
         active_child_id: cue.active_child_id().map(|id| id.to_string()),
     }
 }
@@ -1086,6 +1090,25 @@ pub fn set_group_mode(
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     let cue = cue_list.get_mut(&id).ok_or("Group cue not found")?;
     cue.set_group_mode(group_mode);
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Enable/disable looping for a Playlist Group Cue (wrap last child → first).
+#[tauri::command]
+pub fn set_playlist_loop(
+    group_id: String,
+    loop_on: bool,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let id: Uuid = group_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    let cue = cue_list.get_mut(&id).ok_or("Group cue not found")?;
+    cue.set_playlist_loop(loop_on);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }

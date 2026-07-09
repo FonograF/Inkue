@@ -123,10 +123,11 @@ function computeInnerPlayheadIds(cues: CueSummary[], outerPlayheadId: string | n
       const isAtPlayhead = cue.id === outerPlayheadId;
       const isRunning = cue.state === "running";
 
-      if (cue.group_mode === "sequential") {
+      if (cue.group_mode === "sequential" || cue.group_mode === "playlist") {
         // active_child_id is the child a GO fires next, in every state. Show it
         // whenever the group is running or parked at the outer playhead, so a
         // child the user parked the Playhead on is highlighted — not just the first.
+        // Playlist behaves like Sequential here; Start Random has no armed child.
         if ((isRunning || isAtPlayhead) && cue.active_child_id) {
           result.add(cue.active_child_id);
         }

@@ -42,7 +42,7 @@ export type CueColor =
 
 export type FadeCurve = "linear" | "s_curve" | "exponential";
 
-export type GroupMode = "simultaneous" | "sequential";
+export type GroupMode = "simultaneous" | "sequential" | "playlist" | "start_random";
 
 export interface FadeSpec {
   duration_ms: number;
@@ -82,7 +82,9 @@ export interface CueSummary {
   children?: CueSummary[];
   /** For Group cues: playback mode. */
   group_mode?: GroupMode;
-  /** For running Sequential Group cues: ID of the currently active child. */
+  /** For Playlist Group cues: whether the playlist loops (wraps last → first). */
+  playlist_loop?: boolean;
+  /** For running Sequential/Playlist Group cues: ID of the currently active child. */
   active_child_id?: string;
 }
 

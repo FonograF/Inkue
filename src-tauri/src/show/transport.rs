@@ -125,28 +125,32 @@ impl Transport {
             let mut has_visual = false;
 
             for &target_id in &spec.target_cue_ids {
-                if let Some(target) = cue_list.cues.iter().find(|c| c.id() == target_id) {
-                    match target.cue_type() {
-                        CueType::Audio => {
-                            if let Some(vid) = target.playing_voice_id() {
-                                let gain = self.context.audio_engine.get_voice_gain(vid);
-                                let pan = self.context.audio_engine.get_voice_pan(vid);
-                                voice_infos.push((vid, gain, pan));
-                            }
+                // Recursive lookup so a Fade can target a cue nested in a group
+                // (not just a top-level one).
+                let Some(target) = cue_list.get_recursive(&target_id) else { continue };
+                match target.cue_type() {
+                    // Visual cues drive the output-window overlay; a Video also
+                    // fades its paired audio voice (managed by the output engine).
+                    CueType::Video => {
+                        if let Some(aid) = self.context.output_engine.get_current_audio_voice() {
+                            let gain = self.context.audio_engine.get_voice_gain(aid);
+                            let pan = self.context.audio_engine.get_voice_pan(aid);
+                            voice_infos.push((aid, gain, pan));
                         }
-                        CueType::Video => {
-                            // Fade the video's paired audio voice.
-                            if let Some(aid) = self.context.output_engine.get_current_audio_voice() {
-                                let gain = self.context.audio_engine.get_voice_gain(aid);
-                                let pan = self.context.audio_engine.get_voice_pan(aid);
-                                voice_infos.push((aid, gain, pan));
-                            }
-                            has_visual = true;
+                        has_visual = true;
+                    }
+                    CueType::Image => {
+                        has_visual = true;
+                    }
+                    // Audio, Group, Mic, … — fade every audio voice the target
+                    // owns.  For a Group this is all of its children's voices,
+                    // recursively; for a leaf Audio cue it is its single voice.
+                    _ => {
+                        for vid in target.all_voice_ids() {
+                            let gain = self.context.audio_engine.get_voice_gain(vid);
+                            let pan = self.context.audio_engine.get_voice_pan(vid);
+                            voice_infos.push((vid, gain, pan));
                         }
-                        CueType::Image => {
-                            has_visual = true;
-                        }
-                        _ => {}
                     }
                 }
             }

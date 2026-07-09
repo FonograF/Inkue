@@ -12,12 +12,15 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 
-use common::{recording_context, full_registry};
+use common::{recording_context, full_registry, CallLog, EngineCall};
 use inkue_lib::cue::context::{CueContext, CueEvent};
+use inkue_lib::cue::fade_cue::FadeCue;
+use inkue_lib::cue::group_cue::GroupCue;
 use inkue_lib::cue::registry::CueRegistry;
 use inkue_lib::cue::traits::Cue;
 use inkue_lib::cue::types::{ContinueMode, CueType, GroupMode};
@@ -214,4 +217,72 @@ fn sequential_group_holds_the_outer_playhead() {
     // advancing the outer playhead to a sibling.
     let result2 = transport.go(&mut list).unwrap();
     assert_eq!(result2.triggered, vec![group_id], "the second GO is absorbed by the group");
+}
+
+/// An Audio cue with a decoded buffer preloaded, so `go()` actually plays it
+/// through the (recording) audio engine and assigns it a voice id.
+fn preloaded_audio(reg: &CueRegistry) -> Box<dyn Cue> {
+    let mut c = reg.create(&CueType::Audio).unwrap();
+    // Long duration so nothing auto-completes by wall clock during the test.
+    c.accept_preloaded_audio(Arc::new(vec![0.0f32; 4800]), 1, 48_000, Duration::from_secs(30));
+    c
+}
+
+fn set_gain_count(log: &CallLog) -> usize {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|c| matches!(c, EngineCall::AudioSetGain { .. }))
+        .count()
+}
+
+#[test]
+fn fade_targeting_a_group_fades_every_child_voice() {
+    // Regression: a Fade cue targeting a Group did nothing — the transport only
+    // looked at top-level cues and only knew how to read a single Audio voice,
+    // so a Group (which owns one voice per child) contributed no voices and the
+    // fade had nothing to drive. It now collects the group's voices recursively.
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context();
+    let tick_ctx = ctx.clone(); // shares the same recording engine double + log
+    let mut transport = Transport::new(ctx);
+
+    // A Simultaneous group with two audio children (both play at once).
+    let mut group = GroupCue::new();
+    group.mode = GroupMode::Simultaneous;
+    group.children.push(preloaded_audio(&reg));
+    group.children.push(preloaded_audio(&reg));
+    let group_id = group.id();
+
+    // A Fade cue targeting the group: fade the volume down to silence.
+    let mut fade = FadeCue::new();
+    fade.target_cue_ids = vec![group_id];
+    fade.target_volume_db = -60.0;
+    fade.fade_duration_ms = 30;
+    let fade_id = fade.id();
+
+    let mut list = list_of(vec![Box::new(group), Box::new(fade)]);
+
+    // GO the group: both children play and get voice ids.
+    transport.go(&mut list).unwrap();
+    // GO the fade: the transport injects the group's child voices into it.
+    transport.go(&mut list).unwrap();
+
+    let before = set_gain_count(&log);
+
+    // Tick the fade to completion; it interpolates gain on every injected voice.
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(200) {
+        if let Some(fc) = list.get_mut(&fade_id) {
+            let _ = fc.tick(&tick_ctx);
+        }
+        std::thread::sleep(Duration::from_millis(3));
+    }
+
+    let applied = set_gain_count(&log) - before;
+    assert!(
+        applied >= 2,
+        "a fade on a group must drive set_voice_gain on every child voice \
+         (got {applied} gain updates — 0 would mean the group contributed no voices)"
+    );
 }

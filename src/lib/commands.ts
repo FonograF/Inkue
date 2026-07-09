@@ -85,6 +85,8 @@ export const ungroup = (groupId: CueId) =>
   invoke<void>("ungroup", { groupId });
 export const setGroupMode = (groupId: CueId, mode: GroupMode) =>
   invoke<void>("set_group_mode", { groupId, mode });
+export const setPlaylistLoop = (groupId: CueId, loopOn: boolean) =>
+  invoke<void>("set_playlist_loop", { groupId, loopOn });
 export const addCueToGroup = (cueId: CueId, groupId: CueId, position = -1) =>
   invoke<void>("add_cue_to_group", { cueId, groupId, position });
 export const removeCueFromGroup = (groupId: CueId, cueId: CueId) =>

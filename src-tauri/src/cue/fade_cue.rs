@@ -83,6 +83,11 @@ pub struct FadeCue {
     /// Overlay alpha at fade completion (255 = black).
     visual_target_alpha: u8,
     fade_complete: bool,
+    /// Target cue ids to hard-stop once the fade finishes (set on completion when
+    /// `stop_at_end` is on).  The event loop drains this via
+    /// [`take_fade_stop_targets`](crate::cue::traits::Cue::take_fade_stop_targets)
+    /// and stops the actual cues — the fade itself can't reach the cue list.
+    stop_targets_pending: Vec<CueId>,
 }
 
 impl FadeCue {
@@ -118,6 +123,7 @@ impl FadeCue {
             visual_start_alpha: 0,
             visual_target_alpha: 0,
             fade_complete: false,
+            stop_targets_pending: Vec::new(),
         }
     }
 
@@ -166,6 +172,7 @@ impl Cue for FadeCue {
         self.visual_start_alpha = 0;
         self.visual_target_alpha = 0;
         self.fade_complete = false;
+        self.stop_targets_pending.clear();
         self.started_at = Some(Instant::now());
 
         if self.pre_wait.is_zero() {
@@ -233,6 +240,7 @@ impl Cue for FadeCue {
         self.visual_start_alpha = 0;
         self.visual_target_alpha = 0;
         self.fade_complete = false;
+        self.stop_targets_pending.clear();
         Ok(())
     }
 
@@ -296,12 +304,18 @@ impl Cue for FadeCue {
         if t >= 1.0 && !self.fade_complete {
             self.fade_complete = true;
             if self.stop_at_end {
+                // Immediate audio cut (the fade already reached the target level).
                 for &(vid, _, _) in &self.target_voices {
                     let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.fade_curve));
                 }
                 if self.has_visual_target {
                     context.output_engine.hard_stop_current();
                 }
+                // Queue the target CUES to be stopped by the event loop: stopping
+                // voices alone leaves the target cue (and group children) in the
+                // Running state.  The event loop drains this and calls their
+                // hard_stop(), which resets state and recurses into groups.
+                self.stop_targets_pending = self.target_cue_ids.clone();
             }
         }
 
@@ -352,6 +366,10 @@ impl Cue for FadeCue {
     fn is_auto_continue_fired(&self) -> bool { self.auto_continue_fired }
     fn mark_auto_continue_fired(&mut self) { self.auto_continue_fired = true; }
     fn clear_auto_continue_fired(&mut self) { self.auto_continue_fired = false; }
+
+    fn take_fade_stop_targets(&mut self) -> Vec<CueId> {
+        std::mem::take(&mut self.stop_targets_pending)
+    }
 
     fn fade_specification(&self) -> Option<FadeAction> {
         let visual_alpha = ((1.0 - self.target_brightness_pct.clamp(0.0, 100.0) / 100.0) * 255.0)

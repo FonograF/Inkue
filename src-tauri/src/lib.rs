@@ -21,7 +21,7 @@ use commands::{
         get_output_window_visible, get_waveform_peaks, get_normalize_db,
         group_cues, list_video_screens, move_cue, move_cues, preview_cue,
         renumber_cues, move_to_top_level, remove_cue, remove_cues, remove_cue_from_group,
-        set_audio_file, set_group_mode, set_image_file, set_playhead,
+        set_audio_file, set_group_mode, set_playlist_loop, set_image_file, set_playhead,
         set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
     },
     cue_list_cmds::{
@@ -404,6 +404,7 @@ pub fn run() {
             group_cues,
             ungroup,
             set_group_mode,
+            set_playlist_loop,
             add_cue_to_group,
             remove_cue_from_group,
             move_to_top_level,
