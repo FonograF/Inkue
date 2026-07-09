@@ -29,6 +29,7 @@ use inkue_lib::cue::registry::CueRegistry;
 use inkue_lib::cue::types::CueType;
 use inkue_lib::engine::dmx_engine::ChannelWidth;
 use inkue_lib::engine::engine_traits::{AudioEngineApi, DmxEngineApi, OutputEngineApi};
+use inkue_lib::engine::output_engine::ContentRequest;
 use inkue_lib::engine::ring_command::{FadeCurve, VoiceId};
 use inkue_lib::engine::voice::Voice;
 
@@ -267,6 +268,7 @@ pub enum EngineCall {
     OutputTextOverlay { ass: String },
     OutputClearText,
     OutputPanicStop,
+    OutputEofFade { fade_ms: u32 },
     DmxSubmitFade { universe: u16, channel: u16, target_norm: f64 },
 }
 
@@ -332,11 +334,10 @@ impl AudioEngineApi for RecAudio {
 
 struct RecOutput(CallLog);
 impl OutputEngineApi for RecOutput {
-    #[allow(clippy::too_many_arguments)]
-    fn show_content(&self, file_path: &Path, is_image: bool, _fi: u32, _fo: u32, _l: u32, _s: Option<u64>, _e: Option<u64>, _sc: Option<u32>, _av: Option<VoiceId>, _dd: Option<u64>) -> Result<VoiceId> {
+    fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
         record(&self.0, EngineCall::OutputShowContent {
-            path: file_path.to_string_lossy().into_owned(),
-            is_image,
+            path: req.file_path.to_string_lossy().into_owned(),
+            is_image: req.is_image,
         });
         Ok(Uuid::new_v4())
     }
@@ -360,6 +361,10 @@ impl OutputEngineApi for RecOutput {
     }
     fn clear_text_overlay(&self) {
         record(&self.0, EngineCall::OutputClearText);
+    }
+    fn begin_eof_fade_out(&self, _v: VoiceId, fade_ms: u32) -> bool {
+        record(&self.0, EngineCall::OutputEofFade { fade_ms });
+        true
     }
 }
 

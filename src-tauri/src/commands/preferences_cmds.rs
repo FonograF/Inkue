@@ -185,16 +185,73 @@ pub fn get_output_screen(state: State<'_, AppState>) -> Result<Option<u32>, Stri
 /// Set the output screen index in display preferences and mark the workspace modified.
 ///
 /// Pass `None` for floating windowed, `Some(n)` for fullscreen on monitor n.
+/// The window is repositioned immediately (fullscreen on the selected screen,
+/// or restored to the floating rect) — not just on the next visual GO.
 #[tauri::command]
 pub fn set_output_screen(
     screen: Option<u32>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-    ws.preferences.display.output_screen = screen;
-    ws.mark_modified();
+    {
+        let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        ws.preferences.display.output_screen = screen;
+        ws.mark_modified();
+    }
+    state.output_engine.apply_output_screen(screen);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Return the global projector-alignment transform from display preferences.
+#[tauri::command]
+pub fn get_output_transform(
+    state: State<'_, AppState>,
+) -> Result<crate::engine::output_engine::OutputTransform, String> {
+    let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    Ok(ws.preferences.display.output_transform)
+}
+
+/// Set the global projector-alignment transform.
+///
+/// Persisted in the workspace display preferences and applied to the output
+/// window immediately (recomposed with the current cue's geometry), so the
+/// operator sees the change live while adjusting values.
+#[tauri::command]
+pub fn set_output_transform(
+    transform: crate::engine::output_engine::OutputTransform,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    {
+        let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        ws.preferences.display.output_transform = transform;
+        ws.mark_modified();
+    }
+    state.output_engine.set_output_transform(transform);
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Show a calibration pattern (grid, colour bars, custom image, …) fullscreen
+/// on the configured output screen.  Replaces whatever is playing.
+#[tauri::command]
+pub fn show_test_pattern(
+    pattern: crate::engine::output_engine::TestPattern,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let screen = {
+        let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        ws.preferences.display.output_screen
+    };
+    state.output_engine.show_test_pattern(&pattern, screen);
+    Ok(())
+}
+
+/// Clear the test pattern: the output returns to opaque black.
+#[tauri::command]
+pub fn clear_test_pattern(state: State<'_, AppState>) -> Result<(), String> {
+    state.output_engine.clear_test_pattern();
     Ok(())
 }
 

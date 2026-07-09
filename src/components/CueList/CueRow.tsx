@@ -53,6 +53,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   mic: "🎤",
   timecode: "🕐",
   text: "🔤",
+  camera: "📷",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

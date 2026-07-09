@@ -337,6 +337,11 @@ pub struct DisplayPreferences {
     /// How a cue's colour tag is rendered in the Cue List (stripe vs full row).
     #[serde(default)]
     pub cue_color_style: CueColorStyle,
+
+    /// Global projector-alignment transform (Preferences → Display), composed
+    /// on top of every cue's own geometry by the output engine.
+    #[serde(default)]
+    pub output_transform: crate::engine::output_engine::OutputTransform,
 }
 
 impl DisplayPreferences {
@@ -360,6 +365,7 @@ impl Default for DisplayPreferences {
             timer_floating:     false,
             theme:              Self::default_theme(),
             cue_color_style:    CueColorStyle::default(),
+            output_transform:   crate::engine::output_engine::OutputTransform::default(),
         }
     }
 }

@@ -341,6 +341,15 @@ pub trait Cue: Send {
         false
     }
 
+    /// `true` for cue types that occupy the visual output surface (Video,
+    /// Image, Camera).  The transport uses this for the stop-on-next-GO rule:
+    /// a visual cue is only auto-stopped by another **visual** GO — an audio
+    /// GO must not cut a displayed picture.  Override instead of adding the
+    /// type to a match in `show/transport.rs`.
+    fn is_visual(&self) -> bool {
+        false
+    }
+
     /// Fade Cue only: returns the fade parameters so the transport can resolve
     /// target voices and call [`set_fade_voices`] before the first tick.
     fn fade_specification(&self) -> Option<FadeAction> {
@@ -417,6 +426,13 @@ pub trait Cue: Send {
     /// an inspector edit (volume / pan), so changes apply without restarting.
     /// Returns `None` when the cue has no live voice.  Default is `None`.
     fn live_audio_params(&self) -> Option<LiveAudioParams> {
+        None
+    }
+
+    /// Per-cue visual geometry (Video / Image cues only).  Used by `update_cue`
+    /// to live-apply Geometry-tab edits to the content currently on the output
+    /// window.  Default is `None` (no visual output).
+    fn visual_geometry(&self) -> Option<crate::engine::output_engine::VideoGeometry> {
         None
     }
 

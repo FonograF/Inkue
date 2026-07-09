@@ -1079,7 +1079,14 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text", e: React.MouseEvent) => {
+  const handleAddCamera = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("camera", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text" | "camera", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("inkue:cue-drag-start", {
@@ -1328,6 +1335,12 @@ export default function App() {
             title="Add Text Cue after selection · Drag to insert at position"
             onAdd={handleAddText}
             onDragStart={(e) => dispatchCueDrag("text", e)}
+          />
+          <CueToolbarButton
+            type="camera" label="Cam"
+            title="Add Camera Cue (live webcam / capture / IP stream) · Drag to insert at position"
+            onAdd={handleAddCamera}
+            onDragStart={(e) => dispatchCueDrag("camera", e)}
           />
           <ActionMenu buttonStyle={toolbarBtn} onDone={handleRefresh} />
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">

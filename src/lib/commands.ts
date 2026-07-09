@@ -7,6 +7,7 @@ import type {
   AppPreferences,
   AudioCueData,
   AudioPreferences,
+  CameraDeviceInfo,
   CollectReport,
   CueValidation,
   MachineAudioConfig,
@@ -33,11 +34,13 @@ import type {
   TcTrigger,
   OscReceiveConfig,
   OutputPatch,
+  OutputTransform,
   ParamTarget,
   PatchedFixture,
   RecoveryInfo,
   RelinkResult,
   ScreenInfo,
+  TestPattern,
   UniverseOutput,
   VideoCueData,
   WaveformData,
@@ -120,6 +123,17 @@ export const getWaveformPeaks = (cueId: CueId, bins: number) =>
 export const getNormalizeDb = (cueId: CueId) =>
   invoke<number>("get_normalize_db", { cueId });
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
+export const listCameraDevices = () =>
+  invoke<CameraDeviceInfo[]>("list_camera_devices");
+export const identifyOutputScreen = (screenIndex: number | null) =>
+  invoke<void>("identify_output_screen", { screenIndex });
+export const getOutputTransform = () =>
+  invoke<OutputTransform>("get_output_transform");
+export const setOutputTransform = (transform: OutputTransform) =>
+  invoke<void>("set_output_transform", { transform });
+export const showTestPattern = (pattern: TestPattern) =>
+  invoke<void>("show_test_pattern", { pattern });
+export const clearTestPattern = () => invoke<void>("clear_test_pattern");
 export const listSystemFonts  = () => invoke<string[]>("list_system_fonts");
 export const previewOutputTimer = (
   font: string, fontSize: number, position: string, margin: number, text: string | null,

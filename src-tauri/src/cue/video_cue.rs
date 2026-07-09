@@ -13,7 +13,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::engine::output_engine::{SurfaceId, VoiceId};
+use crate::engine::output_engine::{ContentRequest, SurfaceId, VideoGeometry, VoiceId};
 use crate::engine::ring_command::FadeCurve as EngineFadeCurve;
 use crate::engine::voice::{FadeDirection, FadeState, Voice};
 
@@ -72,6 +72,10 @@ pub struct VideoCue {
     /// Output Patch to route video audio through.  `None` uses the workspace
     /// default patch (or system default if none is configured).
     pub output_patch_id: Option<uuid::Uuid>,
+    /// Freeze on the last frame at natural EOF instead of cutting to black.
+    pub hold_last_frame: bool,
+    /// Visual geometry (fit / position / scale / rotation / crop).
+    pub geometry: VideoGeometry,
 
     is_disabled: bool,
 
@@ -96,6 +100,9 @@ pub struct VideoCue {
     elapsed_before_pause: Duration,
     /// Action-elapsed time accumulated before the most recent pause.
     action_elapsed_before_pause: Duration,
+    /// `true` once the natural-end visual fade-out has been triggered for the
+    /// current play, so `tick()` fires it exactly once.
+    eof_fade_started: bool,
 }
 
 impl VideoCue {
@@ -124,6 +131,8 @@ impl VideoCue {
             loop_count: 0,
             output_surface_id: None,
             output_patch_id: None,
+            hold_last_frame: false,
+            geometry: VideoGeometry::default(),
             is_disabled: false,
             active_voice_id: None,
             decoded_samples: None,
@@ -135,6 +144,7 @@ impl VideoCue {
             auto_continue_fired: false,
             elapsed_before_pause: Duration::ZERO,
             action_elapsed_before_pause: Duration::ZERO,
+            eof_fade_started: false,
         }
     }
 
@@ -144,6 +154,36 @@ impl VideoCue {
             FadeCurve::Linear => EngineFadeCurve::Linear,
             FadeCurve::SCurve => EngineFadeCurve::SCurve,
             FadeCurve::Exponential => EngineFadeCurve::Exponential,
+        }
+    }
+
+    /// Trigger the visual fade-out that lands on the cue's natural end, once
+    /// the remaining action time drops inside the fade-out window.
+    ///
+    /// Without this, `video_fade_out` only ever applied to *manual* stops —
+    /// a video reaching EOF hard-cut to black (`mpv_events` forces the
+    /// overlay opaque on END_FILE).  Skipped for infinite loops (no natural
+    /// end) and for hold-last-frame (nothing to fade to).
+    fn tick_eof_fade(&mut self, context: &CueContext) {
+        if self.eof_fade_started
+            || self.in_pre_wait
+            || self.hold_last_frame
+            || self.loop_count == u32::MAX
+        {
+            return;
+        }
+        let (Some(voice_id), Some(fade), Some(total)) =
+            (self.active_voice_id, &self.video_fade_out, self.duration())
+        else {
+            return;
+        };
+        if let Some(remaining_ms) =
+            eof_fade_remaining_ms(self.action_elapsed(), total, fade.duration_ms)
+        {
+            // Fire exactly once per play, whether or not the engine accepted
+            // it (a `false` return means another cue took over the output).
+            self.eof_fade_started = true;
+            context.output_engine.begin_eof_fade_out(voice_id, remaining_ms);
         }
     }
 
@@ -224,7 +264,6 @@ impl VideoCue {
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
         let fade_in_ms = self.video_fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
-        let fade_out_ms = self.video_fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
 
         // Submit the audio voice (paused) first so it is ready to resume the
         // instant the video's first frame is presented.
@@ -234,22 +273,25 @@ impl VideoCue {
             anyhow!("VideoCue '{}': no file assigned — set a file in the inspector", self.name)
         })?;
 
-        let voice_id = context.output_engine.show_content(
-            path,
-            false,
+        let voice_id = context.output_engine.show_content(ContentRequest {
+            file_path: path,
+            is_image: false,
             fade_in_ms,
-            fade_out_ms,
-            self.loop_count,
+            loop_count: self.loop_count,
             start_ms,
             end_ms,
-            context.output_screen,
+            screen_index: context.output_screen,
             audio_voice_id,
-            None,
-        )?;
+            display_duration_ms: None,
+            hold_last_frame: self.hold_last_frame,
+            geometry: self.geometry,
+            live_source: false,
+        })?;
 
         self.active_voice_id = Some(voice_id);
         self.action_started_at = Some(Instant::now());
         self.in_pre_wait = false;
+        self.eof_fade_started = false;
 
         context.emit(CueEvent::ActionStarted { cue_id: self.id });
         Ok(())
@@ -259,6 +301,29 @@ impl VideoCue {
 impl Default for VideoCue {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// How long the natural-end visual fade should run, once due.
+///
+/// Returns `Some(remaining_ms)` when the remaining action time has dropped
+/// inside the configured fade-out window (the fade then lands exactly on the
+/// cue's natural end), `None` while it is still too early — or when no fade
+/// is configured.  Shared by [`VideoCue`] and [`super::image_cue::ImageCue`].
+pub(crate) fn eof_fade_remaining_ms(
+    action_elapsed: Duration,
+    total: Duration,
+    fade_ms: u64,
+) -> Option<u32> {
+    if fade_ms == 0 {
+        return None;
+    }
+    let remaining = total.checked_sub(action_elapsed)?;
+    let remaining_ms = remaining.as_millis() as u64;
+    if remaining_ms <= fade_ms {
+        Some(remaining_ms.max(1).min(u32::MAX as u64) as u32)
+    } else {
+        None
     }
 }
 
@@ -364,6 +429,7 @@ impl Cue for VideoCue {
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
+        self.eof_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -422,6 +488,7 @@ impl Cue for VideoCue {
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
+        self.eof_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -435,6 +502,7 @@ impl Cue for VideoCue {
         self.action_elapsed_before_pause = Duration::ZERO;
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
+        self.eof_fade_started = false;
         Ok(())
     }
 
@@ -443,6 +511,7 @@ impl Cue for VideoCue {
         if self.in_pre_wait && self.elapsed() >= self.pre_wait {
             self.start_video_action(context)?;
         }
+        self.tick_eof_fade(context);
         Ok(())
     }
 
@@ -551,6 +620,14 @@ impl Cue for VideoCue {
         })
     }
 
+    fn visual_geometry(&self) -> Option<VideoGeometry> {
+        Some(self.geometry)
+    }
+
+    fn is_visual(&self) -> bool {
+        true
+    }
+
     // -----------------------------------------------------------------------
     // Serialisation
     // -----------------------------------------------------------------------
@@ -582,6 +659,8 @@ impl Cue for VideoCue {
             "loop_count": self.loop_count,
             "output_surface_id": self.output_surface_id,
             "output_patch_id": self.output_patch_id,
+            "hold_last_frame": self.hold_last_frame,
+            "geometry": self.geometry,
             "is_disabled": self.is_disabled,
             "cached_duration_ms": self.cached_duration.map(|d| d.as_millis() as u64),
         })
@@ -682,6 +761,14 @@ impl CueFactory for VideoCueFactory {
         if let Some(pid_str) = value.get("output_patch_id").and_then(|v| v.as_str()) {
             cue.output_patch_id = pid_str.parse().ok();
         }
+        if let Some(b) = value.get("hold_last_frame").and_then(|v| v.as_bool()) {
+            cue.hold_last_frame = b;
+        }
+        if let Some(g) = value.get("geometry") {
+            if let Ok(geometry) = serde_json::from_value::<VideoGeometry>(g.clone()) {
+                cue.geometry = geometry;
+            }
+        }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -690,5 +777,91 @@ impl CueFactory for VideoCueFactory {
         }
 
         Ok(Box::new(cue))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::output_engine::FitMode;
+
+    #[test]
+    fn eof_fade_not_due_early() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(1), Duration::from_secs(10), 2000),
+            None,
+        );
+    }
+
+    #[test]
+    fn eof_fade_due_inside_window() {
+        // 10s cue, 2s fade, 8.5s elapsed → 1500ms remaining.
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_millis(8500), Duration::from_secs(10), 2000),
+            Some(1500),
+        );
+    }
+
+    #[test]
+    fn eof_fade_none_without_fade_configured() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(9), Duration::from_secs(10), 0),
+            None,
+        );
+    }
+
+    #[test]
+    fn eof_fade_none_past_the_end() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(11), Duration::from_secs(10), 2000),
+            None,
+        );
+    }
+
+    #[test]
+    fn eof_fade_clamps_to_at_least_one_ms() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(10), Duration::from_secs(10), 2000),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn serialize_roundtrip_geometry_and_hold() {
+        let mut cue = VideoCue::new();
+        cue.hold_last_frame = true;
+        cue.geometry = VideoGeometry {
+            fit_mode: FitMode::Fill,
+            pan_x: 0.2,
+            pan_y: -0.1,
+            scale: 1.25,
+            rotation: 180,
+            crop_left: 0.05,
+            crop_right: 0.0,
+            crop_top: 0.1,
+            crop_bottom: 0.0,
+        };
+
+        let json = cue.serialize();
+        assert_eq!(json["hold_last_frame"], true);
+        assert_eq!(json["geometry"]["fit_mode"], "fill");
+
+        let rebuilt = VideoCueFactory.from_json(json).expect("roundtrip");
+        assert_eq!(rebuilt.visual_geometry().unwrap(), cue.geometry);
+        let rebuilt_json = rebuilt.serialize();
+        assert_eq!(rebuilt_json["hold_last_frame"], true);
+    }
+
+    #[test]
+    fn from_json_without_geometry_uses_defaults() {
+        let json = serde_json::json!({ "type": "video", "name": "Legacy" });
+        let cue = VideoCueFactory.from_json(json).expect("legacy load");
+        assert!(cue.visual_geometry().unwrap().is_default());
+        let json = cue.serialize();
+        assert_eq!(json["hold_last_frame"], false);
     }
 }

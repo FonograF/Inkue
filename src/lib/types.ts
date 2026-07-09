@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera";
 
 /** Accent color per cue type — the single source of truth for the toolbar
  *  buttons (App.tsx) and the cue-list context menu (CueListView.tsx). */
@@ -21,6 +21,7 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   timecode: "#ff2d9c",          // hot pink
   text:     "#e2e8f0",
   memo:     "#e2e8f0",
+  camera:   "#34d399",          // emerald
 };
 
 export type CueState = "standby" | "running" | "paused" | "completed";
@@ -104,6 +105,40 @@ export interface AudioCueData extends CueSummary {
   rate: number;
 }
 
+/** How the source frame is mapped onto the output surface. */
+export type FitMode = "fit" | "fill" | "stretch";
+
+/** Per-cue visual geometry for Video and Image cues. */
+export interface VideoGeometry {
+  fit_mode: FitMode;
+  /** Horizontal offset as a fraction of the scaled video width (−1..1). */
+  pan_x: number;
+  /** Vertical offset as a fraction of the scaled video height (−1..1). */
+  pan_y: number;
+  /** Linear scale factor (1.0 = 100%). */
+  scale: number;
+  /** Clockwise rotation in degrees (0–359). */
+  rotation: number;
+  /** Crop per edge as a fraction of the source size (0..0.45 each). */
+  crop_left: number;
+  crop_right: number;
+  crop_top: number;
+  crop_bottom: number;
+}
+
+/** Neutral geometry (engine defaults). */
+export const DEFAULT_GEOMETRY: VideoGeometry = {
+  fit_mode: "fit",
+  pan_x: 0,
+  pan_y: 0,
+  scale: 1,
+  rotation: 0,
+  crop_left: 0,
+  crop_right: 0,
+  crop_top: 0,
+  crop_bottom: 0,
+};
+
 /** Full cue data returned by get_cue for a Video Cue. */
 export interface VideoCueData extends CueSummary {
   notes: string;
@@ -125,6 +160,9 @@ export interface VideoCueData extends CueSummary {
   loop_count: number;
   output_surface_id: string | null;
   output_patch_id: string | null;
+  /** Freeze on the last frame at natural EOF instead of cutting to black. */
+  hold_last_frame: boolean;
+  geometry: VideoGeometry;
 }
 
 /** 9-point position grid for TextCue. */
@@ -161,6 +199,35 @@ export interface ImageCueData extends CueSummary {
   fade_out_curve: FadeCurve | null;
   /** How long the image stays on screen in ms. null = infinite (hold until stopped). */
   display_duration_ms: number | null;
+  geometry: VideoGeometry;
+}
+
+// ---------------------------------------------------------------------------
+// Camera types
+// ---------------------------------------------------------------------------
+
+/** Where a Camera Cue's live feed comes from (matches the Rust enum tagging). */
+export type CameraSource =
+  | { kind: "device"; id: string; name: string }
+  | { kind: "url"; url: string };
+
+/** One connected capture device (from list_camera_devices). */
+export interface CameraDeviceInfo {
+  id: string;
+  name: string;
+}
+
+/** Full cue data returned by get_cue for a Camera Cue. */
+export interface CameraCueData extends CueSummary {
+  notes: string;
+  source: CameraSource;
+  /** Visual (GL overlay) fade-in from black. */
+  video_fade_in_ms: number | null;
+  video_fade_in_curve: FadeCurve | null;
+  /** Visual (GL overlay) fade-out to black on stop. */
+  video_fade_out_ms: number | null;
+  video_fade_out_curve: FadeCurve | null;
+  geometry: VideoGeometry;
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +702,46 @@ export interface DisplayPreferences {
   theme: "dark" | "light" | "system";
   /** How a cue's colour tag is rendered in the Cue List. */
   cue_color_style: CueColorStyle;
+  /** Global projector-alignment transform, composed on top of per-cue geometry. */
+  output_transform?: OutputTransform;
+}
+
+/** Global projector-alignment transform (Preferences → Display). */
+export interface OutputTransform {
+  /** Horizontal offset as a fraction of the output width (−1..1). */
+  pan_x: number;
+  /** Vertical offset as a fraction of the output height (−1..1). */
+  pan_y: number;
+  /** Linear scale factor (1.0 = 100%). */
+  scale: number;
+  /** Clockwise rotation in degrees — fractional values supported (0.1° steps). */
+  rotation: number;
+  /**
+   * Corner-pin offsets in fractions of the output size, storage order
+   * TL, TR, BL, BR; positive = right/down. Applied after scale/rotation/pan.
+   */
+  corners: [[number, number], [number, number], [number, number], [number, number]];
+}
+
+/** Identity transform (engine defaults). */
+export const DEFAULT_OUTPUT_TRANSFORM: OutputTransform = {
+  pan_x: 0,
+  pan_y: 0,
+  scale: 1,
+  rotation: 0,
+  corners: [[0, 0], [0, 0], [0, 0], [0, 0]],
+};
+
+/** Built-in calibration patterns; custom_image carries the file path. */
+export type TestPatternKind =
+  | "grid" | "smpte_bars" | "rgb_test" | "test_card"
+  | "white" | "gray" | "black" | "custom_image";
+
+/** Serialised form matching the Rust `TestPattern` enum (tag + content). */
+export interface TestPattern {
+  kind: TestPatternKind;
+  /** Only for custom_image. */
+  path?: string;
 }
 
 export const DEFAULT_DISPLAY_PREFS: Pick<DisplayPreferences, "theme" | "cue_color_style"> = {

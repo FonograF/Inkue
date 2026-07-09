@@ -16,6 +16,8 @@ mod fade;
 mod mpv_events;
 #[cfg(output_gl)]
 mod render;
+#[cfg(output_gl)]
+mod warp;
 /// macOS-only: AppKit NSWindow creation + control for the GL output path.
 #[cfg(all(output_gl, target_os = "macos"))]
 mod macos_window;
@@ -23,9 +25,13 @@ mod types;
 #[cfg(output_win32)]
 mod win32_window;
 
-pub use types::{OutputStatus, OutputSurface, ScreenInfo, SurfaceId, VoiceId};
+pub use types::{
+    ContentRequest, FitMode, OutputStatus, OutputSurface, OutputTransform, ScreenInfo, SurfaceId,
+    TestPattern, VideoGeometry, VoiceId,
+};
 use types::{
-    FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice, PendingVideoStart,
+    compose_display_props, FadeAnimState, FadePending, FadePendingParams, MpvCtx, OutputVoice,
+    PendingVideoStart,
 };
 #[cfg(output_win32)]
 use types::OutputWndState;
@@ -65,6 +71,18 @@ pub(super) static OUTPUT_PENDING_VIDEO_START: OnceLock<Mutex<Option<PendingVideo
     OnceLock::new();
 /// The AudioEngine voice carrying the current video's audio track, if any.
 pub(super) static OUTPUT_CURRENT_AUDIO_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
+/// Geometry whose crop is waiting for the source dimensions.  mpv's
+/// `video-crop` is pixel-based, so a fractional per-cue crop can only be
+/// resolved once `video-params/w|h` are known — the `VIDEO_RECONFIG` event
+/// handler drains this.
+pub(super) static PENDING_CROP: OnceLock<Mutex<Option<VideoGeometry>>> = OnceLock::new();
+/// Global projector-alignment transform, composed on top of every cue's
+/// geometry.  Single source of truth is the workspace display preferences;
+/// this mirror is what the (workspace-agnostic) load path reads.
+pub(super) static OUTPUT_TRANSFORM: OnceLock<Mutex<OutputTransform>> = OnceLock::new();
+/// The cue geometry most recently pushed to mpv — re-composed against the new
+/// transform when the operator edits the alignment in Preferences.
+pub(super) static LAST_CUE_GEOMETRY: OnceLock<Mutex<VideoGeometry>> = OnceLock::new();
 /// When `Some`, the timer refresh loop shows this text instead of live cue time.
 pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 /// Deduplication cache for the floating timer text (avoids redundant Tauri events).
@@ -247,6 +265,9 @@ impl OutputEngine {
         OUTPUT_CURRENT_FADE_OUT_MS.get_or_init(|| Mutex::new(0));
         OUTPUT_PENDING_VIDEO_START.get_or_init(|| Mutex::new(None));
         OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
+        PENDING_CROP.get_or_init(|| Mutex::new(None));
+        OUTPUT_TRANSFORM.get_or_init(|| Mutex::new(OutputTransform::default()));
+        LAST_CUE_GEOMETRY.get_or_init(|| Mutex::new(VideoGeometry::default()));
         FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
         TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
         FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
@@ -466,20 +487,21 @@ impl OutputEngine {
     // ── Unified content display ──────────────────────────────────────────────
 
     /// Display content (video or image) on the output window.
-    #[allow(clippy::too_many_arguments)]
-    pub fn show_content(
-        &self,
-        file_path: &Path,
-        is_image: bool,
-        fade_in_ms: u32,
-        _this_fade_out_ms: u32,
-        loop_count: u32,
-        start_ms: Option<u64>,
-        end_ms: Option<u64>,
-        screen_index: Option<u32>,
-        audio_voice_id: Option<VoiceId>,
-        display_duration_ms: Option<u64>,
-    ) -> Result<VoiceId> {
+    pub fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
+        let ContentRequest {
+            file_path,
+            is_image,
+            fade_in_ms,
+            loop_count,
+            start_ms,
+            end_ms,
+            screen_index,
+            audio_voice_id,
+            display_duration_ms,
+            hold_last_frame,
+            geometry,
+            live_source,
+        } = req;
         let voice_id = Uuid::new_v4();
 
         // Replace the old voice.
@@ -530,6 +552,9 @@ impl OutputEngine {
             start_ms,
             end_ms,
             display_duration_ms,
+            hold_last_frame,
+            geometry,
+            live_source,
         };
 
         // Abort any overlay animation that may be running (e.g. a stop-fade
@@ -710,6 +735,59 @@ impl OutputEngine {
         }
     }
 
+    /// `true` when `voice_id` is the content currently on the output window.
+    pub fn is_current_voice(&self, voice_id: VoiceId) -> bool {
+        *self.current_voice.lock().unwrap() == Some(voice_id)
+    }
+
+    /// Apply per-cue visual geometry to whatever is currently on the output.
+    ///
+    /// Called live from `update_cue` when the operator edits the Geometry tab
+    /// of the cue that is on screen; the load path applies geometry itself via
+    /// `execute_load_params`.
+    pub fn apply_geometry(&self, geometry: &VideoGeometry) {
+        apply_geometry_props(&self.mpv_lib, self.mpv_ctx.0, geometry);
+        // GL path: wake the render loop so a static image redraws immediately.
+        #[cfg(output_gl)]
+        render::wake();
+    }
+
+    /// Begin the visual fade-to-black that lands exactly on a cue's natural
+    /// end (EOF), so the content fades out instead of hard-cutting to black.
+    ///
+    /// Called from `VideoCue::tick` / `ImageCue::tick` once the remaining
+    /// action time drops inside the configured fade-out window.  Returns
+    /// `false` (and does nothing) when `voice_id` is no longer the content on
+    /// screen — a later cue already replaced it.
+    pub fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool {
+        if !self.is_current_voice(voice_id) {
+            return false;
+        }
+        if let Some(fs) = FADE_STATE.get() {
+            if let Ok(mut s) = fs.lock() {
+                if s.target_alpha == 255 {
+                    return true; // Already fading (or held) to black.
+                }
+                s.start_alpha = s.current_alpha;
+                s.target_alpha = 255;
+                s.duration_ms = fade_ms.max(1);
+                s.start_time = Instant::now();
+                s.timer_active = false;
+                // No pending Stop: the EOF itself ends playback right after
+                // the fade lands, keeping loop/hold semantics untouched.
+                s.pending = None;
+            }
+        }
+        #[cfg(output_win32)]
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+            PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
+        }
+        #[cfg(output_gl)]
+        render::wake();
+        true
+    }
+
     /// Return the current overlay alpha (0 = transparent, 255 = black).
     pub fn get_overlay_alpha(&self) -> u8 {
         FADE_STATE.get()
@@ -780,10 +858,20 @@ impl OutputEngine {
         _fade_in: Option<&FadeSpec>,
         screen_index: Option<u32>,
     ) -> Result<VoiceId> {
-        self.show_content(
-            file_path, false,
-            0, 0, loop_count, start_ms, end_ms, screen_index, None, None,
-        )
+        self.show_content(ContentRequest {
+            file_path,
+            is_image: false,
+            fade_in_ms: 0,
+            loop_count,
+            start_ms,
+            end_ms,
+            screen_index,
+            audio_voice_id: None,
+            display_duration_ms: None,
+            hold_last_frame: false,
+            geometry: VideoGeometry::default(),
+            live_source: false,
+        })
     }
 
     pub fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32) -> Result<()> {
@@ -1022,6 +1110,10 @@ impl OutputEngine {
     /// surface to composite onto and the output shows black rather than the desktop.
     pub fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
         self.position_window(screen_index);
+        // GL path only: hint the render loop to keep compositing OSD-only
+        // changes.  The legacy Win32 path has no render loop — mpv's own
+        // vo=gpu window composites the OSD itself.
+        #[cfg(output_gl)]
         render::TEXT_OVERLAY_ACTIVE.store(true, Ordering::Relaxed);
 
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
@@ -1066,6 +1158,7 @@ impl OutputEngine {
     /// Restores the opaque-black idle state (alpha=255) when no video or image
     /// content is currently playing.
     pub fn clear_text_overlay(&self) {
+        #[cfg(output_gl)]
         render::TEXT_OVERLAY_ACTIVE.store(false, Ordering::Relaxed);
 
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
@@ -1094,6 +1187,158 @@ impl OutputEngine {
             .unwrap_or(false);
         if !has_content {
             fade::set_overlay_alpha(255);
+        }
+    }
+
+    /// Whether the output window is currently user-visible.
+    pub fn is_output_visible(&self) -> bool {
+        self.visible.load(Ordering::Relaxed)
+    }
+
+    /// Update the global projector-alignment transform and apply it
+    /// immediately, so the operator sees the effect live while dragging in
+    /// the alignment editor.  No-op when the transform is unchanged (the
+    /// event loop re-asserts it every tick to stay in sync with the loaded
+    /// workspace).
+    ///
+    /// GL path: the transform (incl. fractional rotation + corner pin) is a
+    /// dedicated warp render pass — mpv properties are not touched.  Legacy
+    /// Win32 path: pan/scale/rotation are approximated by recomposing mpv
+    /// properties against the last cue geometry (corner pin unsupported).
+    pub fn set_output_transform(&self, transform: OutputTransform) {
+        let changed = OUTPUT_TRANSFORM
+            .get()
+            .and_then(|m| m.lock().ok())
+            .map(|mut t| {
+                if *t == transform {
+                    false
+                } else {
+                    *t = transform;
+                    true
+                }
+            })
+            .unwrap_or(false);
+        if !changed {
+            return;
+        }
+
+        #[cfg(output_gl)]
+        render::set_output_warp(warp::warp_matrix(&transform));
+
+        #[cfg(output_win32)]
+        {
+            let last_geometry = LAST_CUE_GEOMETRY
+                .get()
+                .and_then(|m| m.lock().ok())
+                .map(|g| *g)
+                .unwrap_or_default();
+            apply_geometry_props(&self.mpv_lib, self.mpv_ctx.0, &last_geometry);
+        }
+    }
+
+    // ── Test patterns (projector calibration) ────────────────────────────────
+
+    /// Show a calibration pattern (grid, colour bars, custom image, …) on the
+    /// output window, replacing whatever is playing.
+    ///
+    /// The current content is hard-stopped first (its owning cue completes
+    /// through the normal `OutputStatus::Completed` path), the window is
+    /// positioned like a GO would (fallback + banner included), and the
+    /// pattern is shown with **neutral cue geometry** — only the global
+    /// [`OutputTransform`] applies, which is exactly what alignment and
+    /// colorimetry need.
+    pub fn show_test_pattern(&self, pattern: &TestPattern, screen_index: Option<u32>) {
+        self.hard_stop_current();
+        self.position_window(screen_index);
+
+        // Pattern resolution: match the target screen so the grid is 1:1.
+        let (w, h) = resolve_output_screen(&self.list_screens(), screen_index)
+            .0
+            .map(|s| (s.width, s.height))
+            .unwrap_or((1920, 1080));
+        let url = pattern.mpv_url(w, h);
+
+        apply_geometry_props(&self.mpv_lib, self.mpv_ctx.0, &VideoGeometry::default());
+
+        unsafe {
+            // Patterns behave like images: play immediately, no paused-load
+            // handshake, and no keep-open (a previous held video may have set it).
+            (self.mpv_lib.mpv_set_property_string)(
+                self.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
+            );
+            (self.mpv_lib.mpv_set_property_string)(
+                self.mpv_ctx.0, cs("keep-open").as_ptr(), cs("no").as_ptr(),
+            );
+            if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
+                if let Ok(mut p) = m.lock() {
+                    *p = None;
+                }
+            }
+
+            let opts = if pattern.is_file() {
+                // A custom image needs image-display-duration to hold on screen.
+                cs("audio=no,image-display-duration=inf")
+            } else {
+                cs("audio=no")
+            };
+            let path_cstr = match CString::new(url.as_str()) {
+                Ok(c) => c,
+                Err(_) => {
+                    log::warn!("[output] test pattern path contains NUL byte");
+                    return;
+                }
+            };
+            let cmd = cs("loadfile");
+            let flags = cs("replace");
+            let idx = cs("0");
+            // loadfile signature: <url> <flags> <index> <options> (see fade.rs).
+            let args: [*const std::ffi::c_char; 6] = [
+                cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
+                idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
+            ];
+            let ret = (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+            if ret < 0 {
+                log::warn!("[output] test pattern loadfile failed: {ret} ({url})");
+            }
+        }
+
+        fade::set_overlay_alpha(0);
+    }
+
+    /// Clear the test pattern: stop playback and return to opaque black.
+    pub fn clear_test_pattern(&self) {
+        unsafe {
+            let stop = cs("stop");
+            let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
+            (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+        }
+        fade::set_overlay_alpha(255);
+    }
+
+    /// Immediately apply the output-screen preference to the live window.
+    ///
+    /// `Some(idx)` shows the window fullscreen on that screen right away (same
+    /// missing-screen fallback + health banner as a GO), so the operator sees
+    /// the effect of the Preferences selection without waiting for the next
+    /// visual cue.  `None` (floating) restores the windowed floating rect.
+    pub fn apply_output_screen(&self, screen_index: Option<u32>) {
+        match screen_index {
+            Some(_) => self.position_window(screen_index),
+            None => {
+                crate::health::clear("output-screen");
+
+                #[cfg(output_win32)]
+                if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
+                    if let Ok(mut state) = state_mutex.lock() {
+                        if state.is_fullscreen {
+                            win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
+                        }
+                    }
+                }
+
+                #[cfg(output_gl)]
+                render::set_windowed_floating();
+            }
         }
     }
 
@@ -1133,6 +1378,26 @@ impl OutputEngine {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn position_window(&self, screen_index: Option<u32>) {
+        // Resolve the configured screen against what is actually connected.
+        // A configured-but-missing screen falls back to the primary display
+        // (never a silent no-op) and raises a health banner so the operator
+        // knows before the show that "Screen 2" is not what they expect.
+        let (target_screen, screen_missing) =
+            resolve_output_screen(&self.list_screens(), screen_index);
+        if screen_missing {
+            crate::health::set(crate::health::HealthAlert::new(
+                "output-screen",
+                crate::health::HealthLevel::Warning,
+                format!(
+                    "Output screen {} is not connected — using the primary display instead. \
+                     Check Preferences → Display.",
+                    screen_index.map(|i| i + 1).unwrap_or(0),
+                ),
+            ));
+        } else {
+            crate::health::clear("output-screen");
+        }
+
         #[cfg(output_win32)]
         unsafe {
             use windows_sys::Win32::Foundation::RECT;
@@ -1141,31 +1406,28 @@ impl OutputEngine {
                 SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED,
             };
 
-            if let Some(idx) = screen_index {
-                let screens = self.list_screens();
-                if let Some(s) = screens.into_iter().find(|s| s.index == idx) {
-                    if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
-                        if let Ok(mut state) = state_mutex.lock() {
-                            if !state.is_fullscreen {
-                                state.saved_rect = (100, 100, 100 + 1280, 100 + 720);
-                            }
-                            state.is_fullscreen = true;
+            if let Some(s) = &target_screen {
+                if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
+                    if let Ok(mut state) = state_mutex.lock() {
+                        if !state.is_fullscreen {
+                            state.saved_rect = (100, 100, 100 + 1280, 100 + 720);
                         }
+                        state.is_fullscreen = true;
                     }
-                    win32_window::set_borderless(self.hwnd);
+                }
+                win32_window::set_borderless(self.hwnd);
+                SetWindowPos(
+                    self.hwnd, HWND_TOPMOST,
+                    s.x, s.y, s.width as i32, s.height as i32,
+                    SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+                if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
+                    ShowWindow(overlay, SW_SHOWNA);
                     SetWindowPos(
-                        self.hwnd, HWND_TOPMOST,
+                        overlay, HWND_TOPMOST,
                         s.x, s.y, s.width as i32, s.height as i32,
-                        SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                        SWP_NOACTIVATE,
                     );
-                    if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                        ShowWindow(overlay, SW_SHOWNA);
-                        SetWindowPos(
-                            overlay, HWND_TOPMOST,
-                            s.x, s.y, s.width as i32, s.height as i32,
-                            SWP_NOACTIVATE,
-                        );
-                    }
                 }
             }
 
@@ -1177,7 +1439,7 @@ impl OutputEngine {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
 
-            if screen_index.is_none() {
+            if target_screen.is_none() {
                 if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
                     ShowWindow(overlay, SW_SHOWNA);
                     let mut rc: RECT = std::mem::zeroed();
@@ -1196,16 +1458,16 @@ impl OutputEngine {
         #[cfg(output_gl)]
         {
             self.visible.store(true, Ordering::Relaxed);
-            if let Some(idx) = screen_index {
+            if let Some(s) = &target_screen {
                 // Windows/Linux: position via the winit window using the screen rect
                 // from list_screens(). macOS: place the NSWindow onto NSScreen[idx]
-                // directly (AppKit's own coordinate space — no rect conversion needed).
+                // directly (AppKit's own coordinate space — no rect conversion needed;
+                // our sorted list and NSScreen both put the primary at index 0, so the
+                // fallback index maps correctly too).
                 #[cfg(not(target_os = "macos"))]
-                if let Some(s) = self.list_screens().into_iter().find(|s| s.index == idx) {
-                    render::set_outer_rect(s.x, s.y, s.width, s.height);
-                }
+                render::set_outer_rect(s.x, s.y, s.width, s.height);
                 #[cfg(target_os = "macos")]
-                render::position_on_screen(idx);
+                render::position_on_screen(s.index);
             }
             render::show();
         }
@@ -1226,6 +1488,121 @@ impl Drop for OutputEngine {
 
 pub(super) fn cs(s: &str) -> CString {
     CString::new(s).expect("cs(): interior NUL byte in literal")
+}
+
+/// Resolve the configured output screen index against the connected screens.
+///
+/// Returns `(target, missing)`:
+/// - `target` — the screen to go fullscreen on (`None` = floating window);
+///   when the configured index is absent, falls back to the primary display.
+/// - `missing` — `true` when a screen was configured but is not connected.
+pub(super) fn resolve_output_screen(
+    screens: &[ScreenInfo],
+    screen_index: Option<u32>,
+) -> (Option<ScreenInfo>, bool) {
+    match screen_index {
+        None => (None, false),
+        Some(idx) => match screens.iter().find(|s| s.index == idx) {
+            Some(s) => (Some(s.clone()), false),
+            None => (screens.first().cloned(), true),
+        },
+    }
+}
+
+/// Read an int64 mpv property, or `None` when unavailable.
+pub(super) unsafe fn get_prop_i64(lib: &MpvLib, ctx: *mut c_void, name: &str) -> Option<i64> {
+    let mut val: i64 = 0;
+    let n = cs(name);
+    let ret = (lib.mpv_get_property)(
+        ctx,
+        n.as_ptr(),
+        MPV_FORMAT_INT64,
+        &mut val as *mut i64 as *mut c_void,
+    );
+    (ret == 0).then_some(val)
+}
+
+/// Apply the pixel `video-crop` derived from `geometry` — possible only once
+/// the source dimensions (`video-params/w|h`) are known.  Returns `false`
+/// when they are not yet available (caller keeps the crop pending).
+pub(super) fn try_apply_crop(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeometry) -> bool {
+    unsafe {
+        let w = get_prop_i64(lib, ctx, "video-params/w").unwrap_or(0);
+        let h = get_prop_i64(lib, ctx, "video-params/h").unwrap_or(0);
+        if w <= 0 || h <= 0 {
+            return false;
+        }
+        match geometry.crop_rect_px(w as u32, h as u32) {
+            Some((cw, ch, cx, cy)) => {
+                prop_str(lib, ctx, "video-crop", &format!("{cw}x{ch}+{cx}+{cy}"));
+            }
+            None => prop_str(lib, ctx, "video-crop", ""),
+        }
+        true
+    }
+}
+
+/// The current global projector-alignment transform (win32 fallback path —
+/// the GL path reads the warp matrix in the render thread instead).
+#[cfg(output_win32)]
+pub(super) fn current_output_transform() -> OutputTransform {
+    OUTPUT_TRANSFORM
+        .get()
+        .and_then(|m| m.lock().ok())
+        .map(|t| *t)
+        .unwrap_or_default()
+}
+
+/// Push a cue's [`VideoGeometry`] to mpv.
+///
+/// On the GL path the cue geometry is applied **pure** — the global
+/// [`OutputTransform`] lives in the warp render pass instead, so composing it
+/// here would double-apply it.  The legacy Win32 path has no warp pass and
+/// approximates the transform by composing it into these properties.
+///
+/// The scalar properties (`keepaspect`, `panscan`, `video-zoom`,
+/// `video-pan-x/y`, `video-rotate`) are global mpv properties that persist
+/// across `loadfile`, so every load — and every live edit — sets **all** of
+/// them (a cue without geometry resets the previous cue's values).  The crop
+/// is pixel-based: applied immediately when the source dimensions are known,
+/// otherwise parked in [`PENDING_CROP`] for the `VIDEO_RECONFIG` handler.
+pub(super) fn apply_geometry_props(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeometry) {
+    // Remember the cue geometry so a Preferences transform edit can recompose
+    // (win32 fallback path).
+    if let Some(last) = LAST_CUE_GEOMETRY.get() {
+        if let Ok(mut g) = last.lock() {
+            *g = *geometry;
+        }
+    }
+
+    #[cfg(output_win32)]
+    let props = compose_display_props(geometry, &current_output_transform());
+    #[cfg(output_gl)]
+    let props = compose_display_props(geometry, &OutputTransform::default());
+    unsafe {
+        let (keepaspect, panscan) = geometry.fit_props();
+        prop_str(lib, ctx, "keepaspect", keepaspect);
+        prop_str(lib, ctx, "panscan", panscan);
+        prop_str(lib, ctx, "video-zoom", &format!("{:.6}", props.zoom_log2));
+        prop_str(lib, ctx, "video-pan-x", &format!("{:.6}", props.pan_x));
+        prop_str(lib, ctx, "video-pan-y", &format!("{:.6}", props.pan_y));
+        prop_str(lib, ctx, "video-rotate", &props.rotation.to_string());
+    }
+
+    let pending_crop = if geometry.has_crop() {
+        // Pixel crop needs the source dimensions; park it when unknown.
+        if try_apply_crop(lib, ctx, geometry) { None } else { Some(*geometry) }
+    } else {
+        // No crop on this cue: clear any crop left by the previous cue.
+        // (An empty string needs no dimensions.)
+        unsafe { prop_str(lib, ctx, "video-crop", "") };
+        None
+    };
+    if let Some(pending) = PENDING_CROP.get() {
+        if let Ok(mut p) = pending.lock() {
+            *p = pending_crop;
+        }
+    }
 }
 
 #[cfg(output_win32)]
@@ -1305,5 +1682,49 @@ unsafe fn command_node_map(
     (lib.mpv_free_node_contents)(&mut result);
     if ret < 0 {
         log::warn!("[output] mpv_command_node(osd-overlay) failed: {ret}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screens(n: u32) -> Vec<ScreenInfo> {
+        (0..n)
+            .map(|i| ScreenInfo {
+                index: i,
+                width: 1920,
+                height: 1080,
+                x: (i as i32) * 1920,
+                y: 0,
+                is_primary: i == 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resolve_screen_none_is_floating() {
+        assert_eq!(resolve_output_screen(&screens(2), None), (None, false));
+    }
+
+    #[test]
+    fn resolve_screen_found() {
+        let (target, missing) = resolve_output_screen(&screens(2), Some(1));
+        assert!(!missing);
+        assert_eq!(target.unwrap().index, 1);
+    }
+
+    #[test]
+    fn resolve_screen_missing_falls_back_to_primary() {
+        let (target, missing) = resolve_output_screen(&screens(2), Some(4));
+        assert!(missing);
+        assert_eq!(target.unwrap().index, 0);
+    }
+
+    #[test]
+    fn resolve_screen_missing_with_no_screens() {
+        let (target, missing) = resolve_output_screen(&[], Some(1));
+        assert!(missing);
+        assert!(target.is_none());
     }
 }

@@ -33,6 +33,8 @@ pub enum CueType {
     Timecode,
     /// Displays formatted text on the output surface via the mpv subtitle layer.
     Text,
+    /// Shows a live camera / capture / network video feed on the output surface.
+    Camera,
 }
 
 impl std::fmt::Display for CueType {
@@ -52,6 +54,7 @@ impl std::fmt::Display for CueType {
             CueType::Mic      => write!(f, "mic"),
             CueType::Timecode => write!(f, "timecode"),
             CueType::Text     => write!(f, "text"),
+            CueType::Camera   => write!(f, "camera"),
         }
     }
 }

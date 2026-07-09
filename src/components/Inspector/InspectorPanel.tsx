@@ -2,7 +2,7 @@
 // Shows cue properties across four tabs: Basics, Time, Levels, Fade.
 
 import { useEffect, useState } from "react";
-import type { AudioCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import type { AudioCueData, CameraCueData, CueSummary, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
 import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS } from "../../lib/mediaTypes";
 import { WaveformModal } from "../WaveformModal";
@@ -11,6 +11,7 @@ import { BasicsTab } from "./BasicsTab";
 import { TimeTab } from "./TimeTab";
 import { LevelsTab } from "./LevelsTab";
 import { FadeTab } from "./FadeTab";
+import { GeometryTab } from "./GeometryTab";
 import { MidiTab } from "./MidiTab";
 import { OscTab } from "./OscTab";
 import { LightTab } from "./LightTab";
@@ -18,6 +19,7 @@ import { MicTab } from "./MicTab";
 import { TextTab } from "./TextTab";
 import { TimecodeTab } from "./TimecodeTab";
 import { TriggersTab } from "./TriggersTab";
+import { CameraTab } from "./CameraTab";
 
 interface Props {
   selectedCue: CueSummary | null;
@@ -25,10 +27,10 @@ interface Props {
   onRefresh: () => void;
 }
 
-type Tab = "basics" | "time" | "levels" | "fade" | "messages" | "light" | "mic" | "timecode" | "text" | "triggers";
+type Tab = "basics" | "time" | "levels" | "fade" | "geometry" | "messages" | "light" | "mic" | "timecode" | "text" | "camera" | "triggers";
 
 export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props) {
-  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData | MidiCueData | OscCueData | StopCueData | LightCueData | MicCueData | TimecodeCueData | TextCueData | null>(null);
+  const [cueData, setCueData] = useState<AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData | MidiCueData | OscCueData | StopCueData | LightCueData | MicCueData | TimecodeCueData | TextCueData | CameraCueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
   const [waveformModalOpen, setWaveformModalOpen] = useState(false);
 
@@ -40,14 +42,16 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
     // Clear stale data immediately so isAudio/isVideo flags never mismatch cueData.
     setCueData(null);
     const hasLevels = selectedCue.cue_type === "audio" || selectedCue.cue_type === "video";
-    const hasFade = selectedCue.cue_type === "audio" || selectedCue.cue_type === "image";
+    const hasFade = selectedCue.cue_type === "audio" || selectedCue.cue_type === "video" || selectedCue.cue_type === "image" || selectedCue.cue_type === "camera";
+    const hasGeometry = selectedCue.cue_type === "video" || selectedCue.cue_type === "image" || selectedCue.cue_type === "camera";
     const hasMessages = selectedCue.cue_type === "osc" || selectedCue.cue_type === "midi";
     const hasLight = selectedCue.cue_type === "light";
     const hasMic      = selectedCue.cue_type === "mic";
     const hasTimecode = selectedCue.cue_type === "timecode";
     const hasText     = selectedCue.cue_type === "text";
+    const hasCamera   = selectedCue.cue_type === "camera";
     setActiveTab((prev) => {
-      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "messages" && !hasMessages) || (prev === "light" && !hasLight) || (prev === "mic" && !hasMic) || (prev === "timecode" && !hasTimecode) || (prev === "text" && !hasText)) return "basics";
+      if ((prev === "levels" && !hasLevels) || (prev === "fade" && !hasFade) || (prev === "geometry" && !hasGeometry) || (prev === "messages" && !hasMessages) || (prev === "light" && !hasLight) || (prev === "mic" && !hasMic) || (prev === "timecode" && !hasTimecode) || (prev === "text" && !hasText) || (prev === "camera" && !hasCamera)) return "basics";
       return prev;
     });
     getCue(selectedCue.id)
@@ -87,6 +91,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
   const isMic      = selectedCue.cue_type === "mic";
   const isTimecode = selectedCue.cue_type === "timecode";
   const isText     = selectedCue.cue_type === "text";
+  const isCamera   = selectedCue.cue_type === "camera";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
@@ -152,9 +157,10 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
   };
 
   const tabStyle = (tab: Tab): React.CSSProperties => ({
-    padding: "6px 14px",
+    padding: "6px 10px",
     cursor: "pointer",
     fontSize: 12,
+    whiteSpace: "nowrap",
     background: activeTab === tab ? "var(--wc-bg-surface)" : "transparent",
     color: activeTab === tab ? "var(--wc-text)" : "var(--wc-text-muted)",
     border: "none",
@@ -183,11 +189,12 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
           background: "var(--wc-bg-deepest)",
         }}
       >
-        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : isMic ? "🎤" : isTimecode ? "🕐" : isText ? "🔤" : "📝"} {cueData.name}
+        {isAudio ? "🔊" : isVideo ? "🎬" : isImage ? "🖼" : isGroup ? "📦" : isWait ? "⏱" : isFade ? "📉" : isMidi ? "🎹" : isOsc ? "📡" : isStop ? "⏹" : isLight ? "💡" : isMic ? "🎤" : isTimecode ? "🕐" : isText ? "🔤" : isCamera ? "📷" : "📝"} {cueData.name}
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: "flex", borderBottom: "1px solid var(--wc-border)" }}>
+      {/* Tabs — flexWrap so every tab stays reachable however narrow the
+          inspector gets (a fixed row cropped the trailing tabs). */}
+      <div style={{ display: "flex", flexWrap: "wrap", borderBottom: "1px solid var(--wc-border)" }}>
         <button style={tabStyle("basics")} onClick={() => setActiveTab("basics")}>
           Basics
         </button>
@@ -199,9 +206,19 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
             Levels
           </button>
         )}
-        {(isAudio || isImage) && (
+        {isCamera && (
+          <button style={tabStyle("camera")} onClick={() => setActiveTab("camera")}>
+            Camera
+          </button>
+        )}
+        {(isAudio || isVideo || isImage || isCamera) && (
           <button style={tabStyle("fade")} onClick={() => setActiveTab("fade")}>
             Fade
+          </button>
+        )}
+        {(isVideo || isImage || isCamera) && (
+          <button style={tabStyle("geometry")} onClick={() => setActiveTab("geometry")}>
+            Geometry
           </button>
         )}
         {(isOsc || isMidi) && (
@@ -268,8 +285,14 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh }: Props
         {activeTab === "levels" && (isAudio || isVideo) && (
           <LevelsTab cue={cueData as AudioCueData | VideoCueData} isAudio={isAudio} onSave={save} />
         )}
-        {activeTab === "fade" && (isAudio || isImage) && (
-          <FadeTab cue={cueData as AudioCueData | ImageCueData} onSave={save} />
+        {activeTab === "fade" && (isAudio || isVideo || isImage || isCamera) && (
+          <FadeTab cue={cueData as AudioCueData | VideoCueData | ImageCueData | CameraCueData} onSave={save} />
+        )}
+        {activeTab === "geometry" && (isVideo || isImage || isCamera) && (
+          <GeometryTab cue={cueData as VideoCueData | ImageCueData | CameraCueData} onSave={save} />
+        )}
+        {activeTab === "camera" && isCamera && (
+          <CameraTab cue={cueData as CameraCueData} onSave={save} />
         )}
         {activeTab === "messages" && isOsc && (
           <OscTab cue={cueData as OscCueData} onSave={save} />

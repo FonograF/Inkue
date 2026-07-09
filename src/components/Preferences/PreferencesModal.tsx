@@ -17,6 +17,7 @@ import {
   getOscConfig,
   getOutputScreen,
   getPreferences,
+  identifyOutputScreen,
   listAudioDevices,
   listSystemFonts,
   listVideoScreens,
@@ -34,6 +35,7 @@ import { InputPatchesPanel } from "../InputPatches/InputPatchesPanel";
 import { OutputPatchesPanel } from "../OutputPatches/OutputPatchesPanel";
 import { TcPreferences } from "../Timecode/TcPreferences";
 import { NetworkInterfaceSection } from "./NetworkInterfaceSection";
+import { ProjectorToolsSection } from "./ProjectorToolsSection";
 import { listInputDevices } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
@@ -552,27 +554,47 @@ function DisplayContent({
     <>
       <Section title="Output Surface">
         <Row label="Output Screen">
-          <Select
-            style={selectStyle}
-            value={outputScreen ?? "floating"}
-            onChange={(e) => {
-              const v = e.target.value;
-              onScreenChange(v === "floating" ? null : parseInt(v));
-            }}
-          >
-            <option value="floating">Floating window</option>
-            {screens.map((s) => (
-              <option key={s.index} value={s.index}>
-                {s.is_primary
-                  ? `Screen ${s.index + 1} (primary, ${s.width}×${s.height})`
-                  : `Screen ${s.index + 1} (${s.width}×${s.height})`}
-              </option>
-            ))}
-          </Select>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Select
+              style={selectStyle}
+              value={outputScreen ?? "floating"}
+              onChange={(e) => {
+                const v = e.target.value;
+                onScreenChange(v === "floating" ? null : parseInt(v));
+              }}
+            >
+              <option value="floating">Floating window</option>
+              {screens.map((s) => (
+                <option key={s.index} value={s.index}>
+                  {s.is_primary
+                    ? `Screen ${s.index + 1} (primary, ${s.width}×${s.height})`
+                    : `Screen ${s.index + 1} (${s.width}×${s.height})`}
+                </option>
+              ))}
+            </Select>
+            <button
+              title="Flash a label on the selected output so you can verify it is the projector"
+              onClick={() => void identifyOutputScreen(outputScreen).catch(console.error)}
+              style={{
+                padding: "4px 12px",
+                fontSize: 12,
+                borderRadius: 4,
+                border: "1px solid var(--wc-border-strong)",
+                background: "var(--wc-bg-surface)",
+                color: "var(--wc-text)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Identify
+            </button>
+          </div>
         </Row>
         <Row label="">
           <span style={{ fontSize: 11, color: "var(--wc-text-faint)" }}>
-            Applies to all Video and Image cues. Takes effect on the next GO.
+            Applies immediately to the output window and to all Video and Image
+            cues. If the configured screen is disconnected, output falls back to
+            the primary display and a warning banner is shown.
           </span>
         </Row>
         <Row label="Output Timer">
@@ -703,6 +725,8 @@ function DisplayContent({
           </>
         )}
       </Section>
+
+      <ProjectorToolsSection />
     </>
   );
 }
@@ -1249,7 +1273,13 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                 {category === "display" && (
                   <DisplayContent
                     outputScreen={draftOutputScreen}
-                    onScreenChange={setDraftOutputScreen}
+                    onScreenChange={(s) => {
+                      // Applies immediately: the backend repositions the output
+                      // window (fullscreen on the screen / back to floating).
+                      setDraftOutputScreen(s);
+                      setOutputScreen_(s);
+                      void setOutputScreen(s).catch(console.error);
+                    }}
                     showOutputTimer={draftShowOutputTimer}
                     onTimerChange={setDraftShowOutputTimer}
                     timerFloating={draftTimerFloating}

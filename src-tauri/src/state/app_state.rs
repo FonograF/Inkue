@@ -86,6 +86,7 @@ impl AppState {
         registry.register(CueType::Mic,      Box::new(crate::cue::mic_cue::MicCueFactory));
         registry.register(CueType::Timecode, Box::new(crate::cue::timecode_cue::TimecodeCueFactory));
         registry.register(CueType::Text,     Box::new(crate::cue::text_cue::TextCueFactory));
+        registry.register(CueType::Camera,   Box::new(crate::cue::camera_cue::CameraCueFactory));
         registry.register(CueType::Wait, Box::new(WaitCueFactory));
 
         Self {

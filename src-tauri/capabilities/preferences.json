@@ -9,6 +9,7 @@
     "core:window:allow-destroy",
     "core:window:allow-start-dragging",
     "core:window:allow-hide",
-    "core:window:allow-show"
+    "core:window:allow-show",
+    "dialog:allow-open"
   ]
 }

@@ -196,8 +196,16 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             }
         };
 
+        // Per-cue geometry (fit / pan / scale / rotate / crop).  Set before the
+        // loadfile so the pending crop is armed ahead of VIDEO_RECONFIG, and on
+        // *every* load so a cue without geometry resets the previous cue's.
+        super::apply_geometry_props(lib, ctx, &params.geometry);
+
         if params.is_image {
             (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
+            // Images auto-complete via image-display-duration → END_FILE, which
+            // keep-open would suppress; a previous held video may have left it on.
+            (lib.mpv_set_property_string)(ctx, cs("keep-open").as_ptr(), cs("no").as_ptr());
             if let Some(m) = super::OUTPUT_PENDING_VIDEO_START.get() {
                 if let Ok(mut p) = m.lock() { *p = None; }
             }
@@ -238,6 +246,14 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             };
             opts.push(format!("loop-file={loop_val}"));
 
+            // Live sources (camera / network stream): drop the file-playback
+            // buffering so the feed shows with minimal delay.
+            if params.live_source {
+                opts.push("cache=no".to_string());
+                opts.push("demuxer-lavf-analyzeduration=0.1".to_string());
+                opts.push("video-latency-hacks=yes".to_string());
+            }
+
             let opts_str     = opts.join(",");
             let opts_cstr    = cs(&opts_str);
             let cmd_cstr     = cs("loadfile");
@@ -261,6 +277,12 @@ pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx:
             let hwdec_mode = "auto-copy";
             (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs(hwdec_mode).as_ptr());
             (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());
+
+            // Hold last frame: keep-open makes mpv pause on the final frame at
+            // EOF instead of unloading the file — no END_FILE, no forced black.
+            // The frame stays until the next visual cue replaces it (or a stop).
+            let keep_open = if params.hold_last_frame { "yes" } else { "no" };
+            (lib.mpv_set_property_string)(ctx, cs("keep-open").as_ptr(), cs(keep_open).as_ptr());
 
             // Load paused: frame 0 decoded → PLAYBACK_RESTART → reveal + unpause.
             (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());

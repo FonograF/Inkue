@@ -374,6 +374,10 @@ fn tick(
     let ws_patches        = ws.output_patches.clone();
     let ws_default_patch  = ws.default_output_patch_id;
     let ws_output_screen  = ws.preferences.display.output_screen;
+    // Keep the engine's projector-alignment mirror in sync with the loaded
+    // workspace (no-op unless it actually changed — covers open/new/recovery
+    // without hooking every load path).
+    output_engine.set_output_transform(ws.preferences.display.output_transform);
     let ws_osc_patches    = ws.osc_patches.clone();
     let ws_fixtures       = ws.fixtures.clone();
     let ws_fixture_groups = ws.fixture_groups.clone();

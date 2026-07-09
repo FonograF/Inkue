@@ -145,6 +145,14 @@ pub(super) fn position_on_screen(screen_index: u32) {
     });
 }
 
+/// Restore the saved windowed frame if the window is currently fullscreen
+/// (no-op otherwise).  Used when the operator selects "Floating window".
+pub(super) fn set_windowed() {
+    if MAC_FULLSCREEN.load(Ordering::SeqCst) {
+        toggle_fullscreen();
+    }
+}
+
 /// Toggle the window between its saved windowed frame and fullscreen on its
 /// current screen — the macOS counterpart of winit's `Fullscreen::Borderless`.
 pub(super) fn toggle_fullscreen() {

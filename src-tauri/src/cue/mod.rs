@@ -6,6 +6,7 @@
 //! [`registry::CueRegistry`] at startup.
 
 pub mod audio_cue;
+pub mod camera_cue;
 pub mod context;
 pub mod fade_cue;
 pub mod group_cue;

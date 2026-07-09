@@ -261,6 +261,22 @@ export function TimeTab({
               />
             </Field>
           )}
+          {isVideo && (
+            <Field label="At End">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={cue.hold_last_frame === true}
+                  onChange={(e) =>
+                    onSave({ hold_last_frame: e.target.checked } as never)
+                  }
+                />
+                <span style={{ fontSize: 12, color: "var(--wc-text)" }}>
+                  Hold last frame (no cut to black)
+                </span>
+              </label>
+            </Field>
+          )}
         </>
       )}
     </>

@@ -76,6 +76,24 @@ pub(super) fn mpv_event_loop(
 
             MPV_EVENT_VIDEO_RECONFIG => {
                 log::info!("[output-mpv] MPV_EVENT_VIDEO_RECONFIG");
+                // A fractional per-cue crop parks here until the source
+                // dimensions (video-params/w|h) exist — which they do once the
+                // video output reconfigures.  One-shot: applying the pixel
+                // crop triggers another VIDEO_RECONFIG, by which time the
+                // pending slot is already empty.
+                let pending = super::PENDING_CROP
+                    .get()
+                    .and_then(|m| m.lock().ok())
+                    .and_then(|g| *g);
+                if let Some(geometry) = pending {
+                    if super::try_apply_crop(&lib, ctx.0, &geometry) {
+                        if let Some(m) = super::PENDING_CROP.get() {
+                            if let Ok(mut p) = m.lock() {
+                                *p = None;
+                            }
+                        }
+                    }
+                }
             }
 
             MPV_EVENT_PLAYBACK_RESTART => {

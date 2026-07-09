@@ -12,7 +12,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
 
   useEffect(() => {
-    void getVersion().then(setVersion).catch(() => setVersion("1.1.6"));
+    void getVersion().then(setVersion).catch(() => setVersion("1.2.0"));
   }, []);
 
   const updateStatusText = (() => {

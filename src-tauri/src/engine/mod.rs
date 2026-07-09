@@ -10,6 +10,7 @@
 
 pub mod audio_engine;
 pub mod audio_input;
+pub mod camera_enum;
 pub mod device_manager;
 pub mod timecode_types;
 pub mod timecode_receiver;

@@ -503,10 +503,20 @@ pub fn update_cue(
     // Push live level/pan changes to the cue's currently-playing voice so an
     // inspector edit (volume, pan) takes effect immediately without restarting.
     let live = new_cue.live_audio_params();
+    // Geometry edits apply live too, when this cue is the content currently
+    // on the output window.
+    let live_geometry = new_cue
+        .visual_geometry()
+        .zip(new_cue.playing_voice_id())
+        .filter(|(_, voice_id)| state.output_engine.is_current_voice(*voice_id))
+        .map(|(geometry, _)| geometry);
     cue_list.replace_cue_recursive(&id, new_cue);
     if let Some(p) = live {
         let _ = state.audio_engine.set_voice_gain(p.voice_id, p.gain);
         let _ = state.audio_engine.set_voice_pan(p.voice_id, p.pan);
+    }
+    if let Some(geometry) = live_geometry {
+        state.output_engine.apply_geometry(&geometry);
     }
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
@@ -975,6 +985,63 @@ pub fn list_video_screens(
     state: tauri::State<crate::state::AppState>,
 ) -> Vec<crate::engine::output_engine::ScreenInfo> {
     state.output_engine.list_screens()
+}
+
+/// Enumerate connected cameras / capture devices for the Camera Cue inspector.
+///
+/// Async + `spawn_blocking`: device enumeration can stall on a flaky driver,
+/// and Tauri runs sync commands on the main thread (same rule as
+/// `list_audio_devices` — see 1.1.5).
+#[tauri::command]
+pub async fn list_camera_devices(
+) -> Result<Vec<crate::engine::camera_enum::CameraDeviceInfo>, String> {
+    tauri::async_runtime::spawn_blocking(crate::engine::camera_enum::list_camera_devices)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Monotonic token so a rapid second Identify cancels the first one's cleanup.
+static IDENTIFY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Flash a big identification label on the output window, positioned on the
+/// given screen, so the operator can verify before a show that "Screen 2"
+/// really is the projector.  Cleans up after ~2.5 s: the label is removed and
+/// the window is hidden again if it was hidden before.
+#[tauri::command]
+pub fn identify_output_screen(
+    screen_index: Option<u32>,
+    state: tauri::State<crate::state::AppState>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    let engine = std::sync::Arc::clone(&state.output_engine);
+    let was_visible = engine.is_output_visible();
+    let generation = IDENTIFY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+
+    let label = match screen_index {
+        Some(idx) => format!("SCREEN {}", idx + 1),
+        None => "OUTPUT WINDOW".to_string(),
+    };
+    let ass = format!(
+        "{{\\an5\\fs140\\bord6\\1c&H00FFFFFF&\\3c&H00000000&}}{label}\\N{{\\fs42}}Inkue output identification",
+    );
+    engine.show_text_overlay(&ass, screen_index);
+
+    std::thread::Builder::new()
+        .name("inkue-identify-screen".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            // A newer Identify owns the overlay now — let its cleanup handle it.
+            if IDENTIFY_GENERATION.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            engine.clear_text_overlay();
+            if !was_visible {
+                engine.hide_output();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

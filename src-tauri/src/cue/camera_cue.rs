@@ -1,14 +1,18 @@
-//! [`ImageCue`] — displays a static or animated image on the output surface.
+//! [`CameraCue`] — shows a live camera / capture / network video feed on the
+//! unified output window, like any other visual cue.
 //!
-//! The cue delegates rendering to the [`OutputEngine`], which uses libmpv with
-//! `audio=no,image-display-duration=inf` to show the image in the unified
-//! output window.  Images stay visible until explicitly stopped — there is no
-//! auto-complete via duration.
+//! The feed is opened by libmpv (which wraps libavformat's capture demuxers):
+//! DirectShow on Windows, V4L2 on Linux, AVFoundation on macOS — plus any
+//! network stream mpv can play (RTSP / HTTP / UDP…), which covers IP cameras
+//! and phone-camera apps.  Video fade in/out (dip-to-black overlay) and the
+//! per-cue [`VideoGeometry`] work exactly as they do for Video and Image cues.
+//! The feed runs until stopped and is replaced by the next visual GO.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -18,15 +22,71 @@ use super::{
     context::{CueContext, CueEvent},
     traits::{Cue, CueFactory, RuntimeState},
     types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve, FadeSpec},
-    video_cue::eof_fade_remaining_ms,
 };
 
 // ---------------------------------------------------------------------------
-// ImageCue
+// CameraSource
 // ---------------------------------------------------------------------------
 
-/// A cue that displays a static or animated image file on the output surface.
-pub struct ImageCue {
+/// Where the live feed comes from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CameraSource {
+    /// A local capture device (webcam, USB camera, HDMI capture card).
+    ///
+    /// `id` is the platform identifier ffmpeg's capture demuxer needs:
+    /// the DirectShow device *name* on Windows, the `/dev/videoN` path on
+    /// Linux, the AVFoundation device name on macOS.  `name` is what the
+    /// operator sees (usually the same string).
+    Device { id: String, name: String },
+    /// A network stream URL (RTSP / HTTP / UDP…) — IP cameras, NDI-to-RTSP
+    /// bridges, phone-camera apps.
+    Url { url: String },
+}
+
+impl Default for CameraSource {
+    fn default() -> Self {
+        Self::Device { id: String::new(), name: String::new() }
+    }
+}
+
+impl CameraSource {
+    /// `true` when the source is actually configured.
+    pub fn is_configured(&self) -> bool {
+        match self {
+            Self::Device { id, .. } => !id.is_empty(),
+            Self::Url { url } => !url.is_empty(),
+        }
+    }
+
+    /// The mpv URL that opens this source on the current OS.
+    pub fn mpv_url(&self) -> String {
+        match self {
+            Self::Url { url } => url.clone(),
+            Self::Device { id, .. } => {
+                #[cfg(target_os = "windows")]
+                {
+                    format!("av://dshow:video={id}")
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    format!("av://v4l2:{id}")
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    format!("av://avfoundation:{id}")
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CameraCue
+// ---------------------------------------------------------------------------
+
+/// A cue that shows a live camera / capture / network feed on the output.
+pub struct CameraCue {
     // --- Identity ---
     id: CueId,
     name: String,
@@ -46,110 +106,94 @@ pub struct ImageCue {
     // --- Continue ---
     continue_mode: ContinueMode,
 
-    // --- Image-specific ---
-    /// Absolute (or workspace-relative) path to the image file.
-    pub file_path: Option<PathBuf>,
-    /// Optional fade-in applied when the image first appears.
-    pub fade_in: Option<FadeSpec>,
-    /// Optional fade-out applied when the image is hidden.
-    pub fade_out: Option<FadeSpec>,
-    /// How long the image stays on screen before auto-completing.
-    /// `None` = infinite (hold until explicitly stopped).
-    pub display_duration_ms: Option<u64>,
+    // --- Camera-specific ---
+    /// The live source (device or network URL).
+    pub source: CameraSource,
+    /// Visual (GL overlay) fade-in from black.
+    pub video_fade_in: Option<FadeSpec>,
+    /// Visual (GL overlay) fade-out to black on stop.
+    pub video_fade_out: Option<FadeSpec>,
     /// Visual geometry (fit / position / scale / rotation / crop).
     pub geometry: VideoGeometry,
 
     is_disabled: bool,
 
     // --- Runtime ---
-    /// Active output voice ID.
     active_voice_id: Option<VoiceId>,
-    /// `true` between `go()` and the moment the action starts after pre-wait.
     in_pre_wait: bool,
-    /// Incremented on every `go()` call.
     play_generation: u64,
-    /// Prevents double-firing of Auto-Continue.
     auto_continue_fired: bool,
-    /// `true` once the natural-end visual fade-out has been triggered for the
-    /// current play (timed images only).
-    eof_fade_started: bool,
 }
 
-impl ImageCue {
-    /// Create a new, empty Image Cue with a fresh UUID.
+impl CameraCue {
+    /// Create a new, empty Camera Cue with a fresh UUID.
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
-            name: String::from("Image Cue"),
+            name: String::from("Camera Cue"),
             number: None,
             notes: String::new(),
-            color: CueColor::Green,
+            color: CueColor::Cyan,
             state: CueState::Standby,
             pre_wait: Duration::ZERO,
             post_wait: Duration::ZERO,
             started_at: None,
             action_started_at: None,
             continue_mode: ContinueMode::DoNotContinue,
-            file_path: None,
-            fade_in: None,
-            fade_out: None,
-            display_duration_ms: None,
+            source: CameraSource::default(),
+            video_fade_in: None,
+            video_fade_out: None,
             geometry: VideoGeometry::default(),
             is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
             play_generation: 0,
             auto_continue_fired: false,
-            eof_fade_started: false,
         }
     }
 
-    /// Start the actual image display action.
-    fn start_image_action(&mut self, context: &CueContext) -> Result<()> {
-        let path = self.file_path.as_ref().ok_or_else(|| {
-            anyhow!("ImageCue '{}': no file assigned — set a file in the inspector", self.name)
-        })?;
-
-        let fade_in_ms: u32 = self.fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+    /// Open the feed on the output window.
+    fn start_camera_action(&mut self, context: &CueContext) -> Result<()> {
+        let fade_in_ms = self.video_fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
+        let url = PathBuf::from(self.source.mpv_url());
 
         let voice_id = context.output_engine.show_content(ContentRequest {
-            file_path: path,
-            is_image: true,
+            file_path: &url,
+            is_image: false,
             fade_in_ms,
             loop_count: 0,
             start_ms: None,
             end_ms: None,
             screen_index: context.output_screen,
             audio_voice_id: None,
-            display_duration_ms: self.display_duration_ms,
+            display_duration_ms: None,
             hold_last_frame: false,
             geometry: self.geometry,
-            live_source: false,
+            live_source: true,
         })?;
 
         self.active_voice_id = Some(voice_id);
         self.action_started_at = Some(Instant::now());
         self.in_pre_wait = false;
-        self.eof_fade_started = false;
 
         context.emit(CueEvent::ActionStarted { cue_id: self.id });
         Ok(())
     }
 }
 
-impl Default for ImageCue {
+impl Default for CameraCue {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Cue for ImageCue {
+impl Cue for CameraCue {
     // -----------------------------------------------------------------------
     // Identity
     // -----------------------------------------------------------------------
 
     fn id(&self) -> CueId { self.id }
-    fn cue_type(&self) -> CueType { CueType::Image }
+    fn cue_type(&self) -> CueType { CueType::Camera }
     fn name(&self) -> &str { &self.name }
     fn set_name(&mut self, name: String) { self.name = name; }
     fn number(&self) -> Option<&str> { self.number.as_deref() }
@@ -175,11 +219,9 @@ impl Cue for ImageCue {
             return Ok(());
         }
 
-        let has_file = self.file_path.as_ref().is_some_and(|p| !p.as_os_str().is_empty());
-        if !has_file {
-            // No file assigned — nothing to play. Complete instantly (same
-            // pattern as MemoCue) so Auto-Continue/Auto-Follow can advance
-            // past it instead of getting stuck "running" an empty cue.
+        if !self.source.is_configured() {
+            // No source assigned — complete instantly (same pattern as an
+            // Image cue without a file) so Auto-Continue/Follow can advance.
             self.state = CueState::Running;
             self.started_at = Some(Instant::now());
             context.emit(CueEvent::ActionStarted { cue_id: self.id });
@@ -198,18 +240,14 @@ impl Cue for ImageCue {
             return Ok(());
         }
 
-        self.start_image_action(context)
+        self.start_camera_action(context)
     }
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
         self.in_pre_wait = false;
 
         if let Some(vid) = self.active_voice_id.take() {
-            let fade_ms = self
-                .fade_out
-                .as_ref()
-                .map(|f| f.duration_ms as u32)
-                .unwrap_or(0);
+            let fade_ms = self.video_fade_out.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
             context.output_engine.stop_content(vid, fade_ms, 0);
         }
 
@@ -217,22 +255,16 @@ impl Cue for ImageCue {
         self.started_at = None;
         self.action_started_at = None;
         self.auto_continue_fired = false;
-        self.eof_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
 
     fn pause(&mut self, _context: &CueContext) -> Result<()> {
-        if self.state == CueState::Running {
-            self.state = CueState::Paused;
-        }
+        // A live feed cannot meaningfully pause; keep it running.
         Ok(())
     }
 
     fn resume(&mut self, _context: &CueContext) -> Result<()> {
-        if self.state == CueState::Paused {
-            self.state = CueState::Running;
-        }
         Ok(())
     }
 
@@ -247,7 +279,6 @@ impl Cue for ImageCue {
         self.started_at = None;
         self.action_started_at = None;
         self.auto_continue_fired = false;
-        self.eof_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -259,31 +290,14 @@ impl Cue for ImageCue {
         self.action_started_at = None;
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
-        self.eof_fade_started = false;
         Ok(())
     }
 
     fn tick(&mut self, context: &CueContext) -> Result<()> {
         if self.in_pre_wait && self.elapsed() >= self.pre_wait {
-            if let Err(e) = self.start_image_action(context) {
-                log::warn!("ImageCue '{}' failed to start action: {e}", self.name);
+            if let Err(e) = self.start_camera_action(context) {
+                log::warn!("CameraCue '{}' failed to start: {e}", self.name);
                 self.state = CueState::Standby;
-            }
-        }
-
-        // Timed images: trigger the visual fade-out that lands on the end of
-        // the display duration (mirrors VideoCue's natural-end fade — without
-        // it the image hard-cuts to black when image-display-duration expires).
-        if !self.eof_fade_started && !self.in_pre_wait {
-            if let (Some(voice_id), Some(fade), Some(total)) =
-                (self.active_voice_id, &self.fade_out, self.duration())
-            {
-                if let Some(remaining_ms) =
-                    eof_fade_remaining_ms(self.action_elapsed(), total, fade.duration_ms)
-                {
-                    self.eof_fade_started = true;
-                    context.output_engine.begin_eof_fade_out(voice_id, remaining_ms);
-                }
             }
         }
         Ok(())
@@ -303,7 +317,7 @@ impl Cue for ImageCue {
     fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
     fn duration(&self) -> Option<Duration> {
-        self.display_duration_ms.map(Duration::from_millis)
+        None // A live feed has no natural end — runs until stopped.
     }
 
     fn elapsed(&self) -> Duration {
@@ -331,21 +345,17 @@ impl Cue for ImageCue {
         self.active_voice_id
     }
 
-    fn media_file_path(&self) -> Option<&std::path::Path> {
-        self.file_path.as_deref()
+    fn stop_on_next_go(&self) -> bool {
+        // Like an Image: the next visual GO replaces the feed.
+        true
     }
 
-    fn stop_on_next_go(&self) -> bool {
-        // Images always stop on the next GO (StopOnNextCue behavior).
+    fn is_visual(&self) -> bool {
         true
     }
 
     fn visual_geometry(&self) -> Option<VideoGeometry> {
         Some(self.geometry)
-    }
-
-    fn is_visual(&self) -> bool {
-        true
     }
 
     fn play_generation(&self) -> u64 { self.play_generation }
@@ -376,8 +386,8 @@ impl Cue for ImageCue {
 
     fn serialize(&self) -> Value {
         json!({
-            "type": "image",
-            "cue_type": "image",
+            "type": "camera",
+            "cue_type": "camera",
             "id": self.id,
             "number": self.number,
             "name": self.name,
@@ -386,12 +396,11 @@ impl Cue for ImageCue {
             "pre_wait_ms": self.pre_wait.as_millis() as u64,
             "post_wait_ms": self.post_wait.as_millis() as u64,
             "continue_mode": self.continue_mode,
-            "file_path": self.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "fade_in_ms": self.fade_in.as_ref().map(|f| f.duration_ms),
-            "fade_in_curve": self.fade_in.as_ref().map(|f| f.curve),
-            "fade_out_ms": self.fade_out.as_ref().map(|f| f.duration_ms),
-            "fade_out_curve": self.fade_out.as_ref().map(|f| f.curve),
-            "display_duration_ms": self.display_duration_ms,
+            "source": self.source,
+            "video_fade_in_ms": self.video_fade_in.as_ref().map(|f| f.duration_ms),
+            "video_fade_in_curve": self.video_fade_in.as_ref().map(|f| f.curve),
+            "video_fade_out_ms": self.video_fade_out.as_ref().map(|f| f.duration_ms),
+            "video_fade_out_curve": self.video_fade_out.as_ref().map(|f| f.curve),
             "geometry": self.geometry,
             "is_disabled": self.is_disabled,
         })
@@ -402,16 +411,16 @@ impl Cue for ImageCue {
 // Factory
 // ---------------------------------------------------------------------------
 
-/// Factory for [`ImageCue`].
-pub struct ImageCueFactory;
+/// Factory for [`CameraCue`].
+pub struct CameraCueFactory;
 
-impl CueFactory for ImageCueFactory {
+impl CueFactory for CameraCueFactory {
     fn create(&self) -> Box<dyn Cue> {
-        Box::new(ImageCue::new())
+        Box::new(CameraCue::new())
     }
 
     fn from_json(&self, value: Value) -> Result<Box<dyn Cue>> {
-        let mut cue = ImageCue::new();
+        let mut cue = CameraCue::new();
 
         if let Some(id_str) = value.get("id").and_then(|v| v.as_str()) {
             cue.id = id_str.parse().unwrap_or_else(|_| Uuid::new_v4());
@@ -441,32 +450,30 @@ impl CueFactory for ImageCueFactory {
                 cue.color = color;
             }
         }
-        if let Some(path) = value.get("file_path").and_then(|v| v.as_str()) {
-            cue.file_path = Some(PathBuf::from(path));
+        if let Some(src) = value.get("source") {
+            if let Ok(source) = serde_json::from_value(src.clone()) {
+                cue.source = source;
+            }
         }
-        if let Some(ms) = value.get("fade_in_ms").and_then(|v| v.as_u64()) {
+        if let Some(ms) = value.get("video_fade_in_ms").and_then(|v| v.as_u64()) {
             let curve = value
-                .get("fade_in_curve")
+                .get("video_fade_in_curve")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(FadeCurve::SCurve);
-            cue.fade_in = Some(FadeSpec { duration_ms: ms, curve });
+            cue.video_fade_in = Some(FadeSpec { duration_ms: ms, curve });
         }
-        if let Some(ms) = value.get("fade_out_ms").and_then(|v| v.as_u64()) {
+        if let Some(ms) = value.get("video_fade_out_ms").and_then(|v| v.as_u64()) {
             let curve = value
-                .get("fade_out_curve")
+                .get("video_fade_out_curve")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(FadeCurve::SCurve);
-            cue.fade_out = Some(FadeSpec { duration_ms: ms, curve });
-        }
-        if let Some(ms) = value.get("display_duration_ms").and_then(|v| v.as_u64()) {
-            cue.display_duration_ms = Some(ms);
+            cue.video_fade_out = Some(FadeSpec { duration_ms: ms, curve });
         }
         if let Some(g) = value.get("geometry") {
             if let Ok(geometry) = serde_json::from_value::<VideoGeometry>(g.clone()) {
                 cue.geometry = geometry;
             }
         }
-        // "stop_mode", "screen_index" from older workspaces are silently ignored.
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -484,89 +491,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_color_is_green() {
-        assert_eq!(ImageCue::new().color(), CueColor::Green);
+    fn cue_type_is_camera_and_visual() {
+        let cue = CameraCue::new();
+        assert_eq!(cue.cue_type(), CueType::Camera);
+        assert!(cue.is_visual());
+        assert!(cue.stop_on_next_go());
+        assert!(cue.duration().is_none());
     }
 
     #[test]
-    fn duration_method_always_none() {
-        assert!(ImageCue::new().duration().is_none());
+    fn default_source_is_unconfigured() {
+        assert!(!CameraSource::default().is_configured());
+        assert!(CameraSource::Url { url: "rtsp://cam".into() }.is_configured());
+        assert!(CameraSource::Device { id: "d".into(), name: "Cam".into() }.is_configured());
     }
 
     #[test]
-    fn cue_type_is_image() {
-        assert_eq!(ImageCue::new().cue_type(), CueType::Image);
+    fn device_source_builds_platform_mpv_url() {
+        let src = CameraSource::Device { id: "Logitech C920".into(), name: "Logitech C920".into() };
+        let url = src.mpv_url();
+        #[cfg(target_os = "windows")]
+        assert_eq!(url, "av://dshow:video=Logitech C920");
+        #[cfg(target_os = "linux")]
+        assert_eq!(url, "av://v4l2:Logitech C920");
+        #[cfg(target_os = "macos")]
+        assert_eq!(url, "av://avfoundation:Logitech C920");
     }
 
     #[test]
-    fn stop_on_next_go_always_true() {
-        assert!(ImageCue::new().stop_on_next_go());
+    fn url_source_passes_through() {
+        let src = CameraSource::Url { url: "rtsp://192.168.1.50:8554/live".into() };
+        assert_eq!(src.mpv_url(), "rtsp://192.168.1.50:8554/live");
     }
 
     #[test]
-    fn serialize_roundtrip_basic() {
-        let mut cue = ImageCue::new();
-        cue.set_name("Test Image".to_string());
+    fn serialize_roundtrip() {
+        let mut cue = CameraCue::new();
+        cue.set_name("FOH cam".to_string());
+        cue.source = CameraSource::Url { url: "rtsp://cam.local/stream".into() };
+        cue.video_fade_in = Some(FadeSpec { duration_ms: 1500, curve: FadeCurve::Linear });
 
         let json = cue.serialize();
-        assert_eq!(json["type"], "image");
-        assert_eq!(json["name"], "Test Image");
-        assert!(json.get("screen_index").is_none(), "screen_index must not be serialised");
-        assert!(json.get("stop_mode").is_none(), "stop_mode must not be serialised");
-        assert_eq!(json["display_duration_ms"], serde_json::Value::Null);
-        assert_eq!(json["color"], "green");
+        assert_eq!(json["type"], "camera");
+        assert_eq!(json["source"]["kind"], "url");
+
+        let rebuilt = CameraCueFactory.from_json(json).expect("roundtrip");
+        assert_eq!(rebuilt.name(), "FOH cam");
+        assert_eq!(rebuilt.cue_type(), CueType::Camera);
+        let rebuilt_json = rebuilt.serialize();
+        assert_eq!(rebuilt_json["video_fade_in_ms"], 1500);
+        assert_eq!(rebuilt_json["source"]["url"], "rtsp://cam.local/stream");
     }
 
     #[test]
-    fn from_json_roundtrip() {
-        let factory = ImageCueFactory;
-        let mut cue = ImageCue::new();
-        cue.set_name("Round Trip".to_string());
-
-        let json = cue.serialize();
-        let rebuilt = factory.from_json(json).expect("should deserialise");
-
-        assert_eq!(rebuilt.name(), "Round Trip");
-        assert_eq!(rebuilt.cue_type(), CueType::Image);
-    }
-
-    #[test]
-    fn serialize_roundtrip_geometry() {
-        use crate::engine::output_engine::FitMode;
-        let mut cue = ImageCue::new();
-        cue.geometry = VideoGeometry {
-            fit_mode: FitMode::Stretch,
-            scale: 0.5,
-            crop_bottom: 0.2,
-            ..Default::default()
-        };
-
-        let json = cue.serialize();
-        assert_eq!(json["geometry"]["fit_mode"], "stretch");
-
-        let rebuilt = ImageCueFactory.from_json(json).expect("roundtrip");
-        assert_eq!(rebuilt.visual_geometry().unwrap(), cue.geometry);
-    }
-
-    #[test]
-    fn from_json_without_geometry_uses_defaults() {
-        let json = serde_json::json!({ "type": "image", "name": "Legacy" });
-        let cue = ImageCueFactory.from_json(json).expect("legacy load");
-        assert!(cue.visual_geometry().unwrap().is_default());
-    }
-
-    #[test]
-    fn from_json_ignores_legacy_fields() {
-        let factory = ImageCueFactory;
+    fn from_json_device_source() {
         let json = serde_json::json!({
-            "type": "image",
-            "id": "00000000-0000-0000-0000-000000000001",
-            "name": "Legacy Cue",
-            "screen_index": 1,
-            "stop_mode": "display_duration",
-            "display_duration_ms": 5000,
+            "type": "camera",
+            "name": "Webcam",
+            "source": { "kind": "device", "id": "USB Video Device", "name": "USB Video Device" },
         });
-        let cue = factory.from_json(json).expect("should load without error");
-        assert_eq!(cue.name(), "Legacy Cue");
+        let cue = CameraCueFactory.from_json(json).expect("load");
+        let rebuilt = cue.serialize();
+        assert_eq!(rebuilt["source"]["kind"], "device");
+        assert_eq!(rebuilt["source"]["id"], "USB Video Device");
+    }
+
+    #[test]
+    fn go_without_source_completes_instantly() {
+        // Serialize path only — go() needs a CueContext; the unconfigured
+        // check is exercised through is_configured here.
+        assert!(!CameraCue::new().source.is_configured());
     }
 }

@@ -100,6 +100,15 @@ pub(super) static GL_WINDOW: OnceLock<Arc<winit::window::Window>> = OnceLock::ne
 static GL_WIDTH:  AtomicU32 = AtomicU32::new(1920);
 static GL_HEIGHT: AtomicU32 = AtomicU32::new(1080);
 
+/// Inverse homography for the global output warp (corner pin / fine rotation),
+/// row-major.  `None` = identity: mpv renders straight into the window's
+/// default framebuffer with zero extra cost.  Set via [`set_output_warp`].
+static OUTPUT_WARP: Mutex<Option<[f32; 9]>> = Mutex::new(None);
+/// One-shot "warp params changed" flag: forces a redraw even when mpv has no
+/// new frame (paused video, held image), so edits in the alignment editor are
+/// visible immediately.
+static WARP_DIRTY: AtomicBool = AtomicBool::new(false);
+
 // ---------------------------------------------------------------------------
 // Public helpers called from OutputEngine
 // ---------------------------------------------------------------------------
@@ -176,6 +185,30 @@ pub(super) fn set_outer_rect(x: i32, y: i32, width: u32, height: u32) {
 #[cfg(target_os = "macos")]
 pub(super) fn position_on_screen(screen_index: u32) {
     super::macos_window::position_on_screen(screen_index);
+}
+
+/// Install (or clear) the global output warp and wake the render thread so
+/// the change shows immediately — even on a paused frame or a test pattern.
+pub(super) fn set_output_warp(matrix: Option<[f32; 9]>) {
+    if let Ok(mut w) = OUTPUT_WARP.lock() {
+        *w = matrix;
+    }
+    WARP_DIRTY.store(true, Ordering::Relaxed);
+    wake();
+}
+
+/// Restore the output window to a floating windowed rect — exits the
+/// fullscreen-on-screen placement applied by `set_outer_rect` /
+/// `position_on_screen` when the operator switches back to "Floating window".
+pub(super) fn set_windowed_floating() {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(w) = GL_WINDOW.get() {
+        w.set_fullscreen(None);
+        w.set_outer_position(LogicalPosition::new(100, 100));
+        let _ = w.request_inner_size(LogicalSize::new(1280u32, 720u32));
+    }
+    #[cfg(target_os = "macos")]
+    super::macos_window::set_windowed();
 }
 
 // ---------------------------------------------------------------------------
@@ -641,8 +674,10 @@ fn render_thread_main(
         })
     };
 
-    // ── 8. Fade-quad shader ───────────────────────────────────────────────────
+    // ── 8. Fade-quad + warp shaders ───────────────────────────────────────────
     let (fade_program, fade_vao) = build_fade_shader(&gl)?;
+    let (warp_program, warp_vao) = build_warp_shader(&gl)?;
+    let mut warp_target: Option<WarpTarget> = None;
 
     // ── 9. mpv render context with OpenGL backend ─────────────────────────────
     let display_ptr = &*display_box as *const Display as *mut c_void;
@@ -728,6 +763,10 @@ fn render_thread_main(
         let flags     = unsafe { (lib.mpv_render_context_update)(render_ctx) };
         let has_frame = flags & MPV_RENDER_UPDATE_FRAME != 0;
         let text_active = TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed);
+        // Warp params changed since the last pass — must redraw even without a
+        // new mpv frame (paused video / held image), or alignment edits would
+        // only show on the next frame.
+        let warp_dirty = WARP_DIRTY.swap(false, Ordering::Relaxed);
         // Do not commit frames while the output window is hidden.  On Wayland
         // a wl_surface.commit() with a buffer permanently maps the surface, so
         // a single frame emitted before show_output() would make the window
@@ -741,7 +780,7 @@ fn render_thread_main(
         // mpv frame — mpv does not signal MPV_RENDER_UPDATE_FRAME for OSD
         // changes in idle mode, so we call render unconditionally to composite
         // the osd-overlay text onto the output surface.
-        if !has_frame && alpha == 0 && !text_active { continue; }
+        if !has_frame && alpha == 0 && !text_active && !warp_dirty { continue; }
 
         // Opt-in FPS cap: drop video frames arriving faster than the target interval.
         // Never throttle a fade animation or a Text overlay redraw (must stay smooth);
@@ -753,7 +792,28 @@ fn render_thread_main(
             }
         }
 
-        let mut fbo = MpvOpenglFbo { fbo: 0, w: w_px as i32, h: h_px as i32, internal_format: 0 };
+        // Global output warp (corner pin / fine rotation): when active, mpv
+        // renders into an offscreen texture and a fullscreen inverse-homography
+        // pass places it on the window; when identity, mpv renders straight
+        // into the default framebuffer exactly as before (zero extra cost).
+        let warp = OUTPUT_WARP.lock().ok().and_then(|g| *g);
+        let warp = match warp {
+            Some(hinv) => match ensure_warp_target(&gl, &mut warp_target, w_px, h_px) {
+                Ok(()) => Some(hinv),
+                Err(e) => {
+                    log::warn!("[render] warp disabled (FBO failed): {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let target_fbo: i32 = match (&warp, &warp_target) {
+            (Some(_), Some(t)) => t.fbo.0.get() as i32,
+            _ => 0,
+        };
+
+        let mut fbo = MpvOpenglFbo { fbo: target_fbo, w: w_px as i32, h: h_px as i32, internal_format: 0 };
         let mut flip = flip_y;
         let rp = [
             MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo  as *mut _ as *mut c_void },
@@ -762,6 +822,10 @@ fn render_thread_main(
         ];
         let ret = unsafe { (lib.mpv_render_context_render)(render_ctx, rp.as_ptr()) };
         if ret < 0 { log::warn!("[render] mpv_render_context_render: {ret}"); }
+
+        if let (Some(hinv), Some(t)) = (&warp, &warp_target) {
+            draw_warp_pass(&gl, warp_program, warp_vao, t.tex, hinv, w_px, h_px);
+        }
 
         if alpha > 0 { draw_fade_quad(&gl, fade_program, fade_vao, alpha as f32 / 255.0); }
 
@@ -885,5 +949,155 @@ fn draw_fade_quad(gl: &glow::Context, program: glow::Program, vao: glow::VertexA
         gl.bind_vertex_array(None);
         gl.use_program(None);
         gl.disable(glow::BLEND);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output warp pass (corner pin / fine rotation)
+// ---------------------------------------------------------------------------
+
+/// Offscreen target mpv renders into when the warp is active; the warp pass
+/// then samples it with the inverse homography.
+struct WarpTarget {
+    fbo: glow::Framebuffer,
+    tex: glow::Texture,
+    w:   u32,
+    h:   u32,
+}
+
+/// Create (or resize) the warp FBO to the current window size.
+fn ensure_warp_target(
+    gl: &glow::Context,
+    slot: &mut Option<WarpTarget>,
+    w: u32,
+    h: u32,
+) -> Result<()> {
+    if let Some(t) = slot {
+        if t.w == w && t.h == h {
+            return Ok(());
+        }
+    }
+    unsafe {
+        if let Some(old) = slot.take() {
+            gl.delete_framebuffer(old.fbo);
+            gl.delete_texture(old.tex);
+        }
+        let tex = gl.create_texture().map_err(|e| anyhow!("warp tex: {e}"))?;
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D, 0, glow::RGBA8 as i32,
+            w as i32, h as i32, 0,
+            glow::RGBA, glow::UNSIGNED_BYTE, None,
+        );
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+
+        let fbo = gl.create_framebuffer().map_err(|e| anyhow!("warp fbo: {e}"))?;
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0,
+        );
+        let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        if status != glow::FRAMEBUFFER_COMPLETE {
+            gl.delete_framebuffer(fbo);
+            gl.delete_texture(tex);
+            return Err(anyhow!("warp FBO incomplete: 0x{status:x}"));
+        }
+        *slot = Some(WarpTarget { fbo, tex, w, h });
+        log::info!("[render] warp target (re)created: {w}x{h}");
+    }
+    Ok(())
+}
+
+/// Fullscreen inverse-homography pass: for every window pixel, sample where in
+/// the mpv frame it comes from; pixels outside the destination quad are black.
+fn build_warp_shader(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray)> {
+    const VERT: &str = r#"
+#version 150 core
+const vec2 POS[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
+void main() { gl_Position = vec4(POS[gl_VertexID], 0.0, 1.0); }
+"#;
+    // All warp math is in y-down normalized window space ([0,1]², origin at the
+    // top-left — matching the editor UI).  gl_FragCoord is y-up, so flip once
+    // on input; the mpv texture is rendered with FLIP_Y (y-up), so flip once
+    // more on sampling.
+    const FRAG: &str = r#"
+#version 150 core
+uniform sampler2D u_tex;
+uniform mat3  u_hinv;
+uniform vec2  u_size;
+out vec4 color;
+void main() {
+    vec2 win = vec2(gl_FragCoord.x / u_size.x, 1.0 - gl_FragCoord.y / u_size.y);
+    vec3 t = u_hinv * vec3(win, 1.0);
+    if (t.z == 0.0) { color = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    vec2 uv = t.xy / t.z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        color = vec4(0.0, 0.0, 0.0, 1.0);
+    } else {
+        color = texture(u_tex, vec2(uv.x, 1.0 - uv.y));
+    }
+}
+"#;
+    unsafe {
+        let vs = gl.create_shader(glow::VERTEX_SHADER).map_err(|e| anyhow!("{e}"))?;
+        gl.shader_source(vs, VERT);
+        gl.compile_shader(vs);
+        if !gl.get_shader_compile_status(vs) { return Err(anyhow!("warp vert: {}", gl.get_shader_info_log(vs))); }
+
+        let fs = gl.create_shader(glow::FRAGMENT_SHADER).map_err(|e| anyhow!("{e}"))?;
+        gl.shader_source(fs, FRAG);
+        gl.compile_shader(fs);
+        if !gl.get_shader_compile_status(fs) { return Err(anyhow!("warp frag: {}", gl.get_shader_info_log(fs))); }
+
+        let prog = gl.create_program().map_err(|e| anyhow!("{e}"))?;
+        gl.attach_shader(prog, vs); gl.attach_shader(prog, fs);
+        gl.link_program(prog);
+        if !gl.get_program_link_status(prog) { return Err(anyhow!("warp link: {}", gl.get_program_info_log(prog))); }
+        gl.detach_shader(prog, vs); gl.delete_shader(vs);
+        gl.detach_shader(prog, fs); gl.delete_shader(fs);
+
+        let vao = gl.create_vertex_array().map_err(|e| anyhow!("{e}"))?;
+        log::info!("[render] warp shader compiled");
+        Ok((prog, vao))
+    }
+}
+
+/// Draw the warp pass into the window's default framebuffer.
+fn draw_warp_pass(
+    gl: &glow::Context,
+    program: glow::Program,
+    vao: glow::VertexArray,
+    tex: glow::Texture,
+    hinv: &[f32; 9],
+    w: u32,
+    h: u32,
+) {
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.viewport(0, 0, w as i32, h as i32);
+        gl.disable(glow::BLEND);
+        gl.use_program(Some(program));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        if let Some(loc) = gl.get_uniform_location(program, "u_tex") {
+            gl.uniform_1_i32(Some(&loc), 0);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_hinv") {
+            // Our matrix is row-major; transpose=true converts for GLSL.
+            gl.uniform_matrix_3_f32_slice(Some(&loc), true, hinv);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_size") {
+            gl.uniform_2_f32(Some(&loc), w as f32, h as f32);
+        }
+        gl.bind_vertex_array(Some(vao));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        gl.bind_vertex_array(None);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.use_program(None);
     }
 }

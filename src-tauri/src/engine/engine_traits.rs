@@ -11,7 +11,6 @@
 //! `context.{audio,output,dmx}_engine.*` from the cue and transport layers; the
 //! event loop keeps its own concrete engine handles and is unaffected.
 
-use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -19,7 +18,7 @@ use uuid::Uuid;
 
 use super::audio_engine::AudioEngine;
 use super::dmx_engine::{ChannelWidth, DmxEngine};
-use super::output_engine::OutputEngine;
+use super::output_engine::{ContentRequest, OutputEngine};
 use super::ring_command::{FadeCurve, VoiceId};
 use super::voice::Voice;
 
@@ -133,20 +132,7 @@ impl AudioEngineApi for AudioEngine {
 
 /// The output-engine operations the cue and transport layers depend on.
 pub trait OutputEngineApi: Send + Sync {
-    #[allow(clippy::too_many_arguments)]
-    fn show_content(
-        &self,
-        file_path: &Path,
-        is_image: bool,
-        fade_in_ms: u32,
-        this_fade_out_ms: u32,
-        loop_count: u32,
-        start_ms: Option<u64>,
-        end_ms: Option<u64>,
-        screen_index: Option<u32>,
-        audio_voice_id: Option<VoiceId>,
-        display_duration_ms: Option<u64>,
-    ) -> Result<VoiceId>;
+    fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId>;
     fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32);
     fn hard_stop_current(&self);
     fn panic_stop(&self);
@@ -160,35 +146,14 @@ pub trait OutputEngineApi: Send + Sync {
     fn seek(&self, position_ms: u64);
     fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>);
     fn clear_text_overlay(&self);
+    /// Start the visual fade that lands exactly on the content's natural end.
+    /// Returns `false` when `voice_id` is no longer on the output window.
+    fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool;
 }
 
 impl OutputEngineApi for OutputEngine {
-    fn show_content(
-        &self,
-        file_path: &Path,
-        is_image: bool,
-        fade_in_ms: u32,
-        this_fade_out_ms: u32,
-        loop_count: u32,
-        start_ms: Option<u64>,
-        end_ms: Option<u64>,
-        screen_index: Option<u32>,
-        audio_voice_id: Option<VoiceId>,
-        display_duration_ms: Option<u64>,
-    ) -> Result<VoiceId> {
-        OutputEngine::show_content(
-            self,
-            file_path,
-            is_image,
-            fade_in_ms,
-            this_fade_out_ms,
-            loop_count,
-            start_ms,
-            end_ms,
-            screen_index,
-            audio_voice_id,
-            display_duration_ms,
-        )
+    fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
+        OutputEngine::show_content(self, req)
     }
     fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32) {
         OutputEngine::stop_content(self, voice_id, visual_fade_ms, audio_fade_ms)
@@ -228,6 +193,9 @@ impl OutputEngineApi for OutputEngine {
     }
     fn clear_text_overlay(&self) {
         OutputEngine::clear_text_overlay(self)
+    }
+    fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool {
+        OutputEngine::begin_eof_fade_out(self, voice_id, fade_ms)
     }
 }
 
