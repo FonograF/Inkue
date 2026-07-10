@@ -65,6 +65,7 @@ use crate::engine::mpv_sys::{
 use super::types::MpvCtx;
 use super::FADE_STATE;
 use super::fade;
+use super::slot;
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -677,7 +678,6 @@ fn render_thread_main(
     // ── 8. Fade-quad + warp shaders ───────────────────────────────────────────
     let (fade_program, fade_vao) = build_fade_shader(&gl)?;
     let (warp_program, warp_vao) = build_warp_shader(&gl)?;
-    let mut warp_target: Option<WarpTarget> = None;
 
     // ── 9. mpv render context with OpenGL backend ─────────────────────────────
     let display_ptr = &*display_box as *const Display as *mut c_void;
@@ -711,6 +711,17 @@ fn render_thread_main(
     let mut w_px = handles.width;
     let mut h_px = handles.height;
 
+    // Layer compositor state: the overlay context (timer OSD / Text Cue /
+    // test patterns) renders into its own target like every video slot; the
+    // ping-pong pair accumulates the blend stack.
+    let (composite_program, composite_vao) = build_composite_shader(&gl)?;
+    let (blit_program, blit_vao) = build_blit_shader(&gl)?;
+    let mut overlay_target: Option<WarpTarget> = None;
+    let mut overlay_valid = false;
+    let mut slot_targets: Vec<Option<WarpTarget>> = Vec::new();
+    let mut slot_valid: Vec<bool> = Vec::new();
+    let mut pingpong: [Option<WarpTarget>; 2] = [None, None];
+
     // Opt-in output frame-rate cap (Linux).  `INKUE_OUTPUT_FPS=30` makes the render
     // loop present at most ~30 fps, halving the output window's GPU compositing load so
     // a weak shared-memory iGPU keeps headroom for the WebKitGTK UI during playback.
@@ -729,10 +740,42 @@ fn render_thread_main(
     let mut last_present = std::time::Instant::now();
 
     loop {
-        let needs_animation = FADE_STATE.get()
+        // Create render contexts for slots the engine spawned since last pass.
+        let slots = slot_snapshot();
+        for s in &slots {
+            if s.needs_render_init.swap(false, Ordering::AcqRel) {
+                let mut gl_init2 = MpvOpenglInitParams {
+                    get_proc_address:     gl_get_proc_address,
+                    get_proc_address_ctx: display_ptr,
+                };
+                let api_str2 = CString::new("opengl").unwrap();
+                let params2 = [
+                    MpvRenderParam { type_: MPV_RENDER_PARAM_API_TYPE,           data: api_str2.as_ptr() as *mut c_void },
+                    MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: &mut gl_init2 as *mut _ as *mut c_void },
+                    MpvRenderParam { type_: 0, data: std::ptr::null_mut() },
+                ];
+                let mut rc: *mut c_void = std::ptr::null_mut();
+                let ret = unsafe { (lib.mpv_render_context_create)(&mut rc, s.mpv_ctx.0, params2.as_ptr()) };
+                if ret < 0 {
+                    log::error!("[render] slot {} render context failed: {ret}", s.index);
+                } else {
+                    unsafe { (lib.mpv_render_context_set_update_callback)(rc, Some(on_mpv_update), signal_ptr); }
+                    s.render_ctx.store(rc, Ordering::Release);
+                    log::info!("[render] slot {} render context created", s.index);
+                }
+            }
+        }
+
+        // Per-slot opacity animations pace the loop at 16 ms just like the
+        // master fade.
+        let master_animating = FADE_STATE.get()
             .and_then(|fs| fs.lock().ok())
             .map(|s| s.current_alpha != s.target_alpha)
             .unwrap_or(false);
+        let slots_animating = slots.iter().any(|s| {
+            s.state.lock().map(|st| st.anim.is_animating()).unwrap_or(false)
+        });
+        let needs_animation = master_animating || slots_animating;
         let timeout = if needs_animation { Duration::from_millis(16) } else { Duration::from_millis(100) };
 
         {
@@ -760,6 +803,7 @@ fn render_thread_main(
         let (alpha, done) = fade::tick_fade();
         if done { fade::execute_pending(); }
 
+        // Overlay context (timer OSD / Text Cue / test patterns / win32 path).
         let flags     = unsafe { (lib.mpv_render_context_update)(render_ctx) };
         let has_frame = flags & MPV_RENDER_UPDATE_FRAME != 0;
         let text_active = TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed);
@@ -767,6 +811,51 @@ fn render_thread_main(
         // new mpv frame (paused video / held image), or alignment edits would
         // only show on the next frame.
         let warp_dirty = WARP_DIRTY.swap(false, Ordering::Relaxed);
+
+        // Tick each slot: advance opacity anims, finish pending unloads, and
+        // check for fresh frames.  Ticks must run even while hidden so stop
+        // fades can finish, but rendering below is gated on visibility.
+        let slots = slot_snapshot();
+        struct LayerDraw {
+            slot_index: usize,
+            layer_key: u64,
+            opacity: f32,
+            blend_mode: i32,
+            has_new_frame: bool,
+            render_ctx: *mut c_void,
+        }
+        let mut layers: Vec<LayerDraw> = Vec::with_capacity(slots.len());
+        let mut any_slot_frame = false;
+        for s in &slots {
+            let rc = s.render_ctx.load(Ordering::Acquire);
+            if rc.is_null() {
+                continue;
+            }
+            let sflags = unsafe { (lib.mpv_render_context_update)(rc) };
+            let s_new_frame = sflags & MPV_RENDER_UPDATE_FRAME != 0;
+            let (opacity, _still_animating) = slot::tick_slot(s);
+            let Some((voice, layer_key, blend_mode)) = s
+                .state
+                .lock()
+                .ok()
+                .map(|st| (st.voice_id, st.layer_key, st.blend_mode.shader_id()))
+            else { continue };
+            if voice.is_none() {
+                if let Some(v) = slot_valid.get_mut(s.index) { *v = false; }
+                continue;
+            }
+            any_slot_frame |= s_new_frame;
+            layers.push(LayerDraw {
+                slot_index: s.index,
+                layer_key,
+                opacity,
+                blend_mode,
+                has_new_frame: s_new_frame,
+                render_ctx: rc,
+            });
+        }
+        layers.sort_by_key(|l| l.layer_key);
+
         // Do not commit frames while the output window is hidden.  On Wayland
         // a wl_surface.commit() with a buffer permanently maps the surface, so
         // a single frame emitted before show_output() would make the window
@@ -774,13 +863,12 @@ fn render_thread_main(
         // opens it.  show() sets this flag and wakes the loop so the first
         // committed frame arrives immediately when the window is revealed.
         if !OUTPUT_VISIBLE.load(Ordering::Relaxed) { continue; }
-        // Skip rendering when there is nothing to show: no new frame from mpv
-        // and the GL fade quad is fully transparent (alpha=0).  Exception:
-        // when a Text Cue overlay is active we must render even without a new
-        // mpv frame — mpv does not signal MPV_RENDER_UPDATE_FRAME for OSD
-        // changes in idle mode, so we call render unconditionally to composite
-        // the osd-overlay text onto the output surface.
-        if !has_frame && alpha == 0 && !text_active && !warp_dirty { continue; }
+        // Skip rendering when nothing changed anywhere: no new frame from any
+        // mpv, no animation, no active layers or overlay work.  Text/timer
+        // overlays render unconditionally (mpv does not signal OSD-only
+        // changes in idle mode).
+        if !has_frame && !any_slot_frame && alpha == 0 && !text_active && !warp_dirty
+            && !needs_animation && layers.is_empty() { continue; }
 
         // Opt-in FPS cap: drop video frames arriving faster than the target interval.
         // Never throttle a fade animation or a Text overlay redraw (must stay smooth);
@@ -792,48 +880,126 @@ fn render_thread_main(
             }
         }
 
-        // Global output warp (corner pin / fine rotation): when active, mpv
-        // renders into an offscreen texture and a fullscreen inverse-homography
-        // pass places it on the window; when identity, mpv renders straight
-        // into the default framebuffer exactly as before (zero extra cost).
-        let warp = OUTPUT_WARP.lock().ok().and_then(|g| *g);
-        let warp = match warp {
-            Some(hinv) => match ensure_warp_target(&gl, &mut warp_target, w_px, h_px) {
-                Ok(()) => Some(hinv),
-                Err(e) => {
-                    log::warn!("[render] warp disabled (FBO failed): {e}");
-                    None
+        // ── Size all offscreen targets ────────────────────────────────────────
+        let mut targets_ok = ensure_warp_target(&gl, &mut overlay_target, w_px, h_px).is_ok();
+        targets_ok &= ensure_warp_target(&gl, &mut pingpong[0], w_px, h_px).is_ok();
+        targets_ok &= ensure_warp_target(&gl, &mut pingpong[1], w_px, h_px).is_ok();
+        if slot_targets.len() < slots.len() {
+            slot_targets.resize_with(slots.len(), || None);
+            slot_valid.resize(slots.len(), false);
+        }
+        for l in &layers {
+            if let Some(t) = slot_targets.get_mut(l.slot_index) {
+                targets_ok &= ensure_warp_target(&gl, t, w_px, h_px).is_ok();
+            }
+        }
+        if !targets_ok {
+            log::warn!("[render] compositor targets unavailable — skipping frame");
+            continue;
+        }
+
+        // ── Render mpv contexts into their targets ────────────────────────────
+        // Overlay: render every pass — idle output is a cheap transparent
+        // clear, and OSD/timer changes never signal a new frame.
+        if let Some(t) = &overlay_target {
+            let mut fbo = MpvOpenglFbo { fbo: t.fbo.0.get() as i32, w: w_px as i32, h: h_px as i32, internal_format: 0 };
+            let mut flip = flip_y;
+            let rp = [
+                MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo  as *mut _ as *mut c_void },
+                MpvRenderParam { type_: MPV_RENDER_PARAM_FLIP_Y,     data: &mut flip as *mut _ as *mut c_void },
+                MpvRenderParam { type_: 0, data: std::ptr::null_mut() },
+            ];
+            let ret = unsafe { (lib.mpv_render_context_render)(render_ctx, rp.as_ptr()) };
+            if ret < 0 { log::warn!("[render] overlay render: {ret}"); }
+            overlay_valid = true;
+        }
+
+        for l in &layers {
+            let needs = l.has_new_frame || !slot_valid.get(l.slot_index).copied().unwrap_or(false);
+            if !needs {
+                continue;
+            }
+            if let Some(Some(t)) = slot_targets.get(l.slot_index) {
+                let mut fbo = MpvOpenglFbo { fbo: t.fbo.0.get() as i32, w: w_px as i32, h: h_px as i32, internal_format: 0 };
+                let mut flip = flip_y;
+                let rp = [
+                    MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo  as *mut _ as *mut c_void },
+                    MpvRenderParam { type_: MPV_RENDER_PARAM_FLIP_Y,     data: &mut flip as *mut _ as *mut c_void },
+                    MpvRenderParam { type_: 0, data: std::ptr::null_mut() },
+                ];
+                let ret = unsafe { (lib.mpv_render_context_render)(l.render_ctx, rp.as_ptr()) };
+                if ret < 0 { log::warn!("[render] slot {} render: {ret}", l.slot_index); }
+                if let Some(v) = slot_valid.get_mut(l.slot_index) { *v = true; }
+            }
+        }
+
+        // ── Composite the layer stack (ping-pong) ─────────────────────────────
+        // Base = opaque black; each layer blends over the accumulated result.
+        let mut src = 0usize; // pingpong[src] holds the accumulated composite
+        unsafe {
+            let base = pingpong[src].as_ref().map(|t| t.fbo);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, base);
+            gl.viewport(0, 0, w_px as i32, h_px as i32);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+        }
+        for l in &layers {
+            if l.opacity <= 0.0 {
+                continue;
+            }
+            let Some(Some(layer_t)) = slot_targets.get(l.slot_index) else { continue };
+            let dst = 1 - src;
+            let (backdrop_tex, dst_fbo) = match (&pingpong[src], &pingpong[dst]) {
+                (Some(a), Some(b)) => (a.tex, b.fbo),
+                _ => continue,
+            };
+            draw_composite_pass(
+                &gl, composite_program, composite_vao,
+                backdrop_tex, layer_t.tex, l.blend_mode, l.opacity, w_px, h_px, dst_fbo,
+            );
+            src = dst;
+        }
+        // Overlay (timer / text / patterns / win32 content) always on top.
+        if overlay_valid {
+            if let Some(t) = &overlay_target {
+                let dst = 1 - src;
+                if let (Some(a), Some(b)) = (&pingpong[src], &pingpong[dst]) {
+                    draw_composite_pass(
+                        &gl, composite_program, composite_vao,
+                        a.tex, t.tex, 0, 1.0, w_px, h_px, b.fbo,
+                    );
+                    src = dst;
                 }
-            },
-            None => None,
-        };
+            }
+        }
 
-        let target_fbo: i32 = match (&warp, &warp_target) {
-            (Some(_), Some(t)) => t.fbo.0.get() as i32,
-            _ => 0,
-        };
-
-        let mut fbo = MpvOpenglFbo { fbo: target_fbo, w: w_px as i32, h: h_px as i32, internal_format: 0 };
-        let mut flip = flip_y;
-        let rp = [
-            MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo  as *mut _ as *mut c_void },
-            MpvRenderParam { type_: MPV_RENDER_PARAM_FLIP_Y,     data: &mut flip as *mut _ as *mut c_void },
-            MpvRenderParam { type_: 0, data: std::ptr::null_mut() },
-        ];
-        let ret = unsafe { (lib.mpv_render_context_render)(render_ctx, rp.as_ptr()) };
-        if ret < 0 { log::warn!("[render] mpv_render_context_render: {ret}"); }
-
-        if let (Some(hinv), Some(t)) = (&warp, &warp_target) {
-            draw_warp_pass(&gl, warp_program, warp_vao, t.tex, hinv, w_px, h_px);
+        // ── Present: warp (or plain blit) + master fade quad ──────────────────
+        let warp = OUTPUT_WARP.lock().ok().and_then(|g| *g);
+        let final_tex = pingpong[src].as_ref().map(|t| t.tex);
+        if let Some(tex) = final_tex {
+            match warp {
+                Some(hinv) => draw_warp_pass(&gl, warp_program, warp_vao, tex, &hinv, w_px, h_px),
+                None => draw_blit_pass(&gl, blit_program, blit_vao, tex, w_px, h_px),
+            }
         }
 
         if alpha > 0 { draw_fade_quad(&gl, fade_program, fade_vao, alpha as f32 / 255.0); }
 
         if let Err(e) = surface.swap_buffers(&ctx) { log::warn!("[render] swap: {e:?}"); }
         unsafe { (lib.mpv_render_context_report_swap)(render_ctx); }
+        for l in &layers {
+            if l.has_new_frame {
+                unsafe { (lib.mpv_render_context_report_swap)(l.render_ctx); }
+            }
+        }
         #[cfg(target_os = "linux")]
         { last_present = std::time::Instant::now(); }
     }
+}
+
+/// Snapshot of the slot registry for one render pass.
+fn slot_snapshot() -> Vec<Arc<super::slot::VideoSlot>> {
+    super::slot::all_slots()
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1230,187 @@ void main() {
         let vao = gl.create_vertex_array().map_err(|e| anyhow!("{e}"))?;
         log::info!("[render] warp shader compiled");
         Ok((prog, vao))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layer compositor (blend stack) + plain blit
+// ---------------------------------------------------------------------------
+
+/// One blend step: `result = blend(backdrop, layer, mode, opacity)`.
+///
+/// The per-channel math is [`super::blend::GLSL_BLEND_FN`], whose executable
+/// spec is the Rust `blend_channel` in `blend.rs` — keep them identical.
+fn build_composite_shader(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray)> {
+    const VERT: &str = r#"
+#version 150 core
+const vec2 POS[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
+out vec2 v_uv;
+void main() {
+    gl_Position = vec4(POS[gl_VertexID], 0.0, 1.0);
+    v_uv = POS[gl_VertexID] * 0.5 + 0.5;
+}
+"#;
+    let frag = format!(
+        r#"
+#version 150 core
+uniform sampler2D u_backdrop;
+uniform sampler2D u_layer;
+uniform int   u_blend_mode;
+uniform float u_opacity;
+in vec2 v_uv;
+out vec4 color;
+{}
+void main() {{
+    vec4 b = texture(u_backdrop, v_uv);
+    vec4 s = texture(u_layer, v_uv);
+    float sa = clamp(s.a * u_opacity, 0.0, 1.0);
+    float ao = sa + b.a * (1.0 - sa);
+    vec3 rgb = vec3(0.0);
+    for (int c = 0; c < 3; c++) {{
+        float blended = (1.0 - b.a) * s[c] + b.a * blend_channel(u_blend_mode, b[c], s[c]);
+        rgb[c] = sa * blended + (1.0 - sa) * b.a * b[c];
+    }}
+    if (ao > 0.0) rgb /= ao;
+    color = vec4(rgb, ao);
+}}
+"#,
+        super::blend::GLSL_BLEND_FN,
+    );
+    build_program(gl, VERT, &frag, "composite")
+}
+
+/// Plain textured fullscreen blit (composite → window when no warp).
+fn build_blit_shader(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray)> {
+    const VERT: &str = r#"
+#version 150 core
+const vec2 POS[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
+out vec2 v_uv;
+void main() {
+    gl_Position = vec4(POS[gl_VertexID], 0.0, 1.0);
+    v_uv = POS[gl_VertexID] * 0.5 + 0.5;
+}
+"#;
+    const FRAG: &str = r#"
+#version 150 core
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(texture(u_tex, v_uv).rgb, 1.0); }
+"#;
+    build_program(gl, VERT, FRAG, "blit")
+}
+
+/// Compile + link a program and create its (empty) VAO.
+fn build_program(
+    gl: &glow::Context,
+    vert: &str,
+    frag: &str,
+    name: &str,
+) -> Result<(glow::Program, glow::VertexArray)> {
+    unsafe {
+        let vs = gl.create_shader(glow::VERTEX_SHADER).map_err(|e| anyhow!("{e}"))?;
+        gl.shader_source(vs, vert);
+        gl.compile_shader(vs);
+        if !gl.get_shader_compile_status(vs) {
+            return Err(anyhow!("{name} vert: {}", gl.get_shader_info_log(vs)));
+        }
+
+        let fs = gl.create_shader(glow::FRAGMENT_SHADER).map_err(|e| anyhow!("{e}"))?;
+        gl.shader_source(fs, frag);
+        gl.compile_shader(fs);
+        if !gl.get_shader_compile_status(fs) {
+            return Err(anyhow!("{name} frag: {}", gl.get_shader_info_log(fs)));
+        }
+
+        let prog = gl.create_program().map_err(|e| anyhow!("{e}"))?;
+        gl.attach_shader(prog, vs);
+        gl.attach_shader(prog, fs);
+        gl.link_program(prog);
+        if !gl.get_program_link_status(prog) {
+            return Err(anyhow!("{name} link: {}", gl.get_program_info_log(prog)));
+        }
+        gl.detach_shader(prog, vs);
+        gl.delete_shader(vs);
+        gl.detach_shader(prog, fs);
+        gl.delete_shader(fs);
+
+        let vao = gl.create_vertex_array().map_err(|e| anyhow!("{e}"))?;
+        log::info!("[render] {name} shader compiled");
+        Ok((prog, vao))
+    }
+}
+
+/// One blend step of the layer stack into `dst_fbo`.
+#[allow(clippy::too_many_arguments)]
+fn draw_composite_pass(
+    gl: &glow::Context,
+    program: glow::Program,
+    vao: glow::VertexArray,
+    backdrop_tex: glow::Texture,
+    layer_tex: glow::Texture,
+    blend_mode: i32,
+    opacity: f32,
+    w: u32,
+    h: u32,
+    dst_fbo: glow::Framebuffer,
+) {
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(dst_fbo));
+        gl.viewport(0, 0, w as i32, h as i32);
+        gl.disable(glow::BLEND);
+        gl.use_program(Some(program));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(backdrop_tex));
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, Some(layer_tex));
+        if let Some(loc) = gl.get_uniform_location(program, "u_backdrop") {
+            gl.uniform_1_i32(Some(&loc), 0);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_layer") {
+            gl.uniform_1_i32(Some(&loc), 1);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_blend_mode") {
+            gl.uniform_1_i32(Some(&loc), blend_mode);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_opacity") {
+            gl.uniform_1_f32(Some(&loc), opacity);
+        }
+        gl.bind_vertex_array(Some(vao));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        gl.bind_vertex_array(None);
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.use_program(None);
+    }
+}
+
+/// Blit the final composite to the window's default framebuffer.
+fn draw_blit_pass(
+    gl: &glow::Context,
+    program: glow::Program,
+    vao: glow::VertexArray,
+    tex: glow::Texture,
+    w: u32,
+    h: u32,
+) {
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.viewport(0, 0, w as i32, h as i32);
+        gl.disable(glow::BLEND);
+        gl.use_program(Some(program));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        if let Some(loc) = gl.get_uniform_location(program, "u_tex") {
+            gl.uniform_1_i32(Some(&loc), 0);
+        }
+        gl.bind_vertex_array(Some(vao));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        gl.bind_vertex_array(None);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.use_program(None);
     }
 }
 

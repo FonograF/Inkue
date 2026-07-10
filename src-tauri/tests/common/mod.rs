@@ -269,6 +269,7 @@ pub enum EngineCall {
     OutputClearText,
     OutputPanicStop,
     OutputEofFade { fade_ms: u32 },
+    OutputSetOpacity { opacity: f32 },
     DmxSubmitFade { universe: u16, channel: u16, target_norm: f64 },
 }
 
@@ -348,14 +349,16 @@ impl OutputEngineApi for RecOutput {
     fn panic_stop(&self) {
         record(&self.0, EngineCall::OutputPanicStop);
     }
-    fn get_overlay_alpha(&self) -> u8 { 0 }
-    fn set_overlay_alpha_direct(&self, _a: u8) {}
-    fn get_current_audio_voice(&self) -> Option<VoiceId> { None }
-    fn resync_audio_to_video(&self) {}
+    fn video_audio_voice(&self, _v: VoiceId) -> Option<VoiceId> { None }
+    fn resync_audio_to_video(&self, _v: VoiceId) {}
+    fn get_voice_opacity(&self, _v: VoiceId) -> f32 { 1.0 }
+    fn set_voice_opacity(&self, _v: VoiceId, opacity: f32) {
+        record(&self.0, EngineCall::OutputSetOpacity { opacity });
+    }
     fn stop_voice(&self, _v: VoiceId, _f: u32) -> Result<()> { Ok(()) }
     fn pause_voice(&self, _v: VoiceId) -> Result<()> { Ok(()) }
     fn resume_voice(&self, _v: VoiceId) -> Result<()> { Ok(()) }
-    fn seek(&self, _p: u64) {}
+    fn seek_voice_ms(&self, _v: VoiceId, _p: u64) {}
     fn show_text_overlay(&self, ass_text: &str, _s: Option<u32>) {
         record(&self.0, EngineCall::OutputTextOverlay { ass: ass_text.to_string() });
     }

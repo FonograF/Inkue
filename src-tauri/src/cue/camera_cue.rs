@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::engine::output_engine::{ContentRequest, VideoGeometry, VoiceId};
+use crate::engine::output_engine::{ContentRequest, LayerStyle, VideoGeometry, VoiceId};
 
 use super::{
     context::{CueContext, CueEvent},
@@ -115,6 +115,11 @@ pub struct CameraCue {
     pub video_fade_out: Option<FadeSpec>,
     /// Visual geometry (fit / position / scale / rotation / crop).
     pub geometry: VideoGeometry,
+    /// Compositing (stacking layer, base opacity, blend mode).
+    pub layer_style: LayerStyle,
+    /// When `true` (default) the next visual GO stops this feed; `false`
+    /// keeps it on stage so it layers with other visual cues.
+    pub stop_on_next_visual: bool,
 
     is_disabled: bool,
 
@@ -144,6 +149,8 @@ impl CameraCue {
             video_fade_in: None,
             video_fade_out: None,
             geometry: VideoGeometry::default(),
+            layer_style: LayerStyle::default(),
+            stop_on_next_visual: true,
             is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
@@ -170,6 +177,7 @@ impl CameraCue {
             hold_last_frame: false,
             geometry: self.geometry,
             live_source: true,
+            layer_style: self.layer_style,
         })?;
 
         self.active_voice_id = Some(voice_id);
@@ -346,8 +354,9 @@ impl Cue for CameraCue {
     }
 
     fn stop_on_next_go(&self) -> bool {
-        // Like an Image: the next visual GO replaces the feed.
-        true
+        // Default: the next visual GO replaces the feed.  Unchecked, the feed
+        // stays on stage and layers (e.g. a camera inset over a video).
+        self.stop_on_next_visual
     }
 
     fn is_visual(&self) -> bool {
@@ -356,6 +365,10 @@ impl Cue for CameraCue {
 
     fn visual_geometry(&self) -> Option<VideoGeometry> {
         Some(self.geometry)
+    }
+
+    fn layer_style(&self) -> Option<LayerStyle> {
+        Some(self.layer_style)
     }
 
     fn play_generation(&self) -> u64 { self.play_generation }
@@ -402,6 +415,8 @@ impl Cue for CameraCue {
             "video_fade_out_ms": self.video_fade_out.as_ref().map(|f| f.duration_ms),
             "video_fade_out_curve": self.video_fade_out.as_ref().map(|f| f.curve),
             "geometry": self.geometry,
+            "layer_style": self.layer_style,
+            "stop_on_next_visual": self.stop_on_next_visual,
             "is_disabled": self.is_disabled,
         })
     }
@@ -473,6 +488,14 @@ impl CueFactory for CameraCueFactory {
             if let Ok(geometry) = serde_json::from_value::<VideoGeometry>(g.clone()) {
                 cue.geometry = geometry;
             }
+        }
+        if let Some(ls) = value.get("layer_style") {
+            if let Ok(style) = serde_json::from_value::<LayerStyle>(ls.clone()) {
+                cue.layer_style = style;
+            }
+        }
+        if let Some(b) = value.get("stop_on_next_visual").and_then(|v| v.as_bool()) {
+            cue.stop_on_next_visual = b;
         }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;

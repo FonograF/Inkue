@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-10
 
-## Current version: 1.2.0 (tagged for release — video theatre parity: fades/geometry/warp/camera + group modes, stable numbering, AIFF, perf)
+## Current version: 1.2.0 released + unreleased **layer compositor** (N layers / blend modes / per-layer fades) on top
 
 ## cargo build result
 
@@ -13,7 +13,7 @@ macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
 
 ## cargo test result
 
-**`cargo test --lib` → 238 pass, 0 failures** (verified 2026-07-09; run the full
+**`cargo test --lib` → 259 pass, 0 failures** (verified 2026-07-10; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -205,6 +205,60 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-07-10) — Layer compositor: N simultaneous visual cues, blend modes, crossfades
+
+The QLab video model, closing the image/video chapter: every Video / Image /
+Camera cue is now an independent **layer** on the output stage — multiple cues
+play at once, composited in layer order with per-cue opacity and blend mode.
+Crossfades emerge naturally: GO video B (fade-in) while video A fades out —
+both decode simultaneously, no black flash possible.
+
+- **Slot pool** (`output_engine/slot.rs`, new): one mpv context per
+  simultaneously-visible cue (lazy, cap 8, never destroyed; pool exhaustion
+  steals the oldest content with a `Completed` so its cue resets).  Each slot:
+  own event thread (PLAYBACK_RESTART reveal handshake + watchdog, END_FILE
+  EOF/ERROR per voice, VIDEO_RECONFIG per-slot crop, duration reporting), own
+  per-slot **opacity animation** (reveal fade-in, stop fade-out → unload, EOF
+  fade, Fade Cue), per-slot geometry/hold/live-latency options,
+  `background=none` + `alpha=yes` so idle/letterbox pixels are transparent.
+  Layer sort key: explicit layers 1–1000 band below automatic (newest on top),
+  GO order breaks ties.
+- **Compositor** (`render.rs`): every slot renders into its own RGBA FBO; the
+  stack is accumulated **ping-pong** with a blend shader (W3C separable modes,
+  backdrop sampled as texture — GL 3.3 can't read the framebuffer), the
+  overlay context (timer OSD / Text Cue / test patterns) composites topmost,
+  then the global **warp** (unchanged) and the master fade quad (now purely a
+  blackout curtain: startup idle, panic, cleared pattern).  Idle = engine
+  clear to black, no reliance on mpv idle frames.
+- **`BlendMode`** (`blend.rs`, new): 14 modes (Normal, Add, Multiply, Screen,
+  Overlay, Soft/Hard Light, Darken, Lighten, Dodge, Burn, Difference,
+  Exclusion, Subtract).  Pure-Rust reference formulas are the executable spec
+  of the GLSL (same discipline as `warp.rs`), 12 unit tests incl. duals,
+  edge-division cases and alpha compositing.
+- **`LayerStyle` per cue** (`layer` auto/1–1000, `opacity`, `blend_mode`) on
+  Video/Image/Camera + `stop_on_next_visual` (default **true** = pre-1.3
+  replace behaviour preserved for existing workspaces; unchecked, the cue
+  stays and layers).  Serialized with serde defaults; live-applied from the
+  inspector via `set_layer_props` (new Compositing section in the Geometry
+  tab: layer, opacity slider, blend dropdown, stop-on-next checkbox).
+- **Per-voice engine API** (breaking, internal): `stop/pause/resume/seek`,
+  `video_audio_voice`, `resync_audio_to_video`, `current_video_position_ms`
+  all take the voice now; `get/set_voice_opacity` replace the global overlay
+  alpha in the Fade path.  **Fade Cues fade each visual target's own layer**
+  (multi-target visual fades finally meaningful — `set_fade_voices` carries
+  `(voice, start_opacity)` pairs); Stop-at-End stops the visual voices too.
+  Per-cue video pause/resume/seek now truly per-cue (used to hit the single
+  global mpv).
+- **Legacy Win32 path**: intact — single-context replace semantics behind
+  `cfg(output_win32)` (show_content/stop_content split, mpv-props transform
+  composition, global overlay fades).  Compiles warning-free.
+- Text Cue on GL: the black lavfi dummy is gone (the overlay context idles
+  transparent, so text floats **over** video layers; the compositor provides
+  the black stage).
+- Tests 238 → **259**: blend formulas/serde/shader-ids, layer-key ordering,
+  opacity-anim math, LayerStyle serde + defaults, VideoCue layer roundtrip +
+  legacy-JSON compat (old workspaces keep replace behaviour).
 
 ### 1.2.0 (2026-07-10) — part 4: Camera Cue (live input as a visual cue)
 

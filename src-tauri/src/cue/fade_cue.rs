@@ -76,12 +76,10 @@ pub struct FadeCue {
     // Runtime — injected by transport after go()
     /// (audio_voice_id, start_gain, start_pan) for each audio/video audio-track target.
     target_voices: Vec<(Uuid, f32, f32)>,
-    /// True when at least one target is a Video or Image cue.
-    has_visual_target: bool,
-    /// Overlay alpha at GO time (0 = transparent).
-    visual_start_alpha: u8,
-    /// Overlay alpha at fade completion (255 = black).
-    visual_target_alpha: u8,
+    /// (output_voice_id, start_opacity) for each visual target's layer.
+    visual_targets: Vec<(Uuid, f32)>,
+    /// Layer opacity at fade completion (0.0 = black, 1.0 = fully visible).
+    visual_target_opacity: f32,
     fade_complete: bool,
     /// Target cue ids to hard-stop once the fade finishes (set on completion when
     /// `stop_at_end` is on).  The event loop drains this via
@@ -119,9 +117,8 @@ impl FadeCue {
             stop_at_end: false,
             is_disabled: false,
             target_voices: Vec::new(),
-            has_visual_target: false,
-            visual_start_alpha: 0,
-            visual_target_alpha: 0,
+            visual_targets: Vec::new(),
+            visual_target_opacity: 0.0,
             fade_complete: false,
             stop_targets_pending: Vec::new(),
         }
@@ -168,9 +165,8 @@ impl Cue for FadeCue {
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
         self.target_voices = Vec::new();
-        self.has_visual_target = false;
-        self.visual_start_alpha = 0;
-        self.visual_target_alpha = 0;
+        self.visual_targets = Vec::new();
+        self.visual_target_opacity = 0.0;
         self.fade_complete = false;
         self.stop_targets_pending.clear();
         self.started_at = Some(Instant::now());
@@ -236,9 +232,8 @@ impl Cue for FadeCue {
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
         self.target_voices = Vec::new();
-        self.has_visual_target = false;
-        self.visual_start_alpha = 0;
-        self.visual_target_alpha = 0;
+        self.visual_targets = Vec::new();
+        self.visual_target_opacity = 0.0;
         self.fade_complete = false;
         self.stop_targets_pending.clear();
         Ok(())
@@ -265,7 +260,7 @@ impl Cue for FadeCue {
         }
 
         // No targets → nothing to drive; just wait for duration to expire.
-        if self.target_voices.is_empty() && !self.has_visual_target {
+        if self.target_voices.is_empty() && self.visual_targets.is_empty() {
             return Ok(());
         }
 
@@ -292,12 +287,12 @@ impl Cue for FadeCue {
             }
         }
 
-        // Interpolate overlay alpha for visual targets (direct, no Win32 timer).
-        if self.has_visual_target {
-            let start = self.visual_start_alpha as f32;
-            let target = self.visual_target_alpha as f32;
-            let alpha = (start + (target - start) * curved_t).round() as u8;
-            context.output_engine.set_overlay_alpha_direct(alpha);
+        // Interpolate each visual target's layer opacity (per-slot — a Fade
+        // on one video no longer dips the whole output to black).
+        for &(vid, start_opacity) in &self.visual_targets {
+            let opacity =
+                start_opacity + (self.visual_target_opacity - start_opacity) * curved_t;
+            context.output_engine.set_voice_opacity(vid, opacity);
         }
 
         // At fade completion, optionally stop targets.
@@ -308,8 +303,8 @@ impl Cue for FadeCue {
                 for &(vid, _, _) in &self.target_voices {
                     let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.fade_curve));
                 }
-                if self.has_visual_target {
-                    context.output_engine.hard_stop_current();
+                for &(vid, _) in &self.visual_targets {
+                    let _ = context.output_engine.stop_voice(vid, 0);
                 }
                 // Queue the target CUES to be stopped by the event loop: stopping
                 // voices alone leaves the target cue (and group children) in the
@@ -387,14 +382,12 @@ impl Cue for FadeCue {
     fn set_fade_voices(
         &mut self,
         voices: Vec<(CueId, f32, f32)>,
-        has_visual: bool,
-        visual_start_alpha: u8,
-        visual_target_alpha: u8,
+        visual_targets: Vec<(CueId, f32)>,
+        visual_target_opacity: f32,
     ) {
         self.target_voices = voices;
-        self.has_visual_target = has_visual;
-        self.visual_start_alpha = visual_start_alpha;
-        self.visual_target_alpha = visual_target_alpha;
+        self.visual_targets = visual_targets;
+        self.visual_target_opacity = visual_target_opacity.clamp(0.0, 1.0);
     }
 
     fn resolve_fade_targets(&mut self, number_to_id: &std::collections::HashMap<String, CueId>) {

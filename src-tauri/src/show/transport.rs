@@ -117,28 +117,30 @@ impl Transport {
         }
 
         // Inject target voices into Fade Cues so tick() can apply gain updates,
-        // and trigger visual overlay fade for Video/Image targets.
+        // and per-layer opacity fades for Video/Image/Camera targets.
         let fade_spec = cue_list.get(&cue_id).and_then(|c| c.fade_specification());
         if let Some(spec) = fade_spec {
             let mut voice_infos: Vec<(VoiceId, f32, f32)> = Vec::new();
-            let mut has_visual = false;
+            let mut visual_targets: Vec<(VoiceId, f32)> = Vec::new();
 
             for &target_id in &spec.target_cue_ids {
                 // Recursive lookup so a Fade can target a cue nested in a group
                 // (not just a top-level one).
                 let Some(target) = cue_list.get_recursive(&target_id) else { continue };
                 if target.is_visual() {
-                    // Visual cues (Video, Image, Camera, …) drive the
-                    // output-window overlay; a Video additionally fades its
-                    // paired audio voice (managed by the output engine).
+                    // Visual cues (Video, Image, Camera, …): fade the target's
+                    // own layer opacity — other layers are untouched.  A Video
+                    // additionally fades its paired audio voice.
+                    let Some(voice) = target.playing_voice_id() else { continue };
+                    let start_opacity = self.context.output_engine.get_voice_opacity(voice);
+                    visual_targets.push((voice, start_opacity));
                     if target.cue_type() == CueType::Video {
-                        if let Some(aid) = self.context.output_engine.get_current_audio_voice() {
+                        if let Some(aid) = self.context.output_engine.video_audio_voice(voice) {
                             let gain = self.context.audio_engine.get_voice_gain(aid);
                             let pan = self.context.audio_engine.get_voice_pan(aid);
                             voice_infos.push((aid, gain, pan));
                         }
                     }
-                    has_visual = true;
                 } else {
                     // Audio, Group, Mic, … — fade every audio voice the target
                     // owns.  For a Group this is all of its children's voices,
@@ -151,18 +153,15 @@ impl Transport {
                 }
             }
 
-            // target_gain_linear: 0.0 → black (alpha 255), 1.0 → visible (alpha 0).
-            let visual_start_alpha = if has_visual {
-                self.context.output_engine.get_overlay_alpha()
-            } else {
-                0
-            };
-            let visual_target_alpha = spec.target_visual_alpha.unwrap_or_else(|| {
-                ((1.0 - spec.target_gain_linear.clamp(0.0, 1.0)) * 255.0) as u8
-            });
+            // Brightness % → layer opacity; without an explicit visual target
+            // the audio gain doubles as the opacity target (legacy semantics).
+            let visual_target_opacity = spec
+                .target_visual_alpha
+                .map(|alpha| 1.0 - alpha as f32 / 255.0)
+                .unwrap_or_else(|| spec.target_gain_linear.clamp(0.0, 1.0));
 
             if let Some(fc) = cue_list.get_mut(&cue_id) {
-                fc.set_fade_voices(voice_infos, has_visual, visual_start_alpha, visual_target_alpha);
+                fc.set_fade_voices(voice_infos, visual_targets, visual_target_opacity);
             }
         }
 

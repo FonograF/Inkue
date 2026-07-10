@@ -412,7 +412,7 @@ fn fade_stop_at_end_queues_its_targets_after_completing() {
     fade.fade_duration_ms = 20;
 
     fade.go(&ctx).unwrap();
-    fade.set_fade_voices(vec![(vid, 1.0, 0.0)], false, 0, 0);
+    fade.set_fade_voices(vec![(vid, 1.0, 0.0)], Vec::new(), 0.0);
 
     // Before completion, nothing to stop.
     assert!(fade.take_fade_stop_targets().is_empty());
@@ -443,7 +443,7 @@ fn pan_only_fade_moves_voice_pan_and_leaves_gain_untouched() {
 
     fade.go(&ctx).unwrap();
     // Transport injects (voice_id, start_gain, start_pan) after go().
-    fade.set_fade_voices(vec![(vid, 0.5, -1.0)], false, 0, 0);
+    fade.set_fade_voices(vec![(vid, 0.5, -1.0)], Vec::new(), 0.0);
 
     std::thread::sleep(Duration::from_millis(80)); // past the fade duration
     fade.tick(&ctx).unwrap();

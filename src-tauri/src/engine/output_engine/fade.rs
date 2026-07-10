@@ -11,8 +11,12 @@
 //!   in `output_wnd_proc` advances the animation via `execute_fade_pending`.
 
 use super::{cs, FADE_STATE, OUTPUT_CURRENT_VOICE, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB};
-use super::types::{FadePending, FadePendingParams, PendingVideoStart};
+use super::types::FadePending;
+#[cfg(output_win32)]
+use super::types::{FadePendingParams, PendingVideoStart};
+#[cfg(output_win32)]
 use std::ffi::c_void;
+#[cfg(output_win32)]
 use crate::engine::mpv_sys::MpvLib;
 
 // Win32 fade overlay imports.
@@ -180,10 +184,12 @@ pub(super) fn execute_fade_pending(_hwnd: isize) {
 }
 
 // ---------------------------------------------------------------------------
-// mpv loadfile executor (shared by both paths)
+// mpv loadfile executor (legacy Win32 single-context path)
 // ---------------------------------------------------------------------------
 
 /// Send an mpv `loadfile` command for the given content parameters.
+/// (The GL path loads via the slot pool — `slot::load_into_slot`.)
+#[cfg(output_win32)]
 pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx: *mut c_void) {
     use std::ffi::CString;
 

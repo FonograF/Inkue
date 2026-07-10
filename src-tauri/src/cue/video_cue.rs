@@ -13,7 +13,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::engine::output_engine::{ContentRequest, SurfaceId, VideoGeometry, VoiceId};
+use crate::engine::output_engine::{ContentRequest, LayerStyle, SurfaceId, VideoGeometry, VoiceId};
 use crate::engine::ring_command::FadeCurve as EngineFadeCurve;
 use crate::engine::voice::{FadeDirection, FadeState, Voice};
 
@@ -76,6 +76,11 @@ pub struct VideoCue {
     pub hold_last_frame: bool,
     /// Visual geometry (fit / position / scale / rotation / crop).
     pub geometry: VideoGeometry,
+    /// Compositing (stacking layer, base opacity, blend mode).
+    pub layer_style: LayerStyle,
+    /// When `true` (default — pre-layering behaviour) the next visual GO stops
+    /// this cue; `false` keeps it on stage so cues layer QLab-style.
+    pub stop_on_next_visual: bool,
 
     is_disabled: bool,
 
@@ -133,6 +138,8 @@ impl VideoCue {
             output_patch_id: None,
             hold_last_frame: false,
             geometry: VideoGeometry::default(),
+            layer_style: LayerStyle::default(),
+            stop_on_next_visual: true,
             is_disabled: false,
             active_voice_id: None,
             decoded_samples: None,
@@ -286,6 +293,7 @@ impl VideoCue {
             hold_last_frame: self.hold_last_frame,
             geometry: self.geometry,
             live_source: false,
+            layer_style: self.layer_style,
         })?;
 
         self.active_voice_id = Some(voice_id);
@@ -465,7 +473,8 @@ impl Cue for VideoCue {
         if self.action_started_at.is_none() && self.state != CueState::Paused {
             return;
         }
-        ctx.output_engine.seek(position_ms);
+        let Some(voice_id) = self.active_voice_id else { return };
+        ctx.output_engine.seek_voice_ms(voice_id, position_ms);
         if self.state == CueState::Paused {
             self.action_elapsed_before_pause = Duration::from_millis(position_ms);
             self.elapsed_before_pause = self.pre_wait + Duration::from_millis(position_ms);
@@ -624,8 +633,18 @@ impl Cue for VideoCue {
         Some(self.geometry)
     }
 
+    fn layer_style(&self) -> Option<LayerStyle> {
+        Some(self.layer_style)
+    }
+
     fn is_visual(&self) -> bool {
         true
+    }
+
+    fn stop_on_next_go(&self) -> bool {
+        // Pre-layering behaviour (default): the next visual GO replaces this
+        // video.  Unchecked, the video stays on stage and layers.
+        self.stop_on_next_visual
     }
 
     // -----------------------------------------------------------------------
@@ -661,6 +680,8 @@ impl Cue for VideoCue {
             "output_patch_id": self.output_patch_id,
             "hold_last_frame": self.hold_last_frame,
             "geometry": self.geometry,
+            "layer_style": self.layer_style,
+            "stop_on_next_visual": self.stop_on_next_visual,
             "is_disabled": self.is_disabled,
             "cached_duration_ms": self.cached_duration.map(|d| d.as_millis() as u64),
         })
@@ -769,6 +790,14 @@ impl CueFactory for VideoCueFactory {
                 cue.geometry = geometry;
             }
         }
+        if let Some(ls) = value.get("layer_style") {
+            if let Ok(style) = serde_json::from_value::<LayerStyle>(ls.clone()) {
+                cue.layer_style = style;
+            }
+        }
+        if let Some(b) = value.get("stop_on_next_visual").and_then(|v| v.as_bool()) {
+            cue.stop_on_next_visual = b;
+        }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -863,5 +892,38 @@ mod tests {
         assert!(cue.visual_geometry().unwrap().is_default());
         let json = cue.serialize();
         assert_eq!(json["hold_last_frame"], false);
+    }
+
+    #[test]
+    fn layer_style_roundtrip_and_stop_on_next_visual() {
+        use crate::engine::output_engine::BlendMode;
+        let mut cue = VideoCue::new();
+        // Defaults: pre-layering behaviour preserved.
+        assert!(cue.stop_on_next_go());
+        assert!(cue.layer_style().unwrap().is_default());
+
+        cue.layer_style = LayerStyle {
+            layer: Some(3),
+            opacity: 0.5,
+            blend_mode: BlendMode::Multiply,
+        };
+        cue.stop_on_next_visual = false;
+
+        let json = cue.serialize();
+        assert_eq!(json["layer_style"]["blend_mode"], "multiply");
+        assert_eq!(json["stop_on_next_visual"], false);
+
+        let rebuilt = VideoCueFactory.from_json(json).expect("roundtrip");
+        assert_eq!(rebuilt.layer_style().unwrap(), cue.layer_style);
+        assert!(!rebuilt.stop_on_next_go(), "unchecked = the cue layers");
+    }
+
+    #[test]
+    fn legacy_json_defaults_to_stop_on_next_visual() {
+        // Pre-1.3 workspaces have neither field: behaviour must not change.
+        let json = serde_json::json!({ "type": "video", "name": "Old" });
+        let cue = VideoCueFactory.from_json(json).expect("legacy load");
+        assert!(cue.stop_on_next_go());
+        assert!(cue.layer_style().unwrap().is_default());
     }
 }

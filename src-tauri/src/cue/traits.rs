@@ -357,21 +357,21 @@ pub trait Cue: Send {
     }
 
     /// Inject resolved audio voice IDs (and their current gains) into this cue,
-    /// plus visual fade parameters for any Video/Image targets.
+    /// plus per-layer visual fade targets for any Video/Image/Camera targets.
     ///
-    /// - `voices`: `(audio_voice_id, start_gain, start_pan)` for each audio/video target.
-    /// - `has_visual`: true when at least one target is a Video or Image cue.
-    /// - `visual_start_alpha`: current overlay alpha at GO time (read from OutputEngine).
-    /// - `visual_target_alpha`: desired overlay alpha when fade completes.
+    /// - `voices`: `(audio_voice_id, start_gain, start_pan)` for each audio target.
+    /// - `visual_targets`: `(output_voice_id, start_opacity)` for each visual
+    ///   target's layer.
+    /// - `visual_target_opacity`: layer opacity when the fade completes
+    ///   (0.0 = black, 1.0 = fully visible).
     ///
     /// Called by [`crate::show::transport::Transport::go`] after `go()` so that
-    /// `tick()` knows which voices/overlay to update.
+    /// `tick()` knows which voices/layers to update.
     fn set_fade_voices(
         &mut self,
         _voices: Vec<(CueId, f32, f32)>,
-        _has_visual: bool,
-        _visual_start_alpha: u8,
-        _visual_target_alpha: u8,
+        _visual_targets: Vec<(CueId, f32)>,
+        _visual_target_opacity: f32,
     ) {}
 
     /// Stop Cue only: describes what to stop after `go()` completes.
@@ -433,6 +433,13 @@ pub trait Cue: Send {
     /// to live-apply Geometry-tab edits to the content currently on the output
     /// window.  Default is `None` (no visual output).
     fn visual_geometry(&self) -> Option<crate::engine::output_engine::VideoGeometry> {
+        None
+    }
+
+    /// Compositing properties (layer / opacity / blend mode) for visual cues.
+    /// Used by `update_cue` to live-apply Compositing edits to the cue's slot.
+    /// Default is `None` (no visual output).
+    fn layer_style(&self) -> Option<crate::engine::output_engine::LayerStyle> {
         None
     }
 

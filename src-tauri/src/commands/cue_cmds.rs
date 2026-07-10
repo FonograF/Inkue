@@ -503,20 +503,24 @@ pub fn update_cue(
     // Push live level/pan changes to the cue's currently-playing voice so an
     // inspector edit (volume, pan) takes effect immediately without restarting.
     let live = new_cue.live_audio_params();
-    // Geometry edits apply live too, when this cue is the content currently
+    // Geometry + compositing edits apply live too, when this cue is currently
     // on the output window.
-    let live_geometry = new_cue
-        .visual_geometry()
-        .zip(new_cue.playing_voice_id())
-        .filter(|(_, voice_id)| state.output_engine.is_current_voice(*voice_id))
-        .map(|(geometry, _)| geometry);
+    let live_visual = new_cue
+        .playing_voice_id()
+        .filter(|voice_id| state.output_engine.is_current_voice(*voice_id))
+        .map(|voice_id| (voice_id, new_cue.visual_geometry(), new_cue.layer_style()));
     cue_list.replace_cue_recursive(&id, new_cue);
     if let Some(p) = live {
         let _ = state.audio_engine.set_voice_gain(p.voice_id, p.gain);
         let _ = state.audio_engine.set_voice_pan(p.voice_id, p.pan);
     }
-    if let Some(geometry) = live_geometry {
-        state.output_engine.apply_geometry(&geometry);
+    if let Some((voice_id, geometry, layer_style)) = live_visual {
+        if let Some(geometry) = geometry {
+            state.output_engine.apply_geometry(voice_id, &geometry);
+        }
+        if let Some(style) = layer_style {
+            state.output_engine.set_layer_props(voice_id, &style);
+        }
     }
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));

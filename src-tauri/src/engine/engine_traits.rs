@@ -136,14 +136,18 @@ pub trait OutputEngineApi: Send + Sync {
     fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32);
     fn hard_stop_current(&self);
     fn panic_stop(&self);
-    fn get_overlay_alpha(&self) -> u8;
-    fn set_overlay_alpha_direct(&self, alpha: u8);
-    fn get_current_audio_voice(&self) -> Option<VoiceId>;
-    fn resync_audio_to_video(&self);
+    /// The AudioEngine voice carrying a video voice's audio track, if any.
+    fn video_audio_voice(&self, voice_id: VoiceId) -> Option<VoiceId>;
+    /// Re-anchor a video's paired audio voice to its actual picture position.
+    fn resync_audio_to_video(&self, voice_id: VoiceId);
+    /// Current animated opacity (0.0–1.0) of a voice's layer.
+    fn get_voice_opacity(&self, voice_id: VoiceId) -> f32;
+    /// Directly drive a voice's layer opacity (Fade Cue tick, ~30 fps).
+    fn set_voice_opacity(&self, voice_id: VoiceId, opacity: f32);
     fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32) -> Result<()>;
     fn pause_voice(&self, voice_id: VoiceId) -> Result<()>;
     fn resume_voice(&self, voice_id: VoiceId) -> Result<()>;
-    fn seek(&self, position_ms: u64);
+    fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64);
     fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>);
     fn clear_text_overlay(&self);
     /// Start the visual fade that lands exactly on the content's natural end.
@@ -164,17 +168,17 @@ impl OutputEngineApi for OutputEngine {
     fn panic_stop(&self) {
         OutputEngine::panic_stop(self)
     }
-    fn get_overlay_alpha(&self) -> u8 {
-        OutputEngine::get_overlay_alpha(self)
+    fn video_audio_voice(&self, voice_id: VoiceId) -> Option<VoiceId> {
+        OutputEngine::video_audio_voice(self, voice_id)
     }
-    fn set_overlay_alpha_direct(&self, alpha: u8) {
-        OutputEngine::set_overlay_alpha_direct(self, alpha)
+    fn resync_audio_to_video(&self, voice_id: VoiceId) {
+        OutputEngine::resync_audio_to_video(self, voice_id)
     }
-    fn get_current_audio_voice(&self) -> Option<VoiceId> {
-        OutputEngine::get_current_audio_voice(self)
+    fn get_voice_opacity(&self, voice_id: VoiceId) -> f32 {
+        OutputEngine::get_voice_opacity(self, voice_id)
     }
-    fn resync_audio_to_video(&self) {
-        OutputEngine::resync_audio_to_video(self)
+    fn set_voice_opacity(&self, voice_id: VoiceId, opacity: f32) {
+        OutputEngine::set_voice_opacity(self, voice_id, opacity)
     }
     fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32) -> Result<()> {
         OutputEngine::stop_voice(self, voice_id, fade_ms)
@@ -185,8 +189,8 @@ impl OutputEngineApi for OutputEngine {
     fn resume_voice(&self, voice_id: VoiceId) -> Result<()> {
         OutputEngine::resume_voice(self, voice_id)
     }
-    fn seek(&self, position_ms: u64) {
-        OutputEngine::seek(self, position_ms)
+    fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64) {
+        OutputEngine::seek_voice_ms(self, voice_id, position_ms)
     }
     fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
         OutputEngine::show_text_overlay(self, ass_text, screen_index)

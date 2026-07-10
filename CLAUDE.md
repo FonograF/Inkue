@@ -49,6 +49,15 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 - **Group modes** (`GroupMode`, `cue/types.rs`): Simultaneous, Sequential, Playlist
   (exclusive one-at-a-time + optional loop), StartRandom (one random child/GO,
   shuffle-bag). Simultaneous/Sequential must stay behaviour-identical when extending.
+- **Visual cues are layers** (GL path, QLab model): every Video/Image/Camera cue
+  gets its own mpv slot (`output_engine/slot.rs`, lazy pool cap 8) and is
+  composited in layer order with per-cue opacity + blend mode (`LayerStyle`).
+  `stop_on_next_visual` (default true) keeps the historic replace behaviour;
+  unchecked, cues stack. Fades drive the target's **own layer opacity**
+  (`set_voice_opacity`), never a global overlay; the master fade quad is only a
+  blackout curtain (idle/panic). The `legacy-win32-output` path keeps
+  single-context replace semantics — every output-engine change must compile on
+  both paths (`cargo check --features legacy-win32-output`).
 
 ## Cross-cutting invariants (learned the hard way)
 
@@ -67,4 +76,4 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 
 ## Tests
 
-Run `cargo test` from `src-tauri/` (current count in `PROGRESS.md`). Must cover: CueNumber parsing, CueRegistry, AudioCue serialization roundtrip, dB↔linear, FadeSpec curves, CueList operations (incl. stable-numbering: reorder preserves numbers, explicit `renumber_all`), audio SR conversion, Stop/Fade specs, **Fade pan + fade-targeting-a-group + Stop-at-End queueing**, **Group modes (Playlist exclusivity/loop, StartRandom shuffle-bag, completion/is_complete per mode)**, OSC types/server/dedup, DMX engine/sink/fixtures/Light Cue. Dev server holds `inkue.exe`/`libmpv-2.dll` — close it before `cargo test`, and **never force-kill `cargo` mid-build** (corrupts the incremental cache → `LNK anon.*.llvm.*`).
+Run `cargo test` from `src-tauri/` (current count in `PROGRESS.md`). Must cover: CueNumber parsing, CueRegistry, AudioCue serialization roundtrip, dB↔linear, FadeSpec curves, CueList operations (incl. stable-numbering: reorder preserves numbers, explicit `renumber_all`), audio SR conversion, Stop/Fade specs, **Fade pan + fade-targeting-a-group + Stop-at-End queueing**, **Group modes (Playlist exclusivity/loop, StartRandom shuffle-bag, completion/is_complete per mode)**, **layer compositor (blend formulas as executable spec of the GLSL, layer-key ordering, opacity-anim math, LayerStyle serde + legacy-JSON compat)**, OSC types/server/dedup, DMX engine/sink/fixtures/Light Cue. Dev server holds `inkue.exe`/`libmpv-2.dll` — close it before `cargo test` (or validate with `CARGO_TARGET_DIR=target-check`), and **never force-kill `cargo` mid-build** (corrupts the incremental cache → `LNK anon.*.llvm.*`).

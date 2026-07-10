@@ -139,6 +139,28 @@ export const DEFAULT_GEOMETRY: VideoGeometry = {
   crop_bottom: 0,
 };
 
+/** How a visual cue's pixels combine with the layers below it. */
+export type BlendMode =
+  | "normal" | "add" | "multiply" | "screen" | "overlay"
+  | "soft_light" | "hard_light" | "darken" | "lighten"
+  | "color_dodge" | "color_burn" | "difference" | "exclusion" | "subtract";
+
+/** Compositing properties of a visual cue (QLab layer model). */
+export interface LayerStyle {
+  /** Stacking order 1–1000 (higher = closer to the viewer). null = automatic (newest on top). */
+  layer: number | null;
+  /** Base opacity 0.0–1.0. */
+  opacity: number;
+  blend_mode: BlendMode;
+}
+
+/** Default compositing (automatic layer, fully opaque, normal blending). */
+export const DEFAULT_LAYER_STYLE: LayerStyle = {
+  layer: null,
+  opacity: 1,
+  blend_mode: "normal",
+};
+
 /** Full cue data returned by get_cue for a Video Cue. */
 export interface VideoCueData extends CueSummary {
   notes: string;
@@ -163,6 +185,9 @@ export interface VideoCueData extends CueSummary {
   /** Freeze on the last frame at natural EOF instead of cutting to black. */
   hold_last_frame: boolean;
   geometry: VideoGeometry;
+  layer_style: LayerStyle;
+  /** true (default): the next visual GO stops this cue; false: it layers. */
+  stop_on_next_visual: boolean;
 }
 
 /** 9-point position grid for TextCue. */
@@ -200,6 +225,9 @@ export interface ImageCueData extends CueSummary {
   /** How long the image stays on screen in ms. null = infinite (hold until stopped). */
   display_duration_ms: number | null;
   geometry: VideoGeometry;
+  layer_style: LayerStyle;
+  /** true (default): the next visual GO stops this cue; false: it layers. */
+  stop_on_next_visual: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +256,9 @@ export interface CameraCueData extends CueSummary {
   video_fade_out_ms: number | null;
   video_fade_out_curve: FadeCurve | null;
   geometry: VideoGeometry;
+  layer_style: LayerStyle;
+  /** true (default): the next visual GO stops this feed; false: it layers. */
+  stop_on_next_visual: boolean;
 }
 
 // ---------------------------------------------------------------------------

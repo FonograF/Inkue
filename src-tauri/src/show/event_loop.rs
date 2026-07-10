@@ -431,7 +431,9 @@ fn tick(
                 // position (time-pos) — without moving the picture — so audio
                 // catches up precisely before playback resumes.
                 if cue.cue_type() == CueType::Video {
-                    tick_ctx.output_engine.resync_audio_to_video();
+                    if let Some(voice) = cue.playing_voice_id() {
+                        tick_ctx.output_engine.resync_audio_to_video(voice);
+                    }
                 }
                 if cue.resume(&tick_ctx).is_ok() {
                     just_resumed.push(cue.id());

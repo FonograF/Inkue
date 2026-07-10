@@ -154,6 +154,44 @@ impl VideoGeometry {
 }
 
 // ---------------------------------------------------------------------------
+// LayerStyle — compositing properties of one visual cue
+// ---------------------------------------------------------------------------
+
+fn layer_default_opacity() -> f64 {
+    1.0
+}
+
+/// How a visual cue sits in the layer compositor (QLab model): its stacking
+/// order, base opacity and blend mode.  Fade in/out and Fade Cues animate a
+/// separate runtime multiplier on top of `opacity`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LayerStyle {
+    /// Stacking order, 1–1000 (higher = closer to the viewer).
+    /// `None` = automatic: newest content stacks on top.
+    #[serde(default)]
+    pub layer: Option<u32>,
+    /// Base opacity of the cue, 0.0–1.0 (default 1.0).
+    #[serde(default = "layer_default_opacity")]
+    pub opacity: f64,
+    /// How the cue's pixels combine with the layers below.
+    #[serde(default)]
+    pub blend_mode: super::blend::BlendMode,
+}
+
+impl Default for LayerStyle {
+    fn default() -> Self {
+        Self { layer: None, opacity: 1.0, blend_mode: super::blend::BlendMode::Normal }
+    }
+}
+
+impl LayerStyle {
+    /// `true` when every field is at its default.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OutputTransform — global projector alignment
 // ---------------------------------------------------------------------------
 
@@ -333,6 +371,8 @@ pub struct ContentRequest<'a> {
     /// Camera / network feeds: apply low-latency demuxer options (no cache,
     /// minimal analyzeduration) instead of the file-playback defaults.
     pub live_source: bool,
+    /// Compositing properties (stacking order, base opacity, blend mode).
+    pub layer_style: LayerStyle,
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +419,8 @@ pub(super) struct OutputVoice {
 // ---------------------------------------------------------------------------
 
 /// Parameters for a pending content load, passed directly to `execute_load_params`.
+/// Legacy Win32 single-context path only — the GL path loads via the slot pool.
+#[cfg_attr(output_gl, allow(dead_code))]
 pub(crate) struct FadePendingParams {
     pub path: String,
     pub is_image: bool,
@@ -400,6 +442,9 @@ pub(crate) struct FadePendingParams {
 }
 
 pub(crate) enum FadePending {
+    /// Issue `mpv stop` once the master fade lands.  Constructed by the
+    /// legacy Win32 stop path only; the GL render loop still drains it.
+    #[cfg_attr(output_gl, allow(dead_code))]
     Stop,
 }
 
@@ -552,6 +597,28 @@ mod tests {
     fn geometry_crop_zero_source_is_none() {
         let g = VideoGeometry { crop_left: 0.1, ..Default::default() };
         assert_eq!(g.crop_rect_px(0, 1080), None);
+    }
+
+    #[test]
+    fn layer_style_default_and_serde() {
+        let d = LayerStyle::default();
+        assert!(d.is_default());
+        assert_eq!(d.opacity, 1.0);
+        assert_eq!(d.layer, None);
+
+        let s = LayerStyle {
+            layer: Some(42),
+            opacity: 0.35,
+            blend_mode: super::super::blend::BlendMode::Screen,
+        };
+        let json = serde_json::to_value(s).unwrap();
+        assert_eq!(json["blend_mode"], "screen");
+        let back: LayerStyle = serde_json::from_value(json).unwrap();
+        assert_eq!(s, back);
+
+        // Pre-1.3 workspaces have no layer_style: empty object = defaults.
+        let empty: LayerStyle = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.is_default());
     }
 
     #[test]

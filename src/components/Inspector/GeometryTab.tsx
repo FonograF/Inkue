@@ -1,9 +1,27 @@
 // Geometry tab for Video and Image cues: fit mode, position, scale,
 // rotation and crop. Edits apply live when the cue is on the output window.
 
-import type { CameraCueData, FitMode, ImageCueData, VideoCueData, VideoGeometry } from "../../lib/types";
-import { DEFAULT_GEOMETRY } from "../../lib/types";
+import type { BlendMode, CameraCueData, FitMode, ImageCueData, LayerStyle, VideoCueData, VideoGeometry } from "../../lib/types";
+import { DEFAULT_GEOMETRY, DEFAULT_LAYER_STYLE } from "../../lib/types";
 import { Field, inputStyle } from "./Field";
+import { Select } from "../common/Select";
+
+const BLEND_MODES: { value: BlendMode; label: string }[] = [
+  { value: "normal", label: "Normal" },
+  { value: "add", label: "Add" },
+  { value: "multiply", label: "Multiply" },
+  { value: "screen", label: "Screen" },
+  { value: "overlay", label: "Overlay" },
+  { value: "soft_light", label: "Soft Light" },
+  { value: "hard_light", label: "Hard Light" },
+  { value: "darken", label: "Darken" },
+  { value: "lighten", label: "Lighten" },
+  { value: "color_dodge", label: "Color Dodge" },
+  { value: "color_burn", label: "Color Burn" },
+  { value: "difference", label: "Difference" },
+  { value: "exclusion", label: "Exclusion" },
+  { value: "subtract", label: "Subtract" },
+];
 
 const FIT_MODES: { value: FitMode; label: string; hint: string }[] = [
   { value: "fit", label: "Fit", hint: "keep aspect, letterbox" },
@@ -72,6 +90,11 @@ export function GeometryTab({
   const patch = (partial: Partial<VideoGeometry>) =>
     onSave({ geometry: { ...geometry, ...partial } });
 
+  const layerStyle: LayerStyle = cue.layer_style ?? DEFAULT_LAYER_STYLE;
+  const patchLayer = (partial: Partial<LayerStyle>) =>
+    onSave({ layer_style: { ...layerStyle, ...partial } });
+  const stopOnNextVisual = cue.stop_on_next_visual !== false;
+
   const isDefault =
     geometry.fit_mode === "fit" &&
     geometry.pan_x === 0 &&
@@ -85,7 +108,81 @@ export function GeometryTab({
 
   return (
     <>
-      <div style={{ ...sectionTitleStyle, marginTop: 0 }}>Fit</div>
+      <div style={{ ...sectionTitleStyle, marginTop: 0 }}>Compositing</div>
+      <Field label="Layer">
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={layerStyle.layer === null}
+            onChange={(e) => patchLayer({ layer: e.target.checked ? null : 500 })}
+          />
+          {layerStyle.layer === null ? (
+            <span style={{ color: "var(--wc-text-muted)", fontSize: 12 }}>
+              automatic (newest on top)
+            </span>
+          ) : (
+            <input
+              style={{ ...inputStyle, width: 80 }}
+              type="number"
+              min={1}
+              max={1000}
+              step={1}
+              key={`layer-${layerStyle.layer}`}
+              defaultValue={layerStyle.layer}
+              onBlur={(e) => {
+                const parsed = parseInt(e.target.value, 10);
+                if (Number.isNaN(parsed)) return;
+                patchLayer({ layer: Math.min(1000, Math.max(1, parsed)) });
+              }}
+            />
+          )}
+        </div>
+      </Field>
+      <Field label="Opacity">
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={layerStyle.opacity}
+            onChange={(e) => patchLayer({ opacity: parseFloat(e.target.value) })}
+            style={{ flex: 1, cursor: "pointer" }}
+          />
+          <span style={{ width: 40, textAlign: "right", fontSize: 12, color: "var(--wc-text-secondary)" }}>
+            {Math.round(layerStyle.opacity * 100)}%
+          </span>
+        </div>
+      </Field>
+      <Field label="Blend Mode">
+        <Select
+          style={{ ...inputStyle, cursor: "pointer" }}
+          value={layerStyle.blend_mode}
+          onChange={(e) => patchLayer({ blend_mode: e.target.value as BlendMode })}
+        >
+          {BLEND_MODES.map((m) => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="On next cue">
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={stopOnNextVisual}
+            onChange={(e) => onSave({ stop_on_next_visual: e.target.checked })}
+          />
+          <span style={{ fontSize: 12 }}>
+            Stop when the next visual cue starts
+          </span>
+        </label>
+      </Field>
+      <div style={{ fontSize: 11, color: "var(--wc-text-faint)", marginBottom: 6 }}>
+        Uncheck to keep this cue on stage and layer it with other visual cues
+        (QLab-style compositing).
+      </div>
+
+      <div style={sectionTitleStyle}>Fit</div>
       <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
         {FIT_MODES.map((m) => (
           <button
