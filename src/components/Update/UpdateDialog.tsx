@@ -3,6 +3,63 @@
 
 import { useUpdateStore } from "../../stores/updateStore";
 
+/** Render `**bold**` spans of a markdown line as JSX (no dependency). */
+function inlineBold(text: string): React.ReactNode {
+  const parts = text.split(/\*\*([^*]+)\*\*/g);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) =>
+    i % 2 === 1 ? <strong key={i} style={{ color: "var(--wc-text)" }}>{part}</strong> : part,
+  );
+}
+
+/**
+ * Minimal markdown rendering for release notes (headers, bullets, bold,
+ * separators).  The notes come from the GitHub release body via latest.json;
+ * a full markdown library is overkill for this one read-only box.
+ */
+function ReleaseNotes({ notes }: { notes: string }) {
+  const lines = notes.replace(/\r\n/g, "\n").split("\n");
+  return (
+    <>
+      {lines.map((line, i) => {
+        const h = line.match(/^(#{1,3})\s+(.*)$/);
+        if (h) {
+          const level = h[1].length;
+          return (
+            <div
+              key={i}
+              style={{
+                fontWeight: 700,
+                fontSize: level === 1 ? 13 : 12,
+                color: "var(--wc-text-bright)",
+                margin: i === 0 ? "0 0 4px" : "10px 0 4px",
+              }}
+            >
+              {inlineBold(h[2])}
+            </div>
+          );
+        }
+        if (/^\s*---+\s*$/.test(line)) {
+          return <hr key={i} style={{ border: "none", borderTop: "1px solid var(--wc-border)", margin: "8px 0" }} />;
+        }
+        const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+        if (bullet) {
+          return (
+            <div key={i} style={{ display: "flex", gap: 6, paddingLeft: 4 }}>
+              <span style={{ flexShrink: 0 }}>•</span>
+              <span>{inlineBold(bullet[1])}</span>
+            </div>
+          );
+        }
+        if (line.trim() === "") {
+          return <div key={i} style={{ height: 6 }} />;
+        }
+        return <div key={i}>{inlineBold(line)}</div>;
+      })}
+    </>
+  );
+}
+
 export function UpdateDialog() {
   const { status, version, notes, progress, error, dismissed, downloadAndInstall, dismiss } =
     useUpdateStore();
@@ -45,10 +102,10 @@ export function UpdateDialog() {
               background: "rgba(255,255,255,0.04)", border: "1px solid var(--wc-border)",
               borderRadius: 6, padding: "10px 12px", fontSize: 12,
               color: "var(--wc-text-secondary)", marginBottom: 16,
-              maxHeight: 160, overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: 1.5,
+              maxHeight: 200, overflowY: "auto", lineHeight: 1.5,
             }}
           >
-            {notes}
+            <ReleaseNotes notes={notes} />
           </div>
         )}
 
