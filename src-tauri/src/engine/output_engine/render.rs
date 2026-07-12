@@ -109,6 +109,17 @@ static OUTPUT_WARP: Mutex<Option<[f32; 9]>> = Mutex::new(None);
 /// new frame (paused video, held image), so edits in the alignment editor are
 /// visible immediately.
 static WARP_DIRTY: AtomicBool = AtomicBool::new(false);
+/// One-shot "overlay went inactive" flag: forces one redraw so the last
+/// composited overlay image (timer text, cleared pattern) leaves the screen
+/// even when no layer is animating and mpv signals no new frame.
+static OVERLAY_DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// Force one redraw after an overlay deactivation (timer cleared, Text Cue
+/// ended, test pattern cleared).
+pub(super) fn mark_overlay_dirty() {
+    OVERLAY_DIRTY.store(true, Ordering::Relaxed);
+    wake();
+}
 
 // ---------------------------------------------------------------------------
 // Public helpers called from OutputEngine
@@ -717,7 +728,6 @@ fn render_thread_main(
     let (composite_program, composite_vao) = build_composite_shader(&gl)?;
     let (blit_program, blit_vao) = build_blit_shader(&gl)?;
     let mut overlay_target: Option<WarpTarget> = None;
-    let mut overlay_valid = false;
     let mut slot_targets: Vec<Option<WarpTarget>> = Vec::new();
     let mut slot_valid: Vec<bool> = Vec::new();
     let mut pingpong: [Option<WarpTarget>; 2] = [None, None];
@@ -810,7 +820,8 @@ fn render_thread_main(
         // Warp params changed since the last pass — must redraw even without a
         // new mpv frame (paused video / held image), or alignment edits would
         // only show on the next frame.
-        let warp_dirty = WARP_DIRTY.swap(false, Ordering::Relaxed);
+        let warp_dirty = WARP_DIRTY.swap(false, Ordering::Relaxed)
+            || OVERLAY_DIRTY.swap(false, Ordering::Relaxed);
 
         // Tick each slot: advance opacity anims, finish pending unloads, and
         // check for fresh frames.  Ticks must run even while hidden so stop
@@ -899,9 +910,14 @@ fn render_thread_main(
         }
 
         // ── Render mpv contexts into their targets ────────────────────────────
-        // Overlay: render every pass — idle output is a cheap transparent
-        // clear, and OSD/timer changes never signal a new frame.
-        if let Some(t) = &overlay_target {
+        // Overlay: render every pass **while it shows something** (timer OSD /
+        // Text Cue / test pattern) — OSD-only changes never signal a new
+        // frame.  While inactive it is neither rendered nor composited: mpv's
+        // *idle* render clears the target to opaque black on some libmpv
+        // builds (`background=none` ignored in idle — measured on 0.41-dev,
+        // Windows), which would mask every video layer below.
+        let overlay_on = super::overlay_active();
+        if let (true, Some(t)) = (overlay_on, &overlay_target) {
             let mut fbo = MpvOpenglFbo { fbo: t.fbo.0.get() as i32, w: w_px as i32, h: h_px as i32, internal_format: 0 };
             let mut flip = flip_y;
             let rp = [
@@ -911,8 +927,8 @@ fn render_thread_main(
             ];
             let ret = unsafe { (lib.mpv_render_context_render)(render_ctx, rp.as_ptr()) };
             if ret < 0 { log::warn!("[render] overlay render: {ret}"); }
-            overlay_valid = true;
         }
+        let overlay_valid = overlay_on;
 
         for l in &layers {
             let needs = l.has_new_frame || !slot_valid.get(l.slot_index).copied().unwrap_or(false);
@@ -959,7 +975,7 @@ fn render_thread_main(
             );
             src = dst;
         }
-        // Overlay (timer / text / patterns / win32 content) always on top.
+        // Overlay (timer / text / patterns) on top — only while active.
         if overlay_valid {
             if let Some(t) = &overlay_target {
                 let dst = 1 - src;

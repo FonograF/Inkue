@@ -83,9 +83,10 @@ impl Transport {
         // Advance playhead before triggering (matches QLab behaviour).
         cue_list.advance_playhead();
 
-        // Stop any running cues that should automatically stop on the next GO.
-        // Visual cues (Cue::is_visual) only stop when the incoming cue is also
-        // visual — an audio GO must not cut a displayed image.
+        // Stop any running cues that should automatically stop on the next GO
+        // (only the Text Cue opts in — visual cues are layers and never
+        // auto-stop each other).  If a visual type ever opts back in, it only
+        // stops when the incoming cue is also visual.
         let incoming_is_visual = cue_list
             .get(&cue_id)
             .map(|c| c.is_visual())

@@ -1,13 +1,10 @@
 //! [`OutputEngine`] — unified output for both video and image cues.
 //!
-//! Unified GL path (`output_gl` — Windows default, Linux, macOS): a native window
-//! hosts libmpv via the OpenGL Render API (`vo=libmpv`, see `render.rs`); the
-//! dip-to-black fade is a GL quad drawn in the same surface.  The render loop and
-//! fade are identical on every OS — only native window creation differs (winit on
-//! Windows/Linux, AppKit/objc2 on macOS, see `macos_window.rs`).
-//!
-//! Windows legacy (`legacy-win32-output` feature): a `WS_POPUP` Win32 window hosts
-//! libmpv via the `wid` option, with a `WS_EX_LAYERED` overlay driving the fade.
+//! A native window hosts libmpv via the OpenGL Render API (`vo=libmpv`, see
+//! `render.rs`); the dip-to-black fade is a GL quad drawn in the same surface.
+//! The render loop and fade are identical on every OS — only native window
+//! creation differs (winit on Windows/Linux, AppKit/objc2 on macOS, see
+//! `macos_window.rs`).
 //!
 //! On every OS the floating cue timer is a Tauri WebView window (`float-timer`),
 //! and the on-output timer is mpv's OSD (`osd-msg1`).
@@ -15,18 +12,13 @@
 mod blend;
 mod fade;
 mod mpv_events;
-#[cfg(output_gl)]
 mod render;
-#[cfg(output_gl)]
 mod slot;
-#[cfg(output_gl)]
 mod warp;
 /// macOS-only: AppKit NSWindow creation + control for the GL output path.
-#[cfg(all(output_gl, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 mod macos_window;
 mod types;
-#[cfg(output_win32)]
-mod win32_window;
 
 pub use blend::BlendMode;
 pub use types::{
@@ -34,10 +26,6 @@ pub use types::{
     SurfaceId, TestPattern, VideoGeometry, VoiceId,
 };
 use types::{compose_display_props, FadeAnimState, MpvCtx, OutputVoice, PendingVideoStart};
-#[cfg(output_win32)]
-use types::{FadePending, FadePendingParams};
-#[cfg(output_win32)]
-use types::OutputWndState;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CString};
@@ -57,8 +45,6 @@ use super::mpv_sys::{
     MpvLib, MpvNode, MpvNodeList, MpvNodeUnion,
     MPV_FORMAT_INT64, MPV_FORMAT_NODE_MAP, MPV_FORMAT_NONE, MPV_FORMAT_STRING,
 };
-#[cfg(output_win32)]
-use super::mpv_sys::MPV_FORMAT_DOUBLE;
 
 // ---------------------------------------------------------------------------
 // Global mpv state (cross-platform)
@@ -94,41 +80,83 @@ pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new
 pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
 /// Font family mirrored from OSD settings → emitted to the float-timer window.
 pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
-/// `true` while a Text Cue has loaded the `av://lavfi:color=black` dummy source
-/// so the OSD has a surface to composite onto in idle mode.  Cleared when the
-/// text ends.
-static TEXT_HAS_DUMMY: AtomicBool = AtomicBool::new(false);
+/// `true` while the overlay context has the transparent lavfi dummy loaded.
+///
+/// mpv needs a decoded video surface to composite OSD/text at all — **idle**
+/// renders ignore the OSD *and* clear the target to opaque black on some
+/// libmpv builds (0.41-dev on Windows honours neither `background=none` nor
+/// OSD in idle; measured 2026-07-11).  With a fully transparent RGBA source
+/// loaded, mpv honours the source alpha and composites the OSD with correct
+/// per-pixel alpha, so timer/text float over the video layers below.
+static OVERLAY_HAS_DUMMY: AtomicBool = AtomicBool::new(false);
+/// `true` while the on-output timer (`osd-msg1`) shows text.
+static TIMER_OSD_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// `true` while a test pattern occupies the overlay context.
+static TEST_PATTERN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// `true` when the overlay context currently shows something (timer OSD, Text
+/// Cue, test pattern) and must be composited on top of the video layers.
+///
+/// **Load-bearing for the compositor**: the overlay context's idle render is
+/// opaque black on some libmpv builds, so compositing it unconditionally
+/// blacks out every video layer below — it must only be composited while one
+/// of these is actually active.
+pub(super) fn overlay_active() -> bool {
+    TIMER_OSD_ACTIVE.load(Ordering::Relaxed)
+        || render::TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed)
+        || TEST_PATTERN_ACTIVE.load(Ordering::Relaxed)
+}
 
 /// mpv `osd-overlay` ID reserved for the Text Cue surface.  Distinct from the
 /// timer (which uses `osd-msg1`, a separate OSD channel).
 const TEXT_OSD_OVERLAY_ID: i64 = 47;
 
-// ---------------------------------------------------------------------------
-// Global Win32-only state
-// ---------------------------------------------------------------------------
+/// Load the transparent lavfi dummy into the overlay context (idempotent).
+///
+/// Called whenever timer/text OSD content appears.  No-op while a test
+/// pattern is showing — the pattern is the overlay surface then.
+fn ensure_overlay_surface() {
+    if TEST_PATTERN_ACTIVE.load(Ordering::Relaxed)
+        || OVERLAY_HAS_DUMMY.swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+        unsafe {
+            let cmd = cs("loadfile");
+            // Tiny + fully transparent: `format=rgba` keeps the alpha plane,
+            // 10 fps keeps the OSD recomposited without measurable cost.
+            let url = cs("av://lavfi:color=c=black@0.0:s=64x64:r=10,format=rgba");
+            let flags = cs("replace");
+            let idx = cs("0");
+            let opts = cs("audio=no,loop-file=inf");
+            let args: [*const c_char; 6] = [
+                cmd.as_ptr(), url.as_ptr(), flags.as_ptr(),
+                idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
+            ];
+            let ret = (lib.mpv_command)(ctx.0, args.as_ptr());
+            if ret < 0 {
+                log::warn!("[output] overlay dummy loadfile failed: {ret}");
+            }
+        }
+    }
+    render::wake();
+}
 
-/// Fullscreen / saved-rect state for the Win32 output window.
-#[cfg(output_win32)]
-pub(super) static OUTPUT_WND_STATE: OnceLock<Mutex<OutputWndState>> = OnceLock::new();
-/// HWND of the Win32 parent output window.
-#[cfg(output_win32)]
-pub(super) static OUTPUT_PARENT_HWND: OnceLock<isize> = OnceLock::new();
-/// HWND of the Win32 layered fade-overlay popup window.
-#[cfg(output_win32)]
-pub(super) static FADE_OVERLAY_HWND: OnceLock<isize> = OnceLock::new();
-
-// ---------------------------------------------------------------------------
-// Win32 message constants (Windows only)
-// ---------------------------------------------------------------------------
-
-/// `WM_APP + 1`: posted by the mpv event thread after `MPV_EVENT_FILE_LOADED`.
-#[cfg(output_win32)]
-pub(super) const WM_SETUP_MPV_CHILD: u32 = 0x8001;
-/// `WM_APP + 2`: posted by show_content/stop_content to start the fade timer.
-#[cfg(output_win32)]
-pub(super) const WM_DO_FADE: u32 = 0x8002;
-#[cfg(output_win32)]
-pub(super) const FADE_TIMER_ID: usize = 1;
+/// Unload the overlay dummy once neither the timer nor a Text Cue needs it.
+fn release_overlay_surface_if_idle() {
+    if overlay_active() || !OVERLAY_HAS_DUMMY.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
+        unsafe {
+            let stop = cs("stop");
+            let args: [*const c_char; 2] = [stop.as_ptr(), std::ptr::null()];
+            (lib.mpv_command)(ctx.0, args.as_ptr());
+        }
+    }
+    render::wake();
+}
 
 // ---------------------------------------------------------------------------
 // OutputEngine
@@ -138,9 +166,6 @@ pub(super) const FADE_TIMER_ID: usize = 1;
 pub struct OutputEngine {
     mpv_lib: Arc<MpvLib>,
     mpv_ctx: Arc<MpvCtx>,
-    /// Win32 parent HWND (0 on Mac/Linux — mpv manages its own window).
-    #[allow(dead_code)]
-    hwnd: isize,
     current_voice: Arc<Mutex<Option<VoiceId>>>,
     voices: Mutex<HashMap<VoiceId, OutputVoice>>,
     #[allow(dead_code)]
@@ -158,19 +183,10 @@ pub struct OutputEngine {
 impl OutputEngine {
     /// Construct the engine.
     ///
-    /// On Windows creates the Win32 window (shown immediately) and starts the Win32
-    /// message loop.  On Mac / Linux mpv manages its own window; a cross-platform
-    /// 16 ms fade-loop thread is started instead.
+    /// Creates the native GL output window (hidden) and blocks until mpv's
+    /// render context is live.
     pub fn new(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Result<Self> {
         let lib = Arc::new(MpvLib::load()?);
-
-        // Legacy Win32 path: create a Win32 parent window and embed mpv into it via wid.
-        // winit path (Linux + Windows default) / macOS: the winit or mpv-native window
-        // owns presentation, so `hwnd` is unused (0).
-        #[cfg(output_win32)]
-        let hwnd = win32_window::create_output_window()?;
-        #[cfg(not(output_win32))]
-        let hwnd: isize = 0;
 
         // mpv requires LC_NUMERIC=C; set it before mpv_create() on non-Windows.
         #[cfg(not(target_os = "windows"))]
@@ -184,36 +200,8 @@ impl OutputEngine {
         }
 
         unsafe {
-            // Legacy Win32 path only: embed mpv into the Win32 parent window via wid.
-            #[cfg(output_win32)]
-            {
-                let wid_name = cs("wid");
-                let mut wid_val: i64 = hwnd as i64;
-                (lib.mpv_set_option)(
-                    ctx,
-                    wid_name.as_ptr(),
-                    MPV_FORMAT_INT64,
-                    &mut wid_val as *mut i64 as *mut c_void,
-                );
-            }
-
-            // Legacy Win32 path: D3D11 backend with non-blocking Present (needed for
-            // desync), embedded in our own HWND. `d3d11-flip=no` avoids the DWM
-            // DirectFlip→composed transition that flashes black when the layered fade
-            // overlay covers the swapchain. The unified GL path below has no such
-            // overlay (the fade is a GL quad in the same surface), so it is not needed.
-            #[cfg(output_win32)]
-            {
-                opt_str(&lib, ctx, "vo", "gpu");
-                opt_str(&lib, ctx, "gpu-api", "d3d11");
-                opt_str(&lib, ctx, "d3d11-sync-interval", "0");
-                opt_str(&lib, ctx, "d3d11-flip", "no");
-                opt_str(&lib, ctx, "force-window", "immediate");
-            }
-            // Unified GL path (render.rs): mpv renders into our own native window via
-            // mpv_render_context_render() instead of creating its own window.  True on
-            // Windows (default), Linux, and macOS.
-            #[cfg(output_gl)]
+            // mpv renders into our own native window via mpv_render_context_render()
+            // instead of creating its own window.
             {
                 opt_str(&lib, ctx, "vo", "libmpv");
                 // This context is the layer compositor's OVERLAY (timer OSD,
@@ -290,10 +278,8 @@ impl OutputEngine {
         // has no other way to learn the current font.
         FLOAT_TIMER_FONT.get_or_init(|| Mutex::new(String::new()));
 
-        // Unified GL path (Linux + Windows default): create the winit/GL output
-        // window and block until mpv's render context is live, so no `loadfile` can
-        // race ahead of it.
-        #[cfg(output_gl)]
+        // Create the winit/GL output window and block until mpv's render
+        // context is live, so no `loadfile` can race ahead of it.
         render::init(&app_handle, Arc::clone(&lib), Arc::clone(&mpv_ctx))?;
 
         {
@@ -306,7 +292,7 @@ impl OutputEngine {
             std::thread::Builder::new()
                 .name("inkue-output-mpv-events".into())
                 .spawn(move || {
-                    mpv_events::mpv_event_loop(lib2, ctx2, voice2, tx2, hwnd, gsa2, ae)
+                    mpv_events::mpv_event_loop(lib2, ctx2, voice2, tx2, gsa2, ae)
                 })
                 .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
         }
@@ -314,7 +300,6 @@ impl OutputEngine {
         Ok(Self {
             mpv_lib: lib,
             mpv_ctx,
-            hwnd,
             current_voice,
             voices: Mutex::new(HashMap::new()),
             status_tx,
@@ -501,13 +486,10 @@ impl OutputEngine {
 
     /// Display content (video, image or live feed) on the output window.
     ///
-    /// GL path: the content gets its own video slot and is **composited** with
+    /// The content gets its own video slot and is **composited** with
     /// whatever else is on stage (layer / opacity / blend from
     /// `req.layer_style`) — nothing is replaced; stopping other cues is the
-    /// transport's `stop_on_next_go` policy, not the engine's.  Legacy Win32
-    /// path: single mpv context, the new content replaces the old (pre-1.3
-    /// behaviour).
-    #[cfg(output_gl)]
+    /// transport's policy, not the engine's.
     pub fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
         let voice_id = Uuid::new_v4();
 
@@ -542,136 +524,9 @@ impl OutputEngine {
         Ok(voice_id)
     }
 
-    /// Display content (video or image) on the output window (legacy Win32:
-    /// single mpv context, replace semantics).
-    #[cfg(output_win32)]
-    pub fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
-        let ContentRequest {
-            file_path,
-            is_image,
-            fade_in_ms,
-            loop_count,
-            start_ms,
-            end_ms,
-            screen_index,
-            audio_voice_id,
-            display_duration_ms,
-            hold_last_frame,
-            geometry,
-            live_source,
-            layer_style: _,
-        } = req;
-        let voice_id = Uuid::new_v4();
-
-        // Replace the old voice.
-        if let Some(old_id) = self.current_voice.lock().unwrap().take() {
-            self.voices.lock().unwrap().remove(&old_id);
-            let _ = self.status_tx.send(OutputStatus::Completed { voice_id: old_id });
-        }
-        *self.current_voice.lock().unwrap() = Some(voice_id);
-        self.voices.lock().unwrap().insert(
-            voice_id,
-            OutputVoice { id: voice_id, started_at: Instant::now(), duration: None },
-        );
-        if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
-            *cv.lock().unwrap() = Some(voice_id);
-        }
-
-        // Stop the previous video's audio track (hard cut — the visual fade-out
-        // of the previous cue is handled by its own stop_content() call).
-        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
-            let previous = {
-                let mut g = av.lock().unwrap();
-                std::mem::replace(&mut *g, audio_voice_id)
-            };
-            if let Some(prev_id) = previous {
-                let _ = self.audio_engine.stop_voice(
-                    prev_id,
-                    0,
-                    crate::engine::ring_command::FadeCurve::SCurve,
-                );
-            }
-        }
-
-        if !is_image {
-            *self.go_sent_at.lock().unwrap() = Some(Instant::now());
-        } else {
-            *self.go_sent_at.lock().unwrap() = None;
-        }
-
-        let path_str = file_path.to_string_lossy().replace('\\', "/");
-        self.position_window(screen_index);
-
-        let params = FadePendingParams {
-            path: path_str,
-            is_image,
-            voice_id,
-            fade_in_ms,
-            loop_count,
-            start_ms,
-            end_ms,
-            display_duration_ms,
-            hold_last_frame,
-            geometry,
-            live_source,
-        };
-
-        // Abort any overlay animation that may be running (e.g. a stop-fade
-        // that was started by a preceding stop_content call).  Clear timer_active
-        // so the Win32 timer tick detects the abort and kills itself.
-        if let Some(fs) = FADE_STATE.get() {
-            if let Ok(mut s) = fs.lock() {
-                s.pending      = None;
-                s.duration_ms  = 0;
-                s.timer_active = false;
-                s.target_alpha = s.current_alpha;
-                s.start_alpha  = s.current_alpha;
-            }
-        }
-
-        if is_image {
-            if fade_in_ms > 0 {
-                // Black overlay (alpha=255) hides whatever was on screen while the
-                // image loads.  The fade then reveals it (255 → 0).
-                fade::set_overlay_alpha(255);
-            }
-            fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
-            if fade_in_ms > 0 {
-                if let Some(fs) = FADE_STATE.get() {
-                    let mut s = fs.lock().unwrap();
-                    s.start_alpha  = 255;
-                    s.current_alpha = 255;
-                    s.target_alpha = 0;
-                    s.duration_ms  = fade_in_ms;
-                    s.start_time   = Instant::now();
-                    s.timer_active = false;
-                    s.pending      = None;
-                }
-                #[cfg(output_win32)]
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                    PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-                }
-                // GL path: wake the render loop so it animates the new FADE_STATE.
-                #[cfg(output_gl)]
-                render::wake();
-            } else {
-                fade::set_overlay_alpha(0);
-            }
-        } else {
-            // Video: hold black overlay while the first frame is decoded.
-            // PLAYBACK_RESTART in mpv_events reveals + unpauses once frame 0 is ready.
-            fade::set_overlay_alpha(255);
-            fade::execute_load_params(&params, &self.mpv_lib, self.mpv_ctx.0);
-        }
-
-        Ok(voice_id)
-    }
-
     /// Stop the content identified by `voice_id`: fade its layer's opacity to
     /// zero over `visual_fade_ms` (then unload the slot) and fade its audio
     /// voice out over `audio_fade_ms`.  Other layers are untouched.
-    #[cfg(output_gl)]
     pub fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32) {
         self.voices.lock().unwrap().remove(&voice_id);
         let Some(slot) = slot::slot_for_voice(voice_id) else { return };
@@ -689,99 +544,10 @@ impl OutputEngine {
         }
     }
 
-    /// Stop the content identified by `voice_id` (legacy Win32: overlay fade
-    /// to black + mpv stop on the single context).
-    #[cfg(output_win32)]
-    pub fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32) {
-        let was_current = {
-            let mut cv = self.current_voice.lock().unwrap();
-            if *cv == Some(voice_id) {
-                *cv = None;
-                true
-            } else {
-                false
-            }
-        };
-        if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
-            let mut cv_lock = cv.lock().unwrap();
-            if *cv_lock == Some(voice_id) {
-                *cv_lock = None;
-            }
-        }
-        self.voices.lock().unwrap().remove(&voice_id);
-
-        if !was_current {
-            return;
-        }
-
-        if visual_fade_ms > 0 {
-            if let Some(fs) = FADE_STATE.get() {
-                let mut state = fs.lock().unwrap();
-                state.start_alpha = state.current_alpha;
-                state.target_alpha = 255;
-                state.duration_ms = visual_fade_ms;
-                state.start_time = Instant::now();
-                state.timer_active = false;
-                state.pending = Some(FadePending::Stop);
-            }
-            #[cfg(output_win32)]
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-            }
-            // GL path: wake the render loop so it animates the stop fade.
-            #[cfg(output_gl)]
-            render::wake();
-        } else {
-            unsafe {
-                let stop = cs("stop");
-                let args: [*const std::ffi::c_char; 2] =
-                    [stop.as_ptr(), std::ptr::null()];
-                (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
-            }
-            // Hard cut: mpv goes idle. On the GL path the render loop would otherwise
-            // skip drawing (no new frame + transparent overlay) and leave the last
-            // frame frozen on screen. Force the overlay to black — it wakes the render
-            // loop and paints an opaque black quad over the stale frame, matching the
-            // end state of a stop-with-fade.
-            fade::set_overlay_alpha(255);
-        }
-
-        if let Some(m) = OUTPUT_CURRENT_FADE_OUT_MS.get() {
-            *m.lock().unwrap() = 0;
-        }
-
-        if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
-            *m.lock().unwrap() = None;
-        }
-        *self.go_sent_at.lock().unwrap() = None;
-
-        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
-            let audio_id = av.lock().unwrap().take();
-            if let Some(aid) = audio_id {
-                let _ = self.audio_engine.stop_voice(
-                    aid,
-                    audio_fade_ms,
-                    crate::engine::ring_command::FadeCurve::SCurve,
-                );
-            }
-        }
-    }
-
     /// Hard-stop all content immediately (no fade).
     pub fn hard_stop_current(&self) {
-        #[cfg(output_gl)]
-        {
-            self.voices.lock().unwrap().clear();
-            slot::panic_all();
-        }
-        #[cfg(output_win32)]
-        {
-            let voice_id = *self.current_voice.lock().unwrap();
-            if let Some(vid) = voice_id {
-                self.stop_content(vid, 0, 0);
-            }
-        }
+        self.voices.lock().unwrap().clear();
+        slot::panic_all();
     }
 
     /// Panic: unconditionally cut whatever the output surface is doing.
@@ -797,8 +563,7 @@ impl OutputEngine {
         }
         self.voices.lock().unwrap().clear();
 
-        // GL: silence every video slot without needing voice ids.
-        #[cfg(output_gl)]
+        // Silence every video slot without needing voice ids.
         slot::panic_all();
 
         unsafe {
@@ -830,14 +595,7 @@ impl OutputEngine {
 
     /// `true` when `voice_id` is content currently on the output window.
     pub fn is_current_voice(&self, voice_id: VoiceId) -> bool {
-        #[cfg(output_gl)]
-        {
-            slot::slot_for_voice(voice_id).is_some()
-        }
-        #[cfg(output_win32)]
-        {
-            *self.current_voice.lock().unwrap() == Some(voice_id)
-        }
+        slot::slot_for_voice(voice_id).is_some()
     }
 
     /// Apply per-cue visual geometry to a voice's content, live.
@@ -845,59 +603,32 @@ impl OutputEngine {
     /// Called from `update_cue` when the operator edits the Geometry tab of a
     /// cue that is on screen; the load path applies geometry itself.
     pub fn apply_geometry(&self, voice_id: VoiceId, geometry: &VideoGeometry) {
-        #[cfg(output_gl)]
-        {
-            let Some(slot) = slot::slot_for_voice(voice_id) else { return };
-            apply_scalar_geometry(&slot.lib, slot.mpv_ctx.0, geometry);
-            let applied = try_apply_crop(&slot.lib, slot.mpv_ctx.0, geometry);
-            if let Ok(mut st) = slot.state.lock() {
-                st.geometry = *geometry;
-                st.crop_applied = applied || !geometry.has_crop();
-            }
-            render::wake();
+        let Some(slot) = slot::slot_for_voice(voice_id) else { return };
+        apply_scalar_geometry(&slot.lib, slot.mpv_ctx.0, geometry);
+        let applied = try_apply_crop(&slot.lib, slot.mpv_ctx.0, geometry);
+        if let Ok(mut st) = slot.state.lock() {
+            st.geometry = *geometry;
+            st.crop_applied = applied || !geometry.has_crop();
         }
-        #[cfg(output_win32)]
-        {
-            let _ = voice_id;
-            apply_geometry_props(&self.mpv_lib, self.mpv_ctx.0, geometry);
-        }
+        render::wake();
     }
 
     /// Live-apply a cue's compositing properties (layer / opacity / blend).
     pub fn set_layer_props(&self, voice_id: VoiceId, style: &LayerStyle) {
-        #[cfg(output_gl)]
         if let Some(slot) = slot::slot_for_voice(voice_id) {
             slot::set_layer_style(&slot, style);
-        }
-        #[cfg(output_win32)]
-        {
-            let _ = (voice_id, style); // No compositor on the legacy path.
         }
     }
 
     /// Current animated opacity (0.0–1.0) of a voice's layer.
     pub fn get_voice_opacity(&self, voice_id: VoiceId) -> f32 {
-        #[cfg(output_gl)]
-        {
-            slot::slot_for_voice(voice_id).map(|s| slot::opacity_of(&s)).unwrap_or(0.0)
-        }
-        #[cfg(output_win32)]
-        {
-            let _ = voice_id;
-            1.0 - self.get_overlay_alpha() as f32 / 255.0
-        }
+        slot::slot_for_voice(voice_id).map(|s| slot::opacity_of(&s)).unwrap_or(0.0)
     }
 
     /// Directly drive a voice's layer opacity — Fade Cue tick at ~30 fps.
     pub fn set_voice_opacity(&self, voice_id: VoiceId, opacity: f32) {
-        #[cfg(output_gl)]
         if let Some(slot) = slot::slot_for_voice(voice_id) {
             slot::set_opacity_direct(&slot, opacity);
-        }
-        #[cfg(output_win32)]
-        {
-            let _ = voice_id;
-            self.set_overlay_alpha_direct(((1.0 - opacity.clamp(0.0, 1.0)) * 255.0) as u8);
         }
     }
 
@@ -908,38 +639,9 @@ impl OutputEngine {
     /// action time drops inside the configured fade-out window.  Returns
     /// `false` (and does nothing) when `voice_id` is no longer on screen.
     pub fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool {
-        #[cfg(output_gl)]
-        {
-            let Some(slot) = slot::slot_for_voice(voice_id) else { return false };
-            slot::animate_opacity(&slot, 0.0, fade_ms);
-            true
-        }
-        #[cfg(output_win32)]
-        {
-            if !self.is_current_voice(voice_id) {
-                return false;
-            }
-            if let Some(fs) = FADE_STATE.get() {
-                if let Ok(mut s) = fs.lock() {
-                    if s.target_alpha == 255 {
-                        return true; // Already fading (or held) to black.
-                    }
-                    s.start_alpha = s.current_alpha;
-                    s.target_alpha = 255;
-                    s.duration_ms = fade_ms.max(1);
-                    s.start_time = Instant::now();
-                    s.timer_active = false;
-                    // No pending Stop: the EOF itself ends playback right
-                    // after the fade lands, keeping loop/hold semantics.
-                    s.pending = None;
-                }
-            }
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                PostMessageW(self.hwnd, WM_DO_FADE, 0, 0);
-            }
-            true
-        }
+        let Some(slot) = slot::slot_for_voice(voice_id) else { return false };
+        slot::animate_opacity(&slot, 0.0, fade_ms);
+        true
     }
 
     /// Return the current overlay alpha (0 = transparent, 255 = black).
@@ -952,55 +654,20 @@ impl OutputEngine {
 
     /// Directly set the overlay alpha — called from FadeCue.tick() at ~30 fps.
     pub fn set_overlay_alpha_direct(&self, alpha: u8) {
-        #[cfg(output_win32)]
-        if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-            if alpha > 0 {
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNA};
-                    ShowWindow(overlay, SW_SHOWNA);
-                }
-            }
-        }
         fade::set_overlay_alpha(alpha);
     }
 
     /// Return the AudioEngine voice carrying a video voice's audio track.
     pub fn video_audio_voice(&self, voice_id: VoiceId) -> Option<VoiceId> {
-        #[cfg(output_gl)]
-        {
-            let slot = slot::slot_for_voice(voice_id)?;
-            let audio = slot.state.lock().ok().and_then(|st| st.audio_voice_id);
-            audio
-        }
-        #[cfg(output_win32)]
-        {
-            let _ = voice_id;
-            OUTPUT_CURRENT_AUDIO_VOICE.get().and_then(|m| m.lock().ok()).and_then(|g| *g)
-        }
+        let slot = slot::slot_for_voice(voice_id)?;
+        let audio = slot.state.lock().ok().and_then(|st| st.audio_voice_id);
+        audio
     }
 
     /// Current playback position of a voice's video (mpv `time-pos`), in ms.
     pub fn current_video_position_ms(&self, voice_id: VoiceId) -> Option<u64> {
-        #[cfg(output_gl)]
-        {
-            let slot = slot::slot_for_voice(voice_id)?;
-            slot::position_ms(&slot)
-        }
-        #[cfg(output_win32)]
-        {
-            let _ = voice_id;
-            let mut secs: f64 = 0.0;
-            let name = cs("time-pos");
-            let ret = unsafe {
-                (self.mpv_lib.mpv_get_property)(
-                    self.mpv_ctx.0,
-                    name.as_ptr(),
-                    MPV_FORMAT_DOUBLE,
-                    &mut secs as *mut f64 as *mut c_void,
-                )
-            };
-            (ret == 0 && secs >= 0.0).then_some((secs * 1000.0) as u64)
-        }
+        let slot = slot::slot_for_voice(voice_id)?;
+        slot::position_ms(&slot)
     }
 
     /// Re-anchor the paired audio voice to the video's **actual** position
@@ -1056,18 +723,9 @@ impl OutputEngine {
         self.hard_stop_current();
     }
 
-    /// The mpv context owning `voice_id`: the voice's slot on GL, the single
-    /// context on the legacy path.
+    /// The mpv context owning `voice_id` (the voice's slot).
     fn voice_mpv_ctx(&self, voice_id: VoiceId) -> Option<*mut c_void> {
-        #[cfg(output_gl)]
-        {
-            slot::slot_for_voice(voice_id).map(|s| s.mpv_ctx.0)
-        }
-        #[cfg(output_win32)]
-        {
-            let _ = voice_id;
-            Some(self.mpv_ctx.0)
-        }
+        slot::slot_for_voice(voice_id).map(|s| s.mpv_ctx.0)
     }
 
     pub fn pause_voice(&self, voice_id: VoiceId) -> Result<()> {
@@ -1140,22 +798,9 @@ impl OutputEngine {
     /// Make the output window visible.
     pub fn show_output(&self) {
         self.visible.store(true, Ordering::Relaxed);
-        #[cfg(output_win32)]
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, HWND_TOPMOST,
-                SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-            };
-            SetWindowPos(
-                self.hwnd, HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
-        }
-        // Unified GL path: render.rs owns the native window. On Windows/Linux this
-        // calls winit inline; on macOS it dispatches the AppKit show onto the main
-        // thread (NSWindow methods are main-thread-only).
-        #[cfg(output_gl)]
+        // render.rs owns the native window. On Windows/Linux this calls winit
+        // inline; on macOS it dispatches the AppKit show onto the main thread
+        // (NSWindow methods are main-thread-only).
         render::show();
         use tauri::Emitter;
         let _ = self.app_handle.emit("output-window-visible", true);
@@ -1164,15 +809,6 @@ impl OutputEngine {
     /// Hide the output window.
     pub fn hide_output(&self) {
         self.visible.store(false, Ordering::Relaxed);
-        #[cfg(output_win32)]
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-            ShowWindow(self.hwnd, SW_HIDE);
-            if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                ShowWindow(overlay, SW_HIDE);
-            }
-        }
-        #[cfg(output_gl)]
         render::hide();
         use tauri::Emitter;
         let _ = self.app_handle.emit("output-window-visible", false);
@@ -1189,10 +825,23 @@ impl OutputEngine {
     ///
     /// Pass `None` (or an empty string) to hide the timer.
     pub fn set_output_timer(&self, text: Option<&str>) {
+        let text = text.unwrap_or("");
+        // The OSD only renders over a decoded surface (see OVERLAY_HAS_DUMMY),
+        // and the overlay is only composited while flagged active.
+        if text.is_empty() {
+            TIMER_OSD_ACTIVE.store(false, Ordering::Relaxed);
+        } else {
+            TIMER_OSD_ACTIVE.store(true, Ordering::Relaxed);
+            ensure_overlay_surface();
+        }
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             unsafe {
-                prop_str(lib, ctx.0, "osd-msg1", text.unwrap_or(""));
+                prop_str(lib, ctx.0, "osd-msg1", text);
             }
+        }
+        if text.is_empty() {
+            release_overlay_surface_if_idle();
+            render::mark_overlay_dirty();
         }
     }
 
@@ -1295,49 +944,14 @@ impl OutputEngine {
     /// surface to composite onto and the output shows black rather than the desktop.
     pub fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
         self.position_window(screen_index);
-        // GL path only: hint the render loop to keep compositing OSD-only
-        // changes.  The legacy Win32 path has no render loop — mpv's own
-        // vo=gpu window composites the OSD itself.
-        #[cfg(output_gl)]
+        // Hint the render loop to keep compositing OSD-only changes.
         render::TEXT_OVERLAY_ACTIVE.store(true, Ordering::Relaxed);
+        // The ASS overlay only renders over a decoded surface.
+        ensure_overlay_surface();
 
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            let no_content = OUTPUT_CURRENT_VOICE
-                .get()
-                .and_then(|cv| cv.lock().ok())
-                .map(|cv| cv.is_none())
-                .unwrap_or(true);
-
-            // Legacy Win32 only: load a black lavfi source so the OSD has a
-            // surface and the output shows black rather than the desktop.
-            // On the GL path the overlay context idles TRANSPARENT on purpose
-            // (the layer compositor provides the black stage), so the text
-            // floats over any video layers below it — no dummy wanted.
-            #[cfg(output_win32)]
-            if no_content && !TEXT_HAS_DUMMY.load(Ordering::Relaxed) {
-                unsafe {
-                    let cmd   = cs("loadfile");
-                    let url   = cs("av://lavfi:color=black:size=1920x1080:rate=1");
-                    let flags = cs("replace");
-                    let idx   = cs("0");
-                    let opts  = cs("audio=no,loop-file=inf");
-                    let args: [*const c_char; 6] = [
-                        cmd.as_ptr(), url.as_ptr(), flags.as_ptr(),
-                        idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
-                    ];
-                    let ret = (lib.mpv_command)(ctx.0, args.as_ptr());
-                    if ret < 0 {
-                        log::warn!("[output] text dummy loadfile failed: {ret}");
-                    }
-                }
-                TEXT_HAS_DUMMY.store(true, Ordering::Relaxed);
-            }
-            #[cfg(output_gl)]
-            let _ = no_content;
-
-            // osd-overlay persists across the lavfi file load, so it can be set
-            // now whether or not the dummy frame has decoded yet — the render
-            // loop composites it as soon as the first frame is ready.
+            // osd-overlay persists across file loads, so it can be set right
+            // away — the render loop composites it as soon as it renders.
             unsafe { osd_overlay_set(lib, ctx.0, ass_text); }
         }
 
@@ -1349,37 +963,16 @@ impl OutputEngine {
     /// Restores the opaque-black idle state (alpha=255) when no video or image
     /// content is currently playing.
     pub fn clear_text_overlay(&self) {
-        #[cfg(output_gl)]
         render::TEXT_OVERLAY_ACTIVE.store(false, Ordering::Relaxed);
 
         if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
             unsafe { osd_overlay_remove(lib, ctx.0); }
-
-            if TEXT_HAS_DUMMY.swap(false, Ordering::Relaxed) {
-                let no_real_content = OUTPUT_CURRENT_VOICE
-                    .get()
-                    .and_then(|cv| cv.lock().ok())
-                    .map(|cv| cv.is_none())
-                    .unwrap_or(true);
-                if no_real_content {
-                    unsafe {
-                        let cmd  = cs("stop");
-                        let args: [*const std::ffi::c_char; 2] = [cmd.as_ptr(), std::ptr::null()];
-                        (lib.mpv_command)(ctx.0, args.as_ptr());
-                    }
-                }
-            }
         }
+        release_overlay_surface_if_idle();
+        render::mark_overlay_dirty();
 
-        // Blackout only when the whole stage is empty (GL: no slot occupied).
-        #[cfg(output_gl)]
+        // Blackout only when the whole stage is empty (no slot occupied).
         let has_content = !self.voices.lock().unwrap().is_empty();
-        #[cfg(output_win32)]
-        let has_content = OUTPUT_CURRENT_VOICE
-            .get()
-            .and_then(|cv| cv.lock().ok())
-            .map(|cv| cv.is_some())
-            .unwrap_or(false);
         if !has_content {
             fade::set_overlay_alpha(255);
         }
@@ -1396,10 +989,8 @@ impl OutputEngine {
     /// event loop re-asserts it every tick to stay in sync with the loaded
     /// workspace).
     ///
-    /// GL path: the transform (incl. fractional rotation + corner pin) is a
-    /// dedicated warp render pass — mpv properties are not touched.  Legacy
-    /// Win32 path: pan/scale/rotation are approximated by recomposing mpv
-    /// properties against the last cue geometry (corner pin unsupported).
+    /// The transform (incl. fractional rotation + corner pin) is a dedicated
+    /// warp render pass — mpv properties are not touched.
     pub fn set_output_transform(&self, transform: OutputTransform) {
         let changed = OUTPUT_TRANSFORM
             .get()
@@ -1417,18 +1008,7 @@ impl OutputEngine {
             return;
         }
 
-        #[cfg(output_gl)]
         render::set_output_warp(warp::warp_matrix(&transform));
-
-        #[cfg(output_win32)]
-        {
-            let last_geometry = LAST_CUE_GEOMETRY
-                .get()
-                .and_then(|m| m.lock().ok())
-                .map(|g| *g)
-                .unwrap_or_default();
-            apply_geometry_props(&self.mpv_lib, self.mpv_ctx.0, &last_geometry);
-        }
     }
 
     // ── Test patterns (projector calibration) ────────────────────────────────
@@ -1445,6 +1025,11 @@ impl OutputEngine {
     pub fn show_test_pattern(&self, pattern: &TestPattern, screen_index: Option<u32>) {
         self.hard_stop_current();
         self.position_window(screen_index);
+
+        // The pattern replaces whatever the overlay context held (incl. the
+        // transparent OSD dummy) and makes the overlay composite opaque.
+        TEST_PATTERN_ACTIVE.store(true, Ordering::Relaxed);
+        OVERLAY_HAS_DUMMY.store(false, Ordering::Relaxed);
 
         // Pattern resolution: match the target screen so the grid is 1:1.
         let (w, h) = resolve_output_screen(&self.list_screens(), screen_index)
@@ -1507,6 +1092,12 @@ impl OutputEngine {
             let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
             (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
         }
+        TEST_PATTERN_ACTIVE.store(false, Ordering::Relaxed);
+        // Timer/Text OSD may still be live — give them their surface back.
+        if overlay_active() {
+            ensure_overlay_surface();
+        }
+        render::mark_overlay_dirty();
         fade::set_overlay_alpha(255);
     }
 
@@ -1521,17 +1112,6 @@ impl OutputEngine {
             Some(_) => self.position_window(screen_index),
             None => {
                 crate::health::clear("output-screen");
-
-                #[cfg(output_win32)]
-                if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
-                    if let Ok(mut state) = state_mutex.lock() {
-                        if state.is_fullscreen {
-                            win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
-                        }
-                    }
-                }
-
-                #[cfg(output_gl)]
                 render::set_windowed_floating();
             }
         }
@@ -1541,13 +1121,6 @@ impl OutputEngine {
 
     /// Toggle the output window between windowed and true fullscreen.
     pub fn toggle_fullscreen(&self) {
-        #[cfg(output_win32)]
-        if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
-            if let Ok(mut state) = state_mutex.lock() {
-                win32_window::toggle_fullscreen_impl(self.hwnd, &mut state);
-            }
-        }
-        #[cfg(output_gl)]
         render::toggle_fullscreen();
     }
 
@@ -1593,79 +1166,19 @@ impl OutputEngine {
             crate::health::clear("output-screen");
         }
 
-        #[cfg(output_win32)]
-        unsafe {
-            use windows_sys::Win32::Foundation::RECT;
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetWindowRect, SetWindowPos, ShowWindow, HWND_TOPMOST, SW_SHOWNA,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED,
-            };
-
-            if let Some(s) = &target_screen {
-                if let Some(state_mutex) = OUTPUT_WND_STATE.get() {
-                    if let Ok(mut state) = state_mutex.lock() {
-                        if !state.is_fullscreen {
-                            state.saved_rect = (100, 100, 100 + 1280, 100 + 720);
-                        }
-                        state.is_fullscreen = true;
-                    }
-                }
-                win32_window::set_borderless(self.hwnd);
-                SetWindowPos(
-                    self.hwnd, HWND_TOPMOST,
-                    s.x, s.y, s.width as i32, s.height as i32,
-                    SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                );
-                if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                    ShowWindow(overlay, SW_SHOWNA);
-                    SetWindowPos(
-                        overlay, HWND_TOPMOST,
-                        s.x, s.y, s.width as i32, s.height as i32,
-                        SWP_NOACTIVATE,
-                    );
-                }
-            }
-
-            self.visible.store(true, Ordering::Relaxed);
-            ShowWindow(self.hwnd, SW_SHOWNA);
-            SetWindowPos(
-                self.hwnd, HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-
-            if target_screen.is_none() {
-                if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-                    ShowWindow(overlay, SW_SHOWNA);
-                    let mut rc: RECT = std::mem::zeroed();
-                    GetWindowRect(self.hwnd, &mut rc);
-                    SetWindowPos(
-                        overlay, HWND_TOPMOST,
-                        rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
-                        SWP_NOACTIVATE,
-                    );
-                }
-            }
-
-            SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        self.visible.store(true, Ordering::Relaxed);
+        if let Some(s) = &target_screen {
+            // Windows/Linux: position via the winit window using the screen rect
+            // from list_screens(). macOS: place the NSWindow onto NSScreen[idx]
+            // directly (AppKit's own coordinate space — no rect conversion needed;
+            // our sorted list and NSScreen both put the primary at index 0, so the
+            // fallback index maps correctly too).
+            #[cfg(not(target_os = "macos"))]
+            render::set_outer_rect(s.x, s.y, s.width, s.height);
+            #[cfg(target_os = "macos")]
+            render::position_on_screen(s.index);
         }
-
-        #[cfg(output_gl)]
-        {
-            self.visible.store(true, Ordering::Relaxed);
-            if let Some(s) = &target_screen {
-                // Windows/Linux: position via the winit window using the screen rect
-                // from list_screens(). macOS: place the NSWindow onto NSScreen[idx]
-                // directly (AppKit's own coordinate space — no rect conversion needed;
-                // our sorted list and NSScreen both put the primary at index 0, so the
-                // fallback index maps correctly too).
-                #[cfg(not(target_os = "macos"))]
-                render::set_outer_rect(s.x, s.y, s.width, s.height);
-                #[cfg(target_os = "macos")]
-                render::position_on_screen(s.index);
-            }
-            render::show();
-        }
+        render::show();
         use tauri::Emitter;
         let _ = self.app_handle.emit("output-window-visible", true);
     }
@@ -1737,23 +1250,11 @@ pub(super) fn try_apply_crop(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeo
     }
 }
 
-/// The current global projector-alignment transform (win32 fallback path —
-/// the GL path reads the warp matrix in the render thread instead).
-#[cfg(output_win32)]
-pub(super) fn current_output_transform() -> OutputTransform {
-    OUTPUT_TRANSFORM
-        .get()
-        .and_then(|m| m.lock().ok())
-        .map(|t| *t)
-        .unwrap_or_default()
-}
-
 /// Push a cue's [`VideoGeometry`] to mpv.
 ///
-/// On the GL path the cue geometry is applied **pure** — the global
-/// [`OutputTransform`] lives in the warp render pass instead, so composing it
-/// here would double-apply it.  The legacy Win32 path has no warp pass and
-/// approximates the transform by composing it into these properties.
+/// The cue geometry is applied **pure** — the global [`OutputTransform`]
+/// lives in the warp render pass instead, so composing it here would
+/// double-apply it.
 ///
 /// The scalar properties (`keepaspect`, `panscan`, `video-zoom`,
 /// `video-pan-x/y`, `video-rotate`) are global mpv properties that persist
@@ -1762,8 +1263,7 @@ pub(super) fn current_output_transform() -> OutputTransform {
 /// is pixel-based: applied immediately when the source dimensions are known,
 /// otherwise parked in [`PENDING_CROP`] for the `VIDEO_RECONFIG` handler.
 pub(super) fn apply_geometry_props(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeometry) {
-    // Remember the cue geometry so a Preferences transform edit can recompose
-    // (win32 fallback path).
+    // Remember the cue geometry most recently pushed to mpv.
     if let Some(last) = LAST_CUE_GEOMETRY.get() {
         if let Ok(mut g) = last.lock() {
             *g = *geometry;
@@ -1792,13 +1292,9 @@ pub(super) fn apply_geometry_props(lib: &MpvLib, ctx: *mut c_void, geometry: &Vi
 /// crop, which needs the source dimensions).  Per-context — used by both the
 /// overlay context and each video slot.
 ///
-/// GL path: the cue geometry is applied **pure** (the global OutputTransform
-/// lives in the warp render pass).  Legacy Win32: composed with the
-/// transform, since there is no warp pass there.
+/// The cue geometry is applied **pure** (the global OutputTransform lives in
+/// the warp render pass).
 pub(super) fn apply_scalar_geometry(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeometry) {
-    #[cfg(output_win32)]
-    let props = compose_display_props(geometry, &current_output_transform());
-    #[cfg(output_gl)]
     let props = compose_display_props(geometry, &OutputTransform::default());
     unsafe {
         let (keepaspect, panscan) = geometry.fit_props();
@@ -1809,11 +1305,6 @@ pub(super) fn apply_scalar_geometry(lib: &MpvLib, ctx: *mut c_void, geometry: &V
         prop_str(lib, ctx, "video-pan-y", &format!("{:.6}", props.pan_y));
         prop_str(lib, ctx, "video-rotate", &props.rotation.to_string());
     }
-}
-
-#[cfg(output_win32)]
-pub(super) fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().collect()
 }
 
 pub(super) unsafe fn opt_str(lib: &MpvLib, ctx: *mut c_void, name: &str, value: &str) {

@@ -1,30 +1,15 @@
-//! Fade overlay helpers — shared between the GL unified path and the legacy Win32 path.
+//! Fade overlay helpers (master blackout quad).
 //!
-//! **GL unified path (default)**
-//!   `FADE_STATE` is the single source of truth for the current overlay alpha.
-//!   `tick_fade()` is called by the render thread each frame to advance the
-//!   animation.  `execute_pending()` fires when a fade completes.  No separate
-//!   fade thread is needed; the render loop drives animation timing.
-//!
-//! **Legacy Win32 path (`legacy-win32-output` feature)**
-//!   `apply_overlay_alpha` drives `SetLayeredWindowAttributes`; a Win32 timer
-//!   in `output_wnd_proc` advances the animation via `execute_fade_pending`.
+//! `FADE_STATE` is the single source of truth for the current overlay alpha.
+//! `tick_fade()` is called by the render thread each frame to advance the
+//! animation.  `execute_pending()` fires when a fade completes.  No separate
+//! fade thread is needed; the render loop drives animation timing.
 
 use super::{cs, FADE_STATE, OUTPUT_CURRENT_VOICE, OUTPUT_MPV_CTX, OUTPUT_MPV_LIB};
 use super::types::FadePending;
-#[cfg(output_win32)]
-use super::types::{FadePendingParams, PendingVideoStart};
-#[cfg(output_win32)]
-use std::ffi::c_void;
-#[cfg(output_win32)]
-use crate::engine::mpv_sys::MpvLib;
-
-// Win32 fade overlay imports.
-#[cfg(output_win32)]
-use super::FADE_OVERLAY_HWND;
 
 // ---------------------------------------------------------------------------
-// Unified: alpha state
+// Alpha state
 // ---------------------------------------------------------------------------
 
 /// Hard-cut the overlay to `alpha` with no animation.
@@ -44,18 +29,13 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
         }
     }
 
-    // Win32: also push to the layered overlay window immediately.
-    #[cfg(output_win32)]
-    apply_overlay_alpha(alpha);
-
-    // GL path: the render loop self-paces at 16 ms only while animating; wake it so
+    // The render loop self-paces at 16 ms only while animating; wake it so
     // externally-driven alpha changes (Fade Cue at 30 fps) redraw the quad at once.
-    #[cfg(output_gl)]
     super::render::wake();
 }
 
 // ---------------------------------------------------------------------------
-// GL unified path: per-frame tick + pending action executor
+// Per-frame tick + pending action executor
 // ---------------------------------------------------------------------------
 
 /// Advance the fade animation by one render-thread frame.
@@ -63,7 +43,6 @@ pub(super) fn set_overlay_alpha(alpha: u8) {
 /// Returns `(current_alpha, did_complete)`.  `did_complete` is `true` exactly
 /// once — on the frame where `current_alpha` first reaches `target_alpha`.
 /// The caller should invoke `execute_pending()` when `did_complete` is `true`.
-#[cfg(output_gl)]
 pub(super) fn tick_fade() -> (u8, bool) {
     let Some(fs) = FADE_STATE.get() else {
         return (0, false);
@@ -99,7 +78,6 @@ pub(super) fn tick_fade() -> (u8, bool) {
 ///
 /// Called by the render thread immediately after `tick_fade()` returns
 /// `did_complete = true`.
-#[cfg(output_gl)]
 pub(super) fn execute_pending() {
     let pending = FADE_STATE
         .get()
@@ -130,183 +108,6 @@ pub(super) fn execute_pending() {
         }
         None => {
             // Fade-in completed — nothing more to do.
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Legacy Win32 path — Win32 layered-window implementation
-// ---------------------------------------------------------------------------
-
-/// Apply `alpha` directly to the Win32 layered fade overlay window.
-///
-/// Does NOT update `FADE_STATE.current_alpha`; use `set_overlay_alpha` for that.
-#[cfg(output_win32)]
-pub(super) fn apply_overlay_alpha(alpha: u8) {
-    if let Some(&overlay) = FADE_OVERLAY_HWND.get() {
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::SetLayeredWindowAttributes;
-            const LWA_ALPHA: u32 = 0x2;
-            SetLayeredWindowAttributes(overlay, 0, alpha, LWA_ALPHA);
-        }
-    }
-}
-
-/// Execute the pending fade action — called from the Win32 `WM_TIMER` handler.
-#[cfg(output_win32)]
-pub(super) fn execute_fade_pending(_hwnd: isize) {
-    let pending = FADE_STATE
-        .get()
-        .and_then(|fs| fs.lock().ok().and_then(|mut s| s.pending.take()));
-
-    match pending {
-        Some(FadePending::Stop) => {
-            let has_new_content = OUTPUT_CURRENT_VOICE
-                .get()
-                .and_then(|cv| cv.lock().ok())
-                .map(|cv| cv.is_some())
-                .unwrap_or(false);
-            if has_new_content {
-                set_overlay_alpha(0);
-                return;
-            }
-            if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-                unsafe {
-                    let stop = cs("stop");
-                    let args: [*const std::ffi::c_char; 2] =
-                        [stop.as_ptr(), std::ptr::null()];
-                    (lib.mpv_command)(ctx.0, args.as_ptr());
-                }
-            }
-        }
-        None => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// mpv loadfile executor (legacy Win32 single-context path)
-// ---------------------------------------------------------------------------
-
-/// Send an mpv `loadfile` command for the given content parameters.
-/// (The GL path loads via the slot pool — `slot::load_into_slot`.)
-#[cfg(output_win32)]
-pub(super) fn execute_load_params(params: &FadePendingParams, lib: &MpvLib, ctx: *mut c_void) {
-    use std::ffi::CString;
-
-    unsafe {
-        let path_cstr = match CString::new(params.path.as_str()) {
-            Ok(c)  => c,
-            Err(_) => {
-                log::warn!("[output] execute_load_params: path contains NUL byte");
-                return;
-            }
-        };
-
-        // Per-cue geometry (fit / pan / scale / rotate / crop).  Set before the
-        // loadfile so the pending crop is armed ahead of VIDEO_RECONFIG, and on
-        // *every* load so a cue without geometry resets the previous cue's.
-        super::apply_geometry_props(lib, ctx, &params.geometry);
-
-        if params.is_image {
-            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
-            // Images auto-complete via image-display-duration → END_FILE, which
-            // keep-open would suppress; a previous held video may have left it on.
-            (lib.mpv_set_property_string)(ctx, cs("keep-open").as_ptr(), cs("no").as_ptr());
-            if let Some(m) = super::OUTPUT_PENDING_VIDEO_START.get() {
-                if let Ok(mut p) = m.lock() { *p = None; }
-            }
-
-            let duration_val = params
-                .display_duration_ms
-                .map(|ms| format!("{:.3}", ms as f64 / 1000.0))
-                .unwrap_or_else(|| "inf".to_string());
-            let opts_str  = format!("audio=no,image-display-duration={duration_val}");
-            let file_opts = cs(&opts_str);
-            let cmd       = cs("loadfile");
-            let flags     = cs("replace");
-            let idx       = cs("0");
-            // mpv loadfile signature is `loadfile <url> <flags> <index> <options>` —
-            // <index> must be present (ignored for "replace") or mpv tries to parse
-            // the options string itself as the index integer and fails. Required on
-            // both Windows (mpv ≥ 0.38) and Linux (tested against mpv 0.41.0).
-            let args: [*const std::ffi::c_char; 6] = [
-                cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                idx.as_ptr(), file_opts.as_ptr(), std::ptr::null(),
-            ];
-            let ret = (lib.mpv_command)(ctx, args.as_ptr());
-            if ret < 0 { log::warn!("[output] mpv loadfile (image) failed: {ret}"); }
-        } else {
-            let mut opts: Vec<String> = vec!["audio=no".to_string()];
-            if let Some(start) = params.start_ms {
-                opts.push(format!("start={:.3}", start as f64 / 1000.0));
-            }
-            if let Some(end) = params.end_ms {
-                opts.push(format!("end={:.3}", end as f64 / 1000.0));
-            }
-            let loop_val = if params.loop_count == u32::MAX {
-                "inf".to_string()
-            } else if params.loop_count == 0 {
-                "no".to_string()
-            } else {
-                params.loop_count.to_string()
-            };
-            opts.push(format!("loop-file={loop_val}"));
-
-            // Live sources (camera / network stream): drop the file-playback
-            // buffering so the feed shows with minimal delay.
-            if params.live_source {
-                opts.push("cache=no".to_string());
-                opts.push("demuxer-lavf-analyzeduration=0.1".to_string());
-                opts.push("video-latency-hacks=yes".to_string());
-            }
-
-            let opts_str     = opts.join(",");
-            let opts_cstr    = cs(&opts_str);
-            let cmd_cstr     = cs("loadfile");
-            let replace_cstr = cs("replace");
-            // hwdec mode.
-            //
-            // Linux: `auto` = direct VAAPI↔GL interop (zero-copy) — the decoded surface
-            // is imported straight into our render-API GL context as a DMA-BUF/EGLImage.
-            // `auto-copy` instead round-trips every frame GPU→system-RAM→GPU, which on a
-            // shared-memory iGPU (Intel HD 520) doubles memory-bus traffic and steals the
-            // bandwidth WebKitGTK needs to composite the UI. Direct interop removes that
-            // round-trip; mpv falls back to copy on its own if interop is unavailable.
-            // (Only effective once a VA-API driver is installed — otherwise mpv software-
-            // decodes regardless; see PORTAGE.md.)
-            //
-            // Windows/macOS keep `auto-copy`: d3d11 / VideoToolbox copy interop is cheap
-            // there and direct interop is less robust through our external GL context.
-            #[cfg(target_os = "linux")]
-            let hwdec_mode = "auto";
-            #[cfg(not(target_os = "linux"))]
-            let hwdec_mode = "auto-copy";
-            (lib.mpv_set_property_string)(ctx, cs("hwdec").as_ptr(), cs(hwdec_mode).as_ptr());
-            (lib.mpv_set_property_string)(ctx, cs("video-sync").as_ptr(), cs("desync").as_ptr());
-
-            // Hold last frame: keep-open makes mpv pause on the final frame at
-            // EOF instead of unloading the file — no END_FILE, no forced black.
-            // The frame stays until the next visual cue replaces it (or a stop).
-            let keep_open = if params.hold_last_frame { "yes" } else { "no" };
-            (lib.mpv_set_property_string)(ctx, cs("keep-open").as_ptr(), cs(keep_open).as_ptr());
-
-            // Load paused: frame 0 decoded → PLAYBACK_RESTART → reveal + unpause.
-            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
-            if let Some(m) = super::OUTPUT_PENDING_VIDEO_START.get() {
-                if let Ok(mut p) = m.lock() {
-                    *p = Some(PendingVideoStart { fade_in_ms: params.fade_in_ms });
-                }
-            }
-
-            let index_cstr = cs("0");
-            // See loadfile signature note in the image branch above.
-            let args: [*const std::ffi::c_char; 6] = [
-                cmd_cstr.as_ptr(), path_cstr.as_ptr(), replace_cstr.as_ptr(),
-                index_cstr.as_ptr(), opts_cstr.as_ptr(), std::ptr::null(),
-            ];
-            let ret = (lib.mpv_command)(ctx, args.as_ptr());
-            if ret < 0 { log::warn!("[output] mpv loadfile (video) failed: {ret}"); }
-            log::info!("[output] loadfile (paused) sent: {} opts=[{opts_str}]", params.path);
         }
     }
 }

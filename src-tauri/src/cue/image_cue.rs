@@ -60,9 +60,6 @@ pub struct ImageCue {
     pub geometry: VideoGeometry,
     /// Compositing (stacking layer, base opacity, blend mode).
     pub layer_style: LayerStyle,
-    /// When `true` (default — historic behaviour) the next visual GO stops
-    /// this image; `false` keeps it on stage so cues layer QLab-style.
-    pub stop_on_next_visual: bool,
 
     is_disabled: bool,
 
@@ -101,7 +98,6 @@ impl ImageCue {
             display_duration_ms: None,
             geometry: VideoGeometry::default(),
             layer_style: LayerStyle::default(),
-            stop_on_next_visual: true,
             is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
@@ -343,12 +339,6 @@ impl Cue for ImageCue {
         self.file_path.as_deref()
     }
 
-    fn stop_on_next_go(&self) -> bool {
-        // Historic default: the next visual GO stops this image.  Unchecked,
-        // the image stays on stage and layers.
-        self.stop_on_next_visual
-    }
-
     fn visual_geometry(&self) -> Option<VideoGeometry> {
         Some(self.geometry)
     }
@@ -407,7 +397,6 @@ impl Cue for ImageCue {
             "display_duration_ms": self.display_duration_ms,
             "geometry": self.geometry,
             "layer_style": self.layer_style,
-            "stop_on_next_visual": self.stop_on_next_visual,
             "is_disabled": self.is_disabled,
         })
     }
@@ -486,10 +475,8 @@ impl CueFactory for ImageCueFactory {
                 cue.layer_style = style;
             }
         }
-        if let Some(b) = value.get("stop_on_next_visual").and_then(|v| v.as_bool()) {
-            cue.stop_on_next_visual = b;
-        }
-        // "stop_mode", "screen_index" from older workspaces are silently ignored.
+        // "stop_mode", "screen_index", "stop_on_next_visual" from older
+        // workspaces are silently ignored.
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -522,8 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn stop_on_next_go_always_true() {
-        assert!(ImageCue::new().stop_on_next_go());
+    fn never_stops_on_next_go() {
+        // Visual cues stack as layers; only Stop/Fade cues remove one.
+        assert!(!ImageCue::new().stop_on_next_go());
     }
 
     #[test]

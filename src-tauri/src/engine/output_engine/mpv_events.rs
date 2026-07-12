@@ -20,15 +20,12 @@ use crate::engine::AudioEngine;
 
 use super::types::{MpvCtx, OutputStatus, VoiceId};
 use super::{cs, OUTPUT_CURRENT_AUDIO_VOICE};
-#[cfg(output_win32)]
-use super::WM_SETUP_MPV_CHILD;
 
 pub(super) fn mpv_event_loop(
     lib: Arc<MpvLib>,
     ctx: Arc<MpvCtx>,
     current_voice: Arc<Mutex<Option<VoiceId>>>,
     status_tx: Sender<OutputStatus>,
-    parent_hwnd: isize,
     go_sent_at: Arc<Mutex<Option<Instant>>>,
     audio_engine: Arc<AudioEngine>,
 ) {
@@ -51,9 +48,7 @@ pub(super) fn mpv_event_loop(
                         "[output-mpv] PLAYBACK_RESTART watchdog fired — forcing \
                          reveal/unpause (mpv did not signal first frame)"
                     );
-                    start_video_playback(
-                        &lib, &ctx, parent_hwnd, &audio_engine, start.fade_in_ms,
-                    );
+                    start_video_playback(&lib, &ctx, &audio_engine, start.fade_in_ms);
                 }
             }
         }
@@ -117,9 +112,7 @@ pub(super) fn mpv_event_loop(
                 match pending {
                     Some(start) => {
                         reveal_deadline = None;
-                        start_video_playback(
-                            &lib, &ctx, parent_hwnd, &audio_engine, start.fade_in_ms,
-                        );
+                        start_video_playback(&lib, &ctx, &audio_engine, start.fade_in_ms);
                         log::info!(
                             "[output-mpv] PLAYBACK_RESTART — first frame {}ms after GO \
                              (revealed, unpaused, audio voice resumed)",
@@ -155,15 +148,6 @@ pub(super) fn mpv_event_loop(
 
             MPV_EVENT_FILE_LOADED => {
                 log::info!("[output-mpv] MPV_EVENT_FILE_LOADED");
-                // Legacy Win32 path only: notify the parent WndProc to make mpv's
-                // D3D11 child click-through.  In the unified GL path mpv has no
-                // child window (vo=libmpv renders via render context, not a HWND).
-                #[cfg(output_win32)]
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-                    PostMessageW(parent_hwnd, WM_SETUP_MPV_CHILD, 0, 0);
-                }
-
                 let mut duration_secs: f64 = 0.0;
                 let ret = unsafe {
                     let name = cs("duration");
@@ -265,7 +249,6 @@ pub(super) fn mpv_event_loop(
 fn start_video_playback(
     lib: &MpvLib,
     ctx: &MpvCtx,
-    _parent_hwnd: isize,
     audio_engine: &Arc<AudioEngine>,
     fade_in_ms: u32,
 ) {
@@ -284,10 +267,8 @@ fn start_video_playback(
     }
 
     if fade_in_ms > 0 {
-        // Set FADE_STATE for fade-from-black.
-        // - Unified GL path: the render thread picks up target_alpha=0 and
-        //   animates automatically — no PostMessage needed.
-        // - Legacy Win32 path: PostMessage WM_DO_FADE to start the Win32 timer.
+        // Set FADE_STATE for fade-from-black; the render thread picks up
+        // target_alpha=0 and animates automatically.
         if let Some(fs) = super::FADE_STATE.get() {
             if let Ok(mut s) = fs.lock() {
                 s.start_alpha   = 255;
@@ -299,13 +280,7 @@ fn start_video_playback(
                 s.pending       = None;
             }
         }
-        #[cfg(output_win32)]
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
-            PostMessageW(_parent_hwnd, super::WM_DO_FADE, 0, 0);
-        }
-        // Unified GL path: wake the render loop so it animates the fade-from-black.
-        #[cfg(output_gl)]
+        // Wake the render loop so it animates the fade-from-black.
         super::render::wake();
     } else {
         super::fade::set_overlay_alpha(0);

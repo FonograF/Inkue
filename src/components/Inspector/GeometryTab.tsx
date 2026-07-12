@@ -93,7 +93,6 @@ export function GeometryTab({
   const layerStyle: LayerStyle = cue.layer_style ?? DEFAULT_LAYER_STYLE;
   const patchLayer = (partial: Partial<LayerStyle>) =>
     onSave({ layer_style: { ...layerStyle, ...partial } });
-  const stopOnNextVisual = cue.stop_on_next_visual !== false;
 
   const isDefault =
     geometry.fit_mode === "fit" &&
@@ -165,23 +164,6 @@ export function GeometryTab({
           ))}
         </Select>
       </Field>
-      <Field label="On next cue">
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={stopOnNextVisual}
-            onChange={(e) => onSave({ stop_on_next_visual: e.target.checked })}
-          />
-          <span style={{ fontSize: 12 }}>
-            Stop when the next visual cue starts
-          </span>
-        </label>
-      </Field>
-      <div style={{ fontSize: 11, color: "var(--wc-text-faint)", marginBottom: 6 }}>
-        Uncheck to keep this cue on stage and layer it with other visual cues
-        (QLab-style compositing).
-      </div>
-
       <div style={sectionTitleStyle}>Fit</div>
       <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
         {FIT_MODES.map((m) => (

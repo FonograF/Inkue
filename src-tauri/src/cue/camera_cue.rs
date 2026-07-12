@@ -117,9 +117,6 @@ pub struct CameraCue {
     pub geometry: VideoGeometry,
     /// Compositing (stacking layer, base opacity, blend mode).
     pub layer_style: LayerStyle,
-    /// When `true` (default) the next visual GO stops this feed; `false`
-    /// keeps it on stage so it layers with other visual cues.
-    pub stop_on_next_visual: bool,
 
     is_disabled: bool,
 
@@ -150,7 +147,6 @@ impl CameraCue {
             video_fade_out: None,
             geometry: VideoGeometry::default(),
             layer_style: LayerStyle::default(),
-            stop_on_next_visual: true,
             is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
@@ -353,12 +349,6 @@ impl Cue for CameraCue {
         self.active_voice_id
     }
 
-    fn stop_on_next_go(&self) -> bool {
-        // Default: the next visual GO replaces the feed.  Unchecked, the feed
-        // stays on stage and layers (e.g. a camera inset over a video).
-        self.stop_on_next_visual
-    }
-
     fn is_visual(&self) -> bool {
         true
     }
@@ -416,7 +406,6 @@ impl Cue for CameraCue {
             "video_fade_out_curve": self.video_fade_out.as_ref().map(|f| f.curve),
             "geometry": self.geometry,
             "layer_style": self.layer_style,
-            "stop_on_next_visual": self.stop_on_next_visual,
             "is_disabled": self.is_disabled,
         })
     }
@@ -494,9 +483,7 @@ impl CueFactory for CameraCueFactory {
                 cue.layer_style = style;
             }
         }
-        if let Some(b) = value.get("stop_on_next_visual").and_then(|v| v.as_bool()) {
-            cue.stop_on_next_visual = b;
-        }
+        // "stop_on_next_visual" from older workspaces is silently ignored.
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -518,7 +505,8 @@ mod tests {
         let cue = CameraCue::new();
         assert_eq!(cue.cue_type(), CueType::Camera);
         assert!(cue.is_visual());
-        assert!(cue.stop_on_next_go());
+        // Visual cues stack as layers; only Stop/Fade cues remove one.
+        assert!(!cue.stop_on_next_go());
         assert!(cue.duration().is_none());
     }
 

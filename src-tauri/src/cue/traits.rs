@@ -335,17 +335,16 @@ pub trait Cue: Send {
     }
 
     /// If `true`, [`Transport::go`] will automatically stop this cue when the
-    /// next GO fires.  Default: `false`.  Image cues override this based on
-    /// their configured stop mode.
+    /// next GO fires.  Default: `false`.  Only the Text Cue opts in — visual
+    /// cues (Video/Image/Camera) are layers and never auto-stop each other.
     fn stop_on_next_go(&self) -> bool {
         false
     }
 
     /// `true` for cue types that occupy the visual output surface (Video,
-    /// Image, Camera).  The transport uses this for the stop-on-next-GO rule:
-    /// a visual cue is only auto-stopped by another **visual** GO — an audio
-    /// GO must not cut a displayed picture.  Override instead of adding the
-    /// type to a match in `show/transport.rs`.
+    /// Image, Camera).  Used by the transport's stop-on-next-GO filter and by
+    /// Fade target resolution.  Override instead of adding the type to a
+    /// match in `show/transport.rs`.
     fn is_visual(&self) -> bool {
         false
     }

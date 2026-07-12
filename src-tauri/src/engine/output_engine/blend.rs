@@ -165,8 +165,6 @@ pub(crate) fn composite_pixel(
 ///
 /// `blend_channel(mode, b, s)` must stay formula-identical to
 /// [`blend_channel`] above — the Rust version is the executable spec.
-/// (Unused on the legacy Win32 build, which has no compositor.)
-#[cfg_attr(output_win32, allow(dead_code))]
 pub(crate) const GLSL_BLEND_FN: &str = r#"
 float hard_light(float b, float s) {
     if (s <= 0.5) return b * 2.0 * s;

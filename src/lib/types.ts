@@ -186,8 +186,6 @@ export interface VideoCueData extends CueSummary {
   hold_last_frame: boolean;
   geometry: VideoGeometry;
   layer_style: LayerStyle;
-  /** true (default): the next visual GO stops this cue; false: it layers. */
-  stop_on_next_visual: boolean;
 }
 
 /** 9-point position grid for TextCue. */
@@ -226,8 +224,6 @@ export interface ImageCueData extends CueSummary {
   display_duration_ms: number | null;
   geometry: VideoGeometry;
   layer_style: LayerStyle;
-  /** true (default): the next visual GO stops this cue; false: it layers. */
-  stop_on_next_visual: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,8 +253,6 @@ export interface CameraCueData extends CueSummary {
   video_fade_out_curve: FadeCurve | null;
   geometry: VideoGeometry;
   layer_style: LayerStyle;
-  /** true (default): the next visual GO stops this feed; false: it layers. */
-  stop_on_next_visual: boolean;
 }
 
 // ---------------------------------------------------------------------------

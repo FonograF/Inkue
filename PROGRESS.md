@@ -1,15 +1,15 @@
-# Inkue — Project state as of 2026-07-10
+# Inkue — Project state as of 2026-07-11
 
-## Current version: 1.2.0 released + unreleased **layer compositor** (N layers / blend modes / per-layer fades) on top
+## Current version: 1.2.0 released + unreleased **layer compositor** (N layers / blend modes / per-layer fades) + compositor black-screen fix / legacy-Win32 removal on top
 
 ## cargo build result
 
 **Compiles without errors, zero warnings** on all three OS in CI (Windows, Linux,
-macOS) — default (GL) **and** `--features legacy-win32-output` on Windows. The
-macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run `cargo check`.
-(The legacy-win32 build had silently broken when the Text Cue landed —
-`render::TEXT_OVERLAY_ACTIVE` referenced without `#[cfg(output_gl)]`; fixed
-2026-07-09.)
+macOS). The macOS job runs `cargo clippy` + `cargo test`; Windows/Linux run
+`cargo check`. The legacy Win32 output path (`legacy-win32-output` feature,
+`win32_window.rs`, the `cfg(output_win32)` / `cfg(output_gl)` split) was
+**removed 2026-07-11** — the GL Render API path is the only output path on all
+three OS.
 
 ## cargo test result
 
@@ -39,7 +39,7 @@ drives every group child voice, logger flood guard.
 | Stop  | ✅ **Functional** | UUID-based targeting; multi-target (stop any subset of cues); target All Cues or specific cues; Soft (fade) or Hard (cut) |
 | Memo  | ✅ **Functional** | Read-only, no audio action |
 | Video | ✅ **Functional** | Unified GL Render API path (Windows); paused-load start (no frame-0 freeze), dip-to-black fades (GL quad), scrub/seek; pause/resume; loop (finite + infinite); **Fade tab in the inspector (video fade in/out was engine-only before), fade-out at natural EOF (was hard cut), Hold Last Frame at EOF (`keep-open`), per-cue Geometry (fit/fill/stretch, position, scale, rotation, crop) with live-apply** |
-| Image | ✅ **Functional** | Same GL output window as Video via libmpv Render API; dip-to-black fades incl. **fade-out landing on the end of a timed display duration**; stop-on-next-cue only fires for visual GOs (audio GO leaves image running); loop support; **per-cue Geometry (same system as Video)** |
+| Image | ✅ **Functional** | Same GL output window as Video via libmpv Render API; dip-to-black fades incl. **fade-out landing on the end of a timed display duration**; layers with other visual cues (never auto-stopped — `stop_on_next_visual` removed 2026-07-11); loop support; **per-cue Geometry (same system as Video)** |
 | Group | ✅ **Functional** | Four QLab-parity modes: **Simultaneous** (all at once, incl. Timeline via child pre-waits), **Sequential** (start-first), **Playlist** (exclusive one-at-a-time + optional loop), **Start Random** (one random child per GO, shuffle-bag); holds playhead + GO absorption for the ordered modes; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
 | Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues, incl. **Groups** and cues nested in a group — voices collected via `all_voice_ids()` recursively); audio fade of **volume and/or pan** (gain/pan interpolation at 30 fps); visual fade for Video/Image (overlay alpha at 30 fps, `set_overlay_alpha_direct`); configurable curve; **Stop at End** now hard-stops the target *cues* (not just their voices) via the event loop + emits state/refresh so the UI clears; sectioned inspector (Targets / Fade / Audio / Visual / On Complete) + searchable target picker with chips |
@@ -49,7 +49,7 @@ drives every group child voice, logger flood guard.
 | Mic      | ✅ **Functional** | (see 0.9.5) |
 | Timecode | ✅ **Functional** | SMPTE timecode generation (MTC out via `TimecodeCue`) + receive (MTC in via `TimecodeReceiver`); per-cue TC triggers + CueList sync toggle; LTC encoder/decoder (`ltc.rs`); TC status indicator in TransportBar; Triggers inspector tab on every cue; TC Preferences (Network tab). LTC out = planned v2; drop-frame 29.97 fully tested. | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
 | Text     | ✅ **Functional** | Renders styled text on the mpv output surface via the `osd-overlay` command (`format=ass-events`) + ASS inline tags; independent of OSD timer. Font, size, hex colour, 9-point position grid, optional auto-complete duration. Stop-on-next-go. |
-| Camera   | ✅ **Functional** | Live feed (webcam / USB camera / HDMI capture via DirectShow-V4L2-AVFoundation, or any network stream — RTSP/HTTP/UDP, covers IP cams + phone apps) shown on the output like any visual cue; low-latency load opts (`cache=no`, `video-latency-hacks`); video fade in/out (overlay), per-cue Geometry, warp applies; runs until stopped, replaced by the next visual GO; device picker (per-OS enumeration) or URL in the Camera inspector tab |
+| Camera   | ✅ **Functional** | Live feed (webcam / USB camera / HDMI capture via DirectShow-V4L2-AVFoundation, or any network stream — RTSP/HTTP/UDP, covers IP cams + phone apps) shown on the output like any visual cue; low-latency load opts (`cache=no`, `video-latency-hacks`); video fade in/out (overlay), per-cue Geometry, warp applies; runs until stopped (layers with other visual cues, never auto-stopped); device picker (per-OS enumeration) or URL in the Camera inspector tab |
 
 > ✅ **Output Patch routing is now a real feature (2026-07-04, was broken/inert before).**
 > Patches live in the workspace (single source of truth — the old unpersisted
@@ -87,7 +87,7 @@ drives every group child voice, logger flood guard.
 | AudioCommand / AudioStatus | `engine/ring_command.rs` | ✅ Complete |
 | DeviceManager / OutputPatch | `engine/device_manager.rs` | ✅ Complete |
 | AudioEngine | `engine/audio_engine.rs` | ✅ Complete — WASAPI/ASIO; SR conversion in `fill_buffer`; infinite loop (`loops_remaining = u32::MAX`) never sends Completed; 5 unit tests |
-| OutputEngine | `engine/output_engine/` | ✅ Complete — unified GL Render API on all 3 OS; `vo=libmpv`; native GL window — winit (Windows/Linux) or AppKit `NSWindow` via objc2 (macOS, `macos_window.rs`); mpv_render_context; GL fade quad; OSD + floating timer; `get_overlay_alpha()`, `set_overlay_alpha_direct()`; legacy Win32+D3D11 behind `legacy-win32-output` feature flag |
+| OutputEngine | `engine/output_engine/` | ✅ Complete — unified GL Render API on all 3 OS; `vo=libmpv`; native GL window — winit (Windows/Linux) or AppKit `NSWindow` via objc2 (macOS, `macos_window.rs`); mpv_render_context; GL fade quad; OSD + floating timer; `get_overlay_alpha()`, `set_overlay_alpha_direct()` |
 | OscPatch | `engine/osc_patch.rs` | ✅ Complete |
 | OscServer | `engine/osc_server.rs` | ✅ Complete — UDP listener, IP allowlist, 50ms hash dedup cache |
 | mpv_sys (FFI) | `engine/mpv_sys.rs` | ✅ libmpv bindings compile |
@@ -205,6 +205,56 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-07-11) — compositor black-screen fix; legacy Win32 path removed; visual cues always stack
+
+The layer-compositor build showed a **fully black output window on Windows**
+for every Video/Image/Camera GO (slots decoded and revealed fine per the log).
+Root-caused with a standalone GL+mpv probe that read back every FBO stage:
+
+- **Black screen — the overlay context masked the stage.** On libmpv 0.41-dev
+  (Windows) the overlay context's **idle** render clears its FBO to **opaque
+  black** — `background=none` is ignored in idle (`alpha=yes` no longer exists
+  ≥ 0.38) — and it was composited above all layers at opacity 1 every frame.
+  Fix (`render.rs`, `mod.rs`): the overlay is only rendered + composited while
+  it actually shows something (`overlay_active()` = timer OSD / Text Cue /
+  test pattern), with a one-shot `OVERLAY_DIRTY` repaint when it deactivates.
+  Additionally mpv renders **no OSD at all in idle**, so timer/Text now load a
+  tiny fully-transparent lavfi dummy
+  (`av://lavfi:color=c=black@0.0:s=64x64:r=10,format=rgba`,
+  `ensure_overlay_surface`/`release_overlay_surface_if_idle`) — probe-verified:
+  with the dummy, OSD text composites with correct per-pixel alpha (97 % of
+  pixels alpha=0). Known limitation: letterbox bars of a video layer are
+  opaque (mpv fills them black), so they occlude layers below.
+- **Zero-fade stop never unloaded the slot** — camera relaunch failed with
+  `dshow: device already in use` (-17): `begin_stop(0)` parks the opacity
+  animation at 0 already *resting*, and `tick_slot` required the tick to
+  report "just completed" before unloading — which a resting animation never
+  does.  The mpv `stop` was never issued, the slot stayed occupied and the
+  capture device stayed open, so re-GOing the cue (or any cue on the same
+  camera) allocated a new slot and hit the busy device.  Unload now fires
+  whenever `pending_unload && opacity <= 0 && !animating` (`slot.rs`; stops
+  *with* a visual fade were unaffected).  Regression test
+  `resting_anim_never_reports_completed`.
+- **GO intermittently erroring `mpv error (code -16)`** (NOTHING_TO_PLAY):
+  `loadfile` raced the slot's `mpv_render_context` creation (render thread) —
+  with `vo=libmpv` and no render context, the video track can't init, and with
+  `audio=no` nothing is left to play. `create_slot` now blocks (≤ 2 s, usually
+  a few ms) until the render context exists before the first load, same
+  discipline as `render::init` for the overlay context.
+- **Legacy Win32 output path removed**: `legacy-win32-output` feature,
+  `win32_window.rs`, `cfg(output_win32)`/`cfg(output_gl)` and every dual-arm
+  method in `output_engine/{mod,fade,mpv_events,types}.rs`; `build.rs` no
+  longer emits output-path cfgs. The GL Render API path is the only output
+  path on all three OS.
+- **`stop_on_next_visual` removed** (Video/Image/Camera + `types.ts` +
+  GeometryTab checkbox): visual cues always **stack** as layers — launching a
+  visual cue never stops another; only Stop/Fade cues (or EOF) remove one.
+  Old workspaces carrying the field load fine (ignored). The Text Cue keeps
+  its own stop-on-next-GO behaviour. `Cue::stop_on_next_go()` trait mechanism
+  in `transport.rs` unchanged.
+- Tests: 259 pass (stop-on-next assertions updated; legacy-JSON compat tests
+  now assert the field is ignored).
 
 ### Unreleased (2026-07-10) — Layer compositor: N simultaneous visual cues, blend modes, crossfades
 

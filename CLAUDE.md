@@ -5,7 +5,7 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 
 ## Stack
 
-- Rust: audio (cpal — WASAPI/ASIO on Windows, CoreAudio on macOS, ALSA/PipeWire on Linux — + symphonia), video/image (libmpv via OpenGL Render API window; legacy Win32+D3D11 behind `legacy-win32-output` feature), show logic
+- Rust: audio (cpal — WASAPI/ASIO on Windows, CoreAudio on macOS, ALSA/PipeWire on Linux — + symphonia), video/image (libmpv via OpenGL Render API window), show logic
 - UI: Tauri v2, React, TypeScript, Zustand
 - Build: `pnpm tauri dev` / `cargo test` / `cargo clippy` (from `src-tauri/`)
 - Runtime dep: libmpv (~113 MB, not versioned) — `vendor/mpv/libmpv-2.dll` bundled on Windows; Homebrew `libmpv.dylib` (macOS) / system `libmpv.so` (Linux) in dev. Resolution detail in `PORTAGE.md`.
@@ -49,15 +49,19 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 - **Group modes** (`GroupMode`, `cue/types.rs`): Simultaneous, Sequential, Playlist
   (exclusive one-at-a-time + optional loop), StartRandom (one random child/GO,
   shuffle-bag). Simultaneous/Sequential must stay behaviour-identical when extending.
-- **Visual cues are layers** (GL path, QLab model): every Video/Image/Camera cue
-  gets its own mpv slot (`output_engine/slot.rs`, lazy pool cap 8) and is
+- **Visual cues are layers** (QLab model): every Video/Image/Camera cue gets
+  its own mpv slot (`output_engine/slot.rs`, lazy pool cap 8) and is
   composited in layer order with per-cue opacity + blend mode (`LayerStyle`).
-  `stop_on_next_visual` (default true) keeps the historic replace behaviour;
-  unchecked, cues stack. Fades drive the target's **own layer opacity**
+  Visual cues always **stack** — launching one never stops another (a Stop/Fade
+  cue does that explicitly). Fades drive the target's **own layer opacity**
   (`set_voice_opacity`), never a global overlay; the master fade quad is only a
-  blackout curtain (idle/panic). The `legacy-win32-output` path keeps
-  single-context replace semantics — every output-engine change must compile on
-  both paths (`cargo check --features legacy-win32-output`).
+  blackout curtain (idle/panic).
+- **Never trust mpv's alpha output for the overlay context.** On some libmpv
+  builds (0.41-dev, Windows) the idle render clears the FBO to **opaque black**
+  even with `background=none` — the overlay must only be composited while it
+  actually shows something (timer OSD / Text Cue / test pattern), and OSD text
+  needs the transparent lavfi dummy loaded to render at all (see
+  `ensure_overlay_surface` in `output_engine/mod.rs`).
 
 ## Cross-cutting invariants (learned the hard way)
 

@@ -205,10 +205,8 @@ fn transform_default_scale() -> f64 {
 /// screen: shift / shrink / finely rotate the whole picture, plus a full
 /// four-corner pin (perspective warp) for keystone-style correction.
 ///
-/// On the GL output path the whole transform (including fractional rotation
-/// and the corner pin) is a dedicated warp render pass; the legacy Win32 path
-/// approximates pan/scale/rotation via mpv properties (rotation rounded to
-/// whole degrees, corner pin unsupported).
+/// The whole transform (including fractional rotation and the corner pin) is
+/// a dedicated warp render pass in `render.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OutputTransform {
     /// Horizontal offset as a fraction of the output width (−1 .. 1).
@@ -262,11 +260,9 @@ pub(crate) struct EffectiveDisplayProps {
     pub rotation: u32,
 }
 
-/// Compose a cue's geometry with the global output transform into mpv
-/// properties — **legacy Win32 path only** (the GL path applies the global
-/// transform as a warp render pass instead, with fractional rotation and the
-/// corner pin; mpv `video-rotate` only takes whole degrees, so the rotation
-/// is rounded here and the corner pin cannot be represented at all).
+/// Compose a cue's geometry with an output transform into mpv properties.
+/// The engine calls this with the identity transform (the global transform
+/// is a warp render pass instead); the composition math is kept unit-tested.
 ///
 /// Scales multiply (mpv `video-zoom` is log2, so the logs add), pans add
 /// (both are fractions of the scaled video size), rotations add mod 360.
@@ -418,33 +414,10 @@ pub(super) struct OutputVoice {
 // Fade overlay state
 // ---------------------------------------------------------------------------
 
-/// Parameters for a pending content load, passed directly to `execute_load_params`.
-/// Legacy Win32 single-context path only — the GL path loads via the slot pool.
-#[cfg_attr(output_gl, allow(dead_code))]
-pub(crate) struct FadePendingParams {
-    pub path: String,
-    pub is_image: bool,
-    #[allow(dead_code)]
-    pub voice_id: Uuid,
-    pub fade_in_ms: u32,
-    pub loop_count: u32,
-    pub start_ms: Option<u64>,
-    pub end_ms: Option<u64>,
-    /// For image cues: how long mpv holds the image before auto-completing.
-    /// `None` = infinite (hold until explicitly stopped).
-    pub display_duration_ms: Option<u64>,
-    /// Video cues: freeze on the last frame at natural EOF (mpv `keep-open`).
-    pub hold_last_frame: bool,
-    /// Per-cue visual geometry applied alongside the load.
-    pub geometry: VideoGeometry,
-    /// Live source (camera / stream): apply low-latency demuxer options.
-    pub live_source: bool,
-}
-
 pub(crate) enum FadePending {
-    /// Issue `mpv stop` once the master fade lands.  Constructed by the
-    /// legacy Win32 stop path only; the GL render loop still drains it.
-    #[cfg_attr(output_gl, allow(dead_code))]
+    /// Issue `mpv stop` once the master fade lands.  No longer constructed
+    /// (the per-slot stop path replaced it); the render loop still drains it.
+    #[allow(dead_code)]
     Stop,
 }
 
@@ -489,16 +462,6 @@ impl FadeAnimState {
             pending: None,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Win32 window state
-// ---------------------------------------------------------------------------
-
-#[cfg(output_win32)]
-pub(crate) struct OutputWndState {
-    pub is_fullscreen: bool,
-    pub saved_rect: (i32, i32, i32, i32),
 }
 
 // ---------------------------------------------------------------------------

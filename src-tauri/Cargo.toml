@@ -113,7 +113,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-# windows-sys — used by both the legacy Win32 output path and lib.rs error dialog.
+# windows-sys — monitor enumeration, camera COM enumeration, lib.rs error dialog.
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -137,10 +137,6 @@ custom-protocol = ["tauri/custom-protocol"]
 #   2. CPAL_ASIO_DIR env var pointing to the SDK root before building
 #   3. Build with: cargo build --features asio-support  (Windows only)
 asio-support = ["cpal/asio"]
-# Keep the old Win32 + D3D11 + --wid output path. OFF by default.
-# The unified OpenGL Render API path (render.rs) is used instead.
-# Re-enable only for regression testing / fallback during the transition.
-legacy-win32-output = []
 
 [profile.release]
 opt-level = 3

@@ -8,8 +8,6 @@
 //! context.  When the pool is exhausted the oldest content is stolen (hard
 //! stop, `Completed` status so the owning cue resets).
 //!
-//! GL output path only; the legacy Win32 path keeps the single-context
-//! behaviour in `mod.rs`.
 
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
@@ -310,6 +308,21 @@ fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc
     registry().write().map_err(|_| anyhow!("slot registry poisoned"))?.push(Arc::clone(&slot));
     // The render thread creates the mpv_render_context + FBO on next wake.
     super::render::wake();
+
+    // Block until the render context exists (normally a few ms).  With
+    // `vo=libmpv`, a `loadfile` whose track selection runs before the render
+    // context is attached fails with NOTHING_TO_PLAY (-16): mpv sees a video
+    // track but no VO to put it on, and with `audio=no` nothing is left —
+    // the cue errors out at GO (observed in the field on fast local files).
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while slot.render_ctx.load(Ordering::Acquire).is_null() {
+        if Instant::now() >= deadline {
+            log::warn!("[slot {index}] render context not ready after 2 s — loading anyway");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
     log::info!("[slot] created video slot {index}");
     Ok(slot)
 }
@@ -430,9 +443,22 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
                 load.loop_count.to_string()
             };
             opts.push(format!("loop-file={loop_val}"));
+            // Live sources: playback is timestamp-paced, so any backlog
+            // buffered during device-open + the paused-load window would
+            // persist as a *constant* glass-to-glass delay — `untimed`
+            // displays frames as soon as they decode (safe: audio=no),
+            // draining that backlog and pinning the feed to the live edge.
             if load.live_source {
                 opts.push("cache=no".to_string());
+                opts.push("untimed=yes".to_string());
+                opts.push("demuxer-readahead-secs=0".to_string());
                 opts.push("demuxer-lavf-analyzeduration=0.1".to_string());
+                // lavf options from mpv's built-in low-latency profile.
+                opts.push("demuxer-lavf-o-add=fflags=+nobuffer".to_string());
+                opts.push("demuxer-lavf-probe-info=nostreams".to_string());
+                // Frame-threaded decode adds one frame of delay per thread
+                // (~270 ms for an 8-thread MJPEG webcam at 30 fps).
+                opts.push("vd-lavc-threads=1".to_string());
                 opts.push("video-latency-hacks=yes".to_string());
             }
             // Paused load: frame 0 decoded → PLAYBACK_RESTART → reveal.
@@ -500,9 +526,15 @@ pub(super) fn tick_slot(slot: &Arc<VideoSlot>) -> (f32, bool) {
     }
 
     let Ok(mut st) = slot.state.lock() else { return (0.0, false) };
-    let (opacity, completed) = st.anim.tick();
-    let unload_now = completed && st.pending_unload && opacity <= 0.0;
+    let (opacity, _completed) = st.anim.tick();
     let animating = st.anim.is_animating();
+    // Unload as soon as the stop fade has landed.  Do NOT require the tick to
+    // report "just completed": a zero-fade stop (`begin_stop(0)` — hard cut,
+    // the default for a Camera Cue) parks the animation at 0 already *resting*,
+    // so `tick()` never completes — requiring it left the slot occupied and
+    // mpv playing forever, which kept the capture device open (the next GO on
+    // the same camera then failed with `dshow: device already in use`).
+    let unload_now = st.pending_unload && opacity <= 0.0 && !animating;
     if unload_now {
         st.pending_unload = false;
         st.voice_id = None;
@@ -808,6 +840,21 @@ mod tests {
         anim.animate_to(7.0, 0);
         let (v, _) = anim.tick();
         assert_eq!(v, 1.0);
+    }
+
+    #[test]
+    fn resting_anim_never_reports_completed() {
+        // begin_stop(fade=0) parks the animation at 0 already resting.  tick()
+        // then never reports "just completed", so tick_slot's unload decision
+        // must not require it — requiring it left the slot occupied and the
+        // capture device open forever (camera relaunch failed with
+        // "dshow: device already in use").
+        let mut anim = OpacityAnim::resting(1.0);
+        anim.set(0.0);
+        let (v, completed) = anim.tick();
+        assert_eq!(v, 0.0);
+        assert!(!completed);
+        assert!(!anim.is_animating());
     }
 }
 

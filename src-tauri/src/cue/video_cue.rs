@@ -78,9 +78,6 @@ pub struct VideoCue {
     pub geometry: VideoGeometry,
     /// Compositing (stacking layer, base opacity, blend mode).
     pub layer_style: LayerStyle,
-    /// When `true` (default — pre-layering behaviour) the next visual GO stops
-    /// this cue; `false` keeps it on stage so cues layer QLab-style.
-    pub stop_on_next_visual: bool,
 
     is_disabled: bool,
 
@@ -139,7 +136,6 @@ impl VideoCue {
             hold_last_frame: false,
             geometry: VideoGeometry::default(),
             layer_style: LayerStyle::default(),
-            stop_on_next_visual: true,
             is_disabled: false,
             active_voice_id: None,
             decoded_samples: None,
@@ -641,12 +637,6 @@ impl Cue for VideoCue {
         true
     }
 
-    fn stop_on_next_go(&self) -> bool {
-        // Pre-layering behaviour (default): the next visual GO replaces this
-        // video.  Unchecked, the video stays on stage and layers.
-        self.stop_on_next_visual
-    }
-
     // -----------------------------------------------------------------------
     // Serialisation
     // -----------------------------------------------------------------------
@@ -681,7 +671,6 @@ impl Cue for VideoCue {
             "hold_last_frame": self.hold_last_frame,
             "geometry": self.geometry,
             "layer_style": self.layer_style,
-            "stop_on_next_visual": self.stop_on_next_visual,
             "is_disabled": self.is_disabled,
             "cached_duration_ms": self.cached_duration.map(|d| d.as_millis() as u64),
         })
@@ -795,9 +784,6 @@ impl CueFactory for VideoCueFactory {
                 cue.layer_style = style;
             }
         }
-        if let Some(b) = value.get("stop_on_next_visual").and_then(|v| v.as_bool()) {
-            cue.stop_on_next_visual = b;
-        }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -895,35 +881,35 @@ mod tests {
     }
 
     #[test]
-    fn layer_style_roundtrip_and_stop_on_next_visual() {
+    fn layer_style_roundtrip() {
         use crate::engine::output_engine::BlendMode;
         let mut cue = VideoCue::new();
-        // Defaults: pre-layering behaviour preserved.
-        assert!(cue.stop_on_next_go());
         assert!(cue.layer_style().unwrap().is_default());
+        // Visual cues never auto-stop each other: launching a visual cue
+        // stacks it as a new layer, only Stop/Fade cues remove one.
+        assert!(!cue.stop_on_next_go());
 
         cue.layer_style = LayerStyle {
             layer: Some(3),
             opacity: 0.5,
             blend_mode: BlendMode::Multiply,
         };
-        cue.stop_on_next_visual = false;
 
         let json = cue.serialize();
         assert_eq!(json["layer_style"]["blend_mode"], "multiply");
-        assert_eq!(json["stop_on_next_visual"], false);
 
         let rebuilt = VideoCueFactory.from_json(json).expect("roundtrip");
         assert_eq!(rebuilt.layer_style().unwrap(), cue.layer_style);
-        assert!(!rebuilt.stop_on_next_go(), "unchecked = the cue layers");
     }
 
     #[test]
-    fn legacy_json_defaults_to_stop_on_next_visual() {
-        // Pre-1.3 workspaces have neither field: behaviour must not change.
-        let json = serde_json::json!({ "type": "video", "name": "Old" });
+    fn legacy_json_loads_with_default_layer_style() {
+        // Pre-1.3 workspaces have no layer_style (and may carry the removed
+        // stop_on_next_visual flag, which must be ignored).
+        let json =
+            serde_json::json!({ "type": "video", "name": "Old", "stop_on_next_visual": true });
         let cue = VideoCueFactory.from_json(json).expect("legacy load");
-        assert!(cue.stop_on_next_go());
+        assert!(!cue.stop_on_next_go());
         assert!(cue.layer_style().unwrap().is_default());
     }
 }
