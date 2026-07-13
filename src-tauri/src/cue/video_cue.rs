@@ -701,6 +701,10 @@ impl Cue for VideoCue {
         Some(self.layer_style)
     }
 
+    fn uses_sliced_playback(&self) -> bool {
+        !self.slices.is_empty()
+    }
+
     fn is_visual(&self) -> bool {
         true
     }

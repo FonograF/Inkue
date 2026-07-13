@@ -541,6 +541,14 @@ impl OutputEngine {
         }
     }
 
+    /// Current playback position of a visual voice in **file time** (ms) —
+    /// mpv's `time-pos`, which reflects ab-loop jumps.  `None` when the voice
+    /// is not on a slot (or mpv has no position yet).
+    pub fn voice_position_ms(&self, voice_id: VoiceId) -> Option<u64> {
+        let slot = slot::slot_for_voice(voice_id)?;
+        slot::position_ms(&slot)
+    }
+
     /// Stop the content identified by `voice_id`: fade its layer's opacity to
     /// zero over `visual_fade_ms` (then unload the slot) and fade its audio
     /// voice out over `audio_fade_ms`.  Other layers are untouched.

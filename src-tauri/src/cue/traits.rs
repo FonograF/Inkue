@@ -385,6 +385,14 @@ pub trait Cue: Send {
         None
     }
 
+    /// `true` while this cue plays with an active slice program — the UI's
+    /// time display then follows the engine-reported **media position**
+    /// instead of wall-clock elapsed (a vamp holds position while the clock
+    /// runs on).  Default: `false`.
+    fn uses_sliced_playback(&self) -> bool {
+        false
+    }
+
     /// Devamp Cue only: describes which cues to devamp after `go()`.
     ///
     /// Returns `Some((stop_at_end, target_cue_ids))`:

@@ -815,6 +815,16 @@ impl AudioEngine {
         self.broadcast_command(AudioCommand::Devamp { voice_id, stop_at_end })
     }
 
+    /// Current playback position of a voice in **file time** (ms).
+    ///
+    /// Reads the RT frame cursor, so it reflects loops and slice jumps —
+    /// unlike a cue's wall-clock elapsed.  Used for UI time displays.
+    pub fn voice_position_ms(&self, voice_id: VoiceId) -> Option<u64> {
+        self.with_voice(voice_id, |v| {
+            v.current_frame() * 1000 / v.sample_rate.max(1) as u64
+        })
+    }
+
     /// Close every aux stream and clear routing alerts.
     ///
     /// Called on any event that changes the routing universe — main device /

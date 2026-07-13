@@ -141,19 +141,41 @@ fn make_context(
 
 /// Collect `cue-time-update` snapshots recursively, including children of
 /// running Group cues.
-fn collect_time_snapshots(cues: &[Box<dyn crate::cue::traits::Cue>]) -> Vec<(CueId, u64, u64, Option<u64>)> {
+///
+/// Sliced cues report the engine's **media position** as `action_elapsed`
+/// instead of wall-clock time: a vamping segment holds its file position
+/// while the clock runs on, so wall-clock bars kept sweeping and looping
+/// (and stayed wrong after a devamp, which only the engine knows about).
+fn collect_time_snapshots(
+    cues: &[Box<dyn crate::cue::traits::Cue>],
+    audio_engine: &Arc<AudioEngine>,
+    output_engine: &Arc<OutputEngine>,
+) -> Vec<(CueId, u64, u64, Option<u64>)> {
     let mut result = Vec::new();
     for cue in cues {
         if cue.state() == CueState::Running || cue.state() == CueState::Paused {
+            let mut action_elapsed = cue.action_elapsed().as_millis() as u64;
+            if cue.uses_sliced_playback() {
+                let media_pos = if cue.is_visual() {
+                    cue.playing_voice_id()
+                        .and_then(|v| output_engine.voice_position_ms(v))
+                } else {
+                    cue.playing_voice_id()
+                        .and_then(|v| audio_engine.voice_position_ms(v))
+                };
+                if let Some(pos) = media_pos {
+                    action_elapsed = pos;
+                }
+            }
             result.push((
                 cue.id(),
                 cue.elapsed().as_millis() as u64,
-                cue.action_elapsed().as_millis() as u64,
-                cue.duration().map(|d| d.as_millis().saturating_sub(cue.action_elapsed().as_millis()) as u64),
+                action_elapsed,
+                cue.duration().map(|d| (d.as_millis() as u64).saturating_sub(action_elapsed)),
             ));
         }
         if let Some(children) = cue.child_cues() {
-            result.extend(collect_time_snapshots(children));
+            result.extend(collect_time_snapshots(children, audio_engine, output_engine));
         }
     }
     result
@@ -599,7 +621,7 @@ fn tick(
 
         // 7. Time snapshots.
         if let Some(cl) = ws.cue_list_by_id(list_id) {
-            all_time_snapshots.extend(collect_time_snapshots(&cl.cues));
+            all_time_snapshots.extend(collect_time_snapshots(&cl.cues, audio_engine, output_engine));
         }
 
         // 8. Auto-Continue / Auto-Follow detection.

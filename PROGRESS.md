@@ -206,6 +206,19 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-07-13) — sliced cues: progress follows the media position
+
+- **Progress bars swept and looped during a vamp** (user-reported): the time
+  display was wall-clock (`cue.action_elapsed()`), which keeps advancing while
+  a vamping segment holds its file position — the ActiveCues bar and the
+  inspector scrub kept sweeping 0→end in a loop, and stayed wrong after a
+  devamp (only the engine knows when the loop released). `collect_time_snapshots`
+  now reports the **engine media position** as `action_elapsed_ms` for cues
+  with active slices: new `AudioEngine::voice_position_ms` (RT frame cursor —
+  reflects slice jumps) and `OutputEngine::voice_position_ms` (mpv `time-pos` —
+  reflects ab-loop jumps), gated by the `Cue::uses_sliced_playback()` hook
+  (default false; Audio/Video override). Unsliced cues are untouched.
+
 ### 1.3.0 (2026-07-13) — part 4: QLab slices + Devamp Cue; clip editor dock replaces the waveform modal
 
 Full vamp/devamp workflow on Audio **and** Video cues (user request).

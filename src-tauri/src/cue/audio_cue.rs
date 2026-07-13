@@ -567,6 +567,10 @@ impl Cue for AudioCue {
         self.active_voice_id
     }
 
+    fn uses_sliced_playback(&self) -> bool {
+        !self.slices.is_empty()
+    }
+
     fn file_duration(&self) -> Option<Duration> {
         self.cached_duration
     }
