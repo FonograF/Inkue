@@ -1,0 +1,55 @@
+# Posts the full release notes to Discord when a release is published.
+#
+# The GitHub→Discord `/github` compatibility webhook only renders a one-line
+# "New release published" message; this workflow posts a rich embed with the
+# complete release body instead. Requires the `DISCORD_RELEASE_WEBHOOK`
+# secret: the Discord webhook URL *without* the `/github` suffix.
+
+name: Discord release notice
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post release notes as a Discord embed
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+        run: |
+          python3 - << 'EOF'
+          import json, os, re, subprocess
+
+          # encoding must be explicit: bare open() decodes with the locale
+          # charset, which turned every — and ∞ into mojibake on Windows.
+          event = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8"))
+          rel = event["release"]
+
+          body = rel.get("body") or ""
+          # The H1 duplicates the embed title; ## headers don't render inside
+          # embed descriptions — bold them instead.
+          body = re.sub(r"^# .*\n", "", body)
+          body = re.sub(r"^## (.+)$", r"**\1**", body, flags=re.M)
+          if len(body) > 4000:
+              body = body[:4000] + "…"
+
+          payload = {"embeds": [{
+              "title": rel.get("name") or rel["tag_name"],
+              "url": rel["html_url"],
+              "description": body,
+              "color": 0x22C55E,
+              "timestamp": rel["published_at"],
+              "footer": {"text": event["repository"]["full_name"]},
+          }]}
+
+          subprocess.run(
+              ["curl", "-sf", "-o", "/dev/null",
+               "-X", "POST", os.environ["WEBHOOK"],
+               "-H", "Content-Type: application/json",
+               "--data-binary", json.dumps(payload)],
+              check=True,
+          )
+          print("posted")
+          EOF
