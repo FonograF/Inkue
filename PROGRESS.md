@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-11
 
-## Current version: 1.2.0 released + unreleased **layer compositor** (N layers / blend modes / per-layer fades) + compositor black-screen fix / legacy-Win32 removal on top
+## Current version: 1.3.0 released — layer compositor, QLab slices + Devamp Cue, clip editor dock, media previews, inspector redesign, DPI-proof output placement
 
 ## cargo build result
 
@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 259 pass, 0 failures** (verified 2026-07-10; run the full
+**`cargo test --lib` → 286 pass, 0 failures** (verified 2026-07-13; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -206,7 +206,213 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
-### Unreleased (2026-07-11) — compositor black-screen fix; legacy Win32 path removed; visual cues always stack
+### 1.3.0 (2026-07-13) — part 4: QLab slices + Devamp Cue; clip editor dock replaces the waveform modal
+
+Full vamp/devamp workflow on Audio **and** Video cues (user request).
+
+- **Slices data model** (`SliceList` in `cue/types.rs`, `PLAY_COUNT_INFINITE =
+  u32::MAX`): markers split the clip into segments, each with a play count
+  (∞ = *vamp*). Serde-defaulted field `slices` on AudioCue + VideoCue (legacy
+  workspaces load unchanged); `segments(clip_start, clip_end)` clamps markers
+  to the trim window. When slices are present, `loop_count` is ignored.
+- **Audio engine slices** (`voice.rs` `SliceProgram`/`SliceSegment`,
+  `audio_engine.rs`): the RT callback's boundary check walks the program —
+  repeat the segment while `remaining > 0` (∞ stays ∞), then advance;
+  the whole thing allocation-free (program built at GO, `UnsafeCell` written
+  before submission like `end_frame`). `AudioCommand::Devamp { stop_at_end }`
+  sets an `AtomicU8` request consumed at the next boundary: release the loop
+  and continue, or stop with `Completed` at the slice edge.
+- **Video engine slices** (`slot.rs` `SlicePlan`; `ContentRequest.slices` as
+  `(start_s, end_s, count)`): segments loop via **mpv ab-loop** (a/b/count set
+  as loadfile options for segment 0 — active before the first frame); the slot
+  event thread observes `time-pos` (`mpv_observe_property`, new symbol +
+  `MpvEventProperty` in `mpv_sys`) and programs the next segment's ab-loop
+  when playback crosses a boundary. Devamp sets `ab-loop-count=0` (finish the
+  pass, then continue past B); stop-at-end hard-unloads at the boundary
+  (normal `Completed` path). A video's **paired audio voice gets the same
+  sample-resolved program**, so picture and sound release together.
+  `VideoCue::duration()`: ∞ while any segment vamps, else the counted sum.
+- **Devamp Cue** (`cue/devamp_cue.rs`, `CueType::Devamp`, registered in
+  `AppState` + test registry): targets audio/video/group cues; completes
+  synchronously; new trait hook `devamp_specification()` resolved by the
+  transport after `go()` (same pattern as Stop/Fade — recursive target lookup,
+  `all_voice_ids()` for groups, output voice + paired audio voice for videos).
+  Options: **Continue** (into the next slice) or **Stop at end of current
+  slice**. Toolbar "+ Devamp", 🔁 icon, inspector Devamp tab (target picker +
+  segmented mode).
+- **Clip editor dock** (`Editor/ClipEditorDock.tsx` + `SliceTimeline.tsx`):
+  the ⤢ button on the inline waveform/filmstrip now opens a **second
+  inspector under the cue list** (the WaveformModal is deleted): a large
+  DPR-crisp timeline — waveform (2000 bins) for audio, 16-tile filmstrip +
+  scrub drag-preview for video — with trim handles, and slice editing:
+  double-click adds a marker, drag moves it (counts follow by permutation),
+  right-click removes it, per-segment **play-count badges** (click → inline
+  input, `inf`/`∞`/`0` = vamp, vamp badges highlighted). Audio cues get an
+  **▶ Audition** button (previewCue). Dock saves via the generic `update_cue`
+  merge; the inspector re-fetches through a `reloadToken` bump.
+- **Timeline zoom** in the clip editor dock: mouse wheel zooms centered on the
+  cursor (Shift+wheel pans, −/+/Fit buttons, visible-range readout), down to a
+  200 ms window. All mapping (markers, trim handles, badges, hit-testing,
+  double-click) is view-window aware (`TrimPainter` gained a `view` param; the
+  inline inspector strips keep passing the full clip). Zooming past 2× swaps
+  in high-resolution data once per file: 16 000-bin waveform / 48-tile
+  filmstrip (both disk-cached). Post-ship fixes: dock `slices` identity was
+  recreated every render, retriggering the timeline's reset effect (glitchy
+  marker drags, badge editor closing instantly — now memoized + content-keyed
+  reset); video duration read from `cached_duration_ms` (the serialized form —
+  `file_duration_ms` only exists on summaries, so the dock showed "Waiting
+  for media duration" forever).
+- **Zoom polish** (user feedback): (1) inspector ↔ dock two-way sync — the
+  dock re-fetches its cue on every inspector save (`onCueSaved` → dock
+  `reloadToken`; media only reloads when the *file* changes); (2) zoomed video
+  now streams **window-matched frames**: new `video_filmstrip_range`
+  (`get_video_filmstrip_range`, ½-second-grid disk cache) fetched debounced
+  (300 ms) for the visible window and composited over the stretched
+  whole-file tiles; (3) all strip canvases repaint on element resize
+  (`useCanvasWidth` ResizeObserver hook — narrow windows squashed the bitmap
+  before); (4) the inline inspector strips draw the cue's **slice markers**
+  as read-only dashed yellow lines (`sliceMarkersMs` prop on TrimStrip).
+- **Changing a media file resets the clip window** (user-reported): the file
+  setters kept the old start/end times and slice markers — on a shorter file
+  the start landed past EOF (silent audio) and ab-loop segments pointed past
+  the end (video looping with Loop unchecked). `set_audio_file` /
+  `set_video_file` now go through `set_file_path_resetting_clip`: when the
+  path actually changed, start/end/slices/cached-duration reset; re-picking
+  the same file keeps everything. Tests: reset-on-change, keep-on-same-file
+  (288 lib tests). The inspector re-fetches the cue after Browse… (it used to
+  patch `file_path` locally, showing the stale clip window until re-select)
+  and bumps the dock's reload token.
+- Tests 274 → **286** + 2 integration: SliceList (normalize, tiling,
+  clamped/out-of-window markers), audio RT slices (vamp holds position,
+  devamp-continue plays through, devamp-stop ends at the boundary, finite
+  counts replay then advance), AudioCue slices serde roundtrip + legacy JSON,
+  DevampCue serde roundtrip, transport devamp fan-out (per-voice with mode,
+  no-op on idle targets). `ALL_CUE_TYPES` contract now 15 types.
+
+### 1.3.0 (2026-07-13) — part 3 (2026-07-12): DPI-proof output placement; screen goes live on load; shortcuts work with output focused
+
+Driven by a theatre-user video report: with the laptop display above 100 %
+scaling, GO on a visual cue shifted/resized the output window off the selected
+projector (their workaround was Floating Window + manual placement).
+
+- **Output placement was DPI-broken** (`render.rs`): `set_outer_rect` passed
+  the **physical** monitor rect from `list_screens()` as a winit
+  `LogicalPosition`/`LogicalSize`, so winit re-multiplied it by the current
+  monitor's scale factor — with any display above 100 % the window landed
+  shifted and oversized on every GO / Preferences apply. Both machines at
+  100 % masked the bug (repro: primary display at 150 %). Replaced by
+  `set_fullscreen_on_rect`: match the target `MonitorHandle` by physical
+  origin and apply `Fullscreen::Borderless(monitor)` — DPI-proof, covers the
+  taskbar, pins the window to the monitor, and works on Wayland (where
+  `set_outer_position` is a no-op); physical-rect + `Borderless(None)`
+  fallback when no monitor origin matches. macOS path unchanged.
+- **Configured screen goes live on workspace load**
+  (`OutputEngine::apply_output_screen_on_load`, called from
+  `install_workspace`): the output now shows as a black fullscreen surface on
+  the selected screen as soon as the show opens — not only on the first visual
+  GO. Unlike the GO path, a configured-but-missing screen does **not** fall
+  back to fullscreen-on-primary (that would black out the operator's main
+  display when opening the show at home); it keeps the window hidden and
+  raises the `output-screen` health banner.
+- **Keyboard shortcuts now work while the output window has focus**
+  (`render.rs` → `useTauriEvents.ts`): the winit window swallowed every key —
+  Space/GO and Escape/panic went dead if the operator clicked the output. The
+  winit event loop now forwards `KeyboardInput` presses (`dom_key` maps winit
+  logical keys to DOM `KeyboardEvent.key` values; modifiers tracked via
+  `ModifiersChanged`) as an `output-keydown` Tauri event; the frontend replays
+  them into the window-level shortcut handler via `window.dispatchEvent`.
+  macOS needs no forwarding: the borderless NSWindow can't become key, so keys
+  already stay on the main window.
+- Tests 259 → **264**: `dom_key` mapping (DOM `" "` for Space, NamedKey names
+  = DOM values, character passthrough, dead keys dropped).
+- **Every backend event was handled twice in dev** — surfaced as F9 (pressed
+  with the output window focused) hiding and instantly re-showing the window.
+  `useTauriEvents` registered its listeners in an async `setup()`; under React
+  StrictMode's dev double-mount, the first mount's cleanup runs while the
+  `listen()` promises are still pending, so those listeners were never
+  unsubscribed → two handlers per event (also double-fired `osc-command` GO in
+  dev). Fixed with a `cancelled` flag + post-setup sweep; the same racy
+  "save unlisten in `.then`, cleanup with `unlisten?.()`" pattern was fixed in
+  `App.tsx`, `LogViewerModal`, `LightingPanel` and `ImageSurface` (cleanup now
+  resolves the listen promise, the codebase's safe idiom). Release builds
+  (no StrictMode) were unaffected.
+- **F9 (show output) instantly re-hid the window**: winit on Windows
+  fabricates `KeyboardInput` *Pressed* events (`is_synthetic: true`) for every
+  key physically held when a window gains focus — showing the output window
+  activates it while F9 is still down, and the ghost press was forwarded and
+  toggled the window straight back to hidden. Key forwarding now skips
+  `is_synthetic` events.
+- **Inspector redesign** (readability at high parameter counts): the panel is
+  now **resizable** (left-edge drag handle, 360 px default, 320–560 clamp,
+  width persisted in the `inkue_ui_layout` localStorage blob) and every cue
+  type gets a **dedicated main tab** instead of piling into Basics —
+  `FadeCueTab` (targets / fade / audio / visual / on-complete), `StopTab`
+  (targets + Soft/Hard segmented), `GroupTab` (mode + hint + playlist loop);
+  `GeometryTab` split into `LayerTab` (compositing: layer order / opacity /
+  blend) and a pure Geometry tab. Basics is identity-only (n° + color grid,
+  name, notes, media file, flow). New shared primitives in
+  `Inspector/Field.tsx` — `Section` (card with uppercase micro-title), `Grid2`
+  + `MiniField` (side-by-side numerics: waits, position, crop 2×2, clip
+  start/end), `SliderRow` (opacity/scale/rotation/brightness/pan), `Segmented`
+  (Fit/Fill/Stretch, Soft/Hard), `NumberInput` (clamped commit-on-blur),
+  `ToggleRow`; the cue target picker moved to `CueTargetPicker.tsx` (shared by
+  Fade/Stop). Tab order is uniform: Basics | type tab | Time | Levels | Fade |
+  Layer | Geometry | Triggers. TimeTab/FadeTab re-laid on the same system.
+  Fade Cues can now target **Camera** cues (the target picker excluded them;
+  the engine already faded any `is_visual()` target's layer opacity).
+- **Media previews in the inspector** (user request): Video and Image cues
+  show a thumbnail in Basics → Media — first representative frame for videos
+  (`start=15%`, frame 0 is often black), the image itself for images. Audio
+  already had its inline waveform (Time tab). Generation is headless libmpv
+  with `vo=image` + `frames=1` + `vf=scale=400:-2` in a throwaway context
+  (`engine/thumbnails.rs`) — one code path covers every video/image format
+  the engine plays; raw-file fallback for browser-native formats mpv can't
+  rasterise (SVG), capped at 10 MB. JPEGs cached in
+  `<config>/Inkue/thumbnails/` keyed by path+size+mtime hash, plus a
+  session-lifetime frontend cache (`MediaThumbnail.tsx`). Command
+  `get_media_thumbnail` (async + `spawn_blocking` — decode takes ~100-300 ms).
+- Tests 264 → **270**: thumbnail cache-key stability/invalidations, data-URL
+  encoding, raw-fallback extension gate.
+- **Detailed DAW-style waveform** (user request): `get_waveform_peaks` now
+  also returns per-bin **RMS** (`WaveformData.rms`, helper
+  `compute_waveform_bins`); the inline viewer draws a dim peak envelope with a
+  brighter RMS body, one column per CSS pixel at devicePixelRatio (1600 bins
+  requested), center line — replaces the blocky 400-bin bars.
+- **Video trim strip with filmstrip preview** (user request): the video Time
+  tab gets the same draggable start/end markers as audio, over a **filmstrip**
+  of 8 frames spread across the file. Backend `video_filmstrip`
+  (`thumbnails.rs`): one `vo=image` pass with `sstep=duration/tiles` +
+  `frames=tiles` (duration via `probe_duration`), per-tile disk cache
+  (`<hash>-strip8-<i>.jpg`); command `get_video_filmstrip`. The shared trim
+  shell (markers, drag, labels, DPR-aware canvas) is extracted into
+  `TrimStrip.tsx`; `WaveformViewer` and the new `VideoTrimmer` are thin
+  painters on top of it.
+- Tests 270 → **274**: waveform peak+RMS bins (empty input, RMS ≤ peak, sine
+  RMS = 1/√2, DC signal RMS = peak).
+- **Scrub preview while trimming video**: dragging a start/end marker shows a
+  popup above the cursor with the video frame at that position + timestamp.
+  Instant during the drag: a denser 32-tile × 320 px strip is prefetched in
+  the background after the 8-tile strip loads (same disk cache, keys now
+  include the tile width: `-strip{N}w{W}-{i}.jpg`; `video_filmstrip` takes a
+  `tile_width` param, clamps 2–48 tiles / 80–640 px) and the popup snaps to
+  the nearest tile (falls back to the coarse strip until ready). Generic
+  `dragPreview` slot on `TrimStrip` (cursor-tracked, clamped, above-strip).
+- **Two simultaneous videos stuttered** — even with the top layer fully
+  transparent (slot renders are gated on `has_new_frame`, not opacity).
+  Cause: `mpv_render_context_render()` was called without
+  `MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME` (default **1**), so every call
+  slept until *that* context's frame display time — with N contexts sharing
+  the single render thread the waits serialise (up to ~16 ms each per pass)
+  and every video drops frames. One video never showed it: a single wait
+  aligns with its own cadence. Fix: pass `block_for_target_time=0` (constant
+  added to `mpv_sys.rs`, id 12) on the overlay + every slot render — the loop
+  is paced by the update callbacks and `video-sync=desync` owns each clock,
+  exactly mpv's recommended compositor pattern. Plan B if lag persists on
+  weak iGPUs: slots decode with `hwdec=auto-copy` (GPU→RAM→GPU roundtrip per
+  frame, ×N videos) — switching to direct-interop `auto` is untested across
+  multiple contexts on one GL thread.
+
+### 1.3.0 (2026-07-13) — part 2 (2026-07-11): compositor black-screen fix; legacy Win32 path removed; visual cues always stack
 
 The layer-compositor build showed a **fully black output window on Windows**
 for every Video/Image/Camera GO (slots decoded and revealed fine per the log).
@@ -256,7 +462,7 @@ Root-caused with a standalone GL+mpv probe that read back every FBO stage:
 - Tests: 259 pass (stop-on-next assertions updated; legacy-JSON compat tests
   now assert the field is ignored).
 
-### Unreleased (2026-07-10) — Layer compositor: N simultaneous visual cues, blend modes, crossfades
+### 1.3.0 (2026-07-13) — part 1 (2026-07-10): Layer compositor: N simultaneous visual cues, blend modes, crossfades
 
 The QLab video model, closing the image/video chapter: every Video / Image /
 Camera cue is now an independent **layer** on the output stage — multiple cues
