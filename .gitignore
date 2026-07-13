@@ -69,3 +69,6 @@ npm-debug.log*
 # libmpv-2.dll (~113 MB) lives in vendor/mpv/ and is intentionally not versioned.
 src-tauri/vendor/
 vendor/mpv/
+
+# Release-asset copies downloaded during verification
+latest.json
