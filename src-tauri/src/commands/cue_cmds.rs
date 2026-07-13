@@ -576,8 +576,42 @@ pub fn get_playhead(state: State<'_, AppState>) -> Result<Option<String>, String
 pub struct WaveformData {
     /// Peak values (0.0 – 1.0), one per bin.
     pub peaks: Vec<f32>,
+    /// RMS values (0.0 – 1.0), one per bin — the "body" of the sound, drawn
+    /// inside the peak envelope for a two-tone DAW-style waveform.
+    pub rms: Vec<f32>,
     /// Full file duration in seconds (ignoring start/end markers).
     pub file_duration_s: f64,
+}
+
+/// Downsample interleaved samples into per-bin peak + RMS values.
+fn compute_waveform_bins(samples: &[f32], channels: usize, bins: usize) -> (Vec<f32>, Vec<f32>) {
+    let total_frames = samples.len().checked_div(channels.max(1)).unwrap_or(0);
+    if bins == 0 || total_frames == 0 {
+        return (vec![], vec![]);
+    }
+    let mut peaks = Vec::with_capacity(bins);
+    let mut rms = Vec::with_capacity(bins);
+    for i in 0..bins {
+        let start = (i * total_frames) / bins;
+        let end = (((i + 1) * total_frames) / bins).max(start + 1).min(total_frames);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f64;
+        let mut count = 0usize;
+        for frame in start..end {
+            for ch in 0..channels {
+                let v = samples[frame * channels + ch];
+                let a = v.abs();
+                if a > peak {
+                    peak = a;
+                }
+                sum_sq += (v as f64) * (v as f64);
+                count += 1;
+            }
+        }
+        peaks.push(peak);
+        rms.push(if count > 0 { (sum_sq / count as f64).sqrt() as f32 } else { 0.0 });
+    }
+    (peaks, rms)
 }
 
 /// Return waveform peak data for an audio cue.
@@ -604,32 +638,12 @@ pub fn get_waveform_peaks(
         // workspace lock dropped here
     };
 
-    // Compute peaks outside the lock.
-    let channels = channels as usize;
-    let total_frames = samples.len().checked_div(channels).unwrap_or(0);
-    let peaks = if bins == 0 || total_frames == 0 {
-        vec![]
-    } else {
-        (0..bins)
-            .map(|i| {
-                let start = (i * total_frames) / bins;
-                let end = (((i + 1) * total_frames) / bins).max(start + 1);
-                let mut peak = 0.0f32;
-                for frame in start..end.min(total_frames) {
-                    for ch in 0..channels {
-                        let v = samples[frame * channels + ch].abs();
-                        if v > peak {
-                            peak = v;
-                        }
-                    }
-                }
-                peak
-            })
-            .collect()
-    };
+    // Compute peaks + RMS outside the lock.
+    let (peaks, rms) = compute_waveform_bins(&samples, channels as usize, bins);
 
     Ok(WaveformData {
         peaks,
+        rms,
         file_duration_s: file_duration.as_secs_f64(),
     })
 }
@@ -683,6 +697,27 @@ fn stop_if_live(cue: &mut dyn Cue, state: &AppState, stop_fade_ms: u32) {
     }
 }
 
+/// Swap `file_path` into a serialized cue and, when the path actually
+/// changed, reset the clip window — start/end times and slice markers
+/// describe positions in the *old* media and break playback on a shorter
+/// file (start time past EOF = silent audio; ab-loop segments past the end
+/// = video looping with Loop unchecked).  The cached duration is cleared
+/// too so a stale length never outlives the file it measured.
+fn set_file_path_resetting_clip(json: &mut serde_json::Value, file_path: &str) {
+    let Some(obj) = json.as_object_mut() else { return };
+    let changed = obj.get("file_path").and_then(|v| v.as_str()) != Some(file_path);
+    obj.insert("file_path".to_string(), serde_json::json!(file_path));
+    if changed {
+        obj.insert("start_time_ms".to_string(), serde_json::Value::Null);
+        obj.insert("end_time_ms".to_string(), serde_json::Value::Null);
+        obj.insert(
+            "slices".to_string(),
+            serde_json::json!({ "markers": [], "play_counts": [1] }),
+        );
+        obj.insert("cached_duration_ms".to_string(), serde_json::Value::Null);
+    }
+}
+
 /// Set the file path of an audio cue.
 /// Uses the same JSON-merge-and-rebuild strategy as [`update_cue`].
 #[tauri::command]
@@ -708,9 +743,7 @@ pub fn set_audio_file(
         }
         stop_if_live(cue, &state, stop_fade_ms);
         let mut json = cue.serialize();
-        if let Some(obj) = json.as_object_mut() {
-            obj.insert("file_path".to_string(), serde_json::json!(file_path));
-        }
+        set_file_path_resetting_clip(&mut json, &file_path);
         json
     };
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
@@ -907,9 +940,7 @@ pub fn set_video_file(
 
     stop_if_live(cue_list.cues[idx].as_mut(), &state, stop_fade_ms);
     let mut json = cue_list.cues[idx].serialize();
-    if let Some(obj) = json.as_object_mut() {
-        obj.insert("file_path".to_string(), serde_json::json!(file_path));
-    }
+    set_file_path_resetting_clip(&mut json, &file_path);
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     drop(registry);
     cue_list.cues[idx] = new_cue;
@@ -1090,6 +1121,79 @@ pub fn set_image_file(
     Ok(())
 }
 
+/// Return a `data:` URL thumbnail for a media file (image or video), for the
+/// inspector's Media preview. Generated headlessly via libmpv (`vo=image`) and
+/// cached on disk, so only the first request per file decodes anything.
+///
+/// `seek_into` picks a frame ~15 % in (videos — frame 0 is often black).
+/// Async + `spawn_blocking`: decode can take a few hundred ms and sync
+/// commands run on the main thread.
+#[tauri::command]
+pub async fn get_media_thumbnail(
+    path: String,
+    seek_into: bool,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let lib = state.output_engine.mpv_lib_arc();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::engine::thumbnails::media_thumbnail(&lib, std::path::Path::new(&path), seek_into)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Return a filmstrip for the video trimmer: `tiles` JPEG `data:` URLs evenly
+/// spread across the file. Same headless-libmpv path and disk cache as
+/// [`get_media_thumbnail`].
+#[tauri::command]
+pub async fn get_video_filmstrip(
+    path: String,
+    tiles: usize,
+    tile_width: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let lib = state.output_engine.mpv_lib_arc();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::engine::thumbnails::video_filmstrip(
+            &lib,
+            std::path::Path::new(&path),
+            tiles,
+            tile_width,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Filmstrip over a time range (zoomed clip editor): `tiles` frames spread
+/// across `[start_s, end_s]`.  Same cache/headless-mpv path as the full strip.
+#[tauri::command]
+pub async fn get_video_filmstrip_range(
+    path: String,
+    start_s: f64,
+    end_s: f64,
+    tiles: usize,
+    tile_width: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let lib = state.output_engine.mpv_lib_arc();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::engine::thumbnails::video_filmstrip_range(
+            &lib,
+            std::path::Path::new(&path),
+            start_s,
+            end_s,
+            tiles,
+            tile_width,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Toggle the output window visibility (F9 / View menu).
 #[tauri::command]
 pub fn toggle_output_window(state: State<'_, AppState>) {
@@ -1250,4 +1354,90 @@ pub fn remove_cue_from_group(
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{compute_waveform_bins, set_file_path_resetting_clip};
+
+    #[test]
+    fn changing_the_file_resets_the_clip_window() {
+        let mut json = serde_json::json!({
+            "file_path": "old.wav",
+            "start_time_ms": 81_314,
+            "end_time_ms": 147_104,
+            "slices": { "markers": [90_000, 120_000], "play_counts": [1, u32::MAX, 1] },
+            "cached_duration_ms": 274_250,
+            "volume_db": -6.0,
+        });
+        set_file_path_resetting_clip(&mut json, "new.wav");
+        assert_eq!(json["file_path"], "new.wav");
+        assert!(json["start_time_ms"].is_null());
+        assert!(json["end_time_ms"].is_null());
+        assert!(json["cached_duration_ms"].is_null());
+        assert_eq!(json["slices"]["markers"].as_array().unwrap().len(), 0);
+        assert_eq!(json["volume_db"], -6.0, "unrelated fields untouched");
+    }
+
+    #[test]
+    fn repicking_the_same_file_keeps_the_clip_window() {
+        let mut json = serde_json::json!({
+            "file_path": "same.wav",
+            "start_time_ms": 1_000,
+            "end_time_ms": 2_000,
+            "slices": { "markers": [1_500], "play_counts": [1, 1] },
+        });
+        set_file_path_resetting_clip(&mut json, "same.wav");
+        assert_eq!(json["start_time_ms"], 1_000);
+        assert_eq!(json["end_time_ms"], 2_000);
+        assert_eq!(json["slices"]["markers"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn waveform_bins_empty_input() {
+        assert_eq!(compute_waveform_bins(&[], 2, 10), (vec![], vec![]));
+        assert_eq!(compute_waveform_bins(&[0.5, 0.5], 2, 0), (vec![], vec![]));
+    }
+
+    #[test]
+    fn waveform_bins_rms_never_exceeds_peak() {
+        let samples: Vec<f32> = (0..4800)
+            .map(|i| (i as f32 * 0.13).sin() * 0.8)
+            .collect();
+        let (peaks, rms) = compute_waveform_bins(&samples, 2, 40);
+        assert_eq!(peaks.len(), 40);
+        assert_eq!(rms.len(), 40);
+        for (p, r) in peaks.iter().zip(&rms) {
+            assert!(r <= p, "rms {r} > peak {p}");
+        }
+    }
+
+    #[test]
+    fn waveform_bins_sine_rms_is_peak_over_sqrt2() {
+        // Full-scale sine: peak ≈ 1.0, RMS ≈ 1/√2 ≈ 0.707.
+        let samples: Vec<f32> = (0..48000)
+            .map(|i| (i as f32 * std::f32::consts::TAU / 480.0).sin())
+            .collect();
+        let (peaks, rms) = compute_waveform_bins(&samples, 1, 4);
+        for p in &peaks {
+            assert!((p - 1.0).abs() < 0.01, "peak {p}");
+        }
+        for r in &rms {
+            assert!((r - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01, "rms {r}");
+        }
+    }
+
+    #[test]
+    fn waveform_bins_constant_signal_rms_equals_peak() {
+        let samples = vec![0.5f32; 1000];
+        let (peaks, rms) = compute_waveform_bins(&samples, 1, 5);
+        for (p, r) in peaks.iter().zip(&rms) {
+            assert!((p - 0.5).abs() < 1e-6);
+            assert!((r - 0.5).abs() < 1e-4);
+        }
+    }
 }

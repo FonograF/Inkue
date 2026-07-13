@@ -78,6 +78,9 @@ pub struct VideoCue {
     pub geometry: VideoGeometry,
     /// Compositing (stacking layer, base opacity, blend mode).
     pub layer_style: LayerStyle,
+    /// QLab-style slices (markers + per-segment play counts).  Empty = plain
+    /// playback.  When present, `loop_count` is ignored.
+    pub slices: crate::cue::types::SliceList,
 
     is_disabled: bool,
 
@@ -136,6 +139,7 @@ impl VideoCue {
             hold_last_frame: false,
             geometry: VideoGeometry::default(),
             layer_style: LayerStyle::default(),
+            slices: crate::cue::types::SliceList::default(),
             is_disabled: false,
             active_voice_id: None,
             decoded_samples: None,
@@ -158,6 +162,25 @@ impl VideoCue {
             FadeCurve::SCurve => EngineFadeCurve::SCurve,
             FadeCurve::Exponential => EngineFadeCurve::Exponential,
         }
+    }
+
+    /// Resolve the slice segments within the clip window as
+    /// `(start_ms, end_ms, play_count)`.  Empty = no slicing.
+    fn slice_segments_ms(&self) -> Vec<(u64, u64, u32)> {
+        if self.slices.is_empty() {
+            return Vec::new();
+        }
+        let file_ms = self
+            .cached_duration
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(u64::MAX);
+        let clip_start = self.start_time.map(|d| d.as_millis() as u64).unwrap_or(0);
+        let clip_end = self
+            .end_time
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(file_ms)
+            .min(file_ms);
+        self.slices.segments(clip_start, clip_end)
     }
 
     /// Trigger the visual fade-out that lands on the cue's natural end, once
@@ -224,6 +247,29 @@ impl VideoCue {
             voice.frame_pos.store(start_frame, std::sync::atomic::Ordering::Relaxed);
         }
 
+        // Slice program: the paired audio follows the same segments as the
+        // mpv side (which drives them via ab-loop), sample-resolved here.
+        {
+            let sr = self.decoded_sample_rate as u64;
+            let segments: Vec<crate::engine::voice::SliceSegment> = self
+                .slice_segments_ms()
+                .into_iter()
+                .map(|(s, e, count)| crate::engine::voice::SliceSegment {
+                    start_frame: s * sr / 1000,
+                    end_frame: e * sr / 1000,
+                    play_count: count,
+                })
+                .collect();
+            if let Some(program) = crate::engine::voice::SliceProgram::new(segments) {
+                voice.frame_pos.store(
+                    program.segments[0].start_frame,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                // SAFETY: written once before submission.
+                unsafe { *voice.inner.slices.get() = Some(program) };
+            }
+        }
+
         if let Some(ref fi) = self.fade_in {
             let total = (fi.duration_ms * self.decoded_sample_rate as u64) / 1000;
             // SAFETY: single writer before submission.
@@ -276,6 +322,12 @@ impl VideoCue {
             anyhow!("VideoCue '{}': no file assigned — set a file in the inspector", self.name)
         })?;
 
+        let slices: Vec<(f64, f64, u32)> = self
+            .slice_segments_ms()
+            .into_iter()
+            .map(|(s, e, count)| (s as f64 / 1000.0, e as f64 / 1000.0, count))
+            .collect();
+
         let voice_id = context.output_engine.show_content(ContentRequest {
             file_path: path,
             is_image: false,
@@ -290,6 +342,7 @@ impl VideoCue {
             geometry: self.geometry,
             live_source: false,
             layer_style: self.layer_style,
+            slices,
         })?;
 
         self.active_voice_id = Some(voice_id);
@@ -534,6 +587,21 @@ impl Cue for VideoCue {
     fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
     fn duration(&self) -> Option<Duration> {
+        if !self.slices.is_empty() {
+            // Sliced playback: a vamp has no fixed duration; finite counts sum.
+            let segments = self.slice_segments_ms();
+            if segments.is_empty() {
+                // Markers all fall outside the clip window — plain playback.
+            } else if segments.iter().any(|&(_, _, c)| c == u32::MAX) {
+                return None;
+            } else {
+                let total_ms: u64 = segments
+                    .iter()
+                    .map(|&(s, e, c)| (e - s) * c as u64)
+                    .sum();
+                return Some(Duration::from_millis(total_ms));
+            }
+        }
         if self.loop_count == u32::MAX {
             return None; // Infinite loop — no fixed duration.
         }
@@ -671,6 +739,7 @@ impl Cue for VideoCue {
             "hold_last_frame": self.hold_last_frame,
             "geometry": self.geometry,
             "layer_style": self.layer_style,
+            "slices": self.slices,
             "is_disabled": self.is_disabled,
             "cached_duration_ms": self.cached_duration.map(|d| d.as_millis() as u64),
         })
@@ -782,6 +851,12 @@ impl CueFactory for VideoCueFactory {
         if let Some(ls) = value.get("layer_style") {
             if let Ok(style) = serde_json::from_value::<LayerStyle>(ls.clone()) {
                 cue.layer_style = style;
+            }
+        }
+        if let Some(s) = value.get("slices") {
+            if let Ok(mut slices) = serde_json::from_value::<crate::cue::types::SliceList>(s.clone()) {
+                slices.normalize();
+                cue.slices = slices;
             }
         }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {

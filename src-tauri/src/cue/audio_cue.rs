@@ -71,6 +71,10 @@ pub struct AudioCue {
     pub output_patch_id: Option<uuid::Uuid>,
     /// Playback rate multiplier (1.0 = normal speed).
     pub rate: f64,
+    /// QLab-style slices (markers + per-segment play counts).  Empty = plain
+    /// playback.  When present, `loop_count` is ignored (the vamp segments
+    /// own the looping).
+    pub slices: crate::cue::types::SliceList,
 
     is_disabled: bool,
 
@@ -122,6 +126,7 @@ impl AudioCue {
             loop_count: 0,
             output_patch_id: None,
             rate: 1.0,
+            slices: crate::cue::types::SliceList::default(),
             is_disabled: false,
             decoded_samples: None,
             decoded_channels: 2,
@@ -139,6 +144,36 @@ impl AudioCue {
     /// Return the active voice ID if the cue is currently playing.
     pub fn voice_id(&self) -> Option<VoiceId> {
         self.active_voice_id
+    }
+
+    /// Build the frame-resolved slice program for the current clip window,
+    /// or `None` when the cue has no slice markers inside it.
+    fn build_slice_program(&self) -> Option<crate::engine::voice::SliceProgram> {
+        if self.slices.is_empty() {
+            return None;
+        }
+        let sr = self.decoded_sample_rate as u64;
+        let file_ms = self
+            .cached_duration
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(u64::MAX);
+        let clip_start = self.start_time.map(|d| d.as_millis() as u64).unwrap_or(0);
+        let clip_end = self
+            .end_time
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(file_ms)
+            .min(file_ms);
+        let segments: Vec<crate::engine::voice::SliceSegment> = self
+            .slices
+            .segments(clip_start, clip_end)
+            .into_iter()
+            .map(|(s, e, count)| crate::engine::voice::SliceSegment {
+                start_frame: s * sr / 1000,
+                end_frame: e * sr / 1000,
+                play_count: count,
+            })
+            .collect();
+        crate::engine::voice::SliceProgram::new(segments)
     }
 
     /// Convert a [`FadeCurve`] from the cue layer to the engine layer.
@@ -184,6 +219,18 @@ impl AudioCue {
         if let Some(start) = self.start_time {
             let start_frame = (start.as_secs_f64() * self.decoded_sample_rate as f64) as u64;
             voice.frame_pos.store(start_frame, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Slice program (QLab slices): resolved against the clip window in
+        // frames.  When active it owns all boundaries — loop_count/end_frame
+        // are ignored by the callback.
+        if let Some(program) = self.build_slice_program() {
+            voice.frame_pos.store(
+                program.segments[0].start_frame,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            // SAFETY: written once before play_voice(); RT thread not started.
+            unsafe { *voice.inner.slices.get() = Some(program) };
         }
 
         // Apply fade-in if configured (written before play_voice; RT thread not running yet).
@@ -610,6 +657,7 @@ impl Cue for AudioCue {
             "loop_count": self.loop_count,
             "output_patch_id": self.output_patch_id,
             "rate": self.rate,
+            "slices": self.slices,
             "is_disabled": self.is_disabled,
         })
     }
@@ -694,6 +742,12 @@ impl CueFactory for AudioCueFactory {
         if let Some(rate) = value.get("rate").and_then(|v| v.as_f64()) {
             cue.rate = rate;
         }
+        if let Some(s) = value.get("slices") {
+            if let Ok(mut slices) = serde_json::from_value::<crate::cue::types::SliceList>(s.clone()) {
+                slices.normalize();
+                cue.slices = slices;
+            }
+        }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -734,6 +788,35 @@ mod tests {
         assert_eq!(restored.name(), "Test Audio");
         assert_eq!(restored.number(), Some("1"));
         assert_eq!(restored.continue_mode(), ContinueMode::AutoContinue);
+    }
+
+    #[test]
+    fn serialize_roundtrip_preserves_slices() {
+        use crate::cue::types::{SliceList, PLAY_COUNT_INFINITE};
+        let mut cue = make_cue();
+        cue.slices = SliceList {
+            markers: vec![2000, 8000],
+            play_counts: vec![1, PLAY_COUNT_INFINITE, 2],
+        };
+        let json = cue.serialize();
+        let restored = AudioCueFactory.from_json(json).expect("deserialize");
+        let restored_json = restored.serialize();
+        let slices: SliceList =
+            serde_json::from_value(restored_json.get("slices").unwrap().clone()).unwrap();
+        assert_eq!(slices.markers, vec![2000, 8000]);
+        assert_eq!(slices.play_counts, vec![1, PLAY_COUNT_INFINITE, 2]);
+    }
+
+    #[test]
+    fn legacy_json_without_slices_loads_empty() {
+        let cue = make_cue();
+        let mut json = cue.serialize();
+        json.as_object_mut().unwrap().remove("slices");
+        let restored = AudioCueFactory.from_json(json).expect("deserialize");
+        let restored_json = restored.serialize();
+        let slices: crate::cue::types::SliceList =
+            serde_json::from_value(restored_json.get("slices").unwrap().clone()).unwrap();
+        assert!(slices.is_empty());
     }
 
     #[test]

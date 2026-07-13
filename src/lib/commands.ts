@@ -122,6 +122,14 @@ export const getWaveformPeaks = (cueId: CueId, bins: number) =>
   invoke<WaveformData>("get_waveform_peaks", { cueId, bins });
 export const getNormalizeDb = (cueId: CueId) =>
   invoke<number>("get_normalize_db", { cueId });
+export const getMediaThumbnail = (path: string, seekInto: boolean) =>
+  invoke<string>("get_media_thumbnail", { path, seekInto });
+export const getVideoFilmstrip = (path: string, tiles: number, tileWidth: number) =>
+  invoke<string[]>("get_video_filmstrip", { path, tiles, tileWidth });
+export const getVideoFilmstripRange = (
+  path: string, startS: number, endS: number, tiles: number, tileWidth: number,
+) =>
+  invoke<string[]>("get_video_filmstrip_range", { path, startS, endS, tiles, tileWidth });
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
 export const listCameraDevices = () =>
   invoke<CameraDeviceInfo[]>("list_camera_devices");

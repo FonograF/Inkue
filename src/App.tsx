@@ -11,6 +11,7 @@ import { ShowModeView } from "./components/ShowMode/ShowModeView";
 import { ActiveCuesView } from "./components/ActiveCues/ActiveCuesView";
 import { CueListTabs } from "./components/CueList/CueListTabs";
 import { InspectorPanel } from "./components/Inspector/InspectorPanel";
+import { ClipEditorDock } from "./components/Editor/ClipEditorDock";
 import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -593,9 +594,22 @@ interface UiLayout {
   showCueListTabs: boolean;
   inspectorOpen: boolean;
   showSearchBar: boolean;
+  inspectorWidth: number;
 }
 
-const DEFAULT_UI_LAYOUT: UiLayout = { showCueListTabs: true, inspectorOpen: true, showSearchBar: true };
+const INSPECTOR_MIN_WIDTH = 320;
+const INSPECTOR_MAX_WIDTH = 560;
+const INSPECTOR_DEFAULT_WIDTH = 360;
+
+const clampInspectorWidth = (w: number) =>
+  Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, w));
+
+const DEFAULT_UI_LAYOUT: UiLayout = {
+  showCueListTabs: true,
+  inspectorOpen: true,
+  showSearchBar: true,
+  inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
+};
 
 function loadUiLayout(): UiLayout {
   try {
@@ -606,6 +620,7 @@ function loadUiLayout(): UiLayout {
       showCueListTabs: parsed.showCueListTabs ?? true,
       inspectorOpen: parsed.inspectorOpen ?? true,
       showSearchBar: parsed.showSearchBar ?? true,
+      inspectorWidth: clampInspectorWidth(parsed.inspectorWidth ?? INSPECTOR_DEFAULT_WIDTH),
     };
   } catch {
     return DEFAULT_UI_LAYOUT;
@@ -723,6 +738,10 @@ export default function App() {
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
   const [showCueListTabs, setShowCueListTabs]     = useState(() => loadUiLayout().showCueListTabs);
   const [showSearchBar, setShowSearchBar]         = useState(() => loadUiLayout().showSearchBar);
+  const [inspectorWidth, setInspectorWidth]       = useState(() => loadUiLayout().inspectorWidth);
+  const [editorCueId, setEditorCueId]             = useState<string | null>(null);
+  const [inspectorReload, setInspectorReload]     = useState(0);
+  const [editorReload, setEditorReload]           = useState(0);
   const [showMode, setShowMode]                   = useState(false);
   const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
   const [gotoOpen, setGotoOpen]                   = useState(false);
@@ -737,10 +756,26 @@ export default function App() {
   const [recoveryInfo, setRecoveryInfo]           = useState<RecoveryInfo | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Persist panel visibility across launches.
+  // Persist panel visibility + inspector width across launches.
   useEffect(() => {
-    saveUiLayout({ showCueListTabs, inspectorOpen, showSearchBar });
-  }, [showCueListTabs, inspectorOpen, showSearchBar]);
+    saveUiLayout({ showCueListTabs, inspectorOpen, showSearchBar, inspectorWidth });
+  }, [showCueListTabs, inspectorOpen, showSearchBar, inspectorWidth]);
+
+  // Drag-resize the inspector from its left edge (pointer capture keeps the
+  // drag alive even when the cursor leaves the 5 px handle).
+  const handleInspectorResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = inspectorWidth;
+    const onMove = (ev: PointerEvent) =>
+      setInspectorWidth(clampInspectorWidth(startWidth + (startX - ev.clientX)));
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   // Silent update check shortly after startup (production builds only —
   // dev builds have no signed update artifacts to compare against).
@@ -793,11 +828,10 @@ export default function App() {
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);
 
-    let unlistenVisible: (() => void) | undefined;
-    listen<boolean>("output-window-visible", (e) => {
+    const unlistenVisible = listen<boolean>("output-window-visible", (e) => {
       setOutputSurfaceVisible(e.payload);
-    }).then((u) => { unlistenVisible = u; }).catch(console.error);
-    return () => { unlistenVisible?.(); };
+    });
+    return () => { void unlistenVisible.then((u) => u()).catch(console.error); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // One-time crash-recovery prompt: a snapshot left by a previous session means
@@ -1044,6 +1078,13 @@ export default function App() {
     await refreshCues();
   };
 
+  const handleAddDevamp = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("devamp", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
   const handleAddMidi = async () => {
     const { selectedCueId, cues } = useWorkspaceStore.getState();
     const idx = cues.findIndex((c) => c.id === selectedCueId);
@@ -1086,7 +1127,7 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text" | "camera", e: React.MouseEvent) => {
+  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text" | "camera" | "devamp", e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("inkue:cue-drag-start", {
@@ -1342,6 +1383,12 @@ export default function App() {
             onAdd={handleAddCamera}
             onDragStart={(e) => dispatchCueDrag("camera", e)}
           />
+          <CueToolbarButton
+            type="devamp" label="Devamp"
+            title="Add Devamp Cue (release a vamping slice loop) · Drag to insert at position"
+            onAdd={handleAddDevamp}
+            onDragStart={(e) => dispatchCueDrag("devamp", e)}
+          />
           <ActionMenu buttonStyle={toolbarBtn} onDone={handleRefresh} />
           <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
             Inspector
@@ -1390,6 +1437,19 @@ export default function App() {
                 })()
               )}
 
+              {/* Clip editor dock — trim + slices for the opened cue */}
+              {editorCueId && (
+                <ClipEditorDock
+                  cueId={editorCueId}
+                  onClose={() => setEditorCueId(null)}
+                  onSaved={() => {
+                    void handleRefresh();
+                    setInspectorReload((n) => n + 1);
+                  }}
+                  reloadToken={editorReload}
+                />
+              )}
+
               {/* Search bar — anchored at the bottom of the cue list */}
               {showSearchBar && (
                 <div style={{ padding: "4px 8px", borderTop: "1px solid var(--wc-border)", flexShrink: 0 }}>
@@ -1411,18 +1471,32 @@ export default function App() {
                 </div>
               )}
             </div>
-            {inspectorOpen && (() => {
-              return (
+            {inspectorOpen && (
+              <div
+                style={{
+                  width: inspectorWidth, position: "relative",
+                  borderLeft: "1px solid var(--wc-border)",
+                  overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
+                }}
+              >
                 <div
+                  onPointerDown={handleInspectorResizeStart}
+                  title="Drag to resize"
                   style={{
-                    width: 300, borderLeft: "1px solid var(--wc-border)",
-                    overflow: "hidden", display: "flex", flexDirection: "column", flexShrink: 0,
+                    position: "absolute", left: 0, top: 0, bottom: 0, width: 5,
+                    cursor: "ew-resize", zIndex: 2,
                   }}
-                >
-                  <InspectorPanel selectedCue={selectedCue} selectedCueIds={selectedCueIds} onRefresh={handleRefresh} />
-                </div>
-              );
-            })()}
+                />
+                <InspectorPanel
+                  selectedCue={selectedCue}
+                  selectedCueIds={selectedCueIds}
+                  onRefresh={handleRefresh}
+                  onOpenEditor={(id) => setEditorCueId(id)}
+                  reloadToken={inspectorReload}
+                  onCueSaved={() => setEditorReload((n) => n + 1)}
+                />
+              </div>
+            )}
           </>
         )}
       </div>

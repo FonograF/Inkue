@@ -35,6 +35,8 @@ pub enum CueType {
     Text,
     /// Shows a live camera / capture / network video feed on the output surface.
     Camera,
+    /// Releases a vamping (infinitely-looping) slice on its target cues.
+    Devamp,
 }
 
 impl std::fmt::Display for CueType {
@@ -55,6 +57,7 @@ impl std::fmt::Display for CueType {
             CueType::Timecode => write!(f, "timecode"),
             CueType::Text     => write!(f, "text"),
             CueType::Camera   => write!(f, "camera"),
+            CueType::Devamp   => write!(f, "devamp"),
         }
     }
 }
@@ -103,6 +106,73 @@ pub enum CueColor {
     Pink,
     White,
     Black,
+}
+
+/// Play count meaning "loop this slice forever" (a *vamp*).
+pub const PLAY_COUNT_INFINITE: u32 = u32::MAX;
+
+/// QLab-style slices on a media cue's timeline.
+///
+/// `markers` split the clip into `markers.len() + 1` segments; segment *i*
+/// plays `play_counts[i]` times ([`PLAY_COUNT_INFINITE`] = vamp until a Devamp
+/// Cue releases it). Empty markers = no slicing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SliceList {
+    /// Marker positions in ms from **file** start, sorted ascending.
+    pub markers: Vec<u64>,
+    /// Play count per segment — always `markers.len() + 1` entries after
+    /// [`Self::normalize`]; `u32::MAX` = infinite (vamp).
+    pub play_counts: Vec<u32>,
+}
+
+impl SliceList {
+    /// `true` when the cue has no slice markers (plain linear playback).
+    pub fn is_empty(&self) -> bool {
+        self.markers.is_empty()
+    }
+
+    /// Sort markers, drop duplicates and resize `play_counts` to
+    /// `markers.len() + 1` (new segments default to 1 play).
+    pub fn normalize(&mut self) {
+        self.markers.sort_unstable();
+        self.markers.dedup();
+        self.play_counts.resize(self.markers.len() + 1, 1);
+        for c in &mut self.play_counts {
+            if *c == 0 {
+                *c = 1;
+            }
+        }
+    }
+
+    /// Resolve the slice segments within the clip window
+    /// `[clip_start_ms, clip_end_ms)` as `(start_ms, end_ms, play_count)`.
+    ///
+    /// Markers outside the window are ignored; segment edges are clamped so
+    /// the result always tiles the window exactly. Returns an empty vec when
+    /// there is no marker inside the window (plain playback).
+    pub fn segments(&self, clip_start_ms: u64, clip_end_ms: u64) -> Vec<(u64, u64, u32)> {
+        if self.is_empty() || clip_end_ms <= clip_start_ms {
+            return Vec::new();
+        }
+        let mut normalized = self.clone();
+        normalized.normalize();
+
+        let mut segments = Vec::with_capacity(normalized.markers.len() + 1);
+        let mut cursor = clip_start_ms;
+        for (i, &m) in normalized.markers.iter().enumerate() {
+            if m <= clip_start_ms || m >= clip_end_ms {
+                continue;
+            }
+            segments.push((cursor, m, normalized.play_counts[i]));
+            cursor = m;
+        }
+        if segments.is_empty() {
+            return Vec::new();
+        }
+        let last_count = *normalized.play_counts.last().unwrap_or(&1);
+        segments.push((cursor, clip_end_ms, last_count));
+        segments
+    }
 }
 
 /// Available fade curve shapes, matching QLab's options.
@@ -258,6 +328,40 @@ mod tests {
             assert!(start.abs() < 1e-9, "{curve:?} at t=0 should be 0, got {start}");
             assert!((end - 1.0).abs() < 1e-9, "{curve:?} at t=1 should be 1, got {end}");
         }
+    }
+
+    #[test]
+    fn slice_list_normalize_sorts_and_pads_counts() {
+        let mut s = SliceList { markers: vec![5000, 2000, 5000], play_counts: vec![0] };
+        s.normalize();
+        assert_eq!(s.markers, vec![2000, 5000]);
+        assert_eq!(s.play_counts, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn slice_list_segments_tile_the_clip_window() {
+        let s = SliceList { markers: vec![2000, 6000], play_counts: vec![1, PLAY_COUNT_INFINITE, 2] };
+        let segs = s.segments(0, 10000);
+        assert_eq!(segs, vec![
+            (0, 2000, 1),
+            (2000, 6000, PLAY_COUNT_INFINITE),
+            (6000, 10000, 2),
+        ]);
+    }
+
+    #[test]
+    fn slice_list_segments_ignore_markers_outside_clip() {
+        let s = SliceList { markers: vec![500, 4000, 9500], play_counts: vec![1, 3, 1, 1] };
+        // Clip trimmed to [1000, 8000): only the 4000 marker survives.
+        let segs = s.segments(1000, 8000);
+        assert_eq!(segs, vec![(1000, 4000, 3), (4000, 8000, 1)]);
+    }
+
+    #[test]
+    fn slice_list_segments_empty_without_markers_in_window() {
+        let s = SliceList { markers: vec![9000], play_counts: vec![1, 1] };
+        assert!(s.segments(0, 5000).is_empty());
+        assert!(SliceList::default().segments(0, 5000).is_empty());
     }
 
     #[test]

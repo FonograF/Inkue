@@ -1,6 +1,7 @@
-import type { AudioCueData, CueSummary } from "../../lib/types";
-import { Field, inputStyle } from "./Field";
+import type { AudioCueData, VideoCueData, CueSummary } from "../../lib/types";
+import { Grid2, MiniField, NumberInput, Section, ToggleRow, inputStyle } from "./Field";
 import { WaveformViewer } from "./WaveformViewer";
+import { VideoTrimmer } from "./VideoTrimmer";
 import { ScrubBar } from "./ScrubBar";
 
 const LOOP_INFINITE = 4294967295; // u32::MAX
@@ -51,233 +52,206 @@ export function TimeTab({
           loopDurationMs={isLooping ? fileDurationMs! : undefined}
         />
       )}
+
       {isWait && (
-        <Field label="Duration (s)">
-          <input
-            style={inputStyle}
-            type="number"
-            step="0.1"
-            min="0"
-            key={`wait-${cue.wait_duration_ms}`}
-            defaultValue={((cue.wait_duration_ms ?? 5000) / 1000).toFixed(1)}
-            onBlur={(e) =>
-              onSave({
-                wait_duration_ms: Math.round(parseFloat(e.target.value) * 1000),
-              } as never)
-            }
-          />
-        </Field>
-      )}
-      {isFade && (
-        <Field label="Duration (s)">
-          <input
-            style={inputStyle}
-            type="number"
-            step="0.1"
-            min="0.1"
-            key={`fade-dur-${cue.fade_duration_ms}`}
-            defaultValue={((cue.fade_duration_ms ?? 2000) / 1000).toFixed(1)}
-            onBlur={(e) =>
-              onSave({
-                fade_duration_ms: Math.round(parseFloat(e.target.value) * 1000),
-              } as never)
-            }
-          />
-        </Field>
-      )}
-      {isImage && (
-        <Field label="Display Duration">
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              id="img-dur-enabled"
-              checked={cue.display_duration_ms != null}
-              onChange={(e) =>
-                onSave({
-                  display_duration_ms: e.target.checked ? 5000 : null,
-                } as never)
-              }
-            />
-            {cue.display_duration_ms != null ? (
-              <input
-                style={{ ...inputStyle, width: 80 }}
-                type="number"
-                step="0.1"
-                min="0.1"
-                key={`img-dur-${cue.display_duration_ms}`}
-                defaultValue={(cue.display_duration_ms / 1000).toFixed(1)}
-                onBlur={(e) =>
-                  onSave({
-                    display_duration_ms: Math.round(parseFloat(e.target.value) * 1000),
-                  } as never)
-                }
+        <Section title="Duration">
+          <Grid2>
+            <MiniField label="Wait (s)">
+              <NumberInput
+                value={(cue.wait_duration_ms ?? 5000) / 1000}
+                step={0.1}
+                min={0}
+                max={86400}
+                onCommit={(v) => onSave({ wait_duration_ms: Math.round(v * 1000) } as never)}
               />
-            ) : (
-              <span style={{ color: "var(--wc-text-muted)", fontSize: 12 }}>∞ hold</span>
-            )}
-            {cue.display_duration_ms != null && (
-              <span style={{ color: "var(--wc-text-muted)", fontSize: 12 }}>s</span>
-            )}
-          </div>
-        </Field>
+            </MiniField>
+          </Grid2>
+        </Section>
       )}
-      <Field label="Pre-Wait (s)">
-        <input
-          style={inputStyle}
-          type="number"
-          step="0.1"
-          min="0"
-          defaultValue={(cue.pre_wait_ms / 1000).toFixed(1)}
-          onBlur={(e) =>
-            onSave({
-              pre_wait_ms: Math.round(parseFloat(e.target.value) * 1000),
-            })
-          }
-        />
-      </Field>
-      <Field label="Post-Wait (s)">
-        <input
-          style={inputStyle}
-          type="number"
-          step="0.1"
-          min="0"
-          defaultValue={(cue.post_wait_ms / 1000).toFixed(1)}
-          onBlur={(e) =>
-            onSave({
-              post_wait_ms: Math.round(parseFloat(e.target.value) * 1000),
-            })
-          }
-        />
-      </Field>
+
+      {isFade && (
+        <Section title="Duration">
+          <Grid2>
+            <MiniField label="Fade (s)">
+              <NumberInput
+                value={(cue.fade_duration_ms ?? 2000) / 1000}
+                step={0.1}
+                min={0.1}
+                max={3600}
+                onCommit={(v) => onSave({ fade_duration_ms: Math.round(v * 1000) } as never)}
+              />
+            </MiniField>
+          </Grid2>
+        </Section>
+      )}
+
+      {isImage && (
+        <Section title="Display">
+          <ToggleRow
+            label="Limit display duration"
+            checked={cue.display_duration_ms != null}
+            onToggle={(v) => onSave({ display_duration_ms: v ? 5000 : null } as never)}
+          >
+            <Grid2>
+              <MiniField label="Duration (s)">
+                <NumberInput
+                  value={(cue.display_duration_ms ?? 5000) / 1000}
+                  step={0.1}
+                  min={0.1}
+                  max={86400}
+                  onCommit={(v) => onSave({ display_duration_ms: Math.round(v * 1000) } as never)}
+                />
+              </MiniField>
+            </Grid2>
+          </ToggleRow>
+          {cue.display_duration_ms == null && (
+            <div style={{ fontSize: 11, color: "var(--wc-text-faint)", marginTop: -4, marginBottom: 6 }}>
+              ∞ — holds until stopped or replaced.
+            </div>
+          )}
+        </Section>
+      )}
+
+      <Section title="Waits">
+        <Grid2>
+          <MiniField label="Pre-Wait (s)">
+            <NumberInput
+              value={cue.pre_wait_ms / 1000}
+              step={0.1}
+              min={0}
+              max={86400}
+              onCommit={(v) => onSave({ pre_wait_ms: Math.round(v * 1000) })}
+            />
+          </MiniField>
+          <MiniField label="Post-Wait (s)">
+            <NumberInput
+              value={cue.post_wait_ms / 1000}
+              step={0.1}
+              min={0}
+              max={86400}
+              onCommit={(v) => onSave({ post_wait_ms: Math.round(v * 1000) })}
+            />
+          </MiniField>
+        </Grid2>
+      </Section>
+
       {isAudio && cue.file_path && (
         <WaveformViewer cue={cue} onSave={onSave} onExpand={onOpenWaveform} />
       )}
+      {isVideo && cue.file_path && (
+        <VideoTrimmer
+          cue={cue as VideoCueData}
+          durationMs={fileDurationMs ?? liveDurationMs ?? 0}
+          onSave={onSave as (p: Partial<VideoCueData>) => void}
+          onExpand={onOpenWaveform}
+        />
+      )}
+
       {(isAudio || isVideo) && (
-        <>
-          <Field label="Start Time (s)">
-            <input
-              style={inputStyle}
-              type="number"
-              step="0.001"
-              min="0"
-              key={`start-${cue.start_time_ms}`}
-              defaultValue={
-                cue.start_time_ms != null
-                  ? (cue.start_time_ms / 1000).toFixed(3)
-                  : ""
-              }
-              placeholder="0.000"
-              onBlur={(e) =>
-                onSave({
-                  start_time_ms: e.target.value
-                    ? Math.round(parseFloat(e.target.value) * 1000)
-                    : null,
-                })
-              }
-            />
-          </Field>
-          <Field label="End Time (s)">
-            <input
-              style={inputStyle}
-              type="number"
-              step="0.001"
-              min="0"
-              key={`end-${cue.end_time_ms}`}
-              defaultValue={
-                cue.end_time_ms != null
-                  ? (cue.end_time_ms / 1000).toFixed(3)
-                  : ""
-              }
-              placeholder="end of file"
-              onBlur={(e) =>
-                onSave({
-                  end_time_ms: e.target.value
-                    ? Math.round(parseFloat(e.target.value) * 1000)
-                    : null,
-                })
-              }
-            />
-          </Field>
-          <Field label="Loop">
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <Section title="Clip">
+          <Grid2>
+            <MiniField label="Start Time (s)">
               <input
-                type="checkbox"
-                checked={cue.loop_count > 0}
-                onChange={(e) =>
-                  onSave({ loop_count: e.target.checked ? 1 : 0 })
+                style={inputStyle}
+                type="number"
+                step="0.001"
+                min="0"
+                key={`start-${cue.start_time_ms}`}
+                defaultValue={cue.start_time_ms != null ? (cue.start_time_ms / 1000).toFixed(3) : ""}
+                placeholder="0.000"
+                onBlur={(e) =>
+                  onSave({
+                    start_time_ms: e.target.value
+                      ? Math.round(parseFloat(e.target.value) * 1000)
+                      : null,
+                  })
                 }
               />
+            </MiniField>
+            <MiniField label="End Time (s)">
+              <input
+                style={inputStyle}
+                type="number"
+                step="0.001"
+                min="0"
+                key={`end-${cue.end_time_ms}`}
+                defaultValue={cue.end_time_ms != null ? (cue.end_time_ms / 1000).toFixed(3) : ""}
+                placeholder="end of file"
+                onBlur={(e) =>
+                  onSave({
+                    end_time_ms: e.target.value
+                      ? Math.round(parseFloat(e.target.value) * 1000)
+                      : null,
+                  })
+                }
+              />
+            </MiniField>
+          </Grid2>
+
+          <ToggleRow
+            label="Loop"
+            checked={cue.loop_count > 0}
+            onToggle={(v) => onSave({ loop_count: v ? 1 : 0 })}
+          >
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               {cue.loop_count > 0 && cue.loop_count < LOOP_INFINITE && (
-                <input
-                  style={{ ...inputStyle, width: 56 }}
-                  type="number"
-                  min="1"
-                  key={`loop-${cue.loop_count}`}
-                  defaultValue={cue.loop_count}
-                  onBlur={(e) => {
-                    const v = parseInt(e.target.value, 10);
-                    onSave({ loop_count: v >= 1 ? v : 1 });
-                  }}
+                <NumberInput
+                  value={cue.loop_count}
+                  step={1}
+                  min={1}
+                  max={LOOP_INFINITE - 1}
+                  width={64}
+                  onCommit={(v) => onSave({ loop_count: Math.max(1, Math.round(v)) })}
                 />
               )}
               {cue.loop_count === LOOP_INFINITE && (
                 <span style={{ fontSize: 16, lineHeight: 1 }}>∞</span>
               )}
-              {cue.loop_count > 0 && (
-                <button
-                  title={cue.loop_count === LOOP_INFINITE ? "Set finite loop count" : "Loop infinitely"}
-                  onClick={() =>
-                    onSave({
-                      loop_count:
-                        cue.loop_count === LOOP_INFINITE ? 1 : LOOP_INFINITE,
-                    })
-                  }
-                  style={{
-                    background: cue.loop_count === LOOP_INFINITE ? "var(--wc-accent)" : "transparent",
-                    border: "1px solid var(--wc-accent)",
-                    borderRadius: 4,
-                    color: cue.loop_count === LOOP_INFINITE ? "var(--wc-accent-fg)" : "var(--wc-accent)",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    padding: "1px 6px",
-                    lineHeight: 1.4,
-                  }}
-                >
-                  ∞
-                </button>
-              )}
+              <button
+                title={cue.loop_count === LOOP_INFINITE ? "Set finite loop count" : "Loop infinitely"}
+                onClick={() =>
+                  onSave({
+                    loop_count: cue.loop_count === LOOP_INFINITE ? 1 : LOOP_INFINITE,
+                  })
+                }
+                style={{
+                  background: cue.loop_count === LOOP_INFINITE ? "var(--wc-accent)" : "transparent",
+                  border: "1px solid var(--wc-accent)",
+                  borderRadius: 4,
+                  color: cue.loop_count === LOOP_INFINITE ? "var(--wc-accent-fg)" : "var(--wc-accent)",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  padding: "1px 6px",
+                  lineHeight: 1.4,
+                }}
+              >
+                ∞
+              </button>
             </div>
-          </Field>
+          </ToggleRow>
+
           {isAudio && (
-            <Field label="Rate">
-              <input
-                style={inputStyle}
-                type="number"
-                step="0.1"
-                min="0.1"
-                max="4.0"
-                defaultValue={cue.rate}
-                onBlur={(e) => onSave({ rate: parseFloat(e.target.value) })}
-              />
-            </Field>
-          )}
-          {isVideo && (
-            <Field label="At End">
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={cue.hold_last_frame === true}
-                  onChange={(e) =>
-                    onSave({ hold_last_frame: e.target.checked } as never)
-                  }
+            <Grid2>
+              <MiniField label="Rate (0.1 – 4×)">
+                <NumberInput
+                  value={cue.rate}
+                  step={0.1}
+                  min={0.1}
+                  max={4}
+                  onCommit={(v) => onSave({ rate: v })}
                 />
-                <span style={{ fontSize: 12, color: "var(--wc-text)" }}>
-                  Hold last frame (no cut to black)
-                </span>
-              </label>
-            </Field>
+              </MiniField>
+            </Grid2>
           )}
-        </>
+
+          {isVideo && (
+            <ToggleRow
+              label="Hold last frame at end (no cut to black)"
+              checked={cue.hold_last_frame === true}
+              onToggle={(v) => onSave({ hold_last_frame: v } as never)}
+            />
+          )}
+        </Section>
       )}
     </>
   );

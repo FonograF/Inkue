@@ -67,6 +67,10 @@ pub enum AudioCommand {
     /// Set the patch-gain multiplier (mixer fader) on every voice routed
     /// through the given Output Patch.
     SetPatchGain { patch_id: uuid::Uuid, gain: f32 },
+    /// Release the target voice's current slice loop (QLab Devamp): the pass
+    /// in progress finishes, then playback continues into the next slice —
+    /// or stops at the slice boundary when `stop_at_end` is set.
+    Devamp { voice_id: VoiceId, stop_at_end: bool },
     /// Panic: immediately silence every voice in the pool, whatever its state.
     /// Backstop for desynced cue bookkeeping — must never depend on voice IDs.
     StopAll,

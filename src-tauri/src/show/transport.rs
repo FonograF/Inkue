@@ -166,6 +166,30 @@ impl Transport {
             }
         }
 
+        // Devamp Cues: release the current slice loop on every target voice.
+        // The engines act at the next slice boundary, so ordering with
+        // Auto-Follow below is not timing-sensitive.
+        let devamp_spec = cue_list.get(&cue_id).and_then(|c| c.devamp_specification());
+        if let Some((stop_at_end, target_ids)) = devamp_spec {
+            for target_id in &target_ids {
+                let Some(target) = cue_list.get_recursive(target_id) else { continue };
+                if target.is_visual() {
+                    // Video: devamp the mpv slice plan and the paired audio
+                    // voice together so picture and sound release in step.
+                    let Some(voice) = target.playing_voice_id() else { continue };
+                    self.context.output_engine.devamp_voice(voice, stop_at_end);
+                    if let Some(aid) = self.context.output_engine.video_audio_voice(voice) {
+                        let _ = self.context.audio_engine.devamp_voice(aid, stop_at_end);
+                    }
+                } else {
+                    // Audio / Group — devamp every audio voice the target owns.
+                    for vid in target.all_voice_ids() {
+                        let _ = self.context.audio_engine.devamp_voice(vid, stop_at_end);
+                    }
+                }
+            }
+        }
+
         // Execute the stop action declared by Stop Cues **before** evaluating
         // Auto-Follow, so the chained cue is not immediately killed.
         let stop_spec = cue_list.get(&cue_id).and_then(|c| c.stop_specification());

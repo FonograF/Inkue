@@ -53,7 +53,7 @@ export function OutputSurface() {
   );
 
   useEffect(() => {
-    const unlisteners: Array<() => void> = [];
+    const unlisteners: Array<Promise<() => void>> = [];
 
     // On mount: fetch any voice the engine queued before React loaded.
     invoke<VoiceInitData | null>("get_surface_current_voice", {
@@ -64,8 +64,8 @@ export function OutputSurface() {
       })
       .catch(console.error);
 
-    win
-      .listen<{ voice_id: string; data_url: string; fade_in_ms: number }>(
+    unlisteners.push(
+      win.listen<{ voice_id: string; data_url: string; fade_in_ms: number }>(
         "surface-show-image",
         (e) => {
           showImage(
@@ -74,11 +74,11 @@ export function OutputSurface() {
             e.payload.fade_in_ms,
           );
         },
-      )
-      .then((u) => unlisteners.push(u));
+      ),
+    );
 
-    win
-      .listen<{ voice_id: string; fade_ms: number }>(
+    unlisteners.push(
+      win.listen<{ voice_id: string; fade_ms: number }>(
         "surface-hide-image",
         (e) => {
           if (currentVoiceRef.current !== e.payload.voice_id) return;
@@ -99,11 +99,11 @@ export function OutputSurface() {
             void invoke("report_image_faded_out", { voiceId: vid });
           }, fadeMs);
         },
-      )
-      .then((u) => unlisteners.push(u));
+      ),
+    );
 
     return () => {
-      unlisteners.forEach((u) => u());
+      unlisteners.forEach((p) => { void p.then((u) => u()).catch(console.error); });
     };
     // showImage is stable (useCallback with no deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps

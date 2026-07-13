@@ -34,11 +34,8 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
 
   // Live monitor feed.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<DmxUniverseSnapshot[]>("dmx-monitor", (e) => setSnapshot(e.payload))
-      .then((u) => { unlisten = u; })
-      .catch(console.error);
-    return () => unlisten?.();
+    const unlisten = listen<DmxUniverseSnapshot[]>("dmx-monitor", (e) => setSnapshot(e.payload));
+    return () => { void unlisten.then((u) => u()).catch(console.error); };
   }, []);
 
   // Persist + push outputs through the workspace-backed command.

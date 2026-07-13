@@ -1,5 +1,5 @@
 import type { AudioCueData, CameraCueData, FadeCurve, ImageCueData, VideoCueData } from "../../lib/types";
-import { Field, inputStyle } from "./Field";
+import { Grid2, MiniField, Section, inputStyle } from "./Field";
 import { CurveSelect } from "../common/CurveSelect";
 
 function FadeSection({
@@ -16,49 +16,34 @@ function FadeSection({
   onChange: (patch: Record<string, unknown>) => void;
 }) {
   return (
-    <div
-      style={{
-        marginBottom: 14,
-        paddingBottom: 14,
-        borderBottom: "1px solid var(--wc-border)",
-      }}
-    >
-      <div
-        style={{
-          fontSize: 11,
-          color: "var(--wc-text-muted)",
-          marginBottom: 8,
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-        }}
-      >
-        {label}
-      </div>
-      <Field label="Duration (s)">
-        <input
-          key={`${idPrefix}-dur`}
-          style={inputStyle}
-          type="number"
-          step="0.1"
-          min="0"
-          defaultValue={durationMs != null ? (durationMs / 1000).toFixed(2) : ""}
-          placeholder="none"
-          onBlur={(e) =>
-            onChange({
-              [`${idPrefix}_ms`]: e.target.value
-                ? Math.round(parseFloat(e.target.value) * 1000)
-                : null,
-            })
-          }
-        />
-      </Field>
-      <Field label="Curve">
-        <CurveSelect
-          value={curve ?? "s_curve"}
-          onChange={(v) => onChange({ [`${idPrefix}_curve`]: v })}
-        />
-      </Field>
-    </div>
+    <Section title={label}>
+      <Grid2>
+        <MiniField label="Duration (s)">
+          <input
+            key={`${idPrefix}-dur`}
+            style={inputStyle}
+            type="number"
+            step="0.1"
+            min="0"
+            defaultValue={durationMs != null ? (durationMs / 1000).toFixed(2) : ""}
+            placeholder="none"
+            onBlur={(e) =>
+              onChange({
+                [`${idPrefix}_ms`]: e.target.value
+                  ? Math.round(parseFloat(e.target.value) * 1000)
+                  : null,
+              })
+            }
+          />
+        </MiniField>
+        <MiniField label="Curve">
+          <CurveSelect
+            value={curve ?? "s_curve"}
+            onChange={(v) => onChange({ [`${idPrefix}_curve`]: v })}
+          />
+        </MiniField>
+      </Grid2>
+    </Section>
   );
 }
 

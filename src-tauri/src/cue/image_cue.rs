@@ -129,6 +129,7 @@ impl ImageCue {
             geometry: self.geometry,
             live_source: false,
             layer_style: self.layer_style,
+            slices: Vec::new(),
         })?;
 
         self.active_voice_id = Some(voice_id);

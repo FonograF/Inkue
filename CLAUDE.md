@@ -49,6 +49,13 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 - **Group modes** (`GroupMode`, `cue/types.rs`): Simultaneous, Sequential, Playlist
   (exclusive one-at-a-time + optional loop), StartRandom (one random child/GO,
   shuffle-bag). Simultaneous/Sequential must stay behaviour-identical when extending.
+- **Slices & Devamp** (QLab model): Audio/Video cues carry a `SliceList`
+  (markers + per-segment play counts, `u32::MAX` = vamp); when present,
+  `loop_count` is ignored. Audio slices run in the RT callback
+  (`SliceProgram`, zero-alloc); video slices run via mpv ab-loop + `time-pos`
+  observation, with the paired audio voice on the same program. A Devamp Cue
+  releases the current pass (continue or stop-at-slice-end) — resolved by the
+  transport like Stop/Fade (`devamp_specification()`).
 - **Visual cues are layers** (QLab model): every Video/Image/Camera cue gets
   its own mpv slot (`output_engine/slot.rs`, lazy pool cap 8) and is
   composited in layer order with per-cue opacity + blend mode (`LayerStyle`).

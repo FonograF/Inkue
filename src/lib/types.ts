@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera";
 
 /** Accent color per cue type — the single source of truth for the toolbar
  *  buttons (App.tsx) and the cue-list context menu (CueListView.tsx). */
@@ -22,6 +22,7 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   text:     "#e2e8f0",
   memo:     "#e2e8f0",
   camera:   "#34d399",          // emerald
+  devamp:   "#facc15",          // amber — the "release the vamp" action
 };
 
 export type CueState = "standby" | "running" | "paused" | "completed";
@@ -90,6 +91,20 @@ export interface CueSummary {
 }
 
 /** Full cue data returned by get_cue. */
+/** Play count meaning "loop this slice forever" (a vamp) — u32::MAX. */
+export const PLAY_COUNT_INFINITE = 4294967295;
+
+/** QLab-style slices: markers split the clip into segments, each with a play
+ *  count (PLAY_COUNT_INFINITE = vamp until a Devamp Cue releases it). */
+export interface SliceList {
+  /** Marker positions in ms from file start, sorted ascending. */
+  markers: number[];
+  /** Play count per segment (markers.length + 1 entries). */
+  play_counts: number[];
+}
+
+export const EMPTY_SLICES: SliceList = { markers: [], play_counts: [1] };
+
 export interface AudioCueData extends CueSummary {
   notes: string;
   volume_db: number;
@@ -103,6 +118,7 @@ export interface AudioCueData extends CueSummary {
   loop_count: number;
   output_patch_id: string | null;
   rate: number;
+  slices: SliceList;
 }
 
 /** How the source frame is mapped onto the output surface. */
@@ -186,6 +202,10 @@ export interface VideoCueData extends CueSummary {
   hold_last_frame: boolean;
   geometry: VideoGeometry;
   layer_style: LayerStyle;
+  slices: SliceList;
+  /** Full media duration (serialized form only — summaries carry
+   *  file_duration_ms instead). */
+  cached_duration_ms?: number | null;
 }
 
 /** 9-point position grid for TextCue. */
@@ -319,6 +339,16 @@ export interface StopCueData extends CueSummary {
   hard_stop_mode: boolean;
 }
 
+export interface DevampCueData extends CueSummary {
+  notes: string;
+  /** UUIDs of the cues to devamp. */
+  target_cue_ids: string[];
+  /** Display labels kept in sync with target_cue_ids. */
+  target_cue_numbers: string[];
+  /** true = the target stops at the end of its current slice. */
+  stop_at_end: boolean;
+}
+
 /** Information about a connected monitor. */
 export interface ScreenInfo {
   index: number;
@@ -445,6 +475,8 @@ export interface CollectReport {
 
 export interface WaveformData {
   peaks: number[];
+  /** RMS per bin — the "body" of the sound, drawn inside the peak envelope. */
+  rms: number[];
   file_duration_s: number;
 }
 
@@ -804,6 +836,15 @@ export interface WorkspaceModifiedEvent {
 
 export interface DeviceChangedEvent {
   devices: DeviceInfo[];
+}
+
+/** Key pressed while the output window has focus, forwarded by the backend. */
+export interface OutputKeyEvent {
+  key: string;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
 }
 
 export interface CueTimeUpdateEvent {

@@ -90,6 +90,50 @@ impl FadeState {
 }
 
 // ---------------------------------------------------------------------------
+// Slice program (QLab-style slices — used inside the audio callback)
+// ---------------------------------------------------------------------------
+
+/// Devamp request values for [`VoiceInner::devamp_request`].
+pub const DEVAMP_NONE: u8 = 0;
+/// Release the current slice's loop: finish the pass, then continue.
+pub const DEVAMP_CONTINUE: u8 = 1;
+/// Release the loop and stop the voice at the end of the current slice.
+pub const DEVAMP_STOP: u8 = 2;
+
+/// One slice segment, resolved to frames at GO time.
+#[derive(Debug, Clone, Copy)]
+pub struct SliceSegment {
+    pub start_frame: u64,
+    pub end_frame: u64,
+    /// Times to play this segment; `u32::MAX` = vamp (infinite).
+    pub play_count: u32,
+}
+
+/// Playback program for a sliced voice. Built once before `play_voice()`;
+/// `current`/`remaining` are mutated **only** inside the audio callback.
+/// The `segments` Vec is never resized after submission (no RT allocation).
+#[derive(Debug, Clone)]
+pub struct SliceProgram {
+    pub segments: Vec<SliceSegment>,
+    /// Index of the segment being played.
+    pub current: usize,
+    /// Remaining *additional* passes of the current segment
+    /// (`u32::MAX` = vamp).
+    pub remaining: u32,
+}
+
+impl SliceProgram {
+    /// Build a program from `(start_frame, end_frame, play_count)` triples.
+    /// Returns `None` for an empty list (plain linear playback).
+    pub fn new(segments: Vec<SliceSegment>) -> Option<Self> {
+        let first = segments.first()?;
+        let remaining = first.play_count.saturating_sub(1);
+        let remaining = if first.play_count == u32::MAX { u32::MAX } else { remaining };
+        Some(Self { segments, current: 0, remaining })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // VoiceInner — wraps all RT-mutable fields in UnsafeCell / atomics
 // ---------------------------------------------------------------------------
 
@@ -127,6 +171,15 @@ pub struct VoiceInner {
     pub fade: UnsafeCell<Option<FadeState>>,
     /// Optional end-frame marker.  Written once before voice is submitted.
     pub end_frame: UnsafeCell<Option<u64>>,
+    /// Optional slice program (QLab slices).  Written once before the voice is
+    /// submitted; `current`/`remaining` mutated only inside the callback.
+    /// When present, `loops_remaining` and `end_frame` are ignored — the
+    /// program owns the playback boundaries.
+    pub slices: UnsafeCell<Option<SliceProgram>>,
+    /// Pending devamp request ([`DEVAMP_NONE`] / [`DEVAMP_CONTINUE`] /
+    /// [`DEVAMP_STOP`]).  Written from the non-RT side, consumed by the
+    /// callback at the next slice boundary.
+    pub devamp_request: AtomicU8,
 }
 
 // SAFETY: `VoiceInner` is never accessed from two threads simultaneously
@@ -298,6 +351,8 @@ impl Voice {
                 patch_gain_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
                 fade: UnsafeCell::new(None),
                 end_frame: UnsafeCell::new(None),
+                slices: UnsafeCell::new(None),
+                devamp_request: AtomicU8::new(DEVAMP_NONE),
             }),
             out_l: 0,
             out_r: 1,
@@ -328,6 +383,8 @@ impl Voice {
                 patch_gain_bits: AtomicU32::new(f32::to_bits(1.0_f32)),
                 fade: UnsafeCell::new(None),
                 end_frame: UnsafeCell::new(None),
+                slices: UnsafeCell::new(None),
+                devamp_request: AtomicU8::new(DEVAMP_NONE),
             }),
             out_l: 0,
             out_r: 1,

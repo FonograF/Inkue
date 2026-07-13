@@ -174,6 +174,7 @@ impl CameraCue {
             geometry: self.geometry,
             live_source: true,
             layer_style: self.layer_style,
+            slices: Vec::new(),
         })?;
 
         self.active_voice_id = Some(voice_id);

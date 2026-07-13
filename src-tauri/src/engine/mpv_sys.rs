@@ -103,6 +103,11 @@ pub const MPV_RENDER_PARAM_OPENGL_FBO:         i32 = 3;
 pub const MPV_RENDER_PARAM_FLIP_Y:             i32 = 4;
 /// `MPV_RENDER_PARAM_ADVANCED_CONTROL` — data = `*mut i32`; enables advanced scheduling.
 pub const MPV_RENDER_PARAM_ADVANCED_CONTROL:   i32 = 10;
+/// `MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME` — data = `*mut i32`; 0 disables the
+/// default where `mpv_render_context_render()` blocks until the frame's target
+/// display time. Must be 0 when several render contexts share one render
+/// thread, or their waits serialise and every video stutters.
+pub const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: i32 = 12;
 
 /// Flag returned by `mpv_render_context_update` when a new frame is available.
 pub const MPV_RENDER_UPDATE_FRAME: u64 = 1;
@@ -142,6 +147,19 @@ pub struct MpvEventEndFile {
     pub reason: i32,
     /// Non-zero mpv error code when `reason == MPV_END_FILE_REASON_ERROR`.
     pub error: i32,
+}
+
+/// Matches `mpv_event_property` from `mpv/client.h` (data of
+/// `MPV_EVENT_PROPERTY_CHANGE`).
+#[repr(C)]
+pub struct MpvEventProperty {
+    /// Name of the observed property.
+    pub name: *const c_char,
+    /// One of the `MPV_FORMAT_*` constants; `MPV_FORMAT_NONE` when the
+    /// property is unavailable.
+    pub format: i32,
+    /// Pointer to the value in the given format (e.g. `*mut f64`), or null.
+    pub data: *mut c_void,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +228,7 @@ pub struct MpvLib {
     pub mpv_free_node_contents:   unsafe extern "C" fn(*mut MpvNode),
     pub mpv_wait_event:           unsafe extern "C" fn(*mut c_void, f64) -> *mut MpvEvent,
     pub mpv_wakeup:               unsafe extern "C" fn(*mut c_void),
+    pub mpv_observe_property:     unsafe extern "C" fn(*mut c_void, u64, *const c_char, i32) -> i32,
     pub mpv_error_string:         unsafe extern "C" fn(i32) -> *const c_char,
     pub mpv_request_log_messages: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
     /// Free a pointer returned by mpv (e.g. strings from `mpv_get_property` with
@@ -369,6 +388,7 @@ impl MpvLib {
             mpv_free_node_contents:   sym!("mpv_free_node_contents":   unsafe extern "C" fn(*mut MpvNode)),
             mpv_wait_event:           sym!("mpv_wait_event":           unsafe extern "C" fn(*mut c_void, f64) -> *mut MpvEvent),
             mpv_wakeup:               sym!("mpv_wakeup":               unsafe extern "C" fn(*mut c_void)),
+            mpv_observe_property:     sym!("mpv_observe_property":     unsafe extern "C" fn(*mut c_void, u64, *const c_char, i32) -> i32),
             mpv_error_string:         sym!("mpv_error_string":         unsafe extern "C" fn(i32) -> *const c_char),
             mpv_request_log_messages: sym!("mpv_request_log_messages": unsafe extern "C" fn(*mut c_void, *const c_char) -> i32),
             mpv_free:                 sym!("mpv_free":                 unsafe extern "C" fn(*mut c_void)),

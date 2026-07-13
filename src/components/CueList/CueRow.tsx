@@ -54,6 +54,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   timecode: "🕐",
   text: "🔤",
   camera: "📷",
+  devamp: "🔁",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

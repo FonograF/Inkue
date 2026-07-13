@@ -31,6 +31,7 @@ pub mod osc_patch;
 pub mod osc_server;
 pub mod output_engine;
 pub mod ring_command;
+pub mod thumbnails;
 pub mod voice;
 
 pub use audio_engine::AudioEngine;

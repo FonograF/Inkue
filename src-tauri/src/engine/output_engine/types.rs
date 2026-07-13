@@ -369,6 +369,10 @@ pub struct ContentRequest<'a> {
     pub live_source: bool,
     /// Compositing properties (stacking order, base opacity, blend mode).
     pub layer_style: LayerStyle,
+    /// QLab-style slice segments as `(start_s, end_s, play_count)`;
+    /// `u32::MAX` = vamp.  Empty = plain playback.  When present,
+    /// `loop_count` is ignored (the segments own the looping via ab-loop).
+    pub slices: Vec<(f64, f64, u32)>,
 }
 
 // ---------------------------------------------------------------------------

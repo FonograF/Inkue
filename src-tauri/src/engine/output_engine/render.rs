@@ -54,13 +54,15 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 #[cfg(not(target_os = "macos"))]
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 #[cfg(not(target_os = "macos"))]
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+#[cfg(not(target_os = "macos"))]
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 
 use crate::engine::mpv_sys::{
     MpvLib, MpvOpenglFbo, MpvOpenglInitParams, MpvRenderParam,
-    MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_PARAM_FLIP_Y,
-    MPV_RENDER_PARAM_OPENGL_FBO, MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
-    MPV_RENDER_UPDATE_FRAME,
+    MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+    MPV_RENDER_PARAM_FLIP_Y, MPV_RENDER_PARAM_OPENGL_FBO,
+    MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, MPV_RENDER_UPDATE_FRAME,
 };
 use super::types::MpvCtx;
 use super::FADE_STATE;
@@ -184,12 +186,34 @@ pub(super) fn toggle_fullscreen() {
     super::macos_window::toggle_fullscreen();
 }
 
-/// Move/resize the winit window to `(x, y, width, height)` in logical pixels.
+/// Place the output window fullscreen on the monitor whose top-left corner is
+/// `(x, y)` — **physical** virtual-screen coordinates from `list_screens()`.
+///
+/// Uses `Fullscreen::Borderless` on the matched `MonitorHandle` rather than a
+/// manual move/resize: the old path passed the physical rect as a *logical*
+/// position, which winit multiplies by the current monitor's DPI scale — with
+/// any display above 100 % the window landed shifted and oversized (the
+/// "output drifts on GO" report). Borderless fullscreen is DPI-proof, covers
+/// the taskbar, pins the window to the monitor, and works on Wayland where
+/// `set_outer_position` is a no-op.
 #[cfg(not(target_os = "macos"))]
-pub(super) fn set_outer_rect(x: i32, y: i32, width: u32, height: u32) {
-    if let Some(w) = GL_WINDOW.get() {
-        w.set_outer_position(LogicalPosition::new(x, y));
-        let _ = w.request_inner_size(LogicalSize::new(width, height));
+pub(super) fn set_fullscreen_on_rect(x: i32, y: i32, width: u32, height: u32) {
+    let Some(w) = GL_WINDOW.get() else { return };
+    let monitor = w.available_monitors().find(|m| {
+        let p = m.position();
+        p.x == x && p.y == y
+    });
+    match monitor {
+        Some(m) => w.set_fullscreen(Some(Fullscreen::Borderless(Some(m)))),
+        None => {
+            // The compositor reported different coordinates than list_screens()
+            // (possible on Wayland). Land on the rect in physical pixels, then
+            // fullscreen whatever monitor the window ended up on.
+            w.set_fullscreen(None);
+            w.set_outer_position(PhysicalPosition::new(x, y));
+            let _ = w.request_inner_size(PhysicalSize::new(width, height));
+            w.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
     }
 }
 
@@ -355,6 +379,23 @@ struct OutputApp {
     window:     Option<Arc<Window>>,
     cursor_pos: PhysicalPosition<f64>,
     last_click: Option<Instant>,
+    /// Emits `output-keydown` so shortcuts keep working with the output focused.
+    app_handle: tauri::AppHandle,
+    modifiers:  ModifiersState,
+}
+
+/// Translate a winit logical key to the DOM `KeyboardEvent.key` string the
+/// frontend shortcut handler expects. winit's `NamedKey` variants are named
+/// after the DOM UI Events key values, so `Debug` *is* the mapping — except
+/// `Space`, which the DOM spells `" "`.
+#[cfg(not(target_os = "macos"))]
+fn dom_key(key: &Key) -> Option<String> {
+    match key {
+        Key::Character(c) => Some(c.to_string()),
+        Key::Named(NamedKey::Space) => Some(" ".into()),
+        Key::Named(n) => Some(format!("{n:?}")),
+        _ => None,
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -411,6 +452,39 @@ impl ApplicationHandler for OutputApp {
                 GL_HEIGHT.store(size.height.max(1), Ordering::Relaxed);
                 if let Some(sig) = RENDER_SIGNAL.get() {
                     if let Ok(mut r) = sig.0.lock() { *r = true; sig.1.notify_one(); }
+                }
+            }
+
+            WindowEvent::ModifiersChanged(m) => {
+                self.modifiers = m.state();
+            }
+
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                // The output window would swallow these otherwise — GO / panic
+                // must keep working while the operator has it focused. Forward
+                // to the main webview, which replays them into the regular
+                // window-level shortcut handler (repeats included, matching
+                // native DOM keydown behaviour).
+                //
+                // `is_synthetic` must be skipped: on Windows, winit fabricates
+                // Pressed events for every key physically held when the window
+                // gains focus — F9 (show output) activates this window while
+                // F9 is still down, and forwarding that ghost press would
+                // instantly toggle the window hidden again.
+                if event.state == ElementState::Pressed && !is_synthetic {
+                    if let Some(key) = dom_key(&event.logical_key) {
+                        use tauri::Emitter;
+                        let _ = self.app_handle.emit(
+                            "output-keydown",
+                            serde_json::json!({
+                                "key":   key,
+                                "ctrl":  self.modifiers.control_key(),
+                                "alt":   self.modifiers.alt_key(),
+                                "shift": self.modifiers.shift_key(),
+                                "meta":  self.modifiers.super_key(),
+                            }),
+                        );
+                    }
                 }
             }
 
@@ -528,9 +602,10 @@ fn build_event_loop() -> Result<EventLoop<()>> {
 /// Unified window creation for Windows and Linux via winit.
 #[cfg(not(target_os = "macos"))]
 fn create_native_window(
-    _app_handle: &tauri::AppHandle,
+    app_handle: &tauri::AppHandle,
 ) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<SendableHandles>>();
+    let app_handle = app_handle.clone();
 
     std::thread::Builder::new()
         .name("inkue-output-window".into())
@@ -547,6 +622,8 @@ fn create_native_window(
                 window:     None,
                 cursor_pos: PhysicalPosition::new(0.0, 0.0),
                 last_click: None,
+                app_handle,
+                modifiers:  ModifiersState::empty(),
             };
             let result = std::panic::catch_unwind(
                 std::panic::AssertUnwindSafe(|| event_loop.run_app(&mut app))
@@ -916,6 +993,13 @@ fn render_thread_main(
         // *idle* render clears the target to opaque black on some libmpv
         // builds (`background=none` ignored in idle — measured on 0.41-dev,
         // Windows), which would mask every video layer below.
+        // All render calls pass block_for_target_time=0: the default (1) makes
+        // each call sleep until *that* context's frame display time, and with
+        // several contexts sharing this one thread the waits serialise — two
+        // simultaneous videos stuttered even when one was fully transparent.
+        // Our loop is paced by the update callbacks instead; each context just
+        // hands over its current frame (video-sync=desync owns the clock).
+        let mut no_block: i32 = 0;
         let overlay_on = super::overlay_active();
         if let (true, Some(t)) = (overlay_on, &overlay_target) {
             let mut fbo = MpvOpenglFbo { fbo: t.fbo.0.get() as i32, w: w_px as i32, h: h_px as i32, internal_format: 0 };
@@ -923,6 +1007,7 @@ fn render_thread_main(
             let rp = [
                 MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo  as *mut _ as *mut c_void },
                 MpvRenderParam { type_: MPV_RENDER_PARAM_FLIP_Y,     data: &mut flip as *mut _ as *mut c_void },
+                MpvRenderParam { type_: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, data: &mut no_block as *mut _ as *mut c_void },
                 MpvRenderParam { type_: 0, data: std::ptr::null_mut() },
             ];
             let ret = unsafe { (lib.mpv_render_context_render)(render_ctx, rp.as_ptr()) };
@@ -941,6 +1026,7 @@ fn render_thread_main(
                 let rp = [
                     MpvRenderParam { type_: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo  as *mut _ as *mut c_void },
                     MpvRenderParam { type_: MPV_RENDER_PARAM_FLIP_Y,     data: &mut flip as *mut _ as *mut c_void },
+                    MpvRenderParam { type_: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, data: &mut no_block as *mut _ as *mut c_void },
                     MpvRenderParam { type_: 0, data: std::ptr::null_mut() },
                 ];
                 let ret = unsafe { (lib.mpv_render_context_render)(l.render_ctx, rp.as_ptr()) };
@@ -1462,5 +1548,48 @@ fn draw_warp_pass(
         gl.bind_vertex_array(None);
         gl.bind_texture(glow::TEXTURE_2D, None);
         gl.use_program(None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::dom_key;
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn dom_key_space_uses_dom_spelling() {
+        assert_eq!(dom_key(&Key::Named(NamedKey::Space)).as_deref(), Some(" "));
+    }
+
+    #[test]
+    fn dom_key_named_keys_match_dom_values() {
+        for (key, dom) in [
+            (NamedKey::Escape, "Escape"),
+            (NamedKey::ArrowUp, "ArrowUp"),
+            (NamedKey::ArrowDown, "ArrowDown"),
+            (NamedKey::Delete, "Delete"),
+            (NamedKey::Backspace, "Backspace"),
+            (NamedKey::F5, "F5"),
+            (NamedKey::F9, "F9"),
+        ] {
+            assert_eq!(dom_key(&Key::Named(key)).as_deref(), Some(dom));
+        }
+    }
+
+    #[test]
+    fn dom_key_characters_pass_through() {
+        assert_eq!(dom_key(&Key::Character("s".into())).as_deref(), Some("s"));
+        assert_eq!(dom_key(&Key::Character("S".into())).as_deref(), Some("S"));
+        assert_eq!(dom_key(&Key::Character("[".into())).as_deref(), Some("["));
+        assert_eq!(dom_key(&Key::Character(",".into())).as_deref(), Some(","));
+    }
+
+    #[test]
+    fn dom_key_dead_keys_are_dropped() {
+        assert_eq!(dom_key(&Key::Dead(None)), None);
     }
 }

@@ -32,9 +32,8 @@ export function LogViewerModal({ onClose }: { onClose: () => void }) {
   // Initial fetch + live-tail on the backend's "logs-updated" event.
   useEffect(() => {
     void refresh();
-    let unlisten: (() => void) | undefined;
-    void listen("logs-updated", () => { void refresh(); }).then((u) => { unlisten = u; });
-    return () => unlisten?.();
+    const unlisten = listen("logs-updated", () => { void refresh(); });
+    return () => { void unlisten.then((u) => u()).catch(console.error); };
   }, [refresh]);
 
   const visible = lines.filter((l) => {

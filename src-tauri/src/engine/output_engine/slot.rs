@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 
 use crate::engine::mpv_sys::{
-    MpvEventEndFile, MpvEventLogMessage, MpvLib,
+    MpvEventEndFile, MpvEventLogMessage, MpvEventProperty, MpvLib,
     MPV_END_FILE_REASON_EOF, MPV_END_FILE_REASON_ERROR,
     MPV_EVENT_END_FILE, MPV_EVENT_FILE_LOADED, MPV_EVENT_LOG_MESSAGE,
-    MPV_EVENT_PLAYBACK_RESTART, MPV_EVENT_SHUTDOWN, MPV_EVENT_VIDEO_RECONFIG,
-    MPV_FORMAT_DOUBLE,
+    MPV_EVENT_PLAYBACK_RESTART, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_SHUTDOWN,
+    MPV_EVENT_VIDEO_RECONFIG, MPV_FORMAT_DOUBLE,
 };
 use crate::engine::AudioEngine;
 
@@ -139,9 +139,23 @@ pub(super) struct SlotState {
     pub pending_unload: bool,
     /// Freeze on last frame at EOF (`keep-open=yes` was set for this load).
     pub hold_last_frame: bool,
+    /// QLab-style slice plan (`None` = plain playback).  Segments loop via
+    /// mpv's ab-loop; the event thread advances `current` when `time-pos`
+    /// crosses a segment boundary.
+    pub slice_plan: Option<SlicePlan>,
     /// Monotonic per-slot generation guard (a slow event for load N must not
     /// touch load N+1).
     pub generation: u64,
+}
+
+/// Slice program for one slot: `(start_s, end_s, play_count)` per segment;
+/// `u32::MAX` = vamp.
+pub(super) struct SlicePlan {
+    pub segments: Vec<(f64, f64, u32)>,
+    /// Index of the segment currently playing.
+    pub current: usize,
+    /// Devamp "stop at end of current slice" armed.
+    pub stop_at_end: bool,
 }
 
 impl SlotState {
@@ -159,6 +173,7 @@ impl SlotState {
             reveal_deadline: None,
             pending_unload: false,
             hold_last_frame: false,
+            slice_plan: None,
             generation: 0,
         }
     }
@@ -284,6 +299,12 @@ fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc
             (lib.mpv_terminate_destroy)(ctx);
             return Err(anyhow!("mpv_initialize() failed for video slot: {ret}"));
         }
+
+        // Observe time-pos so the event thread can advance slice plans when
+        // playback crosses a segment boundary (fires ~once per video frame;
+        // the handler is a cheap lock + compare when no plan is active).
+        let time_pos = cs("time-pos");
+        (lib.mpv_observe_property)(ctx, 0, time_pos.as_ptr(), MPV_FORMAT_DOUBLE);
     }
 
     let index = registry().read().map(|v| v.len()).unwrap_or(0);
@@ -339,6 +360,7 @@ pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report_completed: bool) {
         st.pending_reveal = None;
         st.reveal_deadline = None;
         st.pending_unload = false;
+        st.slice_plan = None;
         st.anim.set(0.0);
         (voice, audio)
     };
@@ -373,6 +395,8 @@ pub(super) struct SlotLoad {
     pub live_source: bool,
     pub geometry: VideoGeometry,
     pub layer_style: LayerStyle,
+    /// QLab-style slice segments `(start_s, end_s, play_count)`; empty = none.
+    pub slices: Vec<(f64, f64, u32)>,
 }
 
 /// Load content into an (idle) slot.
@@ -393,6 +417,11 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
         st.base_opacity = load.layer_style.opacity.clamp(0.0, 1.0) as f32;
         st.pending_unload = false;
         st.hold_last_frame = load.hold_last_frame;
+        st.slice_plan = if load.slices.is_empty() {
+            None
+        } else {
+            Some(SlicePlan { segments: load.slices.clone(), current: 0, stop_at_end: false })
+        };
         if load.is_image {
             // Images decode near-instantly: start the reveal fade right away.
             st.pending_reveal = None;
@@ -435,14 +464,32 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
             if let Some(end) = load.end_ms {
                 opts.push(format!("end={:.3}", end as f64 / 1000.0));
             }
-            let loop_val = if load.loop_count == u32::MAX {
-                "inf".to_string()
-            } else if load.loop_count == 0 {
-                "no".to_string()
+            if load.slices.is_empty() {
+                let loop_val = if load.loop_count == u32::MAX {
+                    "inf".to_string()
+                } else if load.loop_count == 0 {
+                    "no".to_string()
+                } else {
+                    load.loop_count.to_string()
+                };
+                opts.push(format!("loop-file={loop_val}"));
             } else {
-                load.loop_count.to_string()
-            };
-            opts.push(format!("loop-file={loop_val}"));
+                // Sliced playback: the segments own all looping (via ab-loop);
+                // program segment 0's loop as loadfile options so it is active
+                // before the first frame plays.
+                opts.push("loop-file=no".to_string());
+                let (a, b, count) = load.slices[0];
+                if count != 1 {
+                    opts.push(format!("ab-loop-a={a:.3}"));
+                    opts.push(format!("ab-loop-b={b:.3}"));
+                    let count_val = if count == u32::MAX {
+                        "inf".to_string()
+                    } else {
+                        count.saturating_sub(1).to_string()
+                    };
+                    opts.push(format!("ab-loop-count={count_val}"));
+                }
+            }
             // Live sources: playback is timestamp-paced, so any backlog
             // buffered during device-open + the paused-load window would
             // persist as a *constant* glass-to-glass delay — `untimed`
@@ -711,6 +758,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                             st.pending_reveal = None;
                             st.reveal_deadline = None;
                             st.pending_unload = false;
+                            st.slice_plan = None;
                             st.anim.set(0.0);
                             (voice, audio)
                         };
@@ -731,6 +779,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                             let audio = st.audio_voice_id.take();
                             st.pending_reveal = None;
                             st.reveal_deadline = None;
+                            st.slice_plan = None;
                             st.anim.set(0.0);
                             (voice, audio)
                         };
@@ -751,6 +800,60 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                 }
             }
 
+            MPV_EVENT_PROPERTY_CHANGE => {
+                // time-pos update — advance the slice plan when playback
+                // crossed the current segment's end (ab-loop keeps time *below*
+                // the boundary while a segment still loops, so crossing it
+                // means the segment is done).
+                let data = unsafe { ((*event).data as *const MpvEventProperty).as_ref() };
+                let Some(prop) = data else { continue };
+                if prop.format != MPV_FORMAT_DOUBLE || prop.data.is_null() {
+                    continue;
+                }
+                let time = unsafe { *(prop.data as *const f64) };
+
+                enum SliceAction {
+                    Advance((f64, f64, u32)),
+                    Stop,
+                }
+                let action = {
+                    let Ok(mut st) = slot.state.lock() else { continue };
+                    let Some(plan) = st.slice_plan.as_mut() else { continue };
+                    let (_, end, _) = plan.segments[plan.current];
+                    if time < end - 0.010 {
+                        None
+                    } else if plan.stop_at_end {
+                        Some(SliceAction::Stop)
+                    } else if plan.current + 1 < plan.segments.len() {
+                        // Skip every boundary the clock already passed (a slow
+                        // event must not re-program a stale segment).
+                        while plan.current + 1 < plan.segments.len()
+                            && time >= plan.segments[plan.current].1 - 0.010
+                        {
+                            plan.current += 1;
+                        }
+                        Some(SliceAction::Advance(plan.segments[plan.current]))
+                    } else {
+                        None // Last segment — natural EOF completes the cue.
+                    }
+                };
+                match action {
+                    Some(SliceAction::Advance(seg)) => {
+                        apply_segment_loop(&lib, ctx as *mut c_void, seg);
+                        log::info!(
+                            "[slot {}] slice → [{:.3}s, {:.3}s) ×{}",
+                            slot.index, seg.0, seg.1,
+                            if seg.2 == u32::MAX { "∞".into() } else { seg.2.to_string() },
+                        );
+                    }
+                    Some(SliceAction::Stop) => {
+                        log::info!("[slot {}] devamp stop at slice boundary", slot.index);
+                        hard_unload(&slot, true);
+                    }
+                    None => {}
+                }
+            }
+
             MPV_EVENT_LOG_MESSAGE => {
                 let data = unsafe { (*event).data as *const MpvEventLogMessage };
                 if !data.is_null() {
@@ -766,6 +869,46 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
             _ => {}
         }
     }
+}
+
+/// Program mpv's ab-loop for `seg` — or clear it when the segment plays once.
+fn apply_segment_loop(lib: &Arc<MpvLib>, ctx: *mut c_void, seg: (f64, f64, u32)) {
+    let (a, b, count) = seg;
+    unsafe {
+        if count == 1 {
+            (lib.mpv_set_property_string)(ctx, cs("ab-loop-a").as_ptr(), cs("no").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("ab-loop-b").as_ptr(), cs("no").as_ptr());
+        } else {
+            let count_val = if count == u32::MAX {
+                "inf".to_string()
+            } else {
+                count.saturating_sub(1).to_string()
+            };
+            (lib.mpv_set_property_string)(ctx, cs("ab-loop-count").as_ptr(), cs(&count_val).as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("ab-loop-a").as_ptr(), cs(&format!("{a:.3}")).as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("ab-loop-b").as_ptr(), cs(&format!("{b:.3}")).as_ptr());
+        }
+    }
+}
+
+/// Devamp: release the slot's current slice loop.  The pass in progress
+/// finishes (ab-loop-count → 0 lets playback continue past B), then the plan
+/// advances normally — or the slot stops at the boundary when `stop_at_end`.
+/// No-op for unsliced content.
+pub(super) fn devamp_slot(slot: &Arc<VideoSlot>, stop_at_end: bool) {
+    {
+        let Ok(mut st) = slot.state.lock() else { return };
+        let Some(plan) = st.slice_plan.as_mut() else { return };
+        if stop_at_end {
+            plan.stop_at_end = true;
+        }
+    }
+    unsafe {
+        let key = cs("ab-loop-count");
+        let val = cs("0");
+        (slot.lib.mpv_set_property_string)(slot.mpv_ctx.0, key.as_ptr(), val.as_ptr());
+    }
+    log::info!("[slot {}] devamp (stop_at_end={stop_at_end})", slot.index);
 }
 
 // ---------------------------------------------------------------------------

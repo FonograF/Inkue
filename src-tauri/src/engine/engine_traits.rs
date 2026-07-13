@@ -34,6 +34,8 @@ pub trait AudioEngineApi: Send + Sync {
     fn pause_voice(&self, voice_id: VoiceId) -> Result<()>;
     fn resume_voice(&self, voice_id: VoiceId) -> Result<()>;
     fn seek_voice(&self, voice_id: VoiceId, frame_pos: u64) -> Result<()>;
+    /// Release the voice's current slice loop (Devamp Cue).
+    fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) -> Result<()>;
     fn set_voice_gain(&self, voice_id: VoiceId, gain: f32) -> Result<()>;
     fn get_voice_gain(&self, voice_id: VoiceId) -> f32;
     fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()>;
@@ -79,6 +81,9 @@ impl AudioEngineApi for AudioEngine {
     }
     fn seek_voice(&self, voice_id: VoiceId, frame_pos: u64) -> Result<()> {
         AudioEngine::seek_voice(self, voice_id, frame_pos)
+    }
+    fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) -> Result<()> {
+        AudioEngine::devamp_voice(self, voice_id, stop_at_end)
     }
     fn set_voice_gain(&self, voice_id: VoiceId, gain: f32) -> Result<()> {
         AudioEngine::set_voice_gain(self, voice_id, gain)
@@ -153,6 +158,8 @@ pub trait OutputEngineApi: Send + Sync {
     /// Start the visual fade that lands exactly on the content's natural end.
     /// Returns `false` when `voice_id` is no longer on the output window.
     fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool;
+    /// Release the visual voice's current slice loop (Devamp Cue).
+    fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool);
 }
 
 impl OutputEngineApi for OutputEngine {
@@ -200,6 +207,9 @@ impl OutputEngineApi for OutputEngine {
     }
     fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool {
         OutputEngine::begin_eof_fade_out(self, voice_id, fade_ms)
+    }
+    fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) {
+        OutputEngine::devamp_voice(self, voice_id, stop_at_end)
     }
 }
 

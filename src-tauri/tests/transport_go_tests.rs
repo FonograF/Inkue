@@ -19,6 +19,7 @@ use crossbeam_channel::Receiver;
 
 use common::{recording_context, full_registry, CallLog, EngineCall};
 use inkue_lib::cue::context::{CueContext, CueEvent};
+use inkue_lib::cue::devamp_cue::DevampCue;
 use inkue_lib::cue::fade_cue::FadeCue;
 use inkue_lib::cue::group_cue::GroupCue;
 use inkue_lib::cue::registry::CueRegistry;
@@ -285,4 +286,67 @@ fn fade_targeting_a_group_fades_every_child_voice() {
         "a fade on a group must drive set_voice_gain on every child voice \
          (got {applied} gain updates — 0 would mean the group contributed no voices)"
     );
+}
+
+#[test]
+fn devamp_forwards_to_every_target_voice_with_mode() {
+    // GO on a Devamp cue must resolve its targets' voices and forward the
+    // devamp (with the stop-at-end flag) to the audio engine — including the
+    // voices of a Group's children, like Fade does.
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context();
+    let mut transport = Transport::new(ctx);
+
+    let mut group = GroupCue::new();
+    group.mode = GroupMode::Simultaneous;
+    group.children.push(preloaded_audio(&reg));
+    group.children.push(preloaded_audio(&reg));
+    let group_id = group.id();
+
+    let mut devamp = DevampCue::new();
+    devamp.target_cue_ids = vec![group_id];
+    devamp.stop_at_end = true;
+
+    let mut list = list_of(vec![Box::new(group), Box::new(devamp)]);
+
+    transport.go(&mut list).unwrap(); // group: children play
+    transport.go(&mut list).unwrap(); // devamp: forward to the voices
+
+    let devamps: Vec<bool> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|c| match c {
+            EngineCall::AudioDevamp { stop_at_end } => Some(*stop_at_end),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        devamps,
+        vec![true, true],
+        "one devamp per child voice, carrying the stop-at-end flag"
+    );
+}
+
+#[test]
+fn devamp_without_running_target_is_a_no_op() {
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context();
+    let mut transport = Transport::new(ctx);
+
+    let idle_audio = preloaded_audio(&reg); // never GO'd — no voice
+    let mut devamp = DevampCue::new();
+    devamp.target_cue_ids = vec![idle_audio.id()];
+
+    // Playhead starts on the devamp: put it first.
+    let mut list = list_of(vec![Box::new(devamp), idle_audio]);
+    transport.go(&mut list).unwrap();
+
+    let count = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| matches!(c, EngineCall::AudioDevamp { .. }))
+        .count();
+    assert_eq!(count, 0, "an idle target contributes no voices — nothing to devamp");
 }

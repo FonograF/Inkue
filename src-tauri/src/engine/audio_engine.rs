@@ -808,6 +808,13 @@ impl AudioEngine {
         self.broadcast_command(AudioCommand::SetPatchGain { patch_id, gain })
     }
 
+    /// Devamp: release the voice's current slice loop.  The pass in progress
+    /// finishes, then playback continues into the next slice — or stops at the
+    /// slice boundary when `stop_at_end` is set.  No-op on unsliced voices.
+    pub fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) -> Result<()> {
+        self.broadcast_command(AudioCommand::Devamp { voice_id, stop_at_end })
+    }
+
     /// Close every aux stream and clear routing alerts.
     ///
     /// Called on any event that changes the routing universe — main device /
@@ -1377,6 +1384,10 @@ fn fill_buffer(
         let end_frame_val: Option<u64> = unsafe { *voice.inner.end_frame.get() };
         let end = end_frame_val.unwrap_or(u64::MAX);
 
+        // SAFETY: `slices` is written once before submission; `current` /
+        // `remaining` are mutated only from this callback (single-writer).
+        let slices_ptr = voice.inner.slices.get();
+
         let mut voice_stopped = false;
 
         for frame in 0..frames {
@@ -1406,7 +1417,48 @@ fn fill_buffer(
 
             // --- Boundary / loop check ----------------------------------------
             let int_pos = frame_pos_f as u64;
-            if int_pos >= end || int_pos >= total_frames {
+            if let Some(prog) = unsafe { &mut *slices_ptr } {
+                // Sliced playback: the program owns loop/advance decisions.
+                let seg = prog.segments[prog.current];
+                if int_pos >= seg.end_frame.min(total_frames) {
+                    let req = voice.inner.devamp_request.load(std::sync::atomic::Ordering::Relaxed);
+                    if req == crate::engine::voice::DEVAMP_STOP {
+                        voice.inner.devamp_request.store(
+                            crate::engine::voice::DEVAMP_NONE,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        voice.set_stopped();
+                        let _ = status_prod.try_push(AudioStatus::Completed { voice_id: voice.id });
+                        break;
+                    }
+                    if req == crate::engine::voice::DEVAMP_CONTINUE {
+                        voice.inner.devamp_request.store(
+                            crate::engine::voice::DEVAMP_NONE,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        prog.remaining = 0;
+                    }
+                    if prog.remaining > 0 {
+                        if prog.remaining != u32::MAX {
+                            prog.remaining -= 1;
+                        }
+                        frame_pos_f = seg.start_frame as f64;
+                    } else if prog.current + 1 < prog.segments.len() {
+                        prog.current += 1;
+                        let next = prog.segments[prog.current];
+                        prog.remaining = if next.play_count == u32::MAX {
+                            u32::MAX
+                        } else {
+                            next.play_count.saturating_sub(1)
+                        };
+                        frame_pos_f = next.start_frame as f64;
+                    } else {
+                        voice.set_stopped();
+                        let _ = status_prod.try_push(AudioStatus::Completed { voice_id: voice.id });
+                        break;
+                    }
+                }
+            } else if int_pos >= end || int_pos >= total_frames {
                 let loops = voice.inner.loops_remaining.load(std::sync::atomic::Ordering::Relaxed);
                 if loops > 0 {
                     if loops != u32::MAX {
@@ -1675,6 +1727,12 @@ fn apply_command(
                 v.frame_pos.store(frame_pos, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        AudioCommand::Devamp { voice_id, stop_at_end } => {
+            if let Some(v) = voices.iter().find(|v| v.id == voice_id) {
+                let req = if stop_at_end { crate::engine::voice::DEVAMP_STOP } else { crate::engine::voice::DEVAMP_CONTINUE };
+                v.inner.devamp_request.store(req, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -1933,6 +1991,91 @@ mod tests {
             statuses.iter().any(|s| matches!(s, AudioStatus::Completed { voice_id } if *voice_id == id)),
             "EOF must emit exactly one Completed for the voice"
         );
+    }
+
+    /// Install a slice program on a not-yet-running voice (test-side stand-in
+    /// for the AudioCue GO path).
+    fn set_slices(voice: &Arc<Voice>, segs: &[(u64, u64, u32)]) {
+        use crate::engine::voice::{SliceProgram, SliceSegment};
+        let program = SliceProgram::new(
+            segs.iter()
+                .map(|&(s, e, c)| SliceSegment { start_frame: s, end_frame: e, play_count: c })
+                .collect(),
+        )
+        .expect("non-empty slice program");
+        // SAFETY: the voice has not been submitted to the RT pool yet.
+        unsafe { *voice.inner.slices.get() = Some(program) };
+        voice.frame_pos.store(segs[0].0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn sliced_voice_vamps_on_infinite_segment() {
+        // 300 frames, slices: [0,100)×1 → [100,200)×∞ → [200,300)×1.
+        let voice = make_voice(300, 2, 48_000, 1.0);
+        set_slices(&voice, &[(0, 100, 1), (100, 200, u32::MAX), (200, 300, 1)]);
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        let statuses = run_block(&pool, None);
+
+        assert_eq!(voice.voice_state(), VoiceState::Playing, "vamp must keep playing");
+        assert!(
+            !statuses.iter().any(|s| matches!(s, AudioStatus::Completed { .. })),
+            "vamping must not complete"
+        );
+        let pos = voice.frame_pos.load(std::sync::atomic::Ordering::Relaxed);
+        assert!((100..200).contains(&pos), "position must stay inside the vamp, got {pos}");
+    }
+
+    #[test]
+    fn devamp_continue_releases_the_vamp_and_plays_through() {
+        let voice = make_voice(300, 2, 48_000, 1.0);
+        set_slices(&voice, &[(100, 200, u32::MAX), (200, 300, 1)]);
+        let id = voice.id;
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+
+        // Block 1: establish the vamp.
+        run_block(&pool, None);
+        assert_eq!(voice.voice_state(), VoiceState::Playing);
+
+        // Block 2: devamp → finish the pass, play the last slice, complete.
+        let statuses = run_block(&pool, Some(AudioCommand::Devamp { voice_id: id, stop_at_end: false }));
+        assert_eq!(voice.voice_state(), VoiceState::Stopped, "must play through to the end");
+        assert!(
+            statuses.iter().any(|s| matches!(s, AudioStatus::Completed { voice_id } if *voice_id == id)),
+            "devamped voice must complete at file end"
+        );
+    }
+
+    #[test]
+    fn devamp_stop_ends_at_the_slice_boundary() {
+        let voice = make_voice(300, 2, 48_000, 1.0);
+        set_slices(&voice, &[(100, 200, u32::MAX), (200, 300, 1)]);
+        let id = voice.id;
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        run_block(&pool, None);
+
+        let statuses = run_block(&pool, Some(AudioCommand::Devamp { voice_id: id, stop_at_end: true }));
+        assert_eq!(voice.voice_state(), VoiceState::Stopped, "stop-at-end must stop the voice");
+        assert!(
+            statuses.iter().any(|s| matches!(s, AudioStatus::Completed { voice_id } if *voice_id == id)),
+            "stop-at-end must emit Completed"
+        );
+        let pos = voice.frame_pos.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(pos <= 200, "must not play past the slice boundary, got {pos}");
+    }
+
+    #[test]
+    fn sliced_finite_counts_replay_then_advance() {
+        // [0,100)×2 → [100,200)×1: one 256-frame block plays 100+100 frames of
+        // segment 0, then enters segment 1 (~56 frames in).
+        let voice = make_voice(300, 2, 48_000, 1.0);
+        set_slices(&voice, &[(0, 100, 2), (100, 200, 1)]);
+        let pool = rt_pool(vec![Arc::clone(&voice)]);
+        let statuses = run_block(&pool, None);
+
+        assert_eq!(voice.voice_state(), VoiceState::Playing);
+        assert!(!statuses.iter().any(|s| matches!(s, AudioStatus::Completed { .. })));
+        let pos = voice.frame_pos.load(std::sync::atomic::Ordering::Relaxed);
+        assert!((100..200).contains(&pos), "expected ~156 inside segment 1, got {pos}");
     }
 
     #[test]

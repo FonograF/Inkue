@@ -12,6 +12,7 @@ import type {
   CueStateChangedEvent,
   CueTimeUpdateEvent,
   DeviceChangedEvent,
+  OutputKeyEvent,
   PlayheadMovedEvent,
 } from "../lib/types";
 
@@ -26,6 +27,7 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
   const { setTiming, clearTiming } = useTimingStore();
 
   useEffect(() => {
+    let cancelled = false;
     const unlisteners: (() => void)[] = [];
     // Re-validate the workspace after edits settle (avoids running the full
     // preflight — incl. MIDI port enumeration — on every keystroke).
@@ -112,6 +114,22 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
         await listen("preferences-applied", async () => {
           await loadDisplayPrefs();
           await loadGeneralPrefs();
+        })
+      );
+
+      unlisteners.push(
+        await listen<OutputKeyEvent>("output-keydown", (e) => {
+          // Keys pressed while the output window has focus — replay them into
+          // the regular window-level shortcut handler.
+          window.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: e.payload.key,
+              ctrlKey: e.payload.ctrl,
+              altKey: e.payload.alt,
+              shiftKey: e.payload.shift,
+              metaKey: e.payload.meta,
+            })
+          );
         })
       );
 
@@ -218,11 +236,22 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
       );
     };
 
-    setup().catch(console.error);
+    setup()
+      .then(() => {
+        // The cleanup below can run while the listen() promises are still
+        // pending (React StrictMode dev double-mount): those listeners land in
+        // the array *after* the sweep and would stay subscribed forever — every
+        // backend event then fires its handler twice (seen as F9 hiding and
+        // instantly re-showing the output window). Sweep again once setup
+        // settles.
+        if (cancelled) unlisteners.splice(0).forEach((u) => u());
+      })
+      .catch(console.error);
 
     return () => {
+      cancelled = true;
       if (validationTimer) clearTimeout(validationTimer);
-      unlisteners.forEach((u) => u());
+      unlisteners.splice(0).forEach((u) => u());
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 }

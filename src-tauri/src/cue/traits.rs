@@ -385,6 +385,18 @@ pub trait Cue: Send {
         None
     }
 
+    /// Devamp Cue only: describes which cues to devamp after `go()`.
+    ///
+    /// Returns `Some((stop_at_end, target_cue_ids))`:
+    /// - `stop_at_end` — `true` = the target stops at the end of its current
+    ///   slice, `false` = it continues into the next slice.
+    ///
+    /// Transport resolves each target's voices (audio + visual + a video's
+    /// paired audio voice) and forwards the devamp to the engines.
+    fn devamp_specification(&self) -> Option<(bool, Vec<CueId>)> {
+        None
+    }
+
     /// Fade Cue only: drain the cue ids whose cues should be hard-stopped now
     /// that a `stop_at_end` fade has finished.  The event loop calls this every
     /// tick and stops the returned cues (the Fade cannot reach the cue list from

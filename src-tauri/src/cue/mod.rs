@@ -8,6 +8,7 @@
 pub mod audio_cue;
 pub mod camera_cue;
 pub mod context;
+pub mod devamp_cue;
 pub mod fade_cue;
 pub mod group_cue;
 pub mod light_cue;

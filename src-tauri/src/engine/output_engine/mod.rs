@@ -317,6 +317,12 @@ impl OutputEngine {
         &self.mpv_lib
     }
 
+    /// Owned handle to the loaded `MpvLib` for background work
+    /// (e.g. thumbnail generation on a blocking task).
+    pub fn mpv_lib_arc(&self) -> Arc<MpvLib> {
+        Arc::clone(&self.mpv_lib)
+    }
+
     /// Probe the duration of a video file without displaying it.
     pub fn probe_duration(lib: &MpvLib, path: &Path) -> Option<Duration> {
         unsafe {
@@ -519,9 +525,20 @@ impl OutputEngine {
             live_source: req.live_source,
             geometry: req.geometry,
             layer_style: req.layer_style,
+            slices: req.slices,
         });
 
         Ok(voice_id)
+    }
+
+    /// Devamp: release the visual voice's current slice loop (see
+    /// [`slot::devamp_slot`]) — the pass in progress finishes, then playback
+    /// continues into the next slice, or stops at the boundary when
+    /// `stop_at_end` is set.  No-op for unsliced content.
+    pub fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) {
+        if let Some(slot) = slot::slot_for_voice(voice_id) {
+            slot::devamp_slot(&slot, stop_at_end);
+        }
     }
 
     /// Stop the content identified by `voice_id`: fade its layer's opacity to
@@ -711,6 +728,7 @@ impl OutputEngine {
             geometry: VideoGeometry::default(),
             live_source: false,
             layer_style: LayerStyle::default(),
+            slices: Vec::new(),
         })
     }
 
@@ -1117,6 +1135,39 @@ impl OutputEngine {
         }
     }
 
+    /// Apply the output-screen preference when a workspace is (re)loaded, so a
+    /// configured screen goes live as a black fullscreen surface immediately —
+    /// not only on the first visual GO.
+    ///
+    /// Unlike [`Self::apply_output_screen`], a configured-but-missing screen
+    /// only raises the health banner and keeps the window hidden: falling back
+    /// to fullscreen-on-primary here would black out the operator's main
+    /// display the moment they open a show file without the projector attached.
+    pub fn apply_output_screen_on_load(&self, screen_index: Option<u32>) {
+        match screen_index {
+            None => {
+                crate::health::clear("output-screen");
+                render::set_windowed_floating();
+            }
+            Some(idx) => {
+                if self.list_screens().iter().any(|s| s.index == idx) {
+                    self.position_window(screen_index);
+                } else {
+                    crate::health::set(crate::health::HealthAlert::new(
+                        "output-screen",
+                        crate::health::HealthLevel::Warning,
+                        format!(
+                            "Output screen {} is not connected — the output window stays \
+                             hidden; visual cues will fall back to the primary display. \
+                             Check Preferences → Display.",
+                            idx + 1,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     // ── Fullscreen ────────────────────────────────────────────────────────────
 
     /// Toggle the output window between windowed and true fullscreen.
@@ -1168,13 +1219,14 @@ impl OutputEngine {
 
         self.visible.store(true, Ordering::Relaxed);
         if let Some(s) = &target_screen {
-            // Windows/Linux: position via the winit window using the screen rect
-            // from list_screens(). macOS: place the NSWindow onto NSScreen[idx]
-            // directly (AppKit's own coordinate space — no rect conversion needed;
-            // our sorted list and NSScreen both put the primary at index 0, so the
-            // fallback index maps correctly too).
+            // Windows/Linux: borderless-fullscreen the winit window on the
+            // monitor matching the physical rect from list_screens(). macOS:
+            // place the NSWindow onto NSScreen[idx] directly (AppKit's own
+            // coordinate space — no rect conversion needed; our sorted list and
+            // NSScreen both put the primary at index 0, so the fallback index
+            // maps correctly too).
             #[cfg(not(target_os = "macos"))]
-            render::set_outer_rect(s.x, s.y, s.width, s.height);
+            render::set_fullscreen_on_rect(s.x, s.y, s.width, s.height);
             #[cfg(target_os = "macos")]
             render::position_on_screen(s.index);
         }

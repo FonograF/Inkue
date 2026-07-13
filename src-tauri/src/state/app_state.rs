@@ -81,6 +81,7 @@ impl AppState {
         registry.register(CueType::Memo, Box::new(MemoCueFactory));
         registry.register(CueType::Osc,   Box::new(OscCueFactory));
         registry.register(CueType::Stop, Box::new(StopCueFactory));
+        registry.register(CueType::Devamp, Box::new(crate::cue::devamp_cue::DevampCueFactory));
         registry.register(CueType::Video, Box::new(VideoCueFactory));
         registry.register(CueType::Image, Box::new(ImageCueFactory));
         registry.register(CueType::Mic,      Box::new(crate::cue::mic_cue::MicCueFactory));

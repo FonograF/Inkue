@@ -160,10 +160,11 @@ pub fn write_wav_float32(path: &Path, samples: &[f32], channels: u16, sample_rat
 
 /// A [`CueRegistry`] with every built-in cue type registered — mirrors the
 /// registration performed in `AppState::new` so tests exercise the real load
-/// path. Kept in sync manually; the registry-contract test asserts all 14
+/// path. Kept in sync manually; the registry-contract test asserts all 15
 /// types are present so drift is caught.
 pub fn full_registry() -> CueRegistry {
     use inkue_lib::cue::audio_cue::AudioCueFactory;
+    use inkue_lib::cue::devamp_cue::DevampCueFactory;
     use inkue_lib::cue::fade_cue::FadeCueFactory;
     use inkue_lib::cue::group_cue::GroupCueFactory;
     use inkue_lib::cue::image_cue::ImageCueFactory;
@@ -180,6 +181,7 @@ pub fn full_registry() -> CueRegistry {
 
     let mut r = CueRegistry::new();
     r.register(CueType::Audio, Box::new(AudioCueFactory));
+    r.register(CueType::Devamp, Box::new(DevampCueFactory));
     r.register(CueType::Fade, Box::new(FadeCueFactory));
     r.register(CueType::Midi, Box::new(MidiCueFactory));
     r.register(CueType::Group, Box::new(GroupCueFactory));
@@ -198,13 +200,14 @@ pub fn full_registry() -> CueRegistry {
 
 /// Every built-in cue type — the single source of truth for "what should the
 /// registry contain".
-pub const ALL_CUE_TYPES: [CueType; 14] = [
+pub const ALL_CUE_TYPES: [CueType; 15] = [
     CueType::Audio,
     CueType::Memo,
     CueType::Wait,
     CueType::Group,
     CueType::Fade,
     CueType::Stop,
+    CueType::Devamp,
     CueType::Video,
     CueType::Image,
     CueType::Osc,
@@ -270,6 +273,8 @@ pub enum EngineCall {
     OutputPanicStop,
     OutputEofFade { fade_ms: u32 },
     OutputSetOpacity { opacity: f32 },
+    AudioDevamp { stop_at_end: bool },
+    OutputDevamp { stop_at_end: bool },
     DmxSubmitFade { universe: u16, channel: u16, target_norm: f64 },
 }
 
@@ -303,6 +308,10 @@ impl AudioEngineApi for RecAudio {
         Ok(())
     }
     fn seek_voice(&self, _v: VoiceId, _p: u64) -> Result<()> { Ok(()) }
+    fn devamp_voice(&self, _v: VoiceId, stop_at_end: bool) -> Result<()> {
+        record(&self.0, EngineCall::AudioDevamp { stop_at_end });
+        Ok(())
+    }
     fn set_voice_gain(&self, _v: VoiceId, gain: f32) -> Result<()> {
         record(&self.0, EngineCall::AudioSetGain { gain });
         Ok(())
@@ -368,6 +377,9 @@ impl OutputEngineApi for RecOutput {
     fn begin_eof_fade_out(&self, _v: VoiceId, fade_ms: u32) -> bool {
         record(&self.0, EngineCall::OutputEofFade { fade_ms });
         true
+    }
+    fn devamp_voice(&self, _v: VoiceId, stop_at_end: bool) {
+        record(&self.0, EngineCall::OutputDevamp { stop_at_end });
     }
 }
 
