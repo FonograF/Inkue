@@ -139,13 +139,61 @@ fn make_context(
     )
 }
 
+/// Action-elapsed time for UI / OSC displays, in ms.
+///
+/// Sliced cues report the engine's **media position** instead of wall-clock
+/// time: a vamping segment holds its file position while the clock runs on,
+/// so wall-clock bars kept sweeping and looping (and stayed wrong after a
+/// devamp, which only the engine knows about).  Unsliced cues keep the
+/// cue's own wall-clock `action_elapsed()`.
+fn media_elapsed_ms(
+    cue: &dyn crate::cue::traits::Cue,
+    audio_engine: &Arc<AudioEngine>,
+    output_engine: &Arc<OutputEngine>,
+) -> u64 {
+    if cue.uses_sliced_playback() {
+        let media_pos = if cue.is_visual() {
+            cue.playing_voice_id().and_then(|v| output_engine.voice_position_ms(v))
+        } else {
+            cue.playing_voice_id().and_then(|v| audio_engine.voice_position_ms(v))
+        };
+        if let Some(pos) = media_pos {
+            return pos;
+        }
+    }
+    cue.action_elapsed().as_millis() as u64
+}
+
+/// OSC progress values for one cue: `(progress 0..1, elapsed s, remaining s,
+/// duration s)`; `remaining`/`duration` are `-1.0` when unknown.
+///
+/// Without a total duration (vamp, ∞ loop, live feed) the progress falls back
+/// to the position within one file pass — a gauge then follows the loop just
+/// like the in-app bars.
+fn progress_values(
+    elapsed_ms: u64,
+    duration_ms: Option<u64>,
+    file_duration_ms: Option<u64>,
+) -> (f32, f32, f32, f32) {
+    let elapsed_s = elapsed_ms as f32 / 1000.0;
+    match duration_ms {
+        Some(d) if d > 0 => {
+            let progress = (elapsed_ms as f32 / d as f32).clamp(0.0, 1.0);
+            let remaining_s = d.saturating_sub(elapsed_ms) as f32 / 1000.0;
+            (progress, elapsed_s, remaining_s, d as f32 / 1000.0)
+        }
+        _ => {
+            let progress = match file_duration_ms {
+                Some(fd) if fd > 0 => ((elapsed_ms % fd) as f32 / fd as f32).clamp(0.0, 1.0),
+                _ => 0.0,
+            };
+            (progress, elapsed_s, -1.0, -1.0)
+        }
+    }
+}
+
 /// Collect `cue-time-update` snapshots recursively, including children of
 /// running Group cues.
-///
-/// Sliced cues report the engine's **media position** as `action_elapsed`
-/// instead of wall-clock time: a vamping segment holds its file position
-/// while the clock runs on, so wall-clock bars kept sweeping and looping
-/// (and stayed wrong after a devamp, which only the engine knows about).
 fn collect_time_snapshots(
     cues: &[Box<dyn crate::cue::traits::Cue>],
     audio_engine: &Arc<AudioEngine>,
@@ -154,19 +202,7 @@ fn collect_time_snapshots(
     let mut result = Vec::new();
     for cue in cues {
         if cue.state() == CueState::Running || cue.state() == CueState::Paused {
-            let mut action_elapsed = cue.action_elapsed().as_millis() as u64;
-            if cue.uses_sliced_playback() {
-                let media_pos = if cue.is_visual() {
-                    cue.playing_voice_id()
-                        .and_then(|v| output_engine.voice_position_ms(v))
-                } else {
-                    cue.playing_voice_id()
-                        .and_then(|v| audio_engine.voice_position_ms(v))
-                };
-                if let Some(pos) = media_pos {
-                    action_elapsed = pos;
-                }
-            }
+            let action_elapsed = media_elapsed_ms(cue.as_ref(), audio_engine, output_engine);
             result.push((
                 cue.id(),
                 cue.elapsed().as_millis() as u64,
@@ -744,19 +780,28 @@ fn tick(
     // Non-consuming peek — the inner block still consumes the flags when it sends.
     let osc_feedback_active = crate::engine::osc_feedback::is_enabled()
         || crate::engine::osc_feedback::any_request_pending();
-    let (running_payload, playhead_payload, cue_list_payload) =
+    let (running_payload, progress_payload, playhead_payload, cue_list_payload) =
         if !osc_feedback_active {
-            (None, None, None)
+            (None, None, None, None)
         } else if let Some(active_cl) = ws.cue_list_by_id(active_list_id) {
-            let running_now: Vec<(CueId, String, String)> = all_running_cues_info(&active_cl.cues);
+            let running_now = all_running_cues_info(&active_cl.cues, audio_engine, output_engine);
             let playhead_now = active_cl
                 .playhead_cue_id
                 .and_then(|ph_id| find_cue_info(&active_cl.cues, ph_id));
 
-            let running_ids: Vec<CueId> = running_now.iter().map(|(id, _, _)| *id).collect();
+            // Media progress: a continuous stream (rate-gated), unlike the
+            // change-driven payloads below.  Same slot order as send_running.
+            let progress_p: Option<Vec<crate::engine::osc_feedback::ProgressSlot>> =
+                if crate::engine::osc_feedback::progress_due() {
+                    Some(running_now.iter().map(|(_, _, _, p)| *p).collect())
+                } else {
+                    None
+                };
+
+            let running_ids: Vec<CueId> = running_now.iter().map(|(id, _, _, _)| *id).collect();
             let running_p: Option<Vec<(String, String)>> = if running_ids != *prev_running_cues {
                 *prev_running_cues = running_ids;
-                Some(running_now.into_iter().map(|(_, n, name)| (n, name)).collect())
+                Some(running_now.into_iter().map(|(_, n, name, _)| (n, name)).collect())
             } else {
                 None
             };
@@ -783,9 +828,9 @@ fn tick(
                     None
                 };
 
-            (running_p, playhead_p, cue_list_p)
+            (running_p, progress_p, playhead_p, cue_list_p)
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
     // Rename for clarity in the rest of the function.
@@ -798,6 +843,9 @@ fn tick(
 
     if let Some(cues) = running_payload {
         crate::engine::osc_feedback::send_running(&cues);
+    }
+    if let Some(slots) = progress_payload {
+        crate::engine::osc_feedback::send_progress(&slots);
     }
     if let Some((number, name)) = playhead_payload {
         crate::engine::osc_feedback::send_playhead(&number, &name);
@@ -986,26 +1034,37 @@ fn find_cue_info(
 /// Collect `(id, number, name)` for every running cue (recursive, ordered).
 fn all_running_cues_info(
     cues: &[Box<dyn crate::cue::traits::Cue>],
-) -> Vec<(CueId, String, String)> {
+    audio_engine: &Arc<AudioEngine>,
+    output_engine: &Arc<OutputEngine>,
+) -> Vec<(CueId, String, String, crate::engine::osc_feedback::ProgressSlot)> {
     let mut out = Vec::new();
-    collect_running(cues, &mut out);
+    collect_running(cues, audio_engine, output_engine, &mut out);
     out
 }
 
 fn collect_running(
     cues: &[Box<dyn crate::cue::traits::Cue>],
-    out: &mut Vec<(CueId, String, String)>,
+    audio_engine: &Arc<AudioEngine>,
+    output_engine: &Arc<OutputEngine>,
+    out: &mut Vec<(CueId, String, String, crate::engine::osc_feedback::ProgressSlot)>,
 ) {
     for cue in cues {
         if cue.state() == CueState::Running {
+            let elapsed = media_elapsed_ms(cue.as_ref(), audio_engine, output_engine);
+            let progress = progress_values(
+                elapsed,
+                cue.duration().map(|d| d.as_millis() as u64),
+                cue.file_duration().map(|d| d.as_millis() as u64),
+            );
             out.push((
                 cue.id(),
                 cue.number().unwrap_or("").to_owned(),
                 cue.name().to_owned(),
+                progress,
             ));
         }
         if let Some(children) = cue.child_cues() {
-            collect_running(children, out);
+            collect_running(children, audio_engine, output_engine, out);
         }
     }
 }
@@ -1049,5 +1108,53 @@ fn format_timer(ms: u64, show_ms: bool) -> String {
         format!("{mins:02}:{secs:02}.{millis:03}")
     } else {
         format!("{mins:02}:{secs:02}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::progress_values;
+
+    #[test]
+    fn progress_with_known_duration() {
+        let (progress, elapsed, remaining, duration) =
+            progress_values(12_600, Some(30_000), Some(30_000));
+        assert!((progress - 0.42).abs() < 1e-3);
+        assert!((elapsed - 12.6).abs() < 1e-3);
+        assert!((remaining - 17.4).abs() < 1e-3);
+        assert!((duration - 30.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn progress_clamps_past_the_end() {
+        let (progress, _, remaining, _) = progress_values(31_000, Some(30_000), None);
+        assert_eq!(progress, 1.0);
+        assert_eq!(remaining, 0.0);
+    }
+
+    #[test]
+    fn unknown_duration_falls_back_to_file_position() {
+        // Vamp / infinite loop: no total duration — the gauge follows the
+        // position within one file pass; remaining/duration report -1.
+        let (progress, elapsed, remaining, duration) =
+            progress_values(75_000, None, Some(60_000));
+        assert!((progress - 0.25).abs() < 1e-3, "75s % 60s = 15s / 60s");
+        assert!((elapsed - 75.0).abs() < 1e-3);
+        assert_eq!(remaining, -1.0);
+        assert_eq!(duration, -1.0);
+    }
+
+    #[test]
+    fn nothing_known_reports_zero_progress() {
+        // Live feed: no duration at all.
+        let (progress, elapsed, remaining, duration) = progress_values(5_000, None, None);
+        assert_eq!(progress, 0.0);
+        assert!((elapsed - 5.0).abs() < 1e-3);
+        assert_eq!(remaining, -1.0);
+        assert_eq!(duration, -1.0);
     }
 }

@@ -206,6 +206,34 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-07-14) — OSC media-progress feedback + OSC seek
+
+- **OSC seek** (user request — navigate inside a playing audio/video cue):
+  `/inkue/cue/{n}/seek <s>` (absolute, clip-relative like the scrub bar),
+  `/inkue/cue/{n}/seek/relative <±s>` (from the current position),
+  `/inkue/cue/{n}/seek/percent <0..1>` (fader-friendly fraction of the clip —
+  one loop iteration when looping, else total duration). Parsed with the
+  first numeric OSC arg (`numeric_arg`); dispatched through the existing
+  `osc-command` → frontend `seekCue` path; clamped to the clip, no-op on
+  standby cues (backend guard). Address reference updated in Preferences →
+  Network. Tests 292 → **295** (seek absolute/relative/percent parsing,
+  missing-value + bad-mode rejection).
+
+- **OSC feedback now streams media progress** (user request): per running
+  cue, `/inkue/cue/{i}/progress` (float 0..1), `/elapsed` (s), `/remaining`
+  (s, −1 = unknown) and `/duration` (s, −1 = unknown) — slot `i` = 0..7,
+  same ordering as the existing `/inkue/cue/{i}/number|name` (slot 0 =
+  topmost running cue), so an Open Stage Control "now playing" strip maps
+  once and works for any simultaneous set. Vamps/∞ loops: progress follows
+  the position within one file pass (media position for sliced cues via
+  `media_elapsed_ms`, shared with the UI bars); remaining/duration report −1.
+  Freed slots get one zeroing pulse so client gauges don't freeze.
+  Rate is configurable (Preferences → OSC → "Progress rate", default 10 Hz,
+  0 = off; `feedback_progress_hz` in `osc.json`); the rate gate
+  (`osc_feedback::progress_due`) sits before payload construction so
+  off-pulse ticks cost nothing. Tests 288 → **292** (`progress_values`:
+  known duration, clamp past end, vamp fallback to file position, live feed).
+
 ### Unreleased (2026-07-13) — sliced cues: progress follows the media position
 
 - **Progress bars swept and looped during a vamp** (user-reported): the time

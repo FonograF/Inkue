@@ -11,6 +11,8 @@ struct Cfg {
     enabled: bool,
     host: String,
     port: u16,
+    /// Media-progress send rate in Hz (0 = progress feedback off).
+    progress_hz: u8,
 }
 
 static CFG: OnceLock<Mutex<Cfg>> = OnceLock::new();
@@ -22,16 +24,17 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn cfg() -> &'static Mutex<Cfg> {
     CFG.get_or_init(|| {
-        Mutex::new(Cfg { enabled: false, host: String::new(), port: 0 })
+        Mutex::new(Cfg { enabled: false, host: String::new(), port: 0, progress_hz: 10 })
     })
 }
 
 /// Apply (or hot-update) the feedback destination.  Safe to call from any thread.
-pub fn apply(enabled: bool, host: String, port: u16) {
+pub fn apply(enabled: bool, host: String, port: u16, progress_hz: u8) {
     if let Ok(mut g) = cfg().lock() {
-        g.enabled = enabled;
-        g.host    = host;
-        g.port    = port;
+        g.enabled     = enabled;
+        g.host        = host;
+        g.port        = port;
+        g.progress_hz = progress_hz;
     }
     ENABLED.store(enabled, Ordering::Relaxed);
 }
@@ -85,6 +88,80 @@ pub fn send_running(cues: &[(String, String)]) {
             .unwrap_or(("", ""));
         msgs.push((format!("/inkue/cue/{i}/number"), rosc::OscType::String(num.to_owned())));
         msgs.push((format!("/inkue/cue/{i}/name"),   rosc::OscType::String(name.to_owned())));
+    }
+
+    let refs: Vec<(&str, rosc::OscType)> = msgs.iter()
+        .map(|(a, v)| (a.as_str(), v.clone()))
+        .collect();
+    send_messages(&refs);
+}
+
+// ---------------------------------------------------------------------------
+// Media progress feedback
+// ---------------------------------------------------------------------------
+
+/// Per-slot progress values: `(progress 0..1, elapsed s, remaining s, duration s)`.
+/// `remaining`/`duration` are `-1.0` when unknown (vamp, live feed, ∞ loop).
+pub type ProgressSlot = (f32, f32, f32, f32);
+
+/// Last progress send, as ms since an arbitrary process-start epoch.
+static LAST_PROGRESS_SEND: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// Slots filled by the previous send — freed slots get one zeroing pulse so
+/// client gauges do not freeze at the last value.
+static PREV_PROGRESS_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Rate gate for progress feedback: `true` when a pulse is due (consumes the
+/// interval).  The event loop calls this before building the payload so the
+/// off-pulse ticks cost nothing.
+pub fn progress_due() -> bool {
+    let hz = {
+        let Ok(g) = cfg().lock() else { return false };
+        if !g.enabled || g.progress_hz == 0 {
+            return false;
+        }
+        g.progress_hz
+    };
+    let interval = std::time::Duration::from_millis(1000 / hz.max(1) as u64);
+    let Ok(mut last) = LAST_PROGRESS_SEND.lock() else { return false };
+    let now = std::time::Instant::now();
+    match *last {
+        Some(t) if now.duration_since(t) < interval => false,
+        _ => {
+            *last = Some(now);
+            true
+        }
+    }
+}
+
+/// Send media progress for the running cues (same slot order as
+/// [`send_running`]: slot 0 = topmost running cue).
+///
+/// Addresses per slot `i` (0..[`MAX_RUNNING`]):
+///   `/inkue/cue/{i}/progress   <float 0..1>`
+///   `/inkue/cue/{i}/elapsed    <float seconds>`
+///   `/inkue/cue/{i}/remaining  <float seconds, -1 = unknown>`
+///   `/inkue/cue/{i}/duration   <float seconds, -1 = unknown>`
+pub fn send_progress(slots: &[ProgressSlot]) {
+    let count = slots.len().min(MAX_RUNNING);
+    let prev = PREV_PROGRESS_COUNT.swap(count, Ordering::Relaxed);
+
+    let mut msgs: Vec<(String, rosc::OscType)> = Vec::with_capacity((count.max(prev)) * 4);
+    for (i, &(progress, elapsed, remaining, duration)) in slots.iter().take(MAX_RUNNING).enumerate() {
+        msgs.push((format!("/inkue/cue/{i}/progress"),  rosc::OscType::Float(progress)));
+        msgs.push((format!("/inkue/cue/{i}/elapsed"),   rosc::OscType::Float(elapsed)));
+        msgs.push((format!("/inkue/cue/{i}/remaining"), rosc::OscType::Float(remaining)));
+        msgs.push((format!("/inkue/cue/{i}/duration"),  rosc::OscType::Float(duration)));
+    }
+    // One zeroing pulse for slots freed since the last send.
+    for i in count..prev.min(MAX_RUNNING) {
+        msgs.push((format!("/inkue/cue/{i}/progress"),  rosc::OscType::Float(0.0)));
+        msgs.push((format!("/inkue/cue/{i}/elapsed"),   rosc::OscType::Float(0.0)));
+        msgs.push((format!("/inkue/cue/{i}/remaining"), rosc::OscType::Float(-1.0)));
+        msgs.push((format!("/inkue/cue/{i}/duration"),  rosc::OscType::Float(-1.0)));
+    }
+    if msgs.is_empty() {
+        return;
     }
 
     let refs: Vec<(&str, rosc::OscType)> = msgs.iter()

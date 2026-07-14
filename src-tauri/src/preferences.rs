@@ -218,23 +218,30 @@ pub struct OscReceiveConfig {
     /// Destination UDP port for OSC feedback.  Default: 53000.
     #[serde(default = "OscReceiveConfig::default_feedback_port")]
     pub feedback_port: u16,
+    /// Send rate (Hz) for the per-slot media progress messages
+    /// (`/inkue/cue/{i}/progress|elapsed|remaining|duration`).
+    /// `0` disables progress feedback (cue number/name still sent on change).
+    #[serde(default = "OscReceiveConfig::default_feedback_progress_hz")]
+    pub feedback_progress_hz: u8,
 }
 
 impl OscReceiveConfig {
-    fn default_port()          -> u16    { 53001 }
-    fn default_feedback_host() -> String { "127.0.0.1".into() }
-    fn default_feedback_port() -> u16    { 53000 }
+    fn default_port()                 -> u16    { 53001 }
+    fn default_feedback_host()        -> String { "127.0.0.1".into() }
+    fn default_feedback_port()        -> u16    { 53000 }
+    fn default_feedback_progress_hz() -> u8     { 10 }
 }
 
 impl Default for OscReceiveConfig {
     fn default() -> Self {
         Self {
-            enabled:          false,
-            port:             Self::default_port(),
-            allowed_ips:      Vec::new(),
-            feedback_enabled: false,
-            feedback_host:    Self::default_feedback_host(),
-            feedback_port:    Self::default_feedback_port(),
+            enabled:               false,
+            port:                  Self::default_port(),
+            allowed_ips:           Vec::new(),
+            feedback_enabled:      false,
+            feedback_host:         Self::default_feedback_host(),
+            feedback_port:         Self::default_feedback_port(),
+            feedback_progress_hz:  Self::default_feedback_progress_hz(),
         }
     }
 }

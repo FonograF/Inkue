@@ -148,8 +148,8 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
       );
 
       unlisteners.push(
-        await listen<{ command: string; cue_number?: string }>("osc-command", async (e) => {
-          const { command, cue_number } = e.payload;
+        await listen<{ command: string; cue_number?: string; seek_mode?: string; value?: number }>("osc-command", async (e) => {
+          const { command, cue_number, seek_mode, value } = e.payload;
           try {
             switch (command) {
               case "go":
@@ -196,6 +196,30 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
                   const { stopCue } = await import("../lib/commands");
                   await stopCue(target.id);
                 }
+                break;
+              }
+              case "cue_seek": {
+                const target = useWorkspaceStore.getState().cues.find(c => c.number === cue_number);
+                if (!target || value == null) break;
+                // Positions are clip-relative (same convention as the scrub
+                // bar): one loop iteration when looping, else total duration.
+                const fileDur = target.file_duration_ms ?? null;
+                const totalDur = target.duration_ms ?? null;
+                const isLooping = fileDur != null && (totalDur == null || fileDur < totalDur);
+                const clipDur = isLooping ? fileDur : (totalDur ?? fileDur);
+                let posMs: number;
+                if (seek_mode === "percent") {
+                  if (clipDur == null) break; // live feed — nothing to map
+                  posMs = Math.max(0, Math.min(1, value)) * clipDur;
+                } else if (seek_mode === "relative") {
+                  const current = useTimingStore.getState().timings[target.id]?.action_elapsed_ms ?? 0;
+                  posMs = current + value * 1000;
+                } else {
+                  posMs = value * 1000;
+                }
+                posMs = Math.max(0, clipDur != null ? Math.min(posMs, clipDur) : posMs);
+                const { seekCue } = await import("../lib/commands");
+                await seekCue(target.id, Math.round(posMs));
                 break;
               }
               case "pause_toggle": {

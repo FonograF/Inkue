@@ -150,6 +150,7 @@ pub fn set_osc_config(
         config.feedback_enabled,
         config.feedback_host.clone(),
         config.feedback_port,
+        config.feedback_progress_hz,
     );
     crate::machine_config::save_osc(&config).map_err(|e| e.to_string())?;
     state.osc_server.reconfigure(config);

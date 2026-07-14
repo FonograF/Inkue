@@ -839,7 +839,8 @@ function OscContent({
           <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", lineHeight: 1.6 }}>
             <code style={{ fontFamily: "monospace" }}>/inkue/go</code> · <code>/inkue/stop</code> · <code>/inkue/hardstop</code><br />
             <code>/inkue/pause</code> · <code>/inkue/resume</code><br />
-            <code>/inkue/cue/&#123;n&#125;/go</code> · <code>/inkue/cue/&#123;n&#125;/select</code> · <code>/inkue/cue/&#123;n&#125;/stop</code>
+            <code>/inkue/cue/&#123;n&#125;/go</code> · <code>/inkue/cue/&#123;n&#125;/select</code> · <code>/inkue/cue/&#123;n&#125;/stop</code><br />
+            <code>/inkue/cue/&#123;n&#125;/seek &lt;s&gt;</code> · <code>…/seek/relative &lt;±s&gt;</code> · <code>…/seek/percent &lt;0..1&gt;</code>
           </div>
         </Row>
       </Section>
@@ -880,12 +881,32 @@ function OscContent({
                 style={{ ...inputStyle, width: 80 }}
               />
             </Row>
+            <Row label="Progress rate">
+              <input
+                type="number"
+                min={0}
+                max={30}
+                value={config.feedback_progress_hz}
+                onChange={(e) => onChange({ ...config, feedback_progress_hz: Math.max(0, Math.min(30, Number(e.target.value))) })}
+                style={{ ...inputStyle, width: 80 }}
+              />
+              <span style={{ fontSize: 12, color: "var(--wc-text-muted)" }}>
+                Hz — media progress send rate (0 = off)
+              </span>
+            </Row>
             <Row label="Messages sent">
               <div style={{ flex: 1, fontSize: 11, color: "var(--wc-text-muted)", lineHeight: 1.7 }}>
                 <code style={{ fontFamily: "monospace" }}>/inkue/cue/number</code> — cue number (string)<br />
                 <code style={{ fontFamily: "monospace" }}>/inkue/cue/name</code> &nbsp;&nbsp;&nbsp;— cue name (string)<br />
                 <code style={{ fontFamily: "monospace" }}>/inkue/cue/active</code> &nbsp;— 1 running / 0 stopped (int)<br />
-                <span style={{ color: "var(--wc-text-faint)" }}>Sent on every active-cue change (GO, stop, auto-follow).</span>
+                <code style={{ fontFamily: "monospace" }}>{"/inkue/cue/{i}/progress"}</code> — 0..1 (float, slot i = 0..7)<br />
+                <code style={{ fontFamily: "monospace" }}>{"/inkue/cue/{i}/elapsed"}</code> &nbsp;— seconds (float)<br />
+                <code style={{ fontFamily: "monospace" }}>{"/inkue/cue/{i}/remaining"}</code> — seconds (float, −1 = unknown)<br />
+                <code style={{ fontFamily: "monospace" }}>{"/inkue/cue/{i}/duration"}</code> &nbsp;— seconds (float, −1 = unknown)<br />
+                <span style={{ color: "var(--wc-text-faint)" }}>
+                  Number/name sent on change (GO, stop, auto-follow); progress streamed at the rate above.
+                  Slot 0 = topmost running cue.
+                </span>
               </div>
             </Row>
           </>
@@ -937,7 +958,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const [theme, setTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [draftTheme, setDraftTheme] = useState({ ...DEFAULT_DISPLAY_PREFS });
   const [availableBackends, setAvailableBackends] = useState<string[]>(["wasapi_shared", "wasapi_exclusive"]);
-  const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [], feedback_enabled: false, feedback_host: "127.0.0.1", feedback_port: 53000 });
+  const [oscConfig, setOscConfig_] = useState<OscReceiveConfig>({ enabled: false, port: 53001, allowed_ips: [], feedback_enabled: false, feedback_host: "127.0.0.1", feedback_port: 53000, feedback_progress_hz: 10 });
   const [applyError, setApplyError] = useState<string | null>(null);
   const [justApplied, setJustApplied] = useState(false);
   const [initFailed, setInitFailed] = useState(false);

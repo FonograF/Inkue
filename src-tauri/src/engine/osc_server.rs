@@ -211,7 +211,7 @@ fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
             crate::engine::osc_feedback::request_playhead();
             return;
         }
-        addr if addr.starts_with("/inkue/cue/") => parse_cue_address(addr),
+        addr if addr.starts_with("/inkue/cue/") => parse_cue_address(addr, &msg.args),
         _ => return,
     };
 
@@ -234,23 +234,61 @@ fn format_osc_arg(arg: &rosc::OscType) -> String {
     }
 }
 
-/// Parse `/inkue/cue/{number}/go|select|stop` and build the command payload.
-fn parse_cue_address(addr: &str) -> serde_json::Value {
-    let parts: Vec<&str> = addr.splitn(6, '/').collect();
-    // parts: ["", "inkue", "cue", "{number}", "action"]
-    if parts.len() == 5 {
-        let number = parts[3];
-        let action = parts[4];
-        let command = match action {
-            "go"     => "cue_go",
-            "select" => "cue_select",
-            "stop"   => "cue_stop",
-            _ => return serde_json::json!({}),
-        };
-        serde_json::json!({ "command": command, "cue_number": number })
-    } else {
-        serde_json::json!({})
+/// First numeric argument of an OSC message, as f64.
+fn numeric_arg(args: &[rosc::OscType]) -> Option<f64> {
+    args.iter().find_map(|a| match a {
+        rosc::OscType::Float(f)  => Some(*f as f64),
+        rosc::OscType::Double(d) => Some(*d),
+        rosc::OscType::Int(i)    => Some(*i as f64),
+        rosc::OscType::Long(l)   => Some(*l as f64),
+        _ => None,
+    })
+}
+
+/// Parse `/inkue/cue/{number}/<action>` and build the command payload.
+///
+/// Actions:
+/// - `go` / `select` / `stop` — no argument.
+/// - `seek <seconds>` — absolute position within the clip.
+/// - `seek/relative <±seconds>` — jump from the current position.
+/// - `seek/percent <0..1>` — fraction of the clip (fader-friendly).
+fn parse_cue_address(addr: &str, args: &[rosc::OscType]) -> serde_json::Value {
+    let parts: Vec<&str> = addr.splitn(7, '/').collect();
+    // parts: ["", "inkue", "cue", "{number}", "action", ("seek mode")]
+    if parts.len() < 5 {
+        return serde_json::json!({});
     }
+    let number = parts[3];
+    let action = parts[4];
+
+    if action == "seek" {
+        let mode = match parts.get(5) {
+            None => "absolute",
+            Some(&"relative") => "relative",
+            Some(&"percent") => "percent",
+            Some(_) => return serde_json::json!({}),
+        };
+        let Some(value) = numeric_arg(args) else {
+            return serde_json::json!({});
+        };
+        return serde_json::json!({
+            "command": "cue_seek",
+            "cue_number": number,
+            "seek_mode": mode,
+            "value": value,
+        });
+    }
+
+    if parts.len() != 5 {
+        return serde_json::json!({});
+    }
+    let command = match action {
+        "go"     => "cue_go",
+        "select" => "cue_select",
+        "stop"   => "cue_stop",
+        _ => return serde_json::json!({}),
+    };
+    serde_json::json!({ "command": command, "cue_number": number })
 }
 
 // ---------------------------------------------------------------------------
@@ -277,22 +315,51 @@ mod tests {
 
     #[test]
     fn parse_cue_go_address() {
-        let payload = parse_cue_address("/inkue/cue/1.5/go");
+        let payload = parse_cue_address("/inkue/cue/1.5/go", &[]);
         assert_eq!(payload["command"], "cue_go");
         assert_eq!(payload["cue_number"], "1.5");
     }
 
     #[test]
     fn parse_cue_select_address() {
-        let payload = parse_cue_address("/inkue/cue/Intro/select");
+        let payload = parse_cue_address("/inkue/cue/Intro/select", &[]);
         assert_eq!(payload["command"], "cue_select");
         assert_eq!(payload["cue_number"], "Intro");
     }
 
     #[test]
     fn parse_cue_stop_address() {
-        let payload = parse_cue_address("/inkue/cue/3/stop");
+        let payload = parse_cue_address("/inkue/cue/3/stop", &[]);
         assert_eq!(payload["command"], "cue_stop");
         assert_eq!(payload["cue_number"], "3");
+    }
+
+    #[test]
+    fn parse_cue_seek_absolute() {
+        let payload = parse_cue_address("/inkue/cue/3/seek", &[rosc::OscType::Float(12.5)]);
+        assert_eq!(payload["command"], "cue_seek");
+        assert_eq!(payload["cue_number"], "3");
+        assert_eq!(payload["seek_mode"], "absolute");
+        assert_eq!(payload["value"], 12.5);
+    }
+
+    #[test]
+    fn parse_cue_seek_relative_and_percent() {
+        let rel = parse_cue_address("/inkue/cue/1.5/seek/relative", &[rosc::OscType::Int(-10)]);
+        assert_eq!(rel["seek_mode"], "relative");
+        assert_eq!(rel["value"], -10.0);
+        assert_eq!(rel["cue_number"], "1.5");
+
+        let pct = parse_cue_address("/inkue/cue/Intro/seek/percent", &[rosc::OscType::Double(0.5)]);
+        assert_eq!(pct["seek_mode"], "percent");
+        assert_eq!(pct["value"], 0.5);
+    }
+
+    #[test]
+    fn parse_cue_seek_without_value_is_ignored() {
+        let payload = parse_cue_address("/inkue/cue/3/seek", &[rosc::OscType::String("x".into())]);
+        assert!(payload.get("command").is_none());
+        let bad_mode = parse_cue_address("/inkue/cue/3/seek/backwards", &[rosc::OscType::Float(1.0)]);
+        assert!(bad_mode.get("command").is_none());
     }
 }

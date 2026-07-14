@@ -518,6 +518,9 @@ export interface OscReceiveConfig {
   feedback_enabled: boolean;
   feedback_host: string;
   feedback_port: number;
+  /** Send rate (Hz) for /inkue/cue/{i}/progress|elapsed|remaining|duration.
+   *  0 disables progress feedback. */
+  feedback_progress_hz: number;
 }
 
 /** One IPv4-capable network interface (Preferences → Network). */

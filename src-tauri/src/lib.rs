@@ -139,6 +139,7 @@ pub fn run() {
                 osc_config.feedback_enabled,
                 osc_config.feedback_host.clone(),
                 osc_config.feedback_port,
+                osc_config.feedback_progress_hz,
             );
             let app_handle_osc = app.handle().clone();
             let osc_server = Arc::new(OscServer::start(osc_config, app_handle_osc));
