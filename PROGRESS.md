@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-11
 
-## Current version: 1.3.0 released — layer compositor, QLab slices + Devamp Cue, clip editor dock, media previews, inspector redesign, DPI-proof output placement
+## Current version: 1.3.1 released — OSC media-progress feedback + OSC seek; vamp progress bars follow the media position
 
 ## cargo build result
 
@@ -206,7 +206,7 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
-### Unreleased (2026-07-14) — OSC media-progress feedback + OSC seek
+### 1.3.1 (2026-07-14) — OSC media-progress feedback + OSC seek
 
 - **OSC seek** (user request — navigate inside a playing audio/video cue):
   `/inkue/cue/{n}/seek <s>` (absolute, clip-relative like the scrub bar),
@@ -234,7 +234,7 @@ fix, not the full investigation.
   off-pulse ticks cost nothing. Tests 288 → **292** (`progress_values`:
   known duration, clamp past end, vamp fallback to file position, live feed).
 
-### Unreleased (2026-07-13) — sliced cues: progress follows the media position
+### 1.3.1 (2026-07-13) — sliced cues: progress follows the media position
 
 - **Progress bars swept and looped during a vamp** (user-reported): the time
   display was wall-clock (`cue.action_elapsed()`), which keeps advancing while
