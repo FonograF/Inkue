@@ -206,6 +206,17 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-07-14) — OSC monitor matched flag comes from the parser
+
+- **OSC monitor mislabeled valid addresses as "unknown"** (user-reported: seek
+  worked but showed red): `OscMonitor.tsx` kept its own copy of the known
+  addresses, which had drifted from the Rust parser. The classification now
+  lives in one place — `osc_server::resolve_action` (pure enum: Command /
+  CueListRequest / PlayheadRequest / Unmatched) computes a `matched` bool
+  emitted with each `osc-debug` event; the monitor just displays it. Tests
+  295 → **297** (matched for every command/seek address, unmatched for
+  strays like `/jog_wheel`).
+
 ### 1.3.1 (2026-07-14) — OSC media-progress feedback + OSC seek
 
 - **OSC seek** (user request — navigate inside a playing audio/video cue):

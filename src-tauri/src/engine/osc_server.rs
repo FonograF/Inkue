@@ -182,19 +182,21 @@ fn handle_packet(packet: &rosc::OscPacket, app_handle: &tauri::AppHandle) {
     }
 }
 
-fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
-    // Always emit a debug event regardless of whether the address matches Inkue.
-    let args_display: Vec<String> = msg.args.iter().map(format_osc_arg).collect();
-    let _ = app_handle.emit(
-        "osc-debug",
-        serde_json::json!({
-            "addr": msg.addr,
-            "args": args_display,
-        }),
-    );
-    log::info!("OSC in: {} {:?}", msg.addr, args_display);
+/// What an incoming OSC message resolves to. Pure classification — the
+/// single source of truth for both dispatch and the monitor's matched flag.
+enum OscAction {
+    /// Dispatch to the frontend as an `osc-command` payload.
+    Command(serde_json::Value),
+    /// Trigger a full cue-list feedback dump.
+    CueListRequest,
+    /// Trigger a playhead feedback dump.
+    PlayheadRequest,
+    /// Address (or its arguments) does not map to any Inkue command.
+    Unmatched,
+}
 
-    let payload = match msg.addr.as_str() {
+fn resolve_action(addr: &str, args: &[rosc::OscType]) -> OscAction {
+    let payload = match addr {
         "/inkue/go"              => serde_json::json!({ "command": "go" }),
         "/inkue/stop"            => serde_json::json!({ "command": "stop_all" }),
         "/inkue/hardstop"        => serde_json::json!({ "command": "hard_stop_all" }),
@@ -203,20 +205,45 @@ fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
         "/inkue/select/next"     => serde_json::json!({ "command": "select_next" }),
         "/inkue/select/previous" => serde_json::json!({ "command": "select_previous" }),
         "/inkue/pause_toggle"    => serde_json::json!({ "command": "pause_toggle" }),
-        "/inkue/cues/request"     => {
-            crate::engine::osc_feedback::request_cue_list();
-            return;
-        }
-        "/inkue/playhead/request" => {
-            crate::engine::osc_feedback::request_playhead();
-            return;
-        }
-        addr if addr.starts_with("/inkue/cue/") => parse_cue_address(addr, &msg.args),
-        _ => return,
+        "/inkue/cues/request"     => return OscAction::CueListRequest,
+        "/inkue/playhead/request" => return OscAction::PlayheadRequest,
+        addr if addr.starts_with("/inkue/cue/") => parse_cue_address(addr, args),
+        _ => return OscAction::Unmatched,
     };
+    if payload.get("command").is_some() {
+        OscAction::Command(payload)
+    } else {
+        OscAction::Unmatched
+    }
+}
 
-    let _ = app_handle.emit("osc-command", &payload);
-    let _ = app_handle.emit("osc-activity", serde_json::json!({}));
+fn handle_message(msg: &rosc::OscMessage, app_handle: &tauri::AppHandle) {
+    let action = resolve_action(&msg.addr, &msg.args);
+
+    // Always emit a debug event regardless of whether the address matches
+    // Inkue; `matched` feeds the OSC monitor so it never re-derives the
+    // address list on its own.
+    let args_display: Vec<String> = msg.args.iter().map(format_osc_arg).collect();
+    let matched = !matches!(action, OscAction::Unmatched);
+    let _ = app_handle.emit(
+        "osc-debug",
+        serde_json::json!({
+            "addr": msg.addr,
+            "args": args_display,
+            "matched": matched,
+        }),
+    );
+    log::info!("OSC in: {} {:?}", msg.addr, args_display);
+
+    match action {
+        OscAction::Command(payload) => {
+            let _ = app_handle.emit("osc-command", &payload);
+            let _ = app_handle.emit("osc-activity", serde_json::json!({}));
+        }
+        OscAction::CueListRequest => crate::engine::osc_feedback::request_cue_list(),
+        OscAction::PlayheadRequest => crate::engine::osc_feedback::request_playhead(),
+        OscAction::Unmatched => {}
+    }
 }
 
 fn format_osc_arg(arg: &rosc::OscType) -> String {
@@ -361,5 +388,37 @@ mod tests {
         assert!(payload.get("command").is_none());
         let bad_mode = parse_cue_address("/inkue/cue/3/seek/backwards", &[rosc::OscType::Float(1.0)]);
         assert!(bad_mode.get("command").is_none());
+    }
+
+    fn is_matched(addr: &str, args: &[rosc::OscType]) -> bool {
+        !matches!(resolve_action(addr, args), OscAction::Unmatched)
+    }
+
+    #[test]
+    fn resolve_action_matches_all_command_addresses() {
+        for addr in [
+            "/inkue/go", "/inkue/stop", "/inkue/hardstop",
+            "/inkue/pause", "/inkue/resume", "/inkue/pause_toggle",
+            "/inkue/select/next", "/inkue/select/previous",
+            "/inkue/cues/request", "/inkue/playhead/request",
+            "/inkue/cue/11/go", "/inkue/cue/11/select", "/inkue/cue/11/stop",
+        ] {
+            assert!(is_matched(addr, &[]), "{addr} should match");
+        }
+        for addr in [
+            "/inkue/cue/11/seek",
+            "/inkue/cue/11/seek/relative",
+            "/inkue/cue/11/seek/percent",
+        ] {
+            assert!(is_matched(addr, &[rosc::OscType::Float(1.0)]), "{addr} should match");
+        }
+    }
+
+    #[test]
+    fn resolve_action_flags_unknown_addresses() {
+        assert!(!is_matched("/jog_wheel", &[rosc::OscType::Float(1.0)]));
+        assert!(!is_matched("/inkue/cue/11/teleport", &[]));
+        assert!(!is_matched("/inkue/cue/11/seek", &[])); // seek without a value
+        assert!(!is_matched("/inkue/nope", &[]));
     }
 }

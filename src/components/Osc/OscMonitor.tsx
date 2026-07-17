@@ -3,18 +3,6 @@
 import { useEffect, useRef } from "react";
 import { useTransportStore } from "../../stores/transportStore";
 
-const KNOWN_ADDRS = new Set([
-  "/inkue/go", "/inkue/stop", "/inkue/hardstop",
-  "/inkue/pause", "/inkue/resume",
-  "/inkue/select/next", "/inkue/select/previous",
-  "/inkue/pause_toggle",
-]);
-
-function isKnown(addr: string): boolean {
-  if (KNOWN_ADDRS.has(addr)) return true;
-  return /^\/inkue\/cue\/.+\/(go|select|stop)$/.test(addr);
-}
-
 export function OscMonitor({ onClose }: { onClose: () => void }) {
   const { oscLog, clearOscLog } = useTransportStore();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -87,7 +75,7 @@ export function OscMonitor({ onClose }: { onClose: () => void }) {
           </div>
         ) : (
           oscLog.map((entry) => {
-            const known = isKnown(entry.addr);
+            const known = entry.matched;
             return (
               <div
                 key={entry.id}

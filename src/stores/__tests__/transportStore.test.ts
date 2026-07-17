@@ -57,7 +57,7 @@ describe("transportStore", () => {
   it("addOscLog assigns monotonically increasing ids and caps the log at 100", () => {
     const s = () => useTransportStore.getState();
     for (let i = 0; i < 105; i++) {
-      s().addOscLog({ ts: "00:00:00.000", addr: `/a/${i}`, args: [] });
+      s().addOscLog({ ts: "00:00:00.000", addr: `/a/${i}`, args: [], matched: true });
     }
     const log = s().oscLog;
     expect(log.length).toBe(100);
@@ -68,7 +68,7 @@ describe("transportStore", () => {
 
   it("clearOscLog empties the log", () => {
     const s = () => useTransportStore.getState();
-    s().addOscLog({ ts: "x", addr: "/a", args: [] });
+    s().addOscLog({ ts: "x", addr: "/a", args: [], matched: false });
     s().clearOscLog();
     expect(s().oscLog).toEqual([]);
   });

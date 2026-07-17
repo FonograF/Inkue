@@ -140,10 +140,10 @@ export function useTauriEvents({ onLoadError }: TauriEventsOptions = {}) {
       );
 
       unlisteners.push(
-        await listen<{ addr: string; args: string[] }>("osc-debug", (e) => {
+        await listen<{ addr: string; args: string[]; matched: boolean }>("osc-debug", (e) => {
           const now = new Date();
           const ts = now.toTimeString().slice(0, 8) + "." + String(now.getMilliseconds()).padStart(3, "0");
-          addOscLog({ ts, addr: e.payload.addr, args: e.payload.args });
+          addOscLog({ ts, addr: e.payload.addr, args: e.payload.args, matched: e.payload.matched });
         })
       );
 

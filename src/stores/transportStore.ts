@@ -8,6 +8,8 @@ export interface OscLogEntry {
   ts: string;       // HH:MM:SS.mmm
   addr: string;
   args: string[];
+  /** Whether the backend parser recognized the address (single source of truth). */
+  matched: boolean;
 }
 
 interface RunningCueTime {
