@@ -21,7 +21,8 @@ use super::{
     context::{CueContext, CueEvent},
     traits::{Cue, CueFactory},
     types::{
-        ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve, FadeSpec,
+        eof_fade_remaining_ms, ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve,
+        FadeSpec,
     },
 };
 
@@ -99,6 +100,9 @@ pub struct AudioCue {
     elapsed_before_pause: Duration,
     /// Action-elapsed time accumulated before the most recent pause.
     action_elapsed_before_pause: Duration,
+    /// `true` once the natural-end fade-out has been handed to the engine for
+    /// the current play, so it fires exactly once.
+    eof_fade_started: bool,
 }
 
 impl AudioCue {
@@ -138,6 +142,7 @@ impl AudioCue {
             auto_continue_fired: false,
             elapsed_before_pause: Duration::ZERO,
             action_elapsed_before_pause: Duration::ZERO,
+            eof_fade_started: false,
         }
     }
 
@@ -183,6 +188,33 @@ impl AudioCue {
             FadeCurve::SCurve => EngineFadeCurve::SCurve,
             FadeCurve::Exponential => EngineFadeCurve::Exponential,
         }
+    }
+
+    /// Trigger the fade-out that lands on the cue's natural end, once the
+    /// remaining action time drops inside the fade-out window.
+    ///
+    /// Without this, `fade_out` only ever applied to *manual* stops — a cue
+    /// left to reach EOF hard-cut.  Skipped for infinite loops and sliced
+    /// playback, which have no fixed natural end (`duration()` is `None`, or
+    /// ignores the slice program).
+    fn tick_eof_fade(&mut self, context: &CueContext) {
+        if self.eof_fade_started || self.in_pre_wait || !self.slices.is_empty() {
+            return;
+        }
+        let (Some(voice_id), Some(fade), Some(total)) =
+            (self.active_voice_id, self.fade_out.as_ref(), self.duration())
+        else {
+            return;
+        };
+        let (fade_ms, curve) = (fade.duration_ms, Self::engine_curve(fade.curve));
+        let Some(remaining_ms) = eof_fade_remaining_ms(self.action_elapsed(), total, fade_ms)
+        else {
+            return;
+        };
+        // Fire exactly once per play, whether or not the engine still knows
+        // the voice (it may already have completed between two ticks).
+        self.eof_fade_started = true;
+        let _ = context.audio_engine.stop_voice(voice_id, remaining_ms, curve);
     }
 
     /// Start the audio action (submit a voice to the engine).
@@ -277,6 +309,7 @@ impl AudioCue {
         self.active_voice_id = Some(voice_id);
         self.action_started_at = Some(Instant::now());
         self.in_pre_wait = false;
+        self.eof_fade_started = false;
 
         context.emit(CueEvent::ActionStarted { cue_id: self.id });
         Ok(())
@@ -392,6 +425,7 @@ impl Cue for AudioCue {
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
+        self.eof_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -461,6 +495,7 @@ impl Cue for AudioCue {
         self.elapsed_before_pause = Duration::ZERO;
         self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
+        self.eof_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -475,6 +510,7 @@ impl Cue for AudioCue {
         self.action_elapsed_before_pause = Duration::ZERO;
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
+        self.eof_fade_started = false;
         Ok(())
     }
 
@@ -482,6 +518,7 @@ impl Cue for AudioCue {
         if self.in_pre_wait && self.elapsed() >= self.pre_wait {
             self.start_audio_action(context)?;
         }
+        self.tick_eof_fade(context);
         Ok(())
     }
 

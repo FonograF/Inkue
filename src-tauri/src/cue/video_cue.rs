@@ -20,7 +20,10 @@ use crate::engine::voice::{FadeDirection, FadeState, Voice};
 use super::{
     context::{CueContext, CueEvent},
     traits::{Cue, CueFactory, RuntimeState},
-    types::{db_to_linear, ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve, FadeSpec},
+    types::{
+        db_to_linear, eof_fade_remaining_ms, ContinueMode, CueColor, CueId, CueState, CueType,
+        FadeCurve, FadeSpec,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,9 @@ pub struct VideoCue {
     /// `true` once the natural-end visual fade-out has been triggered for the
     /// current play, so `tick()` fires it exactly once.
     eof_fade_started: bool,
+    /// Same, for the natural-end fade-out of the paired audio voice — the two
+    /// fades have their own spec, so they arm independently.
+    eof_audio_fade_started: bool,
 }
 
 impl VideoCue {
@@ -152,6 +158,7 @@ impl VideoCue {
             elapsed_before_pause: Duration::ZERO,
             action_elapsed_before_pause: Duration::ZERO,
             eof_fade_started: false,
+            eof_audio_fade_started: false,
         }
     }
 
@@ -183,33 +190,48 @@ impl VideoCue {
         self.slices.segments(clip_start, clip_end)
     }
 
-    /// Trigger the visual fade-out that lands on the cue's natural end, once
-    /// the remaining action time drops inside the fade-out window.
+    /// Trigger the fade-outs that land on the cue's natural end, once the
+    /// remaining action time drops inside each fade-out window.
     ///
-    /// Without this, `video_fade_out` only ever applied to *manual* stops —
-    /// a video reaching EOF hard-cut to black (`mpv_events` forces the
-    /// overlay opaque on END_FILE).  Skipped for infinite loops (no natural
-    /// end) and for hold-last-frame (nothing to fade to).
+    /// Without this, `video_fade_out` / `fade_out` only ever applied to
+    /// *manual* stops — a video reaching EOF hard-cut to black
+    /// (`mpv_events` forces the overlay opaque on END_FILE) and its sound cut
+    /// off abruptly.  Picture and sound have their own spec and their own
+    /// window, so they are armed independently.  Skipped for infinite loops
+    /// (no natural end).
     fn tick_eof_fade(&mut self, context: &CueContext) {
-        if self.eof_fade_started
-            || self.in_pre_wait
-            || self.hold_last_frame
-            || self.loop_count == u32::MAX
-        {
+        if self.in_pre_wait || self.loop_count == u32::MAX {
             return;
         }
-        let (Some(voice_id), Some(fade), Some(total)) =
-            (self.active_voice_id, &self.video_fade_out, self.duration())
-        else {
+        let (Some(voice_id), Some(total)) = (self.active_voice_id, self.duration()) else {
             return;
         };
-        if let Some(remaining_ms) =
-            eof_fade_remaining_ms(self.action_elapsed(), total, fade.duration_ms)
-        {
-            // Fire exactly once per play, whether or not the engine accepted
-            // it (a `false` return means another cue took over the output).
-            self.eof_fade_started = true;
-            context.output_engine.begin_eof_fade_out(voice_id, remaining_ms);
+        let action_elapsed = self.action_elapsed();
+
+        // Picture — skipped for hold-last-frame (nothing to fade to).
+        if !self.eof_fade_started && !self.hold_last_frame {
+            let fade_ms = self.video_fade_out.as_ref().map(|f| f.duration_ms).unwrap_or(0);
+            if let Some(remaining_ms) = eof_fade_remaining_ms(action_elapsed, total, fade_ms) {
+                // Fire exactly once per play, whether or not the engine accepted
+                // it (a `false` return means another cue took over the output).
+                self.eof_fade_started = true;
+                context.output_engine.begin_eof_fade_out(voice_id, remaining_ms);
+            }
+        }
+
+        // Sound — the video's audio track is a normal AudioEngine voice, so it
+        // fades exactly as an Audio Cue would.  Held last frames still fade:
+        // the sound does reach its end even when the picture freezes.
+        if !self.eof_audio_fade_started {
+            let Some(fade) = self.fade_out.as_ref() else { return };
+            let (fade_ms, curve) = (fade.duration_ms, Self::engine_curve(fade.curve));
+            let Some(remaining_ms) = eof_fade_remaining_ms(action_elapsed, total, fade_ms) else {
+                return;
+            };
+            self.eof_audio_fade_started = true;
+            if let Some(audio_voice) = context.output_engine.video_audio_voice(voice_id) {
+                let _ = context.audio_engine.stop_voice(audio_voice, remaining_ms, curve);
+            }
         }
     }
 
@@ -349,6 +371,7 @@ impl VideoCue {
         self.action_started_at = Some(Instant::now());
         self.in_pre_wait = false;
         self.eof_fade_started = false;
+        self.eof_audio_fade_started = false;
 
         context.emit(CueEvent::ActionStarted { cue_id: self.id });
         Ok(())
@@ -358,29 +381,6 @@ impl VideoCue {
 impl Default for VideoCue {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// How long the natural-end visual fade should run, once due.
-///
-/// Returns `Some(remaining_ms)` when the remaining action time has dropped
-/// inside the configured fade-out window (the fade then lands exactly on the
-/// cue's natural end), `None` while it is still too early — or when no fade
-/// is configured.  Shared by [`VideoCue`] and [`super::image_cue::ImageCue`].
-pub(crate) fn eof_fade_remaining_ms(
-    action_elapsed: Duration,
-    total: Duration,
-    fade_ms: u64,
-) -> Option<u32> {
-    if fade_ms == 0 {
-        return None;
-    }
-    let remaining = total.checked_sub(action_elapsed)?;
-    let remaining_ms = remaining.as_millis() as u64;
-    if remaining_ms <= fade_ms {
-        Some(remaining_ms.max(1).min(u32::MAX as u64) as u32)
-    } else {
-        None
     }
 }
 
@@ -487,6 +487,7 @@ impl Cue for VideoCue {
         self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
+        self.eof_audio_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -547,6 +548,7 @@ impl Cue for VideoCue {
         self.action_elapsed_before_pause = Duration::ZERO;
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
+        self.eof_audio_fade_started = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -561,6 +563,7 @@ impl Cue for VideoCue {
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
+        self.eof_audio_fade_started = false;
         Ok(())
     }
 
@@ -882,47 +885,6 @@ impl CueFactory for VideoCueFactory {
 mod tests {
     use super::*;
     use crate::engine::output_engine::FitMode;
-
-    #[test]
-    fn eof_fade_not_due_early() {
-        assert_eq!(
-            eof_fade_remaining_ms(Duration::from_secs(1), Duration::from_secs(10), 2000),
-            None,
-        );
-    }
-
-    #[test]
-    fn eof_fade_due_inside_window() {
-        // 10s cue, 2s fade, 8.5s elapsed → 1500ms remaining.
-        assert_eq!(
-            eof_fade_remaining_ms(Duration::from_millis(8500), Duration::from_secs(10), 2000),
-            Some(1500),
-        );
-    }
-
-    #[test]
-    fn eof_fade_none_without_fade_configured() {
-        assert_eq!(
-            eof_fade_remaining_ms(Duration::from_secs(9), Duration::from_secs(10), 0),
-            None,
-        );
-    }
-
-    #[test]
-    fn eof_fade_none_past_the_end() {
-        assert_eq!(
-            eof_fade_remaining_ms(Duration::from_secs(11), Duration::from_secs(10), 2000),
-            None,
-        );
-    }
-
-    #[test]
-    fn eof_fade_clamps_to_at_least_one_ms() {
-        assert_eq!(
-            eof_fade_remaining_ms(Duration::from_secs(10), Duration::from_secs(10), 2000),
-            Some(1),
-        );
-    }
 
     #[test]
     fn serialize_roundtrip_geometry_and_hold() {

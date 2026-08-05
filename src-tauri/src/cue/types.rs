@@ -293,9 +293,77 @@ pub fn linear_to_db(gain: f64) -> f64 {
     }
 }
 
+/// How long a natural-end (EOF) fade should run, once due.
+///
+/// Returns `Some(remaining_ms)` when the remaining action time has dropped
+/// inside the configured fade-out window — the fade then lands exactly on the
+/// cue's natural end — and `None` while it is still too early, or when no fade
+/// is configured.  Shared by every cue that fades itself out at EOF instead of
+/// hard-cutting: [`AudioCue`](crate::cue::audio_cue::AudioCue) (sound),
+/// [`VideoCue`](crate::cue::video_cue::VideoCue) (picture *and* sound) and
+/// [`ImageCue`](crate::cue::image_cue::ImageCue) (picture).
+pub fn eof_fade_remaining_ms(
+    action_elapsed: std::time::Duration,
+    total: std::time::Duration,
+    fade_ms: u64,
+) -> Option<u32> {
+    if fade_ms == 0 {
+        return None;
+    }
+    let remaining = total.checked_sub(action_elapsed)?;
+    let remaining_ms = remaining.as_millis() as u64;
+    if remaining_ms <= fade_ms {
+        Some(remaining_ms.max(1).min(u32::MAX as u64) as u32)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn eof_fade_not_due_early() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(1), Duration::from_secs(10), 2000),
+            None,
+        );
+    }
+
+    #[test]
+    fn eof_fade_due_inside_window() {
+        // 10s cue, 2s fade, 8.5s elapsed → 1500ms remaining.
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_millis(8500), Duration::from_secs(10), 2000),
+            Some(1500),
+        );
+    }
+
+    #[test]
+    fn eof_fade_none_without_fade_configured() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(9), Duration::from_secs(10), 0),
+            None,
+        );
+    }
+
+    #[test]
+    fn eof_fade_none_past_the_end() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(11), Duration::from_secs(10), 2000),
+            None,
+        );
+    }
+
+    #[test]
+    fn eof_fade_clamps_to_at_least_one_ms() {
+        assert_eq!(
+            eof_fade_remaining_ms(Duration::from_secs(10), Duration::from_secs(10), 2000),
+            Some(1),
+        );
+    }
 
     #[test]
     fn db_to_linear_unity() {

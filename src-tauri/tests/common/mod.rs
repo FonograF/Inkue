@@ -258,7 +258,7 @@ pub fn with_timeout<T: Send + 'static>(
 pub enum EngineCall {
     AudioPlayRouted { device: Option<String> },
     AudioPlayPausedRouted { device: Option<String> },
-    AudioStopVoice,
+    AudioStopVoice { fade_ms: u32 },
     AudioPauseVoice,
     AudioResumeVoice,
     AudioSetGain { gain: f32 },
@@ -295,8 +295,8 @@ impl AudioEngineApi for RecAudio {
         record(&self.0, EngineCall::AudioPlayPausedRouted { device: device_id.map(str::to_string) });
         Ok(Uuid::new_v4())
     }
-    fn stop_voice(&self, _v: VoiceId, _f: u32, _c: FadeCurve) -> Result<()> {
-        record(&self.0, EngineCall::AudioStopVoice);
+    fn stop_voice(&self, _v: VoiceId, fade_ms: u32, _c: FadeCurve) -> Result<()> {
+        record(&self.0, EngineCall::AudioStopVoice { fade_ms });
         Ok(())
     }
     fn pause_voice(&self, _v: VoiceId) -> Result<()> {
@@ -342,44 +342,50 @@ impl AudioEngineApi for RecAudio {
     }
 }
 
-struct RecOutput(CallLog);
+/// `video_audio` is the voice a Video Cue's audio track would occupy on the
+/// real engine — `None` (the default) models a silent video, `Some(id)` a
+/// video whose sound the cue can fade.
+struct RecOutput {
+    log: CallLog,
+    video_audio: Option<VoiceId>,
+}
 impl OutputEngineApi for RecOutput {
     fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
-        record(&self.0, EngineCall::OutputShowContent {
+        record(&self.log, EngineCall::OutputShowContent {
             path: req.file_path.to_string_lossy().into_owned(),
             is_image: req.is_image,
         });
         Ok(Uuid::new_v4())
     }
     fn stop_content(&self, _v: VoiceId, _vf: u32, _af: u32) {
-        record(&self.0, EngineCall::OutputStopContent);
+        record(&self.log, EngineCall::OutputStopContent);
     }
     fn hard_stop_current(&self) {}
     fn panic_stop(&self) {
-        record(&self.0, EngineCall::OutputPanicStop);
+        record(&self.log, EngineCall::OutputPanicStop);
     }
-    fn video_audio_voice(&self, _v: VoiceId) -> Option<VoiceId> { None }
+    fn video_audio_voice(&self, _v: VoiceId) -> Option<VoiceId> { self.video_audio }
     fn resync_audio_to_video(&self, _v: VoiceId) {}
     fn get_voice_opacity(&self, _v: VoiceId) -> f32 { 1.0 }
     fn set_voice_opacity(&self, _v: VoiceId, opacity: f32) {
-        record(&self.0, EngineCall::OutputSetOpacity { opacity });
+        record(&self.log, EngineCall::OutputSetOpacity { opacity });
     }
     fn stop_voice(&self, _v: VoiceId, _f: u32) -> Result<()> { Ok(()) }
     fn pause_voice(&self, _v: VoiceId) -> Result<()> { Ok(()) }
     fn resume_voice(&self, _v: VoiceId) -> Result<()> { Ok(()) }
     fn seek_voice_ms(&self, _v: VoiceId, _p: u64) {}
     fn show_text_overlay(&self, ass_text: &str, _s: Option<u32>) {
-        record(&self.0, EngineCall::OutputTextOverlay { ass: ass_text.to_string() });
+        record(&self.log, EngineCall::OutputTextOverlay { ass: ass_text.to_string() });
     }
     fn clear_text_overlay(&self) {
-        record(&self.0, EngineCall::OutputClearText);
+        record(&self.log, EngineCall::OutputClearText);
     }
     fn begin_eof_fade_out(&self, _v: VoiceId, fade_ms: u32) -> bool {
-        record(&self.0, EngineCall::OutputEofFade { fade_ms });
+        record(&self.log, EngineCall::OutputEofFade { fade_ms });
         true
     }
     fn devamp_voice(&self, _v: VoiceId, stop_at_end: bool) {
-        record(&self.0, EngineCall::OutputDevamp { stop_at_end });
+        record(&self.log, EngineCall::OutputDevamp { stop_at_end });
     }
 }
 
@@ -400,11 +406,26 @@ pub fn recording_context_with(
     fixtures: Vec<inkue_lib::engine::fixture::PatchedFixture>,
     input_patches: Vec<inkue_lib::engine::audio_input::InputPatch>,
 ) -> (CueContext, Receiver<CueEvent>, CallLog) {
+    build_recording_context(osc_patches, fixtures, input_patches, None)
+}
+
+/// [`recording_context`] whose output double reports a paired audio voice for
+/// every visual voice — i.e. a Video Cue that carries a sound track.
+pub fn recording_context_with_video_audio() -> (CueContext, Receiver<CueEvent>, CallLog) {
+    build_recording_context(Vec::new(), Vec::new(), Vec::new(), Some(Uuid::new_v4()))
+}
+
+fn build_recording_context(
+    osc_patches: Vec<inkue_lib::engine::osc_patch::OscPatch>,
+    fixtures: Vec<inkue_lib::engine::fixture::PatchedFixture>,
+    input_patches: Vec<inkue_lib::engine::audio_input::InputPatch>,
+    video_audio: Option<VoiceId>,
+) -> (CueContext, Receiver<CueEvent>, CallLog) {
     let log: CallLog = Arc::new(Mutex::new(Vec::new()));
     let (tx, rx) = unbounded();
     let ctx = CueContext::new(
         Arc::new(RecAudio(log.clone())),
-        Arc::new(RecOutput(log.clone())),
+        Arc::new(RecOutput { log: log.clone(), video_audio }),
         tx,
         500,
         Vec::new(),

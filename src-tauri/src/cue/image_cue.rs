@@ -17,8 +17,10 @@ use crate::engine::output_engine::{ContentRequest, LayerStyle, VideoGeometry, Vo
 use super::{
     context::{CueContext, CueEvent},
     traits::{Cue, CueFactory, RuntimeState},
-    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve, FadeSpec},
-    video_cue::eof_fade_remaining_ms,
+    types::{
+        eof_fade_remaining_ms, ContinueMode, CueColor, CueId, CueState, CueType, FadeCurve,
+        FadeSpec,
+    },
 };
 
 // ---------------------------------------------------------------------------

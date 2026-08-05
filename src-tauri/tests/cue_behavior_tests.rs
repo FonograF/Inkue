@@ -15,7 +15,10 @@ mod common;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
 
-use common::{full_registry, recording_context, recording_context_with, EngineCall};
+use common::{
+    full_registry, recording_context, recording_context_with, recording_context_with_video_audio,
+    EngineCall,
+};
 use inkue_lib::cue::group_cue::GroupCue;
 use inkue_lib::cue::light_cue::{LightCue, ParamTarget};
 use inkue_lib::cue::osc_cue::OscCue;
@@ -389,6 +392,170 @@ fn light_cue_go_with_unpatched_target_is_a_noop_not_a_crash() {
     assert!(
         log.lock().unwrap().iter().all(|c| !matches!(c, EngineCall::DmxSubmitFade { .. })),
         "an unpatched fixture target must submit no fade"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Natural-end (EOF) fade-out — issue #4
+// ---------------------------------------------------------------------------
+// A cue's fade-out used to apply to *manual* stops only: a cue left to reach
+// the end of its media hard-cut its sound. These prove the fade is now armed
+// from tick() so it lands on the natural end.
+
+/// Silent stereo buffer of `ms` milliseconds at 48 kHz, injected straight into
+/// a cue so the test needs no media file and no decoder.
+fn silence(ms: u64) -> (std::sync::Arc<Vec<f32>>, u16, u32, Duration) {
+    let frames = (48_000 * ms / 1000) as usize;
+    (std::sync::Arc::new(vec![0.0_f32; frames * 2]), 2, 48_000, Duration::from_millis(ms))
+}
+
+fn recorded_stop_fades(log: &common::CallLog) -> Vec<u32> {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|c| match c {
+            EngineCall::AudioStopVoice { fade_ms } => Some(*fade_ms),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn audio_cue_fades_out_when_it_reaches_its_natural_end() {
+    use inkue_lib::cue::audio_cue::AudioCue;
+    use inkue_lib::cue::types::{FadeCurve, FadeSpec};
+
+    let (ctx, _rx, log) = recording_context();
+    let mut cue = AudioCue::new();
+    cue.fade_out = Some(FadeSpec { duration_ms: 100, curve: FadeCurve::Linear });
+    let (samples, ch, sr, dur) = silence(300);
+    cue.accept_preloaded_audio(samples, ch, sr, dur);
+
+    cue.go(&ctx).unwrap();
+    cue.tick(&ctx).unwrap();
+    assert!(
+        recorded_stop_fades(&log).is_empty(),
+        "the fade-out must not start until the cue is inside its fade window",
+    );
+
+    std::thread::sleep(Duration::from_millis(240));
+    cue.tick(&ctx).unwrap();
+    cue.tick(&ctx).unwrap();
+
+    let fades = recorded_stop_fades(&log);
+    assert_eq!(fades.len(), 1, "the natural-end fade fires exactly once per play");
+    assert!(
+        (1..=100).contains(&fades[0]),
+        "the fade must be shortened to the time left before the end, got {}ms",
+        fades[0],
+    );
+}
+
+#[test]
+fn audio_cue_without_fade_out_still_hard_cuts_at_its_natural_end() {
+    use inkue_lib::cue::audio_cue::AudioCue;
+
+    let (ctx, _rx, log) = recording_context();
+    let mut cue = AudioCue::new();
+    let (samples, ch, sr, dur) = silence(60);
+    cue.accept_preloaded_audio(samples, ch, sr, dur);
+
+    cue.go(&ctx).unwrap();
+    std::thread::sleep(Duration::from_millis(80));
+    cue.tick(&ctx).unwrap();
+
+    assert!(
+        recorded_stop_fades(&log).is_empty(),
+        "with no fade-out configured the voice must be left to end on its own",
+    );
+}
+
+#[test]
+fn looping_audio_cue_never_arms_the_natural_end_fade() {
+    use inkue_lib::cue::audio_cue::AudioCue;
+    use inkue_lib::cue::types::{FadeCurve, FadeSpec};
+
+    let (ctx, _rx, log) = recording_context();
+    let mut cue = AudioCue::new();
+    cue.loop_count = u32::MAX; // infinite — there is no natural end to land on
+    cue.fade_out = Some(FadeSpec { duration_ms: 100, curve: FadeCurve::Linear });
+    let (samples, ch, sr, dur) = silence(60);
+    cue.accept_preloaded_audio(samples, ch, sr, dur);
+
+    cue.go(&ctx).unwrap();
+    std::thread::sleep(Duration::from_millis(80));
+    cue.tick(&ctx).unwrap();
+
+    assert!(
+        recorded_stop_fades(&log).is_empty(),
+        "an infinite loop has no natural end — nothing may fade it out",
+    );
+}
+
+#[test]
+fn video_cue_fades_its_sound_out_when_it_reaches_its_natural_end() {
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context_with_video_audio();
+
+    let mut vj = reg.create(&CueType::Video).unwrap().serialize();
+    vj["file_path"] = serde_json::json!("video/prologue.mp4");
+    vj["cached_duration_ms"] = serde_json::json!(300);
+    vj["fade_out_ms"] = serde_json::json!(100);
+    let mut cue = reg.from_json(vj).unwrap();
+
+    cue.go(&ctx).unwrap();
+    cue.tick(&ctx).unwrap();
+    assert!(
+        recorded_stop_fades(&log).is_empty(),
+        "the audio fade must not start until the cue is inside its fade window",
+    );
+
+    std::thread::sleep(Duration::from_millis(240));
+    cue.tick(&ctx).unwrap();
+    cue.tick(&ctx).unwrap();
+
+    let fades = recorded_stop_fades(&log);
+    assert_eq!(fades.len(), 1, "the natural-end audio fade fires exactly once per play");
+    assert!(
+        (1..=100).contains(&fades[0]),
+        "the fade must be shortened to the time left before the end, got {}ms",
+        fades[0],
+    );
+}
+
+#[test]
+fn video_cue_arms_picture_and_sound_fades_from_their_own_specs() {
+    // The picture fade is longer than the sound fade, so it must arm first —
+    // proof the two windows are tracked independently.
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context_with_video_audio();
+
+    let mut vj = reg.create(&CueType::Video).unwrap().serialize();
+    vj["file_path"] = serde_json::json!("video/prologue.mp4");
+    vj["cached_duration_ms"] = serde_json::json!(400);
+    vj["video_fade_out_ms"] = serde_json::json!(300);
+    vj["fade_out_ms"] = serde_json::json!(80);
+    let mut cue = reg.from_json(vj).unwrap();
+
+    cue.go(&ctx).unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    cue.tick(&ctx).unwrap();
+
+    assert!(
+        log.lock().unwrap().iter().any(|c| matches!(c, EngineCall::OutputEofFade { .. })),
+        "the picture fade arms as soon as its own (longer) window opens",
+    );
+    assert!(
+        recorded_stop_fades(&log).is_empty(),
+        "the shorter sound fade must still be waiting for its own window",
+    );
+
+    std::thread::sleep(Duration::from_millis(200));
+    cue.tick(&ctx).unwrap();
+    assert_eq!(
+        recorded_stop_fades(&log).len(),
+        1,
+        "the sound fade arms on its own window, once",
     );
 }
 

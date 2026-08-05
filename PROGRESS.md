@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 286 pass, 0 failures** (verified 2026-07-13; run the full
+**`cargo test --lib` → 300 pass, 0 failures** (verified 2026-08-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -23,7 +23,8 @@ QF round-trip; network interface resolution rules; bounded device enumeration
 (`run_bounded` timeout guard); **Group modes (Playlist exclusivity/loop, StartRandom
 shuffle-bag, per-mode is_complete), stable cue numbering, Fade pan + fade-on-group +
 Stop-at-End**; **VideoGeometry (serde roundtrip/defaults, log2 zoom, fit props,
-pixel-crop math + clamping), EOF-fade window math, geometry/hold serialization
+pixel-crop math + clamping), EOF-fade window math (audio + picture), hwdec
+failure detection + software-decode latch, geometry/hold serialization
 roundtrips, output-screen resolution fallback, OutputTransform composition +
 TestPattern URLs**. Plus integration suites
 (`cue_behavior_tests`, `transport_go_tests`, …): group completion end-to-end, fade
@@ -205,6 +206,24 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-08-05) — GitHub issues #4 and #5
+
+- **Fade Out was ignored when a cue reached its own end** (issue #4,
+  user-reported): the sound of an Audio Cue — and of a Video Cue — hard-cut at
+  EOF; the fade only ever applied to a *manual* Stop (or a Stop Cue), which is
+  where `fade_out` was read. `VideoCue` already fell its **picture** out at the
+  natural end (`tick_eof_fade`), so the same treatment now covers sound:
+  `AudioCue::tick` and the audio half of `VideoCue::tick_eof_fade` arm the
+  fade once the remaining action time drops inside the fade-out window, so it
+  lands exactly on the end of the media. Picture and sound arm from their own
+  spec, independently. Skipped where there is no natural end to land on
+  (infinite loops, vamping slices). The shared window math
+  (`eof_fade_remaining_ms`) moved from `video_cue.rs` to `cue/types.rs` — three
+  cue types use it now. Tests 297 → **300** + 5 behavioural
+  (`cue_behavior_tests`: audio fades at EOF and only once, no fade configured =
+  no stop, infinite loop never arms, video sound fades at EOF, picture/sound
+  windows tracked independently).
 
 ### Unreleased (2026-07-14) — OSC monitor matched flag comes from the parser
 
