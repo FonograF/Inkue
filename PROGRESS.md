@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-11
 
-## Current version: 1.3.1 released — OSC media-progress feedback + OSC seek; vamp progress bars follow the media position
+## Current version: 1.3.2 released — fade-out now lands on a cue's natural end; automatic fallback to software decoding when hwdec init fails
 
 ## cargo build result
 
@@ -207,7 +207,7 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
-### Unreleased (2026-08-05) — GitHub issues #4 and #5
+### 1.3.2 (2026-08-05) — GitHub issues #4 and #5
 
 - **Fade Out was ignored when a cue reached its own end** (issue #4,
   user-reported): the sound of an Audio Cue — and of a Video Cue — hard-cut at
@@ -261,7 +261,7 @@ fix, not the full investigation.
   the d3d11 fallback path specifically (on NVIDIA, mpv tries vulkan/cuda and
   falls back cleanly), which is what `INKUE_HWDEC=d3d11va-copy` is for.
 
-### Unreleased (2026-07-14) — OSC monitor matched flag comes from the parser
+### 1.3.2 (2026-07-14) — OSC monitor matched flag comes from the parser
 
 - **OSC monitor mislabeled valid addresses as "unknown"** (user-reported: seek
   worked but showed red): `OscMonitor.tsx` kept its own copy of the known
