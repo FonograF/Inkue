@@ -142,6 +142,17 @@ pub(super) fn mpv_event_loop(
                             "info"            => log::info! ("[mpv] {trimmed}"),
                             _                 => log::debug!("[mpv] {trimmed}"),
                         }
+                        // libavcodec logging is process-global: mpv routes it to
+                        // the **first** core created, which is this overlay
+                        // context — so a video slot's `h264: Failed setup for
+                        // format d3d11: hwaccel initialisation returned error.`
+                        // lands here, never on the slot that loaded the file
+                        // (verified: a second core loading the file receives
+                        // none of them).  This is therefore where the
+                        // software-decoding fallback for issue #5 is armed.
+                        if super::slot::reports_hwdec_failure(trimmed) {
+                            super::slot::fall_back_to_software("output");
+                        }
                     }
                 }
             }

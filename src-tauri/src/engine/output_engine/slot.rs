@@ -40,6 +40,29 @@ static LAYER_SEQ: AtomicU64 = AtomicU64::new(1);
 /// From then on every slot decodes in software — see [`fall_back_to_software`].
 static SOFTWARE_DECODE_ONLY: AtomicBool = AtomicBool::new(false);
 
+/// Operator override for the `hwdec` mode, from the `INKUE_HWDEC` environment
+/// variable (any value libmpv accepts: `no`, `auto-copy`, `d3d11va-copy`, …).
+///
+/// An explicit choice is **pinned**: it also disables the automatic fallback
+/// below, so setting a backend on purpose — to reproduce a decoder bug, or to
+/// work around one — is not silently undone. Read once, on first use.
+static HWDEC_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+
+fn hwdec_override() -> Option<&'static str> {
+    HWDEC_OVERRIDE
+        .get_or_init(|| {
+            let mode = std::env::var("INKUE_HWDEC")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            if let Some(m) = &mode {
+                log::info!("[slot] INKUE_HWDEC={m} — hwdec pinned, automatic fallback disabled");
+            }
+            mode
+        })
+        .as_deref()
+}
+
 /// The `hwdec` mode new slots are created with.
 ///
 /// `auto-copy` reads decoded frames back into system memory, which is the only
@@ -47,24 +70,30 @@ static SOFTWARE_DECODE_ONLY: AtomicBool = AtomicBool::new(false);
 /// Once [`SOFTWARE_DECODE_ONLY`] is latched, slots stop asking for hardware
 /// decoding altogether.
 fn hwdec_mode() -> &'static str {
-    if SOFTWARE_DECODE_ONLY.load(Ordering::Relaxed) {
-        "no"
-    } else {
-        "auto-copy"
+    resolve_hwdec_mode(hwdec_override(), SOFTWARE_DECODE_ONLY.load(Ordering::Relaxed))
+}
+
+/// Precedence, as an executable spec: an operator's pin wins over everything,
+/// then a latched failure, then the default.
+fn resolve_hwdec_mode(pinned: Option<&'static str>, software_only: bool) -> &'static str {
+    match (pinned, software_only) {
+        (Some(mode), _) => mode,
+        (None, true) => "no",
+        (None, false) => "auto-copy",
     }
 }
 
 /// `true` when an mpv log line reports that hardware decoding could not be set
 /// up — the GPU/driver refuses the codec profile, or the hwaccel device cannot
 /// be created at all.  mpv words it the same way for every backend (`d3d11` on
-/// Windows, `vaapi` on Linux, `videotoolbox` on macOS), so one pattern covers
-/// all three; the reason string is matched too in case the wording of the
-/// first half ever changes.
+/// Windows, `vulkan`/`cuda`/`vaapi` elsewhere), so one pattern covers them all;
+/// the reason string is matched too in case the wording of the first half ever
+/// changes.
 ///
 /// mpv retries the failure per frame and can hand the renderer partially
 /// decoded frames, which is what shows up as a green/torn picture; the cure is
 /// to stop asking for hardware decoding (issue #5).
-fn reports_hwdec_failure(text: &str) -> bool {
+pub(super) fn reports_hwdec_failure(text: &str) -> bool {
     text.contains("Failed setup for format")
         || text.contains("hwaccel initialisation returned error")
 }
@@ -905,8 +934,13 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                 if matches!(level.as_ref(), "fatal" | "error") {
                     log::error!("[slot {}] [mpv] {trimmed}", slot.index);
                 }
+                // Belt and braces: libavcodec's messages (`h264: Failed setup
+                // for format …`) reach the *first* mpv core created — the
+                // overlay context, which is where the detection actually
+                // fires (see `mpv_events`).  A slot only sees them if mpv ever
+                // changes that routing, or if a slot happens to be first.
                 if reports_hwdec_failure(trimmed) {
-                    fall_back_to_software(&slot);
+                    fall_back_to_software(&format!("slot {}", slot.index));
                 }
             }
 
@@ -925,14 +959,20 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
 /// video loads start paused.  The switch is latched for the session and
 /// applied to every existing slot: one GPU that refuses a codec profile
 /// refuses it in every slot.
-fn fall_back_to_software(failing_slot: &Arc<VideoSlot>) {
+///
+/// `origin` names the context that saw the message, for the log line only —
+/// the failure is a property of the machine, not of one slot.  Skipped when
+/// the operator pinned a mode with `INKUE_HWDEC`.
+pub(super) fn fall_back_to_software(origin: &str) {
+    if hwdec_override().is_some() {
+        return;
+    }
     if SOFTWARE_DECODE_ONLY.swap(true, Ordering::SeqCst) {
         return; // Already software-only — mpv repeats the message per frame.
     }
     log::warn!(
-        "[slot {}] hardware decoding failed — switching every video slot to \
+        "[{origin}] hardware decoding failed — switching every video slot to \
          software decoding for this session",
-        failing_slot.index,
     );
     for slot in all_slots() {
         unsafe {
@@ -1037,12 +1077,20 @@ mod tests {
 
     #[test]
     fn hwdec_mode_falls_back_to_software_once_latched() {
-        // The latch is process-wide, so restore it for the other tests.
-        let previous = SOFTWARE_DECODE_ONLY.swap(false, Ordering::SeqCst);
-        assert_eq!(hwdec_mode(), "auto-copy");
-        SOFTWARE_DECODE_ONLY.store(true, Ordering::SeqCst);
-        assert_eq!(hwdec_mode(), "no", "a latched failure disables hwdec for new slots");
-        SOFTWARE_DECODE_ONLY.store(previous, Ordering::SeqCst);
+        assert_eq!(resolve_hwdec_mode(None, false), "auto-copy");
+        assert_eq!(
+            resolve_hwdec_mode(None, true),
+            "no",
+            "a latched failure disables hwdec for new slots",
+        );
+    }
+
+    #[test]
+    fn an_operator_pin_outranks_the_automatic_fallback() {
+        // INKUE_HWDEC is set on purpose (bug repro, or a known-bad GPU path):
+        // the automatic fallback must not silently undo it.
+        assert_eq!(resolve_hwdec_mode(Some("d3d11va-copy"), true), "d3d11va-copy");
+        assert_eq!(resolve_hwdec_mode(Some("no"), false), "no");
     }
 
     #[test]

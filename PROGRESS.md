@@ -229,18 +229,37 @@ fix, not the full investigation.
   Windows 11): libmpv failed to initialise d3d11 hardware decoding for one
   file (`Failed setup for format d3d11: hwaccel initialisation returned
   error.`) and did not recover — it retried per frame and handed the
-  compositor half-decoded frames. Video slots now watch their own mpv log
-  (`mpv_request_log_messages` at `warn`, which the slot's `LOG_MESSAGE` arm
-  previously never received) and, on a hwdec-init failure, latch the whole
-  session to software decoding: `hwdec=no` is applied live to every existing
-  slot — which reinitialises the decoder in place, normally before the first
-  frame is even revealed, since video loads start paused — and new slots are
-  created with it. The overlay context also stopped asking for hardware
+  compositor half-decoded frames. On a hwdec-init failure Inkue now latches
+  the whole session to software decoding: `hwdec=no` is applied live to every
+  existing slot — which reinitialises the decoder in place, normally before
+  the first frame is even revealed, since video loads start paused — and new
+  slots are created with it.
+
+  **Where the detection lives matters.** libavcodec's logging is
+  process-global and mpv routes it to the **first core created** — the overlay
+  context — so a slot's `h264: Failed setup for format …` never reaches the
+  slot that loaded the file (measured: a second core loading the failing file
+  receives none of them; the first core, which loaded nothing, receives them
+  all). The detection therefore sits in `mpv_events` (overlay), with the slot
+  handler kept as a backstop should that routing ever change. Slots do now
+  request log messages, which they never did before — their `LOG_MESSAGE` arm
+  was dead code.
+
+  `INKUE_HWDEC` pins the mode (`no`, `auto-copy`, `d3d11va-copy`, …) and
+  disables the automatic fallback, so an explicit choice — reproducing a
+  decoder bug, or working around a known-bad GPU path in the field — is never
+  silently undone. The overlay context also stopped asking for hardware
   decoding altogether: it only ever renders the timer OSD, Text Cues and
   lavfi test patterns, all software sources, so a d3d11 device there was pure
   failure surface. Tests: hwdec log-line detection (verbatim from the report,
-  plus the Linux/vaapi wording), no false positive on ordinary mpv warnings,
-  and the `hwdec` mode latch.
+  plus the vaapi wording), no false positive on ordinary mpv warnings, the
+  latch, and the pin outranking the latch.
+
+  Repro assets: an H.264 file the GPU refuses to decode in hardware — 4:2:2,
+  4:4:4 or 10-bit, all outside NVDEC's 8-bit 4:2:0-only H.264 support — makes
+  any machine emit the failure. The *visual* artefact is narrower: it needs
+  the d3d11 fallback path specifically (on NVIDIA, mpv tries vulkan/cuda and
+  falls back cleanly), which is what `INKUE_HWDEC=d3d11va-copy` is for.
 
 ### Unreleased (2026-07-14) — OSC monitor matched flag comes from the parser
 
