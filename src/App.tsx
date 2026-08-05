@@ -1253,6 +1253,7 @@ export default function App() {
             { label: "Output Surface", checked: outputSurfaceVisible,  onClick: () => void handleToggleSurface() },
           ]}
         />
+        <ActionMenu onDone={handleRefresh} />
 
         {/* Drag region: app name + workspace name */}
         <div
@@ -1389,8 +1390,14 @@ export default function App() {
             onAdd={handleAddDevamp}
             onDragStart={(e) => dispatchCueDrag("devamp", e)}
           />
-          <ActionMenu buttonStyle={toolbarBtn} onDone={handleRefresh} />
-          <button style={toolbarBtn} onClick={() => setInspectorOpen((v) => !v)} title="Toggle Inspector (Ctrl+I)">
+          {/* `marginLeft: auto` pins the Inspector toggle to the right edge of
+              its flex line, away from the cue-creation buttons it does not
+              belong with — and it stays pinned when the row wraps. */}
+          <button
+            style={{ ...toolbarBtn, marginLeft: "auto" }}
+            onClick={() => setInspectorOpen((v) => !v)}
+            title="Toggle Inspector (Ctrl+I)"
+          >
             Inspector
           </button>
         </div>

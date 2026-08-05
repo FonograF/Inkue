@@ -1,56 +1,64 @@
-// "Action" toolbar dropdown — list-wide operations that aren't cue creation.
+// "Action" menu-bar dropdown — list-wide operations that aren't cue creation.
+// Sits in the title bar next to File and View, and matches their look and
+// dismissal behaviour (backdrop click-catcher, same z-index layering).
 // Currently: Renumber All Cues (resequence numbers on demand, since reordering
 // no longer renumbers automatically by default).
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { renumberCues } from "../../lib/commands";
 
 interface Props {
-  buttonStyle: React.CSSProperties;
   onDone: () => void;
 }
 
-export function ActionMenu({ buttonStyle, onDone }: Props) {
+export function ActionMenu({ onDone }: Props) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [open]);
+  const close = () => setOpen(false);
 
   const runRenumber = async () => {
-    setOpen(false);
+    close();
     await renumberCues().catch(console.error);
     onDone();
   };
 
   return (
-    <div ref={ref} style={{ position: "relative" }}>
-      <button style={buttonStyle} onClick={() => setOpen((v) => !v)} title="List-wide actions">
-        Action ▾
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      {open && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9990 }} onClick={close} />
+      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        title="List-wide actions"
+        style={{
+          background: open ? "var(--wc-bg-surface)" : "transparent",
+          border: "none", color: "var(--wc-text)", cursor: "pointer",
+          fontSize: 12, padding: "3px 8px", borderRadius: 4, userSelect: "none",
+        }}
+      >
+        Action
       </button>
       {open && (
         <div
           style={{
-            position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 1000,
-            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
-            borderRadius: 6, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", minWidth: 200, padding: 4,
+            position: "absolute", left: 0, top: "100%", marginTop: 2,
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)", borderRadius: 6,
+            padding: "4px 0", minWidth: 200,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.7)", zIndex: 9999,
           }}
         >
           <button
-            onClick={() => void runRenumber()}
+            onMouseEnter={() => setHovered("renumber")}
+            onMouseLeave={() => setHovered(null)}
+            onClick={(e) => { e.stopPropagation(); void runRenumber(); }}
             style={{
-              display: "block", width: "100%", textAlign: "left", padding: "6px 10px",
-              background: "transparent", border: "none", color: "var(--wc-text)",
-              fontSize: 12, cursor: "pointer", borderRadius: 4,
+              display: "flex", alignItems: "center",
+              width: "100%", padding: "6px 14px",
+              background: hovered === "renumber" ? "var(--wc-bg-hover)" : "transparent",
+              border: "none", color: "var(--wc-text)", fontSize: 13,
+              cursor: "pointer", textAlign: "left",
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--wc-accent)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
             Renumber All Cues
           </button>
