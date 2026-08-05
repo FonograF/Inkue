@@ -401,6 +401,12 @@ fn light_cue_go_with_unpatched_target_is_a_noop_not_a_crash() {
 // A cue's fade-out used to apply to *manual* stops only: a cue left to reach
 // the end of its media hard-cut its sound. These prove the fade is now armed
 // from tick() so it lands on the natural end.
+//
+// The playhead is moved with `seek()` rather than by sleeping: the fade window
+// deliberately closes once the cue is *past* its end, so a test that sleeps
+// towards the window races the scheduler and misses it on a loaded machine
+// (it did, on the macOS CI runner). Seeking re-anchors the action clock
+// exactly, which makes these deterministic and instant.
 
 /// Silent stereo buffer of `ms` milliseconds at 48 kHz, injected straight into
 /// a cue so the test needs no media file and no decoder.
@@ -427,8 +433,9 @@ fn audio_cue_fades_out_when_it_reaches_its_natural_end() {
 
     let (ctx, _rx, log) = recording_context();
     let mut cue = AudioCue::new();
-    cue.fade_out = Some(FadeSpec { duration_ms: 100, curve: FadeCurve::Linear });
-    let (samples, ch, sr, dur) = silence(300);
+    // 3 s of media with a 1 s fade — the window opens at 2 s.
+    cue.fade_out = Some(FadeSpec { duration_ms: 1000, curve: FadeCurve::Linear });
+    let (samples, ch, sr, dur) = silence(3000);
     cue.accept_preloaded_audio(samples, ch, sr, dur);
 
     cue.go(&ctx).unwrap();
@@ -438,14 +445,14 @@ fn audio_cue_fades_out_when_it_reaches_its_natural_end() {
         "the fade-out must not start until the cue is inside its fade window",
     );
 
-    std::thread::sleep(Duration::from_millis(240));
+    cue.seek(2500, &ctx); // 500 ms left — inside the window
     cue.tick(&ctx).unwrap();
     cue.tick(&ctx).unwrap();
 
     let fades = recorded_stop_fades(&log);
     assert_eq!(fades.len(), 1, "the natural-end fade fires exactly once per play");
     assert!(
-        (1..=100).contains(&fades[0]),
+        (1..=1000).contains(&fades[0]),
         "the fade must be shortened to the time left before the end, got {}ms",
         fades[0],
     );
@@ -457,11 +464,11 @@ fn audio_cue_without_fade_out_still_hard_cuts_at_its_natural_end() {
 
     let (ctx, _rx, log) = recording_context();
     let mut cue = AudioCue::new();
-    let (samples, ch, sr, dur) = silence(60);
+    let (samples, ch, sr, dur) = silence(3000);
     cue.accept_preloaded_audio(samples, ch, sr, dur);
 
     cue.go(&ctx).unwrap();
-    std::thread::sleep(Duration::from_millis(80));
+    cue.seek(2900, &ctx); // 100 ms from the end
     cue.tick(&ctx).unwrap();
 
     assert!(
@@ -478,12 +485,12 @@ fn looping_audio_cue_never_arms_the_natural_end_fade() {
     let (ctx, _rx, log) = recording_context();
     let mut cue = AudioCue::new();
     cue.loop_count = u32::MAX; // infinite — there is no natural end to land on
-    cue.fade_out = Some(FadeSpec { duration_ms: 100, curve: FadeCurve::Linear });
-    let (samples, ch, sr, dur) = silence(60);
+    cue.fade_out = Some(FadeSpec { duration_ms: 1000, curve: FadeCurve::Linear });
+    let (samples, ch, sr, dur) = silence(3000);
     cue.accept_preloaded_audio(samples, ch, sr, dur);
 
     cue.go(&ctx).unwrap();
-    std::thread::sleep(Duration::from_millis(80));
+    cue.seek(2900, &ctx);
     cue.tick(&ctx).unwrap();
 
     assert!(
@@ -499,8 +506,8 @@ fn video_cue_fades_its_sound_out_when_it_reaches_its_natural_end() {
 
     let mut vj = reg.create(&CueType::Video).unwrap().serialize();
     vj["file_path"] = serde_json::json!("video/prologue.mp4");
-    vj["cached_duration_ms"] = serde_json::json!(300);
-    vj["fade_out_ms"] = serde_json::json!(100);
+    vj["cached_duration_ms"] = serde_json::json!(3000);
+    vj["fade_out_ms"] = serde_json::json!(1000);
     let mut cue = reg.from_json(vj).unwrap();
 
     cue.go(&ctx).unwrap();
@@ -510,14 +517,14 @@ fn video_cue_fades_its_sound_out_when_it_reaches_its_natural_end() {
         "the audio fade must not start until the cue is inside its fade window",
     );
 
-    std::thread::sleep(Duration::from_millis(240));
+    cue.seek(2500, &ctx); // 500 ms left — inside the window
     cue.tick(&ctx).unwrap();
     cue.tick(&ctx).unwrap();
 
     let fades = recorded_stop_fades(&log);
     assert_eq!(fades.len(), 1, "the natural-end audio fade fires exactly once per play");
     assert!(
-        (1..=100).contains(&fades[0]),
+        (1..=1000).contains(&fades[0]),
         "the fade must be shortened to the time left before the end, got {}ms",
         fades[0],
     );
@@ -532,13 +539,14 @@ fn video_cue_arms_picture_and_sound_fades_from_their_own_specs() {
 
     let mut vj = reg.create(&CueType::Video).unwrap().serialize();
     vj["file_path"] = serde_json::json!("video/prologue.mp4");
-    vj["cached_duration_ms"] = serde_json::json!(400);
-    vj["video_fade_out_ms"] = serde_json::json!(300);
-    vj["fade_out_ms"] = serde_json::json!(80);
+    // 5 s of media: the picture window opens at 2 s, the sound window at 3.5 s.
+    vj["cached_duration_ms"] = serde_json::json!(5000);
+    vj["video_fade_out_ms"] = serde_json::json!(3000);
+    vj["fade_out_ms"] = serde_json::json!(1500);
     let mut cue = reg.from_json(vj).unwrap();
 
     cue.go(&ctx).unwrap();
-    std::thread::sleep(Duration::from_millis(150));
+    cue.seek(2500, &ctx); // inside the picture window, short of the sound one
     cue.tick(&ctx).unwrap();
 
     assert!(
@@ -550,7 +558,7 @@ fn video_cue_arms_picture_and_sound_fades_from_their_own_specs() {
         "the shorter sound fade must still be waiting for its own window",
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    cue.seek(4000, &ctx); // now inside the sound window too
     cue.tick(&ctx).unwrap();
     assert_eq!(
         recorded_stop_fades(&log).len(),
