@@ -36,6 +36,39 @@ pub(super) const MAX_VIDEO_SLOTS: usize = 8;
 /// Stacking sequence for automatic layering (newest on top) and steal order.
 static LAYER_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// Set once a slot has seen libmpv fail to initialise hardware decoding.
+/// From then on every slot decodes in software — see [`fall_back_to_software`].
+static SOFTWARE_DECODE_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// The `hwdec` mode new slots are created with.
+///
+/// `auto-copy` reads decoded frames back into system memory, which is the only
+/// hwdec family that composites correctly through our own GL render context.
+/// Once [`SOFTWARE_DECODE_ONLY`] is latched, slots stop asking for hardware
+/// decoding altogether.
+fn hwdec_mode() -> &'static str {
+    if SOFTWARE_DECODE_ONLY.load(Ordering::Relaxed) {
+        "no"
+    } else {
+        "auto-copy"
+    }
+}
+
+/// `true` when an mpv log line reports that hardware decoding could not be set
+/// up — the GPU/driver refuses the codec profile, or the hwaccel device cannot
+/// be created at all.  mpv words it the same way for every backend (`d3d11` on
+/// Windows, `vaapi` on Linux, `videotoolbox` on macOS), so one pattern covers
+/// all three; the reason string is matched too in case the wording of the
+/// first half ever changes.
+///
+/// mpv retries the failure per frame and can hand the renderer partially
+/// decoded frames, which is what shows up as a green/torn picture; the cure is
+/// to stop asking for hardware decoding (issue #5).
+fn reports_hwdec_failure(text: &str) -> bool {
+    text.contains("Failed setup for format")
+        || text.contains("hwaccel initialisation returned error")
+}
+
 /// The slot registry.  Grow-only; the render thread iterates it every frame.
 static SLOTS: OnceLock<RwLock<Vec<Arc<VideoSlot>>>> = OnceLock::new();
 
@@ -276,7 +309,7 @@ fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc
 
     unsafe {
         opt_str(lib, ctx, "vo", "libmpv");
-        opt_str(lib, ctx, "hwdec", "auto-copy");
+        opt_str(lib, ctx, "hwdec", hwdec_mode());
         opt_str(lib, ctx, "osc", "no");
         opt_str(lib, ctx, "osd-level", "0");
         opt_str(lib, ctx, "input-default-bindings", "no");
@@ -305,6 +338,10 @@ fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc
         // the handler is a cheap lock + compare when no plan is active).
         let time_pos = cs("time-pos");
         (lib.mpv_observe_property)(ctx, 0, time_pos.as_ptr(), MPV_FORMAT_DOUBLE);
+
+        // Decoder diagnostics reach the event thread as log messages — that is
+        // how a failed hwdec init is detected and worked around.
+        (lib.mpv_request_log_messages)(ctx, cs("warn").as_ptr());
     }
 
     let index = registry().read().map(|v| v.len()).unwrap_or(0);
@@ -856,19 +893,57 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
 
             MPV_EVENT_LOG_MESSAGE => {
                 let data = unsafe { (*event).data as *const MpvEventLogMessage };
-                if !data.is_null() {
-                    let level = unsafe { std::ffi::CStr::from_ptr((*data).level) }.to_string_lossy();
-                    let text = unsafe { std::ffi::CStr::from_ptr((*data).text) }.to_string_lossy();
-                    let trimmed = text.trim_end_matches('\n');
-                    if !trimmed.is_empty() && matches!(level.as_ref(), "fatal" | "error") {
-                        log::error!("[slot {}] [mpv] {trimmed}", slot.index);
-                    }
+                if data.is_null() {
+                    continue;
+                }
+                let level = unsafe { std::ffi::CStr::from_ptr((*data).level) }.to_string_lossy();
+                let text = unsafe { std::ffi::CStr::from_ptr((*data).text) }.to_string_lossy();
+                let trimmed = text.trim_end_matches('\n');
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if matches!(level.as_ref(), "fatal" | "error") {
+                    log::error!("[slot {}] [mpv] {trimmed}", slot.index);
+                }
+                if reports_hwdec_failure(trimmed) {
+                    fall_back_to_software(&slot);
                 }
             }
 
             _ => {}
         }
     }
+}
+
+/// Drop every slot back to software decoding after a failed hwdec init.
+///
+/// libmpv does not reliably recover on its own: it retries the hardware
+/// decoder frame after frame and can hand the compositor half-decoded frames,
+/// which shows up as a green cast with a torn band across the picture (issue
+/// #5).  Setting `hwdec=no` reinitialises the decoder in place, so the picture
+/// corrects itself — usually before the first frame is even revealed, because
+/// video loads start paused.  The switch is latched for the session and
+/// applied to every existing slot: one GPU that refuses a codec profile
+/// refuses it in every slot.
+fn fall_back_to_software(failing_slot: &Arc<VideoSlot>) {
+    if SOFTWARE_DECODE_ONLY.swap(true, Ordering::SeqCst) {
+        return; // Already software-only — mpv repeats the message per frame.
+    }
+    log::warn!(
+        "[slot {}] hardware decoding failed — switching every video slot to \
+         software decoding for this session",
+        failing_slot.index,
+    );
+    for slot in all_slots() {
+        unsafe {
+            (slot.lib.mpv_set_property_string)(
+                slot.mpv_ctx.0,
+                cs("hwdec").as_ptr(),
+                cs("no").as_ptr(),
+            );
+        }
+    }
+    super::render::wake();
 }
 
 /// Program mpv's ab-loop for `seg` — or clear it when the segment plays once.
@@ -938,6 +1013,37 @@ pub(super) fn position_ms(slot: &Arc<VideoSlot>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hwdec_failure_detected_from_the_real_mpv_log_lines() {
+        // Verbatim from issue #5 (Windows 11, libmpv, H.264 in MP4).
+        assert!(reports_hwdec_failure(
+            "h264: Failed setup for format d3d11: hwaccel initialisation returned error."
+        ));
+        // Linux/macOS wording of the same failure.
+        assert!(reports_hwdec_failure(
+            "hevc: Failed setup for format vaapi: hwaccel initialisation returned error."
+        ));
+    }
+
+    #[test]
+    fn ordinary_mpv_warnings_do_not_trigger_the_software_fallback() {
+        assert!(!reports_hwdec_failure(
+            "mov,mp4,m4a,3gp,3g2,mj2: Detected creation time before 1970, parsing as unix timestamp."
+        ));
+        assert!(!reports_hwdec_failure("h264: no frame!"));
+        assert!(!reports_hwdec_failure("Using hardware decoding (d3d11va-copy)."));
+    }
+
+    #[test]
+    fn hwdec_mode_falls_back_to_software_once_latched() {
+        // The latch is process-wide, so restore it for the other tests.
+        let previous = SOFTWARE_DECODE_ONLY.swap(false, Ordering::SeqCst);
+        assert_eq!(hwdec_mode(), "auto-copy");
+        SOFTWARE_DECODE_ONLY.store(true, Ordering::SeqCst);
+        assert_eq!(hwdec_mode(), "no", "a latched failure disables hwdec for new slots");
+        SOFTWARE_DECODE_ONLY.store(previous, Ordering::SeqCst);
+    }
 
     #[test]
     fn layer_key_explicit_bands_order_below_automatic() {

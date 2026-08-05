@@ -212,7 +212,12 @@ impl OutputEngine {
                 opt_str(&lib, ctx, "alpha", "yes");
             }
 
-            opt_str(&lib, ctx, "hwdec", "auto");
+            // The overlay context never decodes real media — it carries the
+            // timer OSD, Text Cues and the lavfi-generated test patterns, all
+            // of which are software sources.  Asking for hardware decoding
+            // here only creates a d3d11/vaapi device that can fail to
+            // initialise and pollute the log (issue #5); it buys nothing.
+            opt_str(&lib, ctx, "hwdec", "no");
 
             opt_str(&lib, ctx, "osc", "no");
             opt_str(&lib, ctx, "osd-level", "1");

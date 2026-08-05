@@ -225,6 +225,23 @@ fix, not the full investigation.
   no stop, infinite loop never arms, video sound fades at EOF, picture/sound
   windows tracked independently).
 
+- **Green tint + torn picture on some H.264 files** (issue #5, user-reported,
+  Windows 11): libmpv failed to initialise d3d11 hardware decoding for one
+  file (`Failed setup for format d3d11: hwaccel initialisation returned
+  error.`) and did not recover — it retried per frame and handed the
+  compositor half-decoded frames. Video slots now watch their own mpv log
+  (`mpv_request_log_messages` at `warn`, which the slot's `LOG_MESSAGE` arm
+  previously never received) and, on a hwdec-init failure, latch the whole
+  session to software decoding: `hwdec=no` is applied live to every existing
+  slot — which reinitialises the decoder in place, normally before the first
+  frame is even revealed, since video loads start paused — and new slots are
+  created with it. The overlay context also stopped asking for hardware
+  decoding altogether: it only ever renders the timer OSD, Text Cues and
+  lavfi test patterns, all software sources, so a d3d11 device there was pure
+  failure surface. Tests: hwdec log-line detection (verbatim from the report,
+  plus the Linux/vaapi wording), no false positive on ordinary mpv warnings,
+  and the `hwdec` mode latch.
+
 ### Unreleased (2026-07-14) — OSC monitor matched flag comes from the parser
 
 - **OSC monitor mislabeled valid addresses as "unknown"** (user-reported: seek
