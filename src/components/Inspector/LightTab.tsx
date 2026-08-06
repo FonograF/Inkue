@@ -11,6 +11,7 @@ import { hexToRgb, paramIndexOfKind, rgbToHex } from "../../lib/fixtureColor";
 import { Field, inputStyle } from "./Field";
 import { CurveSelect } from "../common/CurveSelect";
 import { Select } from "../common/Select";
+import { DragNumber } from "../common/DragNumber";
 
 interface Props {
   cue: LightCueData;
@@ -213,10 +214,9 @@ export function LightTab({ cue, onSave }: Props) {
   return (
     <div>
       <Field label="Fade time (s)">
-        <input
+        <DragNumber
           key={`fade-${cue.id}`}
           style={inputStyle}
-          type="number"
           step="0.1"
           min="0"
           defaultValue={(fade.duration_ms / 1000).toFixed(2)}

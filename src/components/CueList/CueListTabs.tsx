@@ -8,6 +8,7 @@ import {
 } from "../../lib/commands";
 import type { CueListTcConfig, TcRate, TcOnStop } from "../../lib/types";
 import { Select } from "../common/Select";
+import { DragNumber } from "../common/DragNumber";
 
 export function CueListTabs({ onRefresh }: { onRefresh: () => void }) {
   const { cueLists, activeCueListId, refreshCueLists } = useWorkspaceStore();
@@ -317,8 +318,7 @@ function CueListTcSync({ activeCueListId }: { activeCueListId: string | null }) 
 
           <div>
             <div style={tcFieldLabel}>Freewheel (ms)</div>
-            <input
-              type="number"
+            <DragNumber
               min={0}
               max={2000}
               step={50}

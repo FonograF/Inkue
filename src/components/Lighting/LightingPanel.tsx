@@ -16,6 +16,7 @@ import type { DmxUniverseSnapshot, OutputProtocol, UniverseOutput } from "../../
 import { FixturePatch } from "./FixturePatch";
 import { FixtureDashboard } from "./FixtureDashboard";
 import { GroupManager } from "./GroupManager";
+import { DragNumber } from "../common/DragNumber";
 
 export function LightingPanel({ onClose }: { onClose: () => void }) {
   const [outputs, setOutputs] = useState<UniverseOutput[]>([]);
@@ -89,8 +90,7 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
                 title="Enabled"
               />
               <label style={lblStyle}>U</label>
-              <input
-                type="number" min={1} max={63999} value={o.universe}
+              <DragNumber min={1} max={63999} value={o.universe}
                 onChange={(e) => updateOutput(i, { universe: Number(e.target.value) })}
                 style={{ ...numStyle, width: 52 }}
               />
@@ -134,11 +134,11 @@ export function LightingPanel({ onClose }: { onClose: () => void }) {
         <Section title="Test channel (no fade)">
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <label style={lblStyle}>U</label>
-            <input type="number" min={1} value={testUniverse}
+            <DragNumber min={1} value={testUniverse}
               onChange={(e) => poke(Number(e.target.value), testAddress, testValue)}
               style={{ ...numStyle, width: 48 }} />
             <label style={lblStyle}>ch</label>
-            <input type="number" min={1} max={512} value={testAddress}
+            <DragNumber min={1} max={512} value={testAddress}
               onChange={(e) => poke(testUniverse, Number(e.target.value), testValue)}
               style={{ ...numStyle, width: 56 }} />
             <input type="range" min={0} max={255} value={testValue}

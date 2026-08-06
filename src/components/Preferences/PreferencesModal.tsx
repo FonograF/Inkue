@@ -37,6 +37,7 @@ import { TcPreferences } from "../Timecode/TcPreferences";
 import { NetworkInterfaceSection } from "./NetworkInterfaceSection";
 import { ProjectorToolsSection } from "./ProjectorToolsSection";
 import { listInputDevices } from "../../lib/commands";
+import { DragNumber } from "../common/DragNumber";
 
 // ---------------------------------------------------------------------------
 // Sidebar categories
@@ -343,8 +344,7 @@ function AudioContent({
           </span>
         </Row>
         <Row label="Fade Out on Stop (ms)">
-          <input
-            type="number" min={0} max={5000} step={50}
+          <DragNumber min={0} max={5000} step={50}
             style={{ ...inputStyle, width: 90 }}
             value={audioPrefs.default_fade_out_ms}
             onChange={(e) => onAudioPrefsChange({ ...audioPrefs, default_fade_out_ms: Number(e.target.value) })}
@@ -374,8 +374,7 @@ function GeneralContent({ prefs, onChange }: {
     <>
       <Section title="Transport">
         <Row label="Double GO Protection">
-          <input
-            type="number" min={0} max={5000} step={50}
+          <DragNumber min={0} max={5000} step={50}
             style={{ ...inputStyle, width: 90 }}
             value={prefs.double_go_protection_ms}
             onChange={(e) => onChange({ ...prefs, double_go_protection_ms: Number(e.target.value) })}
@@ -709,8 +708,7 @@ function DisplayContent({
               </>
             </Row>
             <Row label="Font size">
-              <input
-                type="number"
+              <DragNumber
                 min={20}
                 max={400}
                 step={4}
@@ -808,8 +806,7 @@ function OscContent({
           </label>
         </Row>
         <Row label="Port">
-          <input
-            type="number"
+          <DragNumber
             min={1024}
             max={65535}
             value={config.port}
@@ -872,8 +869,7 @@ function OscContent({
                 style={{ ...inputStyle, flex: 1 }}
               />
               <span style={{ fontSize: 12, color: "var(--wc-text-muted)" }}>:</span>
-              <input
-                type="number"
+              <DragNumber
                 min={1024}
                 max={65535}
                 value={config.feedback_port}
@@ -882,8 +878,7 @@ function OscContent({
               />
             </Row>
             <Row label="Progress rate">
-              <input
-                type="number"
+              <DragNumber
                 min={0}
                 max={30}
                 value={config.feedback_progress_hz}

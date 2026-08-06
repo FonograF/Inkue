@@ -1,6 +1,7 @@
 import type { AudioCueData, CameraCueData, FadeCurve, ImageCueData, VideoCueData } from "../../lib/types";
 import { Grid2, MiniField, Section, inputStyle } from "./Field";
 import { CurveSelect } from "../common/CurveSelect";
+import { DragNumber } from "../common/DragNumber";
 
 function FadeSection({
   label,
@@ -19,10 +20,9 @@ function FadeSection({
     <Section title={label}>
       <Grid2>
         <MiniField label="Duration (s)">
-          <input
+          <DragNumber
             key={`${idPrefix}-dur`}
             style={inputStyle}
-            type="number"
             step="0.1"
             min="0"
             defaultValue={durationMs != null ? (durationMs / 1000).toFixed(2) : ""}

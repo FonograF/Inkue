@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { MidiCueData, MidiMessage, MidiMessageType } from "../../lib/types";
 import { listMidiOutputPorts, sendMidiTest } from "../../lib/commands";
 import { Select } from "../common/Select";
+import { DragNumber } from "../common/DragNumber";
 
 interface Props {
   cue: MidiCueData;
@@ -162,9 +163,8 @@ export function MidiTab({ cue, onSave }: Props) {
           <div style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 6 }}>
             <div>
               <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>Ch</div>
-              <input
+              <DragNumber
                 style={{ ...inputStyle, width: 44 }}
-                type="number"
                 min={1}
                 max={16}
                 value={msg.channel}
@@ -173,9 +173,8 @@ export function MidiTab({ cue, onSave }: Props) {
             </div>
             <div>
               <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>{data1Label(msg.message_type)}</div>
-              <input
+              <DragNumber
                 style={{ ...inputStyle, width: 52 }}
-                type="number"
                 min={0}
                 max={127}
                 value={msg.data1}
@@ -187,9 +186,8 @@ export function MidiTab({ cue, onSave }: Props) {
                 <div style={{ fontSize: 10, color: "var(--wc-text-muted)", marginBottom: 2 }}>
                   {msg.message_type === "control_change" ? "Value" : "Vel"}
                 </div>
-                <input
+                <DragNumber
                   style={{ ...inputStyle, width: 52 }}
-                  type="number"
                   min={0}
                   max={127}
                   value={msg.data2}

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { MicCueData, InputPatch, OutputPatch, FadeCurve } from "../../lib/types";
 import { listInputPatches, getOutputPatches } from "../../lib/commands";
 import { Select } from "../common/Select";
+import { DragNumber } from "../common/DragNumber";
 
 interface Props {
   cue: MicCueData;
@@ -104,9 +105,8 @@ export function MicTab({ cue, onSave }: Props) {
       <div style={{ display: "flex", gap: 12, ...fieldStyle }}>
         <div style={{ flex: 1 }}>
           <div style={labelStyle}>Volume (dB)</div>
-          <input
+          <DragNumber
             style={{ ...inputStyle, width: "100%" }}
-            type="number"
             min={-60}
             max={12}
             step={0.5}
@@ -175,9 +175,8 @@ function FadeRow({
       </label>
       {enabled && (
         <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-          <input
+          <DragNumber
             style={{ ...inputStyle, width: 80 }}
-            type="number"
             min={0}
             step={50}
             value={ms ?? 0}

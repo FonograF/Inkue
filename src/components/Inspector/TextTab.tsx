@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import type { TextCueData, TextPosition } from "../../lib/types";
 import { listSystemFonts } from "../../lib/commands";
 import { Field, inputStyle } from "./Field";
+import { DragNumber } from "../common/DragNumber";
 
 const POSITION_GRID: { value: TextPosition; label: string }[] = [
   { value: "top_left",      label: "↖" },
@@ -59,8 +60,7 @@ export function TextTab({
       </Field>
 
       <Field label="Size">
-        <input
-          type="number"
+        <DragNumber
           min={8}
           max={500}
           value={cue.font_size}
@@ -151,8 +151,7 @@ export function TextTab({
           </label>
           {cue.display_duration_ms !== null && (
             <>
-              <input
-                type="number"
+              <DragNumber
                 min={100}
                 step={100}
                 value={cue.display_duration_ms ?? 5000}

@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import type { AudioCueData, VideoCueData, CueSummary } from "../../lib/types";
 import { Grid2, MiniField, NumberInput, Section, ToggleRow, inputStyle } from "./Field";
 import { WaveformViewer } from "./WaveformViewer";
 import { VideoTrimmer } from "./VideoTrimmer";
 import { ScrubBar } from "./ScrubBar";
+import { DragNumber } from "../common/DragNumber";
 
 const LOOP_INFINITE = 4294967295; // u32::MAX
 
@@ -151,39 +153,17 @@ export function TimeTab({
         <Section title="Clip">
           <Grid2>
             <MiniField label="Start Time (s)">
-              <input
-                style={inputStyle}
-                type="number"
-                step="0.001"
-                min="0"
-                key={`start-${cue.start_time_ms}`}
-                defaultValue={cue.start_time_ms != null ? (cue.start_time_ms / 1000).toFixed(3) : ""}
+              <ClipTimeField
+                ms={cue.start_time_ms}
                 placeholder="0.000"
-                onBlur={(e) =>
-                  onSave({
-                    start_time_ms: e.target.value
-                      ? Math.round(parseFloat(e.target.value) * 1000)
-                      : null,
-                  })
-                }
+                onCommit={(start_time_ms) => onSave({ start_time_ms })}
               />
             </MiniField>
             <MiniField label="End Time (s)">
-              <input
-                style={inputStyle}
-                type="number"
-                step="0.001"
-                min="0"
-                key={`end-${cue.end_time_ms}`}
-                defaultValue={cue.end_time_ms != null ? (cue.end_time_ms / 1000).toFixed(3) : ""}
+              <ClipTimeField
+                ms={cue.end_time_ms}
                 placeholder="end of file"
-                onBlur={(e) =>
-                  onSave({
-                    end_time_ms: e.target.value
-                      ? Math.round(parseFloat(e.target.value) * 1000)
-                      : null,
-                  })
-                }
+                onCommit={(end_time_ms) => onSave({ end_time_ms })}
               />
             </MiniField>
           </Grid2>
@@ -254,5 +234,42 @@ export function TimeTab({
         </Section>
       )}
     </>
+  );
+}
+
+/**
+ * Clip start/end in seconds, stored in ms and clearable back to `null`
+ * ("from the start" / "to the end of the file").
+ *
+ * Controlled rather than the `defaultValue` + remount-key pattern it replaced:
+ * a drag wheel has to move the shown value on every pointer event, which an
+ * uncontrolled field cannot do.
+ */
+function ClipTimeField({
+  ms,
+  placeholder,
+  onCommit,
+}: {
+  ms: number | null;
+  placeholder: string;
+  onCommit: (ms: number | null) => void;
+}) {
+  const asText = (v: number | null) => (v != null ? (v / 1000).toFixed(3) : "");
+  const [draft, setDraft] = useState(asText(ms));
+  useEffect(() => { setDraft(asText(ms)); }, [ms]);
+
+  return (
+    <DragNumber
+      style={inputStyle}
+      step="0.001"
+      min="0"
+      value={draft}
+      placeholder={placeholder}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        const parsed = parseFloat(draft);
+        onCommit(draft.trim() === "" || Number.isNaN(parsed) ? null : Math.round(parsed * 1000));
+      }}
+    />
   );
 }

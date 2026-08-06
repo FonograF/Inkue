@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import type { OscPatch } from "../../lib/types";
 import { listOscPatches, addOscPatch, updateOscPatch, removeOscPatch } from "../../lib/commands";
+import { DragNumber } from "../common/DragNumber";
 
 const inputStyle: React.CSSProperties = {
   background: "var(--wc-bg-app)",
@@ -111,9 +112,8 @@ export function OscPatchesPanel() {
             onChange={(e) => handleChange(patch.id, "ip", e.target.value)}
             onBlur={() => handleBlur(patch)}
           />
-          <input
+          <DragNumber
             style={inputStyle}
-            type="number"
             min={1}
             max={65535}
             value={patch.port}

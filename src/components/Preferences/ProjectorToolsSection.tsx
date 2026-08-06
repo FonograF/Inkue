@@ -15,6 +15,7 @@ import {
 } from "../../lib/commands";
 import { IMAGE_EXTENSIONS } from "../../lib/mediaTypes";
 import { WarpEditor } from "./WarpEditor";
+import { DragNumber } from "../common/DragNumber";
 
 const sectionLabelStyle: React.CSSProperties = {
   fontSize: 10, fontWeight: 600, color: "var(--wc-text-muted)",
@@ -75,8 +76,7 @@ function TransformField({
         onChange={(e) => onCommit(parseFloat(e.target.value))}
         style={{ flex: 1, cursor: "pointer" }}
       />
-      <input
-        type="number"
+      <DragNumber
         min={min}
         max={max}
         step={step}

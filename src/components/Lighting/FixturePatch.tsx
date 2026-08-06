@@ -15,6 +15,7 @@ import {
 } from "../../lib/commands";
 import type { ChannelWidth, FixtureConflict, FixtureType, PatchedFixture } from "../../lib/types";
 import { Select } from "../common/Select";
+import { DragNumber } from "../common/DragNumber";
 
 const widthChannels = (w: ChannelWidth) => (w === "Bit16" ? 2 : 1);
 
@@ -111,16 +112,14 @@ export function FixturePatch() {
             />
             <span style={{ color: "var(--wc-text-muted)", fontSize: 10, flexShrink: 0 }}>{f.fixture_type.name}</span>
             <label style={lblStyle}>U</label>
-            <input
-              style={{ ...numStyle, width: 42 }}
-              type="number" min={1} max={63999} value={f.universe}
+            <DragNumber
+              style={{ ...numStyle, width: 42 }} min={1} max={63999} value={f.universe}
               onChange={(e) => commit(f, { universe: Number(e.target.value) })}
               title="Universe"
             />
             <label style={lblStyle}>@</label>
-            <input
-              style={{ ...numStyle, width: 48 }}
-              type="number" min={1} max={512} value={f.base_address}
+            <DragNumber
+              style={{ ...numStyle, width: 48 }} min={1} max={512} value={f.base_address}
               onChange={(e) => commit(f, { base_address: Number(e.target.value) })}
               title="DMX start address"
             />
@@ -159,15 +158,13 @@ export function FixturePatch() {
           ))}
         </Select>
         <label style={lblStyle}>U</label>
-        <input
-          style={{ ...numStyle, width: 42 }}
-          type="number" min={1} max={63999} value={newUniverse}
+        <DragNumber
+          style={{ ...numStyle, width: 42 }} min={1} max={63999} value={newUniverse}
           onChange={(e) => setNewUniverse(Number(e.target.value))}
         />
         <label style={lblStyle}>@</label>
-        <input
-          style={{ ...numStyle, width: 48 }}
-          type="number" min={1} max={512} value={newAddress}
+        <DragNumber
+          style={{ ...numStyle, width: 48 }} min={1} max={512} value={newAddress}
           onChange={(e) => setNewAddress(Number(e.target.value))}
         />
         <button style={{ ...smallBtn, color: "#a855f7" }} onClick={handleAdd}>+ add</button>

@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { DragNumber } from "../common/DragNumber";
 // Shared layout primitives and input styles used across all Inspector tabs.
 //
 // The inspector's visual language: content is grouped into `Section` cards,
@@ -134,22 +136,28 @@ export function NumberInput({
   placeholder?: string;
   onCommit: (v: number) => void;
 }) {
+  // Controlled draft: the field was uncontrolled (defaultValue + a remount
+  // key), which cannot work with a drag wheel — dragging has to move the
+  // displayed value on every pointer event.
+  const [draft, setDraft] = useState<string>(value?.toString() ?? "");
+  useEffect(() => { setDraft(value?.toString() ?? ""); }, [value]);
+
+  const commit = () => {
+    const parsed = parseFloat(draft);
+    if (Number.isNaN(parsed)) return;
+    onCommit(Math.min(max, Math.max(min, parsed)));
+  };
+
   return (
-    <input
+    <DragNumber
       style={{ ...inputStyle, width: width ?? "100%" }}
-      type="number"
       step={step}
       min={min}
       max={max}
-      key={`n-${value}`}
-      defaultValue={value ?? ""}
+      value={draft}
       placeholder={placeholder}
-      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-      onBlur={(e) => {
-        const parsed = parseFloat(e.target.value);
-        if (Number.isNaN(parsed)) return;
-        onCommit(Math.min(max, Math.max(min, parsed)));
-      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
     />
   );
 }

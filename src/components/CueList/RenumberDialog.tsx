@@ -5,6 +5,7 @@
 // without disturbing what follows.
 
 import { useState } from "react";
+import { DragNumber } from "../common/DragNumber";
 
 interface Props {
   cueCount: number;
@@ -55,9 +56,8 @@ export function RenumberDialog({ cueCount, onCancel, onConfirm }: Props) {
         </div>
 
         <Row label="Start at">
-          <input
+          <DragNumber
             autoFocus
-            type="number"
             step="any"
             value={start}
             onChange={(e) => setStart(e.target.value)}
@@ -65,8 +65,7 @@ export function RenumberDialog({ cueCount, onCancel, onConfirm }: Props) {
           />
         </Row>
         <Row label="Increment">
-          <input
-            type="number"
+          <DragNumber
             step="any"
             value={increment}
             onChange={(e) => setIncrement(e.target.value)}
