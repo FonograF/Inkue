@@ -553,8 +553,16 @@ pub fn update_cue(
         .map(|voice_id| (voice_id, new_cue.visual_geometry(), new_cue.layer_style()));
     cue_list.replace_cue_recursive(&id, new_cue);
     if let Some(p) = live {
-        let _ = state.audio_engine.set_voice_gain(p.voice_id, p.gain);
-        let _ = state.audio_engine.set_voice_pan(p.voice_id, p.pan);
+        // A Video Cue reports its *visual* voice; the sound lives on the
+        // paired audio voice. Sending the visual id straight to the
+        // AudioEngine matched nothing, which is why volume edits on a playing
+        // Video Cue used to do nothing at all.
+        let audio_voice = state
+            .output_engine
+            .video_audio_voice(p.voice_id)
+            .unwrap_or(p.voice_id);
+        let _ = state.audio_engine.set_voice_gain(audio_voice, p.gain);
+        let _ = state.audio_engine.set_voice_pan(audio_voice, p.pan);
     }
     if let Some((voice_id, geometry, layer_style)) = live_visual {
         if let Some(geometry) = geometry {
