@@ -82,6 +82,11 @@ export const moveCues = (ids: CueId[], beforeId: CueId | null) =>
   invoke<void>("move_cues", { ids, beforeId });
 export const renumberCues = () =>
   invoke<void>("renumber_cues");
+/** Resequence only `ids`, in list order, from `start` stepping by `increment`. */
+export const renumberSelectedCues = (ids: CueId[], start: number, increment: number) =>
+  invoke<void>("renumber_selected_cues", { ids, start, increment });
+export const clearCueNumbers = () =>
+  invoke<void>("clear_cue_numbers");
 export const groupCues = (ids: CueId[]) =>
   invoke<CueId>("group_cues", { ids });
 export const ungroup = (groupId: CueId) =>

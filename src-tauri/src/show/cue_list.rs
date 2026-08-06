@@ -47,6 +47,53 @@ fn renumber_recursive(cues: &mut Vec<Box<dyn Cue>>, prefix: &str) {
     }
 }
 
+/// Format a cue number so whole steps read as integers ("1", "2") while
+/// fractional ones keep only the digits they need ("1.5", "0.25") — a cue
+/// number is a display string, and "1.0" or "1.500" would be noise.
+fn format_cue_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        return format!("{}", value.trunc() as i64);
+    }
+    let mut s = format!("{value:.6}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    s
+}
+
+/// Walk the hierarchy in display order, renumbering the cues whose id is in
+/// `ids` and leaving every other cue untouched.  `next` carries the running
+/// value so a selection spanning groups keeps one continuous sequence.
+fn renumber_selection(
+    cues: &mut Vec<Box<dyn Cue>>,
+    ids: &[CueId],
+    next: &mut f64,
+    increment: f64,
+) {
+    for cue in cues.iter_mut() {
+        if ids.contains(&cue.id()) {
+            cue.set_number(Some(format_cue_number(*next)));
+            *next += increment;
+        }
+        if let Some(children) = cue.child_cues_mut() {
+            renumber_selection(children, ids, next, increment);
+        }
+    }
+}
+
+/// Clear every cue number in the hierarchy.
+fn clear_numbers_recursive(cues: &mut Vec<Box<dyn Cue>>) {
+    for cue in cues.iter_mut() {
+        cue.set_number(None);
+        if let Some(children) = cue.child_cues_mut() {
+            clear_numbers_recursive(children);
+        }
+    }
+}
+
 /// Extract a cue from anywhere in the hierarchy (top-level or inside any group).
 fn extract_cue_anywhere(cues: &mut Vec<Box<dyn Cue>>, id: &CueId) -> Option<Box<dyn Cue>> {
     if let Some(idx) = cues.iter().position(|c| c.id() == *id) {
@@ -257,6 +304,25 @@ impl CueList {
     /// Structural mutations use [`maybe_renumber`](Self::maybe_renumber) instead.
     pub fn renumber_all(&mut self) {
         renumber_recursive(&mut self.cues, "");
+    }
+
+    /// Resequence **only** the cues in `ids`, in display order, starting at
+    /// `start` and stepping by `increment` — QLab's "Renumber Selected Cues".
+    ///
+    /// Every other cue keeps its number, which is the point: it renumbers a
+    /// stretch of the show without disturbing what surrounds it.  A selection
+    /// spanning groups stays one continuous sequence, and children are not
+    /// given positional sub-numbers (unlike [`renumber_all`](Self::renumber_all))
+    /// — only what the operator selected is touched.
+    pub fn renumber_selected(&mut self, ids: &[CueId], start: f64, increment: f64) {
+        let mut next = start;
+        renumber_selection(&mut self.cues, ids, &mut next, increment);
+    }
+
+    /// Clear every cue number, recursively — the blank slate before a manual
+    /// numbering pass or after an import that brought its own scheme.
+    pub fn clear_all_numbers(&mut self) {
+        clear_numbers_recursive(&mut self.cues);
     }
 
     /// Renumber after a structural mutation **only if** auto-renumber is on.
@@ -858,6 +924,75 @@ mod tests {
         list.renumber_all();
 
         assert_eq!(numbers(&list), vec![Some("1".into()), Some("2".into()), Some("3".into())]);
+    }
+
+    #[test]
+    fn renumber_selected_leaves_the_surrounding_cues_alone() {
+        let mut list = CueList::new("Test");
+        list.push(numbered_memo(Some("Intro")));
+        let a = numbered_memo(Some("99"));
+        let a_id = a.id();
+        list.push(a);
+        let b = numbered_memo(None);
+        let b_id = b.id();
+        list.push(b);
+        list.push(numbered_memo(Some("Outro")));
+
+        list.renumber_selected(&[a_id, b_id], 10.0, 10.0);
+
+        assert_eq!(
+            numbers(&list),
+            vec![Some("Intro".into()), Some("10".into()), Some("20".into()), Some("Outro".into())],
+            "only the selection is resequenced — its neighbours keep their numbers",
+        );
+    }
+
+    #[test]
+    fn renumber_selected_follows_display_order_not_selection_order() {
+        let mut list = CueList::new("Test");
+        let first = numbered_memo(None);
+        let first_id = first.id();
+        list.push(first);
+        let second = numbered_memo(None);
+        let second_id = second.id();
+        list.push(second);
+
+        // Ids handed over "backwards" — the list order is what decides.
+        list.renumber_selected(&[second_id, first_id], 1.0, 1.0);
+
+        assert_eq!(numbers(&list), vec![Some("1".into()), Some("2".into())]);
+    }
+
+    #[test]
+    fn renumber_selected_writes_fractional_steps_without_trailing_zeros() {
+        let mut list = CueList::new("Test");
+        let ids: Vec<_> = (0..3)
+            .map(|_| {
+                let c = numbered_memo(None);
+                let id = c.id();
+                list.push(c);
+                id
+            })
+            .collect();
+
+        list.renumber_selected(&ids, 1.0, 0.5);
+
+        assert_eq!(
+            numbers(&list),
+            vec![Some("1".into()), Some("1.5".into()), Some("2".into())],
+            "a whole number must read as \"2\", never \"2.0\"",
+        );
+    }
+
+    #[test]
+    fn clear_all_numbers_empties_every_number() {
+        let mut list = CueList::new("Test");
+        list.push(numbered_memo(Some("Intro")));
+        list.push(numbered_memo(Some("7")));
+
+        list.clear_all_numbers();
+
+        assert_eq!(numbers(&list), vec![None, None]);
     }
 
     #[test]

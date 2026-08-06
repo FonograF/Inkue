@@ -353,6 +353,48 @@ pub fn renumber_cues(
     Ok(())
 }
 
+/// Resequence only the selected cues, starting at `start` and stepping by
+/// `increment` (QLab's "Renumber Selected Cues").  Surrounding cues keep
+/// their numbers.
+#[tauri::command]
+pub fn renumber_selected_cues(
+    ids: Vec<String>,
+    start: f64,
+    increment: f64,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let parsed: Vec<Uuid> = ids
+        .iter()
+        .map(|s| s.parse::<Uuid>().map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    if parsed.is_empty() {
+        return Ok(());
+    }
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list.renumber_selected(&parsed, start, increment);
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Clear every cue number in the active list.
+#[tauri::command]
+pub fn clear_cue_numbers(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    cue_list.clear_all_numbers();
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
 /// Duplicate a cue (creates a copy with a new ID, inserted immediately after).
 #[tauri::command]
 pub fn duplicate_cue(

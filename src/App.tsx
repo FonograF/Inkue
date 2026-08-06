@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { CueListView } from "./components/CueList/CueListView";
 import { ActionMenu } from "./components/CueList/ActionMenu";
+import { EditMenu } from "./components/MenuBar/EditMenu";
 import { CartView } from "./components/CueList/CartView";
 import { ShowModeView } from "./components/ShowMode/ShowModeView";
 import { ActiveCuesView } from "./components/ActiveCues/ActiveCuesView";
@@ -1244,6 +1245,7 @@ export default function App() {
           recentFiles={recentFiles}
           onOpenRecent={(p) => void openWorkspacePath(p)}
         />
+        <EditMenu onRefresh={handleRefresh} />
         <ViewMenu
           items={[
             { label: "Show Mode",      checked: showMode,             onClick: () => setShowMode((v) => !v),       shortcut: "F5" },

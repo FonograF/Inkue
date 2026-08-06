@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 
 const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
 const cmdOrCtrl = (e: KeyboardEvent) => isMac ? e.metaKey : e.ctrlKey;
-import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   go,
   hardStopAll,
@@ -13,17 +12,20 @@ import {
   pauseCue,
   resumeCue,
   addCue,
-  removeCue,
-  removeCues,
-  duplicateCue,
-  duplicateCues,
-  groupCues,
-  undo,
-  redo,
-  copyCue,
-  pasteCue,
   setPlayhead,
 } from "../lib/commands";
+// Edit operations are shared with the Edit / Action menus so a shortcut and
+// its menu entry can never behave differently.
+import {
+  copySelection,
+  deleteSelection,
+  duplicateSelection,
+  groupSelection,
+  pasteAfterSelection,
+  redoAction,
+  selectAllCues,
+  undoAction,
+} from "../lib/cueOperations";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 
 export function useKeyboardShortcuts(
@@ -167,8 +169,7 @@ export function useKeyboardShortcuts(
         case "A": {
           if (cmdOrCtrl(e)) {
             e.preventDefault();
-            const { cues, setSelectedCueIds } = useWorkspaceStore.getState();
-            setSelectedCueIds(cues.map((c) => c.id));
+            selectAllCues();
           }
           break;
         }
@@ -176,16 +177,7 @@ export function useKeyboardShortcuts(
         case "G": {
           if (cmdOrCtrl(e)) {
             e.preventDefault();
-            const { selectedCueIds, setSelectedCueId, setSelectedCueIds } =
-              useWorkspaceStore.getState();
-            if (selectedCueIds.length > 0) {
-              const newGroupId = await groupCues(selectedCueIds).catch(() => null);
-              if (newGroupId) {
-                setSelectedCueId(newGroupId);
-                setSelectedCueIds([newGroupId]);
-                onRefresh();
-              }
-            }
+            await groupSelection(onRefresh);
           } else if (!cmdOrCtrl(e) && !e.shiftKey && !e.altKey) {
             e.preventDefault();
             onGoto?.();
@@ -205,13 +197,7 @@ export function useKeyboardShortcuts(
         case "D": {
           if (cmdOrCtrl(e) && selectedCueId) {
             e.preventDefault();
-            const { selectedCueIds } = useWorkspaceStore.getState();
-            if (selectedCueIds.length > 1) {
-              await duplicateCues(selectedCueIds).catch(console.error);
-            } else {
-              await duplicateCue(selectedCueId).catch(console.error);
-            }
-            onRefresh();
+            await duplicateSelection(onRefresh);
           }
           break;
         }
@@ -220,13 +206,11 @@ export function useKeyboardShortcuts(
           if (cmdOrCtrl(e) && e.shiftKey) {
             // Ctrl+Shift+Z → Redo (alternative to Ctrl+Y)
             e.preventDefault();
-            await redo().catch(console.error);
-            onRefresh();
+            await redoAction(onRefresh);
           } else if (cmdOrCtrl(e)) {
             // Ctrl+Z → Undo
             e.preventDefault();
-            await undo().catch(console.error);
-            onRefresh();
+            await undoAction(onRefresh);
           }
           break;
         }
@@ -234,8 +218,7 @@ export function useKeyboardShortcuts(
         case "Y": {
           if (cmdOrCtrl(e)) {
             e.preventDefault();
-            await redo().catch(console.error);
-            onRefresh();
+            await redoAction(onRefresh);
           }
           break;
         }
@@ -243,7 +226,7 @@ export function useKeyboardShortcuts(
         case "C": {
           if (cmdOrCtrl(e) && selectedCueId) {
             e.preventDefault();
-            await copyCue(selectedCueId).catch(console.error);
+            await copySelection();
           }
           break;
         }
@@ -251,37 +234,14 @@ export function useKeyboardShortcuts(
         case "V": {
           if (cmdOrCtrl(e)) {
             e.preventDefault();
-            await pasteCue(selectedCueId).catch(console.error);
-            onRefresh();
+            await pasteAfterSelection(onRefresh);
           }
           break;
         }
         case "Delete":
         case "Backspace": {
           if (selectedCueId && cmdOrCtrl(e) === false) {
-            const { selectedCueIds, setSelectedCueId, setSelectedCueIds } =
-              useWorkspaceStore.getState();
-            if (selectedCueIds.length > 1) {
-              if (generalPrefs.confirm_before_delete) {
-                const ok = await confirm(
-                  `Delete ${selectedCueIds.length} cues?`,
-                  { title: "Confirm Delete", kind: "warning" },
-                );
-                if (!ok) break;
-              }
-              await removeCues(selectedCueIds).catch(console.error);
-              setSelectedCueId(null);
-              setSelectedCueIds([]);
-            } else {
-              if (generalPrefs.confirm_before_delete) {
-                const ok = await confirm("Delete this cue?", { title: "Confirm Delete", kind: "warning" });
-                if (!ok) break;
-              }
-              await removeCue(selectedCueId).catch(console.error);
-              setSelectedCueId(null);
-              setSelectedCueIds([]);
-            }
-            onRefresh();
+            await deleteSelection(onRefresh, generalPrefs.confirm_before_delete);
           }
           break;
         }
