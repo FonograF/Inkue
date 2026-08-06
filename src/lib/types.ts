@@ -2,7 +2,29 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera";
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera" | CommandCueType;
+
+/** Cues whose action is performed on *other* cues (QLab's control cues).
+ *  Distinct types — own colour, own row label, 1:1 with QLab on import — over
+ *  one shared Rust implementation. Grouped behind the toolbar's "+ Command". */
+export type CommandCueType = "start" | "pause" | "resume" | "load" | "reset" | "goto" | "arm" | "disarm";
+
+/** Hints are kept short enough to stay on one line in the toolbar dropdown —
+ *  a wrapped row breaks the menu's rhythm. The inspector carries the longer
+ *  explanation. */
+export const COMMAND_CUE_TYPES: { type: CommandCueType; label: string; hint: string }[] = [
+  { type: "start",  label: "Start",  hint: "Trigger the targets" },
+  { type: "pause",  label: "Pause",  hint: "Pause the targets" },
+  { type: "resume", label: "Resume", hint: "Resume the targets" },
+  { type: "load",   label: "Load",   hint: "Bring them up paused" },
+  { type: "reset",  label: "Reset",  hint: "Return them to standby" },
+  { type: "goto",   label: "Goto",   hint: "Move the Playhead there" },
+  { type: "arm",    label: "Arm",    hint: "Enable the targets" },
+  { type: "disarm", label: "Disarm", hint: "Disable the targets" },
+];
+
+export const isCommandCueType = (t: CueType): t is CommandCueType =>
+  COMMAND_CUE_TYPES.some((c) => c.type === t);
 
 /** Accent color per cue type — the single source of truth for the toolbar
  *  buttons (App.tsx) and the cue-list context menu (CueListView.tsx). */
@@ -23,6 +45,16 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   memo:     "#e2e8f0",
   camera:   "#34d399",          // emerald
   devamp:   "#facc15",          // amber — the "release the vamp" action
+  // Command cues: one hue family so they read as a group in the cue list,
+  // shaded by what they do — go, hold, restore, arm.
+  start:    "#4ade80",
+  resume:   "#4ade80",
+  pause:    "#facc15",
+  load:     "#eab308",
+  reset:    "#38bdf8",
+  goto:     "#0ea5e9",
+  arm:      "#fb923c",
+  disarm:   "#f97316",
 };
 
 export type CueState = "standby" | "running" | "paused" | "completed";

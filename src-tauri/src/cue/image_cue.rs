@@ -77,6 +77,10 @@ pub struct ImageCue {
     /// `true` once the natural-end visual fade-out has been triggered for the
     /// current play (timed images only).
     eof_fade_started: bool,
+    /// Set while `preload()` builds the content request (dark, held load).
+    preloading: bool,
+    /// `true` between a Load Cue and the Start that reveals the image.
+    preloaded: bool,
 }
 
 impl ImageCue {
@@ -106,6 +110,8 @@ impl ImageCue {
             play_generation: 0,
             auto_continue_fired: false,
             eof_fade_started: false,
+            preloading: false,
+            preloaded: false,
         }
     }
 
@@ -132,6 +138,7 @@ impl ImageCue {
             live_source: false,
             layer_style: self.layer_style,
             slices: Vec::new(),
+            preload: self.preloading,
         })?;
 
         self.active_voice_id = Some(voice_id);
@@ -195,6 +202,13 @@ impl Cue for ImageCue {
             return Ok(());
         }
 
+        // Preloaded by a Load Cue: the image is decoded and held off-screen,
+        // so starting it is a reveal.
+        if self.preloaded {
+            self.state = CueState::Paused;
+            return self.resume(context);
+        }
+
         self.play_generation = self.play_generation.wrapping_add(1);
         self.auto_continue_fired = false;
         self.state = CueState::Running;
@@ -206,6 +220,27 @@ impl Cue for ImageCue {
         }
 
         self.start_image_action(context)
+    }
+
+    fn preload(&mut self, context: &CueContext) -> Result<()> {
+        if self.state == CueState::Running || self.preloaded {
+            return Ok(());
+        }
+        let has_file = self.file_path.as_ref().is_some_and(|p| !p.as_os_str().is_empty());
+        if !has_file {
+            return Ok(());
+        }
+
+        self.preloading = true;
+        let result = self.start_image_action(context);
+        self.preloading = false;
+        result?;
+
+        self.state = CueState::Paused;
+        self.started_at = None;
+        self.action_started_at = None;
+        self.preloaded = true;
+        Ok(())
     }
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
@@ -225,6 +260,7 @@ impl Cue for ImageCue {
         self.action_started_at = None;
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
+        self.preloaded = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -236,8 +272,16 @@ impl Cue for ImageCue {
         Ok(())
     }
 
-    fn resume(&mut self, _context: &CueContext) -> Result<()> {
+    fn resume(&mut self, context: &CueContext) -> Result<()> {
         if self.state == CueState::Paused {
+            if let Some(vid) = self.active_voice_id {
+                if self.preloaded {
+                    // Held off-screen by a Load Cue — this is the reveal.
+                    context.output_engine.start_preloaded(vid);
+                    self.action_started_at = Some(Instant::now());
+                }
+            }
+            self.preloaded = false;
             self.state = CueState::Running;
         }
         Ok(())
@@ -255,6 +299,7 @@ impl Cue for ImageCue {
         self.action_started_at = None;
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
+        self.preloaded = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -267,6 +312,7 @@ impl Cue for ImageCue {
         self.in_pre_wait = false;
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
+        self.preloaded = false;
         Ok(())
     }
 

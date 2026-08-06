@@ -67,6 +67,17 @@ const CUE_TYPES: { type: CueType; label: string; color: string }[] = (
     { type: "mic",      label: "Mic" },
     { type: "timecode", label: "Timecode" },
     { type: "text",     label: "Text" },
+    // Command cues last: the toolbar groups them behind one button, but the
+    // right-click "Add Cue" list is where you look when you want a specific
+    // one, so they are spelled out here.
+    { type: "start",    label: "Start" },
+    { type: "pause",    label: "Pause" },
+    { type: "resume",   label: "Resume" },
+    { type: "load",     label: "Load" },
+    { type: "reset",    label: "Reset" },
+    { type: "goto",     label: "Goto" },
+    { type: "arm",      label: "Arm" },
+    { type: "disarm",   label: "Disarm" },
   ] as { type: CueType; label: string }[]
 ).map((c) => ({ ...c, color: CUE_TYPE_COLORS[c.type] }));
 

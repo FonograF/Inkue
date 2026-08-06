@@ -319,7 +319,7 @@ fn image_cue_go_shows_content_as_image() {
     cue.go(&ctx).unwrap();
 
     let show = log.lock().unwrap().iter().find_map(|c| match c {
-        EngineCall::OutputShowContent { path, is_image } => Some((path.clone(), *is_image)),
+        EngineCall::OutputShowContent { path, is_image, .. } => Some((path.clone(), *is_image)),
         _ => None,
     });
     let (path, is_image) = show.expect("Image GO must call show_content");

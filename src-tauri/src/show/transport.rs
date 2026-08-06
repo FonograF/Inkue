@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 
 use crate::cue::{
     context::CueContext,
+    control_cue::ControlAction,
     types::{ContinueMode, CueId, CueState, CueType},
 };
 use crate::engine::ring_command::VoiceId;
@@ -220,6 +221,53 @@ impl Transport {
             stopped = ids_to_stop;
         }
 
+        // Command cues (Start, Pause, Resume, Load, Reset, Goto, Arm, Disarm)
+        // act on other cues, so the transport — which owns the cue list and the
+        // playhead — carries them out. Like the stop action above, this runs
+        // before Auto-Follow is evaluated.
+        let control_spec = cue_list.get(&cue_id).and_then(|c| c.control_specification());
+        let mut commanded: Vec<CueId> = Vec::new();
+        if let Some((action, target_ids)) = control_spec {
+            // Never let a Command cue address itself: a Start targeting itself
+            // would recurse, and the rest are meaningless on an instant cue.
+            for target_id in target_ids.iter().copied().filter(|&t| t != cue_id) {
+                if action == ControlAction::Goto {
+                    // The Playhead is a position in *this* list, so a nested
+                    // cue cannot hold it.
+                    if cue_list.index_of(&target_id).is_some() {
+                        cue_list.playhead_cue_id = Some(target_id);
+                    }
+                    continue;
+                }
+                let Some(target) = cue_list.get_mut_recursive(&target_id) else { continue };
+                match action {
+                    ControlAction::Start => {
+                        let _ = target.go(&self.context);
+                    }
+                    ControlAction::Pause => {
+                        let _ = target.pause(&self.context);
+                    }
+                    ControlAction::Resume => {
+                        let _ = target.resume(&self.context);
+                    }
+                    ControlAction::Load => {
+                        // `preload` is the cue's own business: audio brings up
+                        // a paused voice, visual cues decode without putting
+                        // anything on the output.
+                        let _ = target.preload(&self.context);
+                    }
+                    ControlAction::Reset => {
+                        let _ = target.hard_stop(&self.context);
+                        let _ = target.reset();
+                    }
+                    ControlAction::Arm => target.set_disabled(false),
+                    ControlAction::Disarm => target.set_disabled(true),
+                    ControlAction::Goto => unreachable!("handled above"),
+                }
+                commanded.push(target_id);
+            }
+        }
+
         // Read continue-mode metadata after go() (state may have changed for
         // instant cues that complete synchronously).
         let (continue_mode, post_wait, is_still_running, holds_playhead) = cue_list
@@ -253,7 +301,10 @@ impl Transport {
             }
         }
 
+        // Cues a Command cue acted on are reported as triggered so the UI
+        // refreshes their row — their state changed without them being GO'd.
         let mut triggered = vec![cue_id];
+        triggered.extend(commanded);
 
         if chain_now {
             let mut rest = self.go(cue_list)?;

@@ -196,6 +196,11 @@ pub(super) struct SlotState {
     pub pending_reveal: Option<u32>,
     /// Failsafe deadline for the reveal (mpv event missing/late).
     pub reveal_deadline: Option<Instant>,
+    /// Preloaded (Load Cue): the file is open and frame 0 is decoded, but the
+    /// reveal is **held back** until the cue is actually started. Both the
+    /// `PLAYBACK_RESTART` path and the reveal watchdog respect it, so nothing
+    /// reaches the screen in the meantime.
+    pub preloaded: bool,
     /// `true` when the fade-out completes and mpv should be stopped + the
     /// slot released.  Drained by the render thread tick.
     pub pending_unload: bool,
@@ -233,6 +238,7 @@ impl SlotState {
             anim: OpacityAnim::resting(0.0),
             pending_reveal: None,
             reveal_deadline: None,
+            preloaded: false,
             pending_unload: false,
             hold_last_frame: false,
             slice_plan: None,
@@ -425,6 +431,7 @@ pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report_completed: bool) {
         let audio = st.audio_voice_id.take();
         st.pending_reveal = None;
         st.reveal_deadline = None;
+        st.preloaded = false;
         st.pending_unload = false;
         st.slice_plan = None;
         st.anim.set(0.0);
@@ -463,6 +470,9 @@ pub(super) struct SlotLoad {
     pub layer_style: LayerStyle,
     /// QLab-style slice segments `(start_s, end_s, play_count)`; empty = none.
     pub slices: Vec<(f64, f64, u32)>,
+    /// Decode into the slot but hold the reveal (Load Cue) — see
+    /// [`SlotState::preloaded`].
+    pub preload: bool,
 }
 
 /// Load content into an (idle) slot.
@@ -488,7 +498,16 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
         } else {
             Some(SlicePlan { segments: load.slices.clone(), current: 0, stop_at_end: false })
         };
-        if load.is_image {
+        st.preloaded = load.preload;
+        if load.preload {
+            // Preload: decode into the slot but keep it dark and paused. The
+            // reveal is armed here and released by `start_preloaded`, so an
+            // image gets the same treatment as a video — it must not appear
+            // just because it decodes instantly.
+            st.anim.set(0.0);
+            st.pending_reveal = Some(load.fade_in_ms);
+            st.reveal_deadline = None;
+        } else if load.is_image {
             // Images decode near-instantly: start the reveal fade right away.
             st.pending_reveal = None;
             st.reveal_deadline = None;
@@ -522,7 +541,11 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
                 .map(|ms| format!("{:.3}", ms as f64 / 1000.0))
                 .unwrap_or_else(|| "inf".to_string());
             opts.push(format!("image-display-duration={duration_val}"));
-            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
+            // A preloaded image stays paused like a video: its display
+            // duration must start counting when the cue is started, not when
+            // it was loaded.
+            let pause = if load.preload { "yes" } else { "no" };
+            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs(pause).as_ptr());
         } else {
             if let Some(start) = load.start_ms {
                 opts.push(format!("start={:.3}", start as f64 / 1000.0));
@@ -607,6 +630,7 @@ pub(super) fn begin_stop(slot: &Arc<VideoSlot>, visual_fade_ms: u32) {
     if let Ok(mut st) = slot.state.lock() {
         st.pending_reveal = None;
         st.reveal_deadline = None;
+        st.preloaded = false;
         st.pending_unload = true;
         st.audio_voice_id = None; // caller owns the audio stop
         if visual_fade_ms == 0 {
@@ -626,6 +650,9 @@ pub(super) fn tick_slot(slot: &Arc<VideoSlot>) -> (f32, bool) {
     let force_reveal = {
         let Ok(mut st) = slot.state.lock() else { return (0.0, false) };
         match (st.pending_reveal, st.reveal_deadline) {
+            // A preloaded slot is *meant* to sit there dark and paused, so the
+            // watchdog must never drag it on screen.
+            _ if st.preloaded => false,
             (Some(_), Some(deadline)) if Instant::now() >= deadline => {
                 st.reveal_deadline = None;
                 true
@@ -661,6 +688,22 @@ pub(super) fn tick_slot(slot: &Arc<VideoSlot>) -> (f32, bool) {
         return (0.0, false);
     }
     (opacity, animating)
+}
+
+/// Release a preloaded slot: the file is already open and decoded, so this
+/// only lifts the hold and reveals it.  Returns `false` when the slot was not
+/// preloaded (an ordinary resume then applies).
+pub(super) fn start_preloaded(slot: &Arc<VideoSlot>) -> bool {
+    {
+        let Ok(mut st) = slot.state.lock() else { return false };
+        if !st.preloaded {
+            return false;
+        }
+        st.preloaded = false;
+    }
+    reveal(slot);
+    log::info!("[slot {}] preloaded content started", slot.index);
+    true
 }
 
 /// Reveal a paused video load: resume its audio voice, unpause mpv, start the
@@ -757,7 +800,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                 let has_pending = slot
                     .state
                     .lock()
-                    .map(|st| st.pending_reveal.is_some())
+                    .map(|st| st.pending_reveal.is_some() && !st.preloaded)
                     .unwrap_or(false);
                 if has_pending {
                     reveal(&slot);
@@ -783,8 +826,9 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                                 duration_ms: (duration_secs * 1000.0) as u64,
                             });
                         }
-                        // Arm the reveal watchdog for paused video loads.
-                        if st.pending_reveal.is_some() {
+                        // Arm the reveal watchdog for paused video loads — but
+                        // never for a preload, which has no deadline to meet.
+                        if st.pending_reveal.is_some() && !st.preloaded {
                             st.reveal_deadline =
                                 Some(Instant::now() + Duration::from_millis(2500));
                         }
@@ -823,6 +867,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                             let audio = st.audio_voice_id.take();
                             st.pending_reveal = None;
                             st.reveal_deadline = None;
+                            st.preloaded = false;
                             st.pending_unload = false;
                             st.slice_plan = None;
                             st.anim.set(0.0);
@@ -845,6 +890,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                             let audio = st.audio_voice_id.take();
                             st.pending_reveal = None;
                             st.reveal_deadline = None;
+                            st.preloaded = false;
                             st.slice_plan = None;
                             st.anim.set(0.0);
                             (voice, audio)

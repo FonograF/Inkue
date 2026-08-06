@@ -160,6 +160,9 @@ pub trait OutputEngineApi: Send + Sync {
     fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool;
     /// Release the visual voice's current slice loop (Devamp Cue).
     fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool);
+    /// Reveal + unpause content that was preloaded by a Load Cue.
+    /// `false` = this voice was not preloaded.
+    fn start_preloaded(&self, voice_id: VoiceId) -> bool;
 }
 
 impl OutputEngineApi for OutputEngine {
@@ -210,6 +213,9 @@ impl OutputEngineApi for OutputEngine {
     }
     fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) {
         OutputEngine::devamp_voice(self, voice_id, stop_at_end)
+    }
+    fn start_preloaded(&self, voice_id: VoiceId) -> bool {
+        OutputEngine::start_preloaded(self, voice_id)
     }
 }
 

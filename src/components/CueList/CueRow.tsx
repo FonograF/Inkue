@@ -55,6 +55,15 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   text: "🔤",
   camera: "📷",
   devamp: "🔁",
+  // Command cues — they act on other cues, so the glyph is the action itself.
+  start: "▶",
+  pause: "⏸",
+  resume: "⏯",
+  load: "⏏",
+  reset: "⏮",
+  goto: "↪",
+  arm: "🔓",
+  disarm: "🔒",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import type { AudioCueData, CameraCueData, CueSummary, CueType, DevampCueData, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import { isCommandCueType } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
 import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS } from "../../lib/mediaTypes";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -16,6 +17,7 @@ import { LevelsTab } from "./LevelsTab";
 import { FadeTab } from "./FadeTab";
 import { FadeCueTab } from "./FadeCueTab";
 import { StopTab } from "./StopTab";
+import { CommandTab } from "./CommandTab";
 import { DevampTab } from "./DevampTab";
 import { GroupTab } from "./GroupTab";
 import { LayerTab } from "./LayerTab";
@@ -44,7 +46,7 @@ interface Props {
 type Tab =
   | "basics" | "time" | "levels" | "fade" | "layer" | "geometry" | "messages"
   | "fade-cue" | "stop" | "devamp" | "group" | "light" | "mic" | "timecode"
-  | "text" | "camera" | "triggers";
+  | "text" | "camera" | "triggers" | "command";
 
 type CueData =
   | AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData
@@ -55,6 +57,8 @@ const CUE_ICONS: Partial<Record<CueType, string>> = {
   audio: "🔊", video: "🎬", image: "🖼", group: "📦", wait: "⏱", fade: "📉",
   midi: "🎹", osc: "📡", stop: "⏹", light: "💡", mic: "🎤", timecode: "🕐",
   text: "🔤", camera: "📷", devamp: "🔁",
+  start: "▶", pause: "⏸", resume: "⏯", load: "⏏", reset: "⏮",
+  goto: "↪", arm: "🔓", disarm: "🔒",
 };
 
 /** Ordered tab list for a cue type: identity first, the type's main tab next,
@@ -67,6 +71,7 @@ function tabsFor(type: CueType): { id: Tab; label: string }[] {
   const tabs: { id: Tab; label: string }[] = [{ id: "basics", label: "Basics" }];
   if (type === "fade") tabs.push({ id: "fade-cue", label: "Fade" });
   if (type === "stop") tabs.push({ id: "stop", label: "Stop" });
+  if (isCommandCueType(type)) tabs.push({ id: "command", label: "Command" });
   if (type === "devamp") tabs.push({ id: "devamp", label: "Devamp" });
   if (type === "group") tabs.push({ id: "group", label: "Group" });
   if (type === "camera") tabs.push({ id: "camera", label: "Camera" });
@@ -247,6 +252,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
         )}
         {activeTab === "fade-cue" && isFade && (
           <FadeCueTab cue={cueData as FadeCueData} onSave={save} />
+        )}
+        {activeTab === "command" && isCommandCueType(type) && (
+          <CommandTab cue={cueData as StopCueData} onSave={save} />
         )}
         {activeTab === "stop" && type === "stop" && (
           <StopTab cue={cueData as StopCueData} onSave={save} />

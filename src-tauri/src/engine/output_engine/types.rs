@@ -373,6 +373,12 @@ pub struct ContentRequest<'a> {
     /// `u32::MAX` = vamp.  Empty = plain playback.  When present,
     /// `loop_count` is ignored (the segments own the looping via ab-loop).
     pub slices: Vec<(f64, f64, u32)>,
+    /// Preload only (Load Cue): open the file and decode its first frame, but
+    /// **do not put anything on screen**. The slot stays at zero opacity and
+    /// paused until `start_preloaded` reveals it. Without this, "loading" a
+    /// video would display its first frame — the opposite of what a Load Cue
+    /// is for.
+    pub preload: bool,
 }
 
 // ---------------------------------------------------------------------------

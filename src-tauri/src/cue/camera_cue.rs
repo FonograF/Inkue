@@ -173,6 +173,10 @@ impl CameraCue {
             hold_last_frame: false,
             geometry: self.geometry,
             live_source: true,
+            // A live feed has nothing to decode ahead of time; Load falls back
+            // to the trait default (bring up, pause) — which for a camera is
+            // still useful: it opens the capture device early.
+            preload: false,
             layer_style: self.layer_style,
             slices: Vec::new(),
         })?;

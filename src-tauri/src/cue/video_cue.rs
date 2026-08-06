@@ -114,6 +114,13 @@ pub struct VideoCue {
     /// Same, for the natural-end fade-out of the paired audio voice — the two
     /// fades have their own spec, so they arm independently.
     eof_audio_fade_started: bool,
+    /// Set while `preload()` builds the content request, so it asks the output
+    /// engine for a dark, held load instead of a normal one.
+    preloading: bool,
+    /// `true` between a Load Cue and the Start that releases it: the content
+    /// is decoded and paused off-screen, so starting it is a reveal, not a
+    /// fresh load.
+    preloaded: bool,
 }
 
 impl VideoCue {
@@ -159,6 +166,8 @@ impl VideoCue {
             action_elapsed_before_pause: Duration::ZERO,
             eof_fade_started: false,
             eof_audio_fade_started: false,
+            preloading: false,
+            preloaded: false,
         }
     }
 
@@ -365,6 +374,7 @@ impl VideoCue {
             live_source: false,
             layer_style: self.layer_style,
             slices,
+            preload: self.preloading,
         })?;
 
         self.active_voice_id = Some(voice_id);
@@ -372,6 +382,7 @@ impl VideoCue {
         self.in_pre_wait = false;
         self.eof_fade_started = false;
         self.eof_audio_fade_started = false;
+        self.preloaded = false;
 
         context.emit(CueEvent::ActionStarted { cue_id: self.id });
         Ok(())
@@ -458,6 +469,13 @@ impl Cue for VideoCue {
             return Ok(());
         }
 
+        // Already preloaded by a Load Cue: the file is open and frame 0 is
+        // decoded off-screen, so starting it is a reveal — reloading would
+        // throw away exactly the work the Load was for.
+        if self.preloaded {
+            return self.resume(context);
+        }
+
         self.play_generation = self.play_generation.wrapping_add(1);
         self.auto_continue_fired = false;
         self.state = CueState::Running;
@@ -469,6 +487,34 @@ impl Cue for VideoCue {
         }
 
         self.start_video_action(context)
+    }
+
+    fn preload(&mut self, context: &CueContext) -> Result<()> {
+        if self.state == CueState::Running || self.preloaded {
+            return Ok(());
+        }
+        let has_file = self.file_path.as_ref().is_some_and(|p| !p.as_os_str().is_empty());
+        if !has_file {
+            return Ok(());
+        }
+
+        self.play_generation = self.play_generation.wrapping_add(1);
+        self.auto_continue_fired = false;
+
+        self.preloading = true;
+        let result = self.start_video_action(context);
+        self.preloading = false;
+        result?;
+
+        // The cue is standing by, not playing: its clocks must not run and the
+        // picture is held off-screen until a Start releases it.
+        self.state = CueState::Paused;
+        self.started_at = None;
+        self.action_started_at = None;
+        self.elapsed_before_pause = Duration::ZERO;
+        self.action_elapsed_before_pause = Duration::ZERO;
+        self.preloaded = true;
+        Ok(())
     }
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
@@ -488,6 +534,7 @@ impl Cue for VideoCue {
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
         self.eof_audio_fade_started = false;
+        self.preloaded = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -511,8 +558,14 @@ impl Cue for VideoCue {
 
     fn resume(&mut self, context: &CueContext) -> Result<()> {
         if let Some(vid) = self.active_voice_id {
-            context.output_engine.resume_voice(vid)?;
+            // Releasing a preload reveals and unpauses in one step; an
+            // ordinary pause just unpauses.
+            let revealed = self.preloaded && context.output_engine.start_preloaded(vid);
+            if !revealed {
+                context.output_engine.resume_voice(vid)?;
+            }
         }
+        self.preloaded = false;
         self.started_at = Some(Instant::now() - self.elapsed_before_pause);
         self.action_started_at = Some(Instant::now() - self.action_elapsed_before_pause);
         self.state = CueState::Running;
@@ -549,6 +602,7 @@ impl Cue for VideoCue {
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
         self.eof_audio_fade_started = false;
+        self.preloaded = false;
         context.emit(CueEvent::Stopped { cue_id: self.id });
         Ok(())
     }
@@ -564,6 +618,7 @@ impl Cue for VideoCue {
         self.auto_continue_fired = false;
         self.eof_fade_started = false;
         self.eof_audio_fade_started = false;
+        self.preloaded = false;
         Ok(())
     }
 

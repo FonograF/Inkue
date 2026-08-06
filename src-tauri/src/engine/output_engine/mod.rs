@@ -531,6 +531,7 @@ impl OutputEngine {
             geometry: req.geometry,
             layer_style: req.layer_style,
             slices: req.slices,
+            preload: req.preload,
         });
 
         Ok(voice_id)
@@ -674,6 +675,16 @@ impl OutputEngine {
         true
     }
 
+    /// Start content that was preloaded (Load Cue): reveal it and unpause.
+    ///
+    /// Returns `false` when `voice_id` was not preloaded — the caller should
+    /// then resume it the ordinary way.
+    pub fn start_preloaded(&self, voice_id: VoiceId) -> bool {
+        slot::slot_for_voice(voice_id)
+            .map(|slot| slot::start_preloaded(&slot))
+            .unwrap_or(false)
+    }
+
     /// Return the current overlay alpha (0 = transparent, 255 = black).
     pub fn get_overlay_alpha(&self) -> u8 {
         FADE_STATE.get()
@@ -728,6 +739,7 @@ impl OutputEngine {
         screen_index: Option<u32>,
     ) -> Result<VoiceId> {
         self.show_content(ContentRequest {
+            preload: false,
             file_path,
             is_image: false,
             fade_in_ms: 0,

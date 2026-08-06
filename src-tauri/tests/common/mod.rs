@@ -195,12 +195,19 @@ pub fn full_registry() -> CueRegistry {
     r.register(CueType::Timecode, Box::new(TimecodeCueFactory));
     r.register(CueType::Text, Box::new(TextCueFactory));
     r.register(CueType::Wait, Box::new(WaitCueFactory));
+    r.register(CueType::Camera, Box::new(inkue_lib::cue::camera_cue::CameraCueFactory));
+    for action in inkue_lib::cue::control_cue::ALL_CONTROL_ACTIONS {
+        r.register(
+            action.cue_type(),
+            Box::new(inkue_lib::cue::control_cue::ControlCueFactory(action)),
+        );
+    }
     r
 }
 
 /// Every built-in cue type — the single source of truth for "what should the
 /// registry contain".
-pub const ALL_CUE_TYPES: [CueType; 15] = [
+pub const ALL_CUE_TYPES: [CueType; 24] = [
     CueType::Audio,
     CueType::Memo,
     CueType::Wait,
@@ -216,6 +223,16 @@ pub const ALL_CUE_TYPES: [CueType; 15] = [
     CueType::Mic,
     CueType::Timecode,
     CueType::Text,
+    CueType::Camera,
+    // Command cues — eight types over one shared implementation.
+    CueType::Start,
+    CueType::Pause,
+    CueType::Resume,
+    CueType::Load,
+    CueType::Reset,
+    CueType::Goto,
+    CueType::Arm,
+    CueType::Disarm,
 ];
 
 // ---------------------------------------------------------------------------
@@ -266,12 +283,13 @@ pub enum EngineCall {
     AudioEnsureInputFeed,
     AudioPlayMicVoice,
     AudioPanicStopAll,
-    OutputShowContent { path: String, is_image: bool },
+    OutputShowContent { path: String, is_image: bool, preload: bool },
     OutputStopContent,
     OutputTextOverlay { ass: String },
     OutputClearText,
     OutputPanicStop,
     OutputEofFade { fade_ms: u32 },
+    OutputStartPreloaded,
     OutputSetOpacity { opacity: f32 },
     AudioDevamp { stop_at_end: bool },
     OutputDevamp { stop_at_end: bool },
@@ -354,6 +372,7 @@ impl OutputEngineApi for RecOutput {
         record(&self.log, EngineCall::OutputShowContent {
             path: req.file_path.to_string_lossy().into_owned(),
             is_image: req.is_image,
+            preload: req.preload,
         });
         Ok(Uuid::new_v4())
     }
@@ -386,6 +405,10 @@ impl OutputEngineApi for RecOutput {
     }
     fn devamp_voice(&self, _v: VoiceId, stop_at_end: bool) {
         record(&self.log, EngineCall::OutputDevamp { stop_at_end });
+    }
+    fn start_preloaded(&self, _v: VoiceId) -> bool {
+        record(&self.log, EngineCall::OutputStartPreloaded);
+        true
     }
 }
 

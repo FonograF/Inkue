@@ -53,6 +53,215 @@ fn list_of(cues: Vec<Box<dyn Cue>>) -> CueList {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Command cues — the transport performs their action on other cues
+// ---------------------------------------------------------------------------
+
+/// A Command cue of `cue_type` aimed at `targets`.
+fn command(reg: &CueRegistry, cue_type: CueType, targets: Vec<uuid::Uuid>) -> Box<dyn Cue> {
+    let mut json = reg.create(&cue_type).unwrap().serialize();
+    json["target_cue_ids"] = serde_json::json!(
+        targets.iter().map(|id| id.to_string()).collect::<Vec<_>>()
+    );
+    reg.from_json(json).unwrap()
+}
+
+/// Fire the Command cue sitting at the playhead of a freshly-built list.
+fn go_command(list: &mut CueList) -> (Transport, ()) {
+    let (ctx, _rx) = test_context();
+    let mut transport = Transport::new(ctx);
+    list.playhead_cue_id = list.cues.last().map(|c| c.id());
+    transport.go(list).unwrap();
+    (transport, ())
+}
+
+#[test]
+fn start_command_fires_its_target() {
+    let reg = full_registry();
+    let target = reg.create(&CueType::Wait).unwrap();
+    let target_id = target.id();
+    let mut list = list_of(vec![target, command(&reg, CueType::Start, vec![target_id])]);
+
+    go_command(&mut list);
+
+    assert!(
+        list.get(&target_id).unwrap().is_running(),
+        "a Start Cue must trigger its target",
+    );
+}
+
+#[test]
+fn goto_command_moves_the_playhead_to_its_target() {
+    let reg = full_registry();
+    let first = memo(&reg, "1", ContinueMode::DoNotContinue, Duration::ZERO);
+    let first_id = first.id();
+    let mut list = list_of(vec![
+        first,
+        memo(&reg, "2", ContinueMode::DoNotContinue, Duration::ZERO),
+        command(&reg, CueType::Goto, vec![first_id]),
+    ]);
+
+    go_command(&mut list);
+
+    assert_eq!(
+        list.playhead_cue_id,
+        Some(first_id),
+        "a Goto Cue must leave the Playhead on its target, not advance past itself",
+    );
+}
+
+#[test]
+fn disarm_command_disables_its_target_and_arm_puts_it_back() {
+    let reg = full_registry();
+    let target = memo(&reg, "target", ContinueMode::DoNotContinue, Duration::ZERO);
+    let target_id = target.id();
+
+    let mut list = list_of(vec![target, command(&reg, CueType::Disarm, vec![target_id])]);
+    go_command(&mut list);
+    assert!(list.get(&target_id).unwrap().is_disabled(), "Disarm disables its target");
+
+    // Same list, now with an Arm cue at the playhead.
+    list.push(command(&reg, CueType::Arm, vec![target_id]));
+    go_command(&mut list);
+    assert!(!list.get(&target_id).unwrap().is_disabled(), "Arm re-enables it");
+}
+
+#[test]
+fn pause_then_resume_commands_drive_a_running_target() {
+    let reg = full_registry();
+    let target = reg.create(&CueType::Wait).unwrap();
+    let target_id = target.id();
+    let mut list = list_of(vec![target, command(&reg, CueType::Pause, vec![target_id])]);
+
+    // Start the target by hand, then let the Pause cue act on it.
+    let (ctx, _rx) = test_context();
+    list.get_mut(&target_id).unwrap().go(&ctx).unwrap();
+    go_command(&mut list);
+    assert!(list.get(&target_id).unwrap().is_paused(), "Pause pauses its target");
+
+    list.push(command(&reg, CueType::Resume, vec![target_id]));
+    go_command(&mut list);
+    assert!(list.get(&target_id).unwrap().is_running(), "Resume puts it back to running");
+}
+
+#[test]
+fn reset_command_returns_a_running_target_to_standby() {
+    let reg = full_registry();
+    let target = reg.create(&CueType::Wait).unwrap();
+    let target_id = target.id();
+    let mut list = list_of(vec![target, command(&reg, CueType::Reset, vec![target_id])]);
+
+    let (ctx, _rx) = test_context();
+    list.get_mut(&target_id).unwrap().go(&ctx).unwrap();
+    go_command(&mut list);
+
+    assert_eq!(
+        list.get(&target_id).unwrap().state(),
+        inkue_lib::cue::types::CueState::Standby,
+        "Reset must stop the target and return it to Standby",
+    );
+}
+
+#[test]
+fn a_command_cue_never_acts_on_itself() {
+    // A Start Cue targeting itself would recurse; the transport filters it out.
+    let reg = full_registry();
+    let mut list = CueList::new("T");
+    let start = reg.create(&CueType::Start).unwrap();
+    let real_id = start.id();
+    // Aim it at its own id.
+    let mut json = start.serialize();
+    json["target_cue_ids"] = serde_json::json!(vec![real_id.to_string()]);
+    list.push(reg.from_json(json).unwrap());
+
+    let (ctx, _rx) = test_context();
+    let mut transport = Transport::new(ctx);
+    list.playhead_cue_id = Some(real_id);
+
+    let result = transport.go(&mut list).unwrap();
+
+    assert_eq!(result.triggered, vec![real_id], "only the Command cue itself fired");
+}
+
+#[test]
+fn load_command_prepares_a_video_without_putting_it_on_screen() {
+    // The whole point of Load: the file is opened and decoded, but the output
+    // stays dark until a Start releases it. Going and pausing — the naive
+    // implementation — would show frame 0.
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context();
+    let mut transport = Transport::new(ctx);
+
+    let mut vj = reg.create(&CueType::Video).unwrap().serialize();
+    vj["file_path"] = serde_json::json!("video/act2.mp4");
+    let video = reg.from_json(vj).unwrap();
+    let video_id = video.id();
+    let mut list = list_of(vec![video, command(&reg, CueType::Load, vec![video_id])]);
+    list.playhead_cue_id = list.cues.last().map(|c| c.id());
+
+    transport.go(&mut list).unwrap();
+
+    assert!(
+        log.lock().unwrap().iter().any(|c| matches!(
+            c,
+            EngineCall::OutputShowContent { preload: true, .. }
+        )),
+        "Load must reach the output engine as a preload, not an ordinary show",
+    );
+    assert!(
+        list.get(&video_id).unwrap().is_paused(),
+        "a loaded cue stands by paused, ready to start",
+    );
+}
+
+#[test]
+fn starting_a_loaded_video_reveals_it_instead_of_reloading() {
+    let reg = full_registry();
+    let (ctx, _rx, log) = recording_context();
+    let mut transport = Transport::new(ctx);
+
+    let mut vj = reg.create(&CueType::Video).unwrap().serialize();
+    vj["file_path"] = serde_json::json!("video/act2.mp4");
+    let video = reg.from_json(vj).unwrap();
+    let video_id = video.id();
+    let mut list = list_of(vec![
+        video,
+        command(&reg, CueType::Load, vec![video_id]),
+        command(&reg, CueType::Start, vec![video_id]),
+    ]);
+
+    // Load, then Start.
+    list.playhead_cue_id = Some(list.cues[1].id());
+    transport.go(&mut list).unwrap();
+    list.playhead_cue_id = Some(list.cues[2].id());
+    transport.go(&mut list).unwrap();
+
+    let calls = log.lock().unwrap();
+    let loads = calls.iter().filter(|c| matches!(c, EngineCall::OutputShowContent { .. })).count();
+    assert_eq!(loads, 1, "starting a loaded cue must not load the file a second time");
+    assert!(
+        calls.iter().any(|c| matches!(c, EngineCall::OutputStartPreloaded)),
+        "it releases the preload instead",
+    );
+    drop(calls);
+    assert!(list.get(&video_id).unwrap().is_running(), "and the cue is running");
+}
+
+#[test]
+fn a_command_cue_with_no_target_is_a_harmless_no_op() {
+    let reg = full_registry();
+    let mut list = list_of(vec![
+        memo(&reg, "1", ContinueMode::DoNotContinue, Duration::ZERO),
+        command(&reg, CueType::Reset, vec![]),
+    ]);
+
+    let (ctx, _rx) = test_context();
+    let mut transport = Transport::new(ctx);
+    list.playhead_cue_id = list.cues.last().map(|c| c.id());
+
+    assert!(transport.go(&mut list).is_ok(), "an untargeted Command cue must not fail GO");
+}
+
 #[test]
 fn go_on_empty_playhead_returns_empty() {
     let (ctx, _rx) = test_context();

@@ -27,7 +27,7 @@ import { LogViewerModal } from "./components/Logs/LogViewerModal";
 import { HealthBanner } from "./components/Health/HealthBanner";
 import type { CollectReport, RecoveryInfo, CueType } from "./lib/types";
 import type { CueSummary } from "./lib/types";
-import { CUE_TYPE_COLORS } from "./lib/types";
+import { COMMAND_CUE_TYPES, CUE_TYPE_COLORS } from "./lib/types";
 
 // ---------------------------------------------------------------------------
 // Recent files
@@ -1128,7 +1128,14 @@ export default function App() {
     await refreshCues();
   };
 
-  const dispatchCueDrag = (cueType: "audio" | "stop" | "video" | "image" | "group" | "wait" | "osc" | "fade" | "midi" | "light" | "mic" | "timecode" | "text" | "camera" | "devamp", e: React.MouseEvent) => {
+  const handleAddCommand = async (cueType: CueType) => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue(cueType, idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
+  const dispatchCueDrag = (cueType: CueType, e: React.MouseEvent) => {
     if (e.button !== 0) return;
     document.dispatchEvent(
       new CustomEvent("inkue:cue-drag-start", {
@@ -1392,6 +1399,10 @@ export default function App() {
             onAdd={handleAddDevamp}
             onDragStart={(e) => dispatchCueDrag("devamp", e)}
           />
+          <CommandToolbarButton
+            onAdd={(t) => void handleAddCommand(t)}
+            onDragStart={(t, e) => dispatchCueDrag(t, e)}
+          />
           {/* `marginLeft: auto` pins the Inspector toggle to the right edge of
               its flex line, away from the cue-creation buttons it does not
               belong with — and it stays pinned when the row wraps. */}
@@ -1519,6 +1530,77 @@ const toolbarBtn: React.CSSProperties = {
   padding: "3px 10px", background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
   borderRadius: 4, color: "var(--wc-text)", cursor: "pointer", fontSize: 12,
 };
+
+/** Toolbar "+ Command" button: one entry point for the eight cues that act on
+ *  other cues. They are real, distinct cue types — this only keeps eight more
+ *  buttons out of a toolbar that already wraps. */
+function CommandToolbarButton({ onAdd, onDragStart }: {
+  onAdd: (type: CueType) => void;
+  onDragStart: (type: CueType, e: React.MouseEvent) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const color = CUE_TYPE_COLORS.goto;
+
+  return (
+    <div style={{ position: "relative" }}>
+      {open && <div style={{ position: "fixed", inset: 0, zIndex: 9990 }} onClick={() => setOpen(false)} />}
+      <button
+        style={{
+          ...toolbarBtn,
+          display: "inline-flex", alignItems: "center", gap: 5, userSelect: "none",
+          color: hover || open ? color : "var(--wc-text-secondary)",
+          borderColor: hover || open ? color : "var(--wc-border-strong)",
+          background: hover || open ? "var(--wc-bg-hover)" : "var(--wc-bg-surface)",
+          transition: "color 0.12s, border-color 0.12s, background 0.12s",
+        }}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        title="Cues that act on other cues — Start, Pause, Goto, Arm…"
+      >
+        <span style={{ color, fontWeight: 700, fontSize: 11 }}>+</span>
+        Command
+        <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute", left: 0, top: "100%", marginTop: 4, zIndex: 9999,
+            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+            borderRadius: 6, boxShadow: "0 8px 24px rgba(0,0,0,0.6)", padding: 4, minWidth: 262,
+          }}
+        >
+          {COMMAND_CUE_TYPES.map(({ type, label, hint }) => (
+            <button
+              key={type}
+              onMouseEnter={() => setHoveredItem(type)}
+              onMouseLeave={() => setHoveredItem(null)}
+              onClick={(e) => { e.stopPropagation(); setOpen(false); onAdd(type); }}
+              // Arms the drag-to-insert gesture, exactly like the "+ <type>"
+              // buttons. It must NOT close the menu: unmounting the button on
+              // mousedown means no mouseup lands on it, so `click` never fires
+              // and the plain-click path silently does nothing.
+              onMouseDown={(e) => { if (e.button === 0) onDragStart(type, e); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%",
+                height: 26, padding: "0 10px", borderRadius: 4, border: "none", textAlign: "left",
+                background: hoveredItem === type ? "var(--wc-bg-hover)" : "transparent",
+                cursor: "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              <span style={{ color: CUE_TYPE_COLORS[type], fontSize: 12, fontWeight: 600, width: 52, flexShrink: 0 }}>
+                {label}
+              </span>
+              <span style={{ color: "var(--wc-text-muted)", fontSize: 11 }}>{hint}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Toolbar "+ <type>" button: neutral by default with only the "+" tinted in the
  *  cue-type color; the whole button illuminates in that color on hover. */

@@ -405,6 +405,34 @@ pub trait Cue: Send {
         None
     }
 
+    /// Prepare this cue so a later Start begins instantly (Load Cue):
+    /// decoders warm and buffers filled, but **nothing audible or visible**.
+    ///
+    /// The default brings the cue up and pauses it, which is right for an
+    /// Audio Cue (a paused voice is silent) and harmless for instant cues.
+    /// Visual cues override it: going and pausing would put their first frame
+    /// on the output, which is the opposite of what loading means.
+    fn preload(&mut self, context: &CueContext) -> Result<()> {
+        self.go(context)?;
+        self.pause(context)
+    }
+
+    /// Command cues only (Start, Pause, Resume, Load, Reset, Goto, Arm,
+    /// Disarm): describes what to do to which cues after `go()`.
+    ///
+    /// Returns `Some((action, target_cue_ids))`. Unlike a Stop Cue, an empty
+    /// target list yields `None` rather than "every cue" — resetting or
+    /// starting a whole show by omission is not a useful default.
+    ///
+    /// Transport executes this alongside the stop specification, before
+    /// Auto-Follow is evaluated, and resolves targets recursively so a cue
+    /// nested in a Group can be addressed.
+    fn control_specification(
+        &self,
+    ) -> Option<(crate::cue::control_cue::ControlAction, Vec<CueId>)> {
+        None
+    }
+
     /// Fade Cue only: drain the cue ids whose cues should be hard-stopped now
     /// that a `stop_at_end` fade has finished.  The event loop calls this every
     /// tick and stops the returned cues (the Fade cannot reach the cue list from

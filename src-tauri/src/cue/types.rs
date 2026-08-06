@@ -37,6 +37,28 @@ pub enum CueType {
     Camera,
     /// Releases a vamping (infinitely-looping) slice on its target cues.
     Devamp,
+
+    // --- Command cues -------------------------------------------------------
+    // Cues whose action is performed *on other cues*. They share one
+    // implementation ([`super::control_cue::ControlCue`]) and differ only by
+    // the action they carry, but stay distinct types so each keeps its own
+    // colour, its own row label, and a 1:1 mapping when importing from QLab.
+    /// Triggers its target cues (QLab Start).
+    Start,
+    /// Pauses its target cues.
+    Pause,
+    /// Resumes its paused target cues.
+    Resume,
+    /// Brings its target cues up paused at their start position (QLab Load).
+    Load,
+    /// Returns its target cues to Standby.
+    Reset,
+    /// Moves the Playhead to its target cue.
+    Goto,
+    /// Enables its target cues.
+    Arm,
+    /// Disables its target cues.
+    Disarm,
 }
 
 impl std::fmt::Display for CueType {
@@ -58,6 +80,14 @@ impl std::fmt::Display for CueType {
             CueType::Text     => write!(f, "text"),
             CueType::Camera   => write!(f, "camera"),
             CueType::Devamp   => write!(f, "devamp"),
+            CueType::Start    => write!(f, "start"),
+            CueType::Pause    => write!(f, "pause"),
+            CueType::Resume   => write!(f, "resume"),
+            CueType::Load     => write!(f, "load"),
+            CueType::Reset    => write!(f, "reset"),
+            CueType::Goto     => write!(f, "goto"),
+            CueType::Arm      => write!(f, "arm"),
+            CueType::Disarm   => write!(f, "disarm"),
         }
     }
 }
