@@ -765,6 +765,42 @@ impl AudioEngine {
         Ok(id)
     }
 
+    /// Set a single crosspoint on a playing voice (live matrix editing).
+    pub fn set_voice_crosspoint(
+        &self,
+        voice_id: VoiceId,
+        input: u8,
+        output: u8,
+        gain: f32,
+    ) -> Result<()> {
+        self.broadcast_command(AudioCommand::SetCrosspoint { voice_id, input, output, gain })
+    }
+
+    /// Apply a whole level matrix to a playing voice, one crosspoint at a
+    /// time.  `None` clears it, returning the voice to pan routing.
+    pub fn set_voice_level_matrix(
+        &self,
+        voice_id: VoiceId,
+        matrix: Option<&crate::engine::voice::LevelMatrix>,
+    ) -> Result<()> {
+        match matrix {
+            None => self.broadcast_command(AudioCommand::ClearLevelMatrix { voice_id }),
+            Some(m) => {
+                for (input, row) in m.gains.iter().enumerate() {
+                    for (output, &gain) in row.iter().enumerate() {
+                        self.broadcast_command(AudioCommand::SetCrosspoint {
+                            voice_id,
+                            input: input as u8,
+                            output: output as u8,
+                            gain,
+                        })?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn stop_voice(&self, voice_id: VoiceId, fade_ms: u32, fade_curve: FadeCurve) -> Result<()> {
         self.broadcast_command(AudioCommand::Stop { voice_id, fade_ms, fade_curve })
     }
@@ -1374,6 +1410,11 @@ fn fill_buffer(
         let patch_gain = voice.inner.patch_gain();
         let (gain_l, gain_r) = voice.pan_gains();
         let (gain_l, gain_r) = (gain_l * patch_gain, gain_r * patch_gain);
+        // A level matrix carries its own routing, so it multiplies the voice
+        // gain directly instead of the panned pair.
+        let matrix_gain = voice.inner.gain() * patch_gain;
+        // SAFETY: written once before the voice was submitted; read-only here.
+        let matrix_ptr = voice.inner.level_matrix.get();
         let voice_channels = voice.channels as usize;
         let total_frames = voice.total_frames();
         // Frame advance step: user rate × (source SR / output SR).
@@ -1497,17 +1538,38 @@ fn fill_buffer(
             };
 
             let out_base = frame * channels;
-            let out_l = sample_l * gain_l * fade_gain;
-            let out_r = sample_r * gain_r * fade_gain;
 
-            // Route to the per-voice output channels (from Output Patch).
-            // Bounds-check at the sample level keeps the RT callback safe even
-            // if the patch references a channel the device does not have.
-            if voice.out_l < channels { output[out_base + voice.out_l] += out_l; }
-            if voice.out_r < channels { output[out_base + voice.out_r] += out_r; }
+            // SAFETY: `level_matrix` is written once before submission and only
+            // read here.
+            if let Some(matrix) = unsafe { &*matrix_ptr } {
+                // Crosspoint routing replaces pan and the out_l/out_r pair —
+                // those are this same mix, restricted to two channels.
+                let level = matrix_gain * fade_gain;
+                for out in 0..matrix.width.min(channels) {
+                    let mixed =
+                        (sample_l * matrix.gains[0][out] + sample_r * matrix.gains[1][out]) * level;
+                    output[out_base + out] += mixed;
+                    // Even outputs feed the left meter, odd the right, so the
+                    // VU stays meaningful whatever the channel count.
+                    if out % 2 == 0 {
+                        voice_peak_l = voice_peak_l.max(mixed.abs());
+                    } else {
+                        voice_peak_r = voice_peak_r.max(mixed.abs());
+                    }
+                }
+            } else {
+                let out_l = sample_l * gain_l * fade_gain;
+                let out_r = sample_r * gain_r * fade_gain;
 
-            voice_peak_l = voice_peak_l.max(out_l.abs());
-            voice_peak_r = voice_peak_r.max(out_r.abs());
+                // Route to the per-voice output channels (from Output Patch).
+                // Bounds-check at the sample level keeps the RT callback safe even
+                // if the patch references a channel the device does not have.
+                if voice.out_l < channels { output[out_base + voice.out_l] += out_l; }
+                if voice.out_r < channels { output[out_base + voice.out_r] += out_r; }
+
+                voice_peak_l = voice_peak_l.max(out_l.abs());
+                voice_peak_r = voice_peak_r.max(out_r.abs());
+            }
 
             frame_pos_f += rate;
         }
@@ -1699,6 +1761,31 @@ fn apply_command(
                     }
                     v.state.store(VoiceState::FadingOut as u8, std::sync::atomic::Ordering::Release);
                 }
+            }
+        }
+        AudioCommand::SetCrosspoint { voice_id, input, output, gain } => {
+            if let Some(v) = voices.iter().find(|v| v.id == voice_id) {
+                let (i, o) = (input as usize, output as usize);
+                if i < crate::engine::voice::MATRIX_INPUTS
+                    && o < crate::engine::voice::MATRIX_OUTPUTS
+                {
+                    // SAFETY: `level_matrix` is only mutated here, from the
+                    // single callback thread.
+                    unsafe {
+                        let slot = &mut *v.inner.level_matrix.get();
+                        let matrix = slot.get_or_insert_with(
+                            crate::engine::voice::LevelMatrix::silent,
+                        );
+                        matrix.gains[i][o] = gain;
+                        matrix.recompute_width();
+                    }
+                }
+            }
+        }
+        AudioCommand::ClearLevelMatrix { voice_id } => {
+            if let Some(v) = voices.iter().find(|v| v.id == voice_id) {
+                // SAFETY: as above — single-writer, inside the callback.
+                unsafe { *v.inner.level_matrix.get() = None };
             }
         }
         AudioCommand::Pause { voice_id } => {

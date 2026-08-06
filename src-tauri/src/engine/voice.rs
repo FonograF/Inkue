@@ -134,6 +134,78 @@ impl SliceProgram {
 }
 
 // ---------------------------------------------------------------------------
+// Level matrix
+// ---------------------------------------------------------------------------
+
+/// Input channels a level matrix can address.  The mixer collapses every
+/// source to stereo before routing (a mono file feeds both), so two is not a
+/// limitation — it is what the engine actually carries.
+pub const MATRIX_INPUTS: usize = 2;
+
+/// Output channels a level matrix can address.  Fixed so the matrix is a
+/// plain array the RT callback can read without allocating or bounds-guessing;
+/// matches the per-patch VU slot count.
+pub const MATRIX_OUTPUTS: usize = 16;
+
+/// QLab-style crosspoint levels: how much of each input channel goes to each
+/// output channel.
+///
+/// When a voice carries one, it **replaces** pan and the `out_l`/`out_r` pair —
+/// those are the stereo special case of exactly this. Voice gain, patch gain
+/// and fades still apply on top, so a Fade Cue keeps working unchanged.
+#[derive(Debug, Clone)]
+pub struct LevelMatrix {
+    /// Linear gain per `[input][output]`.
+    pub gains: [[f32; MATRIX_OUTPUTS]; MATRIX_INPUTS],
+    /// One past the highest output index that carries anything, so the
+    /// callback iterates over the used width instead of all 16.
+    pub width: usize,
+}
+
+impl LevelMatrix {
+    /// All crosspoints silent.  Used when a live edit creates the matrix on a
+    /// voice that had none — it is a plain array, so building one inside the
+    /// audio callback allocates nothing.
+    pub fn silent() -> Self {
+        Self { gains: [[0.0; MATRIX_OUTPUTS]; MATRIX_INPUTS], width: 0 }
+    }
+
+    /// Build from `[input][output]` linear gains, ignoring anything past the
+    /// fixed capacity.
+    ///
+    /// Returns `None` only for an **empty** spec (no rows, or no columns).  A
+    /// matrix whose crosspoints are all silent is kept: the operator asked for
+    /// silence, and turning that back into pan routing would make the cue
+    /// audible against their instruction.
+    pub fn new(gains: &[Vec<f32>]) -> Option<Self> {
+        if gains.iter().all(|row| row.is_empty()) {
+            return None;
+        }
+        let mut m = Self::silent();
+        for (i, row) in gains.iter().take(MATRIX_INPUTS).enumerate() {
+            for (o, &g) in row.iter().take(MATRIX_OUTPUTS).enumerate() {
+                m.gains[i][o] = g;
+            }
+        }
+        m.recompute_width();
+        Some(m)
+    }
+
+    /// Refresh the used width after a crosspoint changed.  Called from the RT
+    /// callback, so it stays a bounded scan over the fixed array.
+    pub fn recompute_width(&mut self) {
+        self.width = 0;
+        for row in &self.gains {
+            for (o, &g) in row.iter().enumerate() {
+                if g != 0.0 {
+                    self.width = self.width.max(o + 1);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // VoiceInner — wraps all RT-mutable fields in UnsafeCell / atomics
 // ---------------------------------------------------------------------------
 
@@ -180,6 +252,10 @@ pub struct VoiceInner {
     /// [`DEVAMP_STOP`]).  Written from the non-RT side, consumed by the
     /// callback at the next slice boundary.
     pub devamp_request: AtomicU8,
+    /// Optional crosspoint routing ([`LevelMatrix`]).  Written once before the
+    /// voice is submitted, read-only in the callback.  `None` — the default —
+    /// leaves the voice on the original pan + `out_l`/`out_r` mix path.
+    pub level_matrix: UnsafeCell<Option<LevelMatrix>>,
 }
 
 // SAFETY: `VoiceInner` is never accessed from two threads simultaneously
@@ -353,6 +429,7 @@ impl Voice {
                 end_frame: UnsafeCell::new(None),
                 slices: UnsafeCell::new(None),
                 devamp_request: AtomicU8::new(DEVAMP_NONE),
+                level_matrix: UnsafeCell::new(None),
             }),
             out_l: 0,
             out_r: 1,
@@ -385,6 +462,7 @@ impl Voice {
                 end_frame: UnsafeCell::new(None),
                 slices: UnsafeCell::new(None),
                 devamp_request: AtomicU8::new(DEVAMP_NONE),
+                level_matrix: UnsafeCell::new(None),
             }),
             out_l: 0,
             out_r: 1,

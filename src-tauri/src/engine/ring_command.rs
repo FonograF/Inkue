@@ -71,6 +71,13 @@ pub enum AudioCommand {
     /// in progress finishes, then playback continues into the next slice —
     /// or stops at the slice boundary when `stop_at_end` is set.
     Devamp { voice_id: VoiceId, stop_at_end: bool },
+    /// Set one crosspoint of a voice's level matrix, for live matrix editing.
+    /// Creates the matrix on first use — [`LevelMatrix`](crate::engine::voice::LevelMatrix)
+    /// is a fixed array, so this allocates nothing in the callback.  One
+    /// command per cell keeps this enum (and the ring buffer) small.
+    SetCrosspoint { voice_id: VoiceId, input: u8, output: u8, gain: f32 },
+    /// Drop a voice's level matrix, returning it to pan + Output Patch routing.
+    ClearLevelMatrix { voice_id: VoiceId },
     /// Panic: immediately silence every voice in the pool, whatever its state.
     /// Backstop for desynced cue bookkeeping — must never depend on voice IDs.
     StopAll,

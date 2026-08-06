@@ -88,6 +88,14 @@ export const renumberSelectedCues = (ids: CueId[], start: number, increment: num
 export const clearCueNumbers = () =>
   invoke<void>("clear_cue_numbers");
 
+// Live level edits — engine only, no workspace write and no undo entry. Used
+// while a slider or a matrix cell is being dragged; the value is persisted
+// once on release with the ordinary updateCue.
+export const setLiveLevel = (cueId: CueId, volumeDb: number, pan: number) =>
+  invoke<void>("set_live_level", { cueId, volumeDb, pan });
+export const setLiveCrosspoint = (cueId: CueId, input: number, output: number, gainDb: number) =>
+  invoke<void>("set_live_crosspoint", { cueId, input, output, gainDb });
+
 export const groupCues = (ids: CueId[]) =>
   invoke<CueId>("group_cues", { ids });
 export const ungroup = (groupId: CueId) =>

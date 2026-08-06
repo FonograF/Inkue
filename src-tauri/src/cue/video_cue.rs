@@ -114,6 +114,10 @@ pub struct VideoCue {
     /// Same, for the natural-end fade-out of the paired audio voice — the two
     /// fades have their own spec, so they arm independently.
     eof_audio_fade_started: bool,
+    /// QLab-style crosspoint levels in dB for the video's audio track,
+    /// `[input channel][patch channel]`.  Same model as
+    /// [`AudioCue::level_matrix`](crate::cue::audio_cue::AudioCue::level_matrix).
+    pub level_matrix: Option<Vec<Vec<f64>>>,
     /// Set while `preload()` builds the content request, so it asks the output
     /// engine for a dark, held load instead of a normal one.
     preloading: bool,
@@ -166,6 +170,7 @@ impl VideoCue {
             action_elapsed_before_pause: Duration::ZERO,
             eof_fade_started: false,
             eof_audio_fade_started: false,
+            level_matrix: None,
             preloading: false,
             preloaded: false,
         }
@@ -333,6 +338,19 @@ impl VideoCue {
                 .map(|i| i as u8);
             voice.inner.set_patch_gain(crate::cue::types::db_to_linear(patch.gain_db as f64) as f32);
             patch_device = Some(patch.device_id.clone());
+        }
+
+        if let Some(spec) = &self.level_matrix {
+            let patch_channels: Vec<u16> = context
+                .resolve_patch(self.output_patch_id)
+                .map(|p| p.channels.clone())
+                .unwrap_or_default();
+            if let Some(matrix) =
+                crate::cue::audio_cue::build_level_matrix(spec, &patch_channels)
+            {
+                // SAFETY: written once, before the voice reaches the RT thread.
+                unsafe { *voice.inner.level_matrix.get() = Some(matrix) };
+            }
         }
 
         Ok(Some(context.audio_engine.play_voice_paused_routed(voice, patch_device.as_deref())?))
@@ -743,11 +761,16 @@ impl Cue for VideoCue {
     }
 
     fn live_audio_params(&self) -> Option<crate::cue::traits::LiveAudioParams> {
+        // This is the *visual* voice id; `update_cue` maps it to the paired
+        // audio voice before touching the AudioEngine. Sending it as-is is
+        // what made inspector volume edits silently do nothing on a playing
+        // Video Cue — the AudioEngine had no voice by that id.
         let voice_id = self.active_voice_id?;
         Some(crate::cue::traits::LiveAudioParams {
             voice_id,
             gain: db_to_linear(self.volume_db) as f32,
             pan: 0.0,
+            level_matrix: self.level_matrix.clone(),
         })
     }
 
@@ -802,6 +825,7 @@ impl Cue for VideoCue {
             "geometry": self.geometry,
             "layer_style": self.layer_style,
             "slices": self.slices,
+            "level_matrix": self.level_matrix,
             "is_disabled": self.is_disabled,
             "cached_duration_ms": self.cached_duration.map(|d| d.as_millis() as u64),
         })
@@ -913,6 +937,11 @@ impl CueFactory for VideoCueFactory {
         if let Some(ls) = value.get("layer_style") {
             if let Ok(style) = serde_json::from_value::<LayerStyle>(ls.clone()) {
                 cue.layer_style = style;
+            }
+        }
+        if let Some(m) = value.get("level_matrix") {
+            if let Ok(rows) = serde_json::from_value::<Option<Vec<Vec<f64>>>>(m.clone()) {
+                cue.level_matrix = rows.filter(|r| !r.is_empty());
             }
         }
         if let Some(s) = value.get("slices") {

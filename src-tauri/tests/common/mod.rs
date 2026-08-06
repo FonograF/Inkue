@@ -280,6 +280,7 @@ pub enum EngineCall {
     AudioResumeVoice,
     AudioSetGain { gain: f32 },
     AudioSetPan { pan: f32 },
+    AudioSetLevelMatrix { present: bool },
     AudioEnsureInputFeed,
     AudioPlayMicVoice,
     AudioPanicStopAll,
@@ -340,6 +341,14 @@ impl AudioEngineApi for RecAudio {
         Ok(())
     }
     fn get_voice_pan(&self, _v: VoiceId) -> f32 { 0.0 }
+    fn set_voice_level_matrix(
+        &self,
+        _v: VoiceId,
+        matrix: Option<&inkue_lib::engine::voice::LevelMatrix>,
+    ) -> Result<()> {
+        record(&self.0, EngineCall::AudioSetLevelMatrix { present: matrix.is_some() });
+        Ok(())
+    }
     fn sample_rate(&self) -> u32 { 48_000 }
     fn ensure_input_feed(&self, _d: Option<&str>, _b: u32) -> Result<Uuid> {
         record(&self.0, EngineCall::AudioEnsureInputFeed);

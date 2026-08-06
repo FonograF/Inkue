@@ -35,7 +35,7 @@ pub struct RuntimeState {
 /// Live audio parameters to re-apply to a cue's currently-playing voice after an
 /// inspector edit, so volume/pan changes take effect without restarting
 /// playback.  Returned by [`Cue::live_audio_params`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LiveAudioParams {
     /// The engine voice id to update.
     pub voice_id: CueId,
@@ -43,6 +43,11 @@ pub struct LiveAudioParams {
     pub gain: f32,
     /// Stereo pan (-1.0 .. 1.0).
     pub pan: f32,
+    /// Crosspoint levels in dB, `[input][patch channel]`, when the cue has a
+    /// level matrix.  `None` clears any matrix on the voice, putting it back
+    /// on pan routing.  `update_cue` resolves the columns against the cue's
+    /// Output Patch, exactly as the GO path does.
+    pub level_matrix: Option<Vec<Vec<f64>>>,
 }
 
 // ---------------------------------------------------------------------------

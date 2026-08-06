@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AudioCueData, OutputPatch, VideoCueData } from "../../lib/types";
-import { getNormalizeDb, getOutputPatches } from "../../lib/commands";
+import { getNormalizeDb, getOutputPatchTable, setLiveLevel } from "../../lib/commands";
 import { Field, inputStyle } from "./Field";
 import { Select } from "../common/Select";
+import { LevelMatrixGrid } from "./LevelMatrixGrid";
+import { DragNumber } from "../common/DragNumber";
 
 export function LevelsTab({
   cue,
@@ -18,10 +20,19 @@ export function LevelsTab({
   const [normalizing, setNormalizing] = useState(false);
   const [normalizeError, setNormalizeError] = useState<string | null>(null);
   const [patches, setPatches] = useState<OutputPatch[]>([]);
+  const [defaultPatchId, setDefaultPatchId] = useState<string | null>(null);
 
   useEffect(() => {
-    getOutputPatches().then(setPatches).catch(console.error);
+    getOutputPatchTable()
+      .then((t) => { setPatches(t.patches); setDefaultPatchId(t.default_patch_id); })
+      .catch(console.error);
   }, []);
+
+  // The patch the cue actually plays through: its own, or the workspace
+  // default when it has none. Resolving only `output_patch_id` left every
+  // cue on "Default patch" showing a two-column matrix regardless of how many
+  // outputs the patch really has.
+  const activePatch = patches.find((p) => p.id === (cue.output_patch_id ?? defaultPatchId));
 
   // Sync when the selected cue changes or after an external save
   useEffect(() => {
@@ -30,6 +41,13 @@ export function LevelsTab({
     setNormalizeError(null);
   }, [cue.id, cue.volume_db, isAudio, (cue as AudioCueData).pan]);
 
+  // While dragging, the value goes straight to the engine so a playing cue
+  // follows the slider. Persisting through onSave on every step would
+  // re-serialise the cue and push an undo snapshot per pixel moved.
+  const previewLevels = useCallback(
+    (v: number, p: number) => { void setLiveLevel(cue.id, v, p).catch(console.error); },
+    [cue.id]
+  );
   const commitVolume = useCallback(
     (v: number) => onSave({ volume_db: v }),
     [onSave]
@@ -81,12 +99,15 @@ export function LevelsTab({
             max="12"
             step="0.5"
             value={volumeDb}
-            onChange={(e) => setVolumeDb(parseFloat(e.target.value))}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setVolumeDb(v);
+              previewLevels(v, pan);
+            }}
             onMouseUp={() => commitVolume(volumeDb)}
           />
-          <input
+          <DragNumber
             style={{ ...inputStyle, width: 60 }}
-            type="number"
             step="0.5"
             min="-60"
             max="12"
@@ -141,13 +162,16 @@ export function LevelsTab({
               max="1"
               step="0.05"
               value={pan}
-              onChange={(e) => setPan(parseFloat(e.target.value))}
+              onChange={(e) => {
+                const p = parseFloat(e.target.value);
+                setPan(p);
+                previewLevels(volumeDb, p);
+              }}
               onMouseUp={() => commitPan(pan)}
             />
             <span style={{ color: "var(--wc-text-secondary)", fontSize: 11, flexShrink: 0 }}>R</span>
-            <input
+            <DragNumber
               style={{ ...inputStyle, width: 60 }}
-              type="number"
               step="0.05"
               min="-1"
               max="1"
@@ -158,6 +182,14 @@ export function LevelsTab({
           </div>
         </Field>
       )}
+
+      <LevelMatrixGrid
+        cueId={cue.id}
+        matrix={cue.level_matrix ?? null}
+        patchName={activePatch?.name ?? "Default patch"}
+        deviceChannels={activePatch?.channels ?? []}
+        onSave={(m) => onSave({ level_matrix: m } as Partial<AudioCueData>)}
+      />
     </>
   );
 }

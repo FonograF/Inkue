@@ -39,6 +39,12 @@ pub trait AudioEngineApi: Send + Sync {
     fn set_voice_gain(&self, voice_id: VoiceId, gain: f32) -> Result<()>;
     fn get_voice_gain(&self, voice_id: VoiceId) -> f32;
     fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()>;
+    /// Live crosspoint routing; `None` returns the voice to pan routing.
+    fn set_voice_level_matrix(
+        &self,
+        voice_id: VoiceId,
+        matrix: Option<&super::voice::LevelMatrix>,
+    ) -> Result<()>;
     fn get_voice_pan(&self, voice_id: VoiceId) -> f32;
     fn sample_rate(&self) -> u32;
     fn ensure_input_feed(&self, device_id: Option<&str>, buffer_size: u32) -> Result<Uuid>;
@@ -93,6 +99,13 @@ impl AudioEngineApi for AudioEngine {
     }
     fn set_voice_pan(&self, voice_id: VoiceId, pan: f32) -> Result<()> {
         AudioEngine::set_voice_pan(self, voice_id, pan)
+    }
+    fn set_voice_level_matrix(
+        &self,
+        voice_id: VoiceId,
+        matrix: Option<&super::voice::LevelMatrix>,
+    ) -> Result<()> {
+        AudioEngine::set_voice_level_matrix(self, voice_id, matrix)
     }
     fn get_voice_pan(&self, voice_id: VoiceId) -> f32 {
         AudioEngine::get_voice_pan(self, voice_id)

@@ -326,6 +326,7 @@ impl Cue for MicCue {
             voice_id,
             gain: crate::cue::types::db_to_linear(self.volume_db) as f32,
             pan: self.pan,
+            level_matrix: None,
         })
     }
 

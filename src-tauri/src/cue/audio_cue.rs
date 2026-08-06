@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::engine::{
     ring_command::{FadeCurve as EngineFadeCurve, VoiceId},
-    voice::{FadeDirection, FadeState, Voice},
+    voice::{FadeDirection, FadeState, LevelMatrix, Voice, MATRIX_INPUTS, MATRIX_OUTPUTS},
 };
 
 use super::{
@@ -76,6 +76,16 @@ pub struct AudioCue {
     /// playback.  When present, `loop_count` is ignored (the vamp segments
     /// own the looping).
     pub slices: crate::cue::types::SliceList,
+    /// QLab-style crosspoint levels in dB, `[input channel][patch channel]`.
+    ///
+    /// `None` — the default — keeps the cue on the plain pan + Output Patch
+    /// routing. When set it **replaces** pan: a crosspoint says how much of
+    /// input channel *i* reaches the patch's *j*-th channel, which is what a
+    /// theatre mix actually needs (and what QLab's `AudioLevelMatrix` carries).
+    /// The cue's `volume_db` still applies on top, so a Fade Cue keeps working.
+    /// Columns address the **Output Patch's** channels, not raw device
+    /// channels, so a matrix survives repatching.
+    pub level_matrix: Option<Vec<Vec<f64>>>,
 
     is_disabled: bool,
 
@@ -131,6 +141,7 @@ impl AudioCue {
             output_patch_id: None,
             rate: 1.0,
             slices: crate::cue::types::SliceList::default(),
+            level_matrix: None,
             is_disabled: false,
             decoded_samples: None,
             decoded_channels: 2,
@@ -305,6 +316,21 @@ impl AudioCue {
             patch_device = Some(patch.device_id.clone());
         }
 
+        // Crosspoint levels, resolved against the patch that was just applied
+        // so a matrix column addresses the patch's channel, not a raw device
+        // one.  Written before submission — the RT callback only reads it.
+        if let Some(spec) = &self.level_matrix {
+            let patch_channels: Vec<u16> = context
+                .resolve_patch(self.output_patch_id)
+                .map(|p| p.channels.clone())
+                .unwrap_or_default();
+            if let Some(matrix) = build_level_matrix(spec, &patch_channels) {
+                // SAFETY: written once, before play_voice_routed hands the
+                // voice to the RT thread.
+                unsafe { *voice.inner.level_matrix.get() = Some(matrix) };
+            }
+        }
+
         let voice_id = context.audio_engine.play_voice_routed(voice, patch_device.as_deref())?;
         self.active_voice_id = Some(voice_id);
         self.action_started_at = Some(Instant::now());
@@ -332,6 +358,36 @@ impl Default for AudioCue {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Turn a cue's dB crosspoints into the engine's linear matrix, mapping each
+/// column through `patch_channels` so column *j* lands on the patch's *j*-th
+/// device channel.  Falls back to column index when the cue has no patch.
+///
+/// Returns `None` when nothing would be routed — the voice then stays on the
+/// original pan path rather than being silently muted by an empty matrix.
+pub(crate) fn build_level_matrix(
+    spec: &[Vec<f64>],
+    patch_channels: &[u16],
+) -> Option<LevelMatrix> {
+    // "Configured or not" is a property of the *spec*, not of the padded array
+    // below — an empty spec means the cue has no matrix at all.
+    if spec.iter().all(|row| row.is_empty()) {
+        return None;
+    }
+    let mut routed = vec![vec![0.0_f32; MATRIX_OUTPUTS]; MATRIX_INPUTS];
+    for (input, row) in spec.iter().take(MATRIX_INPUTS).enumerate() {
+        for (column, &db) in row.iter().enumerate() {
+            let device = patch_channels
+                .get(column)
+                .map(|&c| c as usize)
+                .unwrap_or(column);
+            if device < MATRIX_OUTPUTS {
+                routed[input][device] = crate::cue::types::db_to_linear(db) as f32;
+            }
+        }
+    }
+    LevelMatrix::new(&routed)
 }
 
 impl Cue for AudioCue {
@@ -671,6 +727,7 @@ impl Cue for AudioCue {
             voice_id,
             gain: crate::cue::types::db_to_linear(self.volume_db) as f32,
             pan: self.pan,
+            level_matrix: self.level_matrix.clone(),
         })
     }
 
@@ -699,6 +756,7 @@ impl Cue for AudioCue {
             "output_patch_id": self.output_patch_id,
             "rate": self.rate,
             "slices": self.slices,
+            "level_matrix": self.level_matrix,
             "is_disabled": self.is_disabled,
         })
     }
@@ -789,6 +847,13 @@ impl CueFactory for AudioCueFactory {
                 cue.slices = slices;
             }
         }
+        // Absent (every workspace written before matrices existed) stays None,
+        // which is the untouched pan path.
+        if let Some(m) = value.get("level_matrix") {
+            if let Ok(rows) = serde_json::from_value::<Option<Vec<Vec<f64>>>>(m.clone()) {
+                cue.level_matrix = rows.filter(|r| !r.is_empty());
+            }
+        }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -800,6 +865,94 @@ impl CueFactory for AudioCueFactory {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod level_matrix_tests {
+    use super::*;
+
+    #[test]
+    fn a_cue_has_no_matrix_by_default() {
+        // The guarantee this whole feature rests on: existing cues keep the
+        // original pan + patch routing, untouched.
+        assert!(AudioCue::new().level_matrix.is_none());
+    }
+
+    #[test]
+    fn columns_map_through_the_output_patch_channels() {
+        // Patch feeds device channels 4 and 5; column 0 must land on 4.
+        let spec = vec![vec![0.0, -60.0], vec![-60.0, 0.0]];
+        let matrix = build_level_matrix(&spec, &[4, 5]).expect("routed");
+
+        assert!((matrix.gains[0][4] - 1.0).abs() < 1e-6, "input L → patch channel 0 (device 4)");
+        assert_eq!(matrix.gains[0][5], 0.0, "and nothing to the other one");
+        assert!((matrix.gains[1][5] - 1.0).abs() < 1e-6, "input R → patch channel 1 (device 5)");
+        assert_eq!(matrix.width, 6, "width covers up to the highest used device channel");
+    }
+
+    #[test]
+    fn without_a_patch_columns_are_device_channels() {
+        let spec = vec![vec![0.0], vec![0.0]];
+        let matrix = build_level_matrix(&spec, &[]).expect("routed");
+        assert!((matrix.gains[0][0] - 1.0).abs() < 1e-6);
+        assert_eq!(matrix.width, 1);
+    }
+
+    #[test]
+    fn an_empty_spec_yields_no_matrix() {
+        // Nothing configured — the voice stays on the ordinary pan path.
+        assert!(build_level_matrix(&[], &[]).is_none());
+        assert!(build_level_matrix(&[vec![], vec![]], &[]).is_none());
+    }
+
+    #[test]
+    fn an_all_silent_matrix_is_kept_and_mutes_the_cue() {
+        // The operator pulled every crosspoint down; honouring that means
+        // silence. Falling back to pan routing here would make the cue audible
+        // against an explicit instruction.
+        let matrix = build_level_matrix(&[vec![-60.0, -60.0]], &[]).expect("kept");
+        assert_eq!(matrix.width, 0, "nothing is routed anywhere");
+    }
+
+    #[test]
+    fn live_matrix_edits_reach_the_engine_one_crosspoint_at_a_time() {
+        // The whole matrix is 136 bytes; sending it as a single command would
+        // bloat every slot of the RT ring buffer, so it goes cell by cell.
+        let matrix = build_level_matrix(&[vec![0.0], vec![0.0]], &[]).expect("routed");
+        assert_eq!(matrix.gains.len(), MATRIX_INPUTS);
+        assert_eq!(matrix.gains[0].len(), MATRIX_OUTPUTS);
+    }
+
+    #[test]
+    fn crosspoints_past_the_fixed_capacity_are_dropped_not_wrapped() {
+        let wide: Vec<f64> = (0..MATRIX_OUTPUTS + 4).map(|_| 0.0).collect();
+        let matrix = build_level_matrix(&[wide], &[]).expect("routed");
+        assert_eq!(matrix.width, MATRIX_OUTPUTS, "clamped to the array, never out of bounds");
+    }
+
+    #[test]
+    fn serialize_roundtrip_preserves_the_matrix() {
+        let factory = AudioCueFactory;
+        let mut cue = AudioCue::new();
+        cue.level_matrix = Some(vec![vec![0.0, -6.0], vec![-6.0, 0.0]]);
+
+        let rebuilt = factory.from_json(cue.serialize()).unwrap();
+        let json = rebuilt.serialize();
+
+        assert_eq!(json["level_matrix"][0][1], -6.0);
+        assert_eq!(json["level_matrix"][1][0], -6.0);
+    }
+
+    #[test]
+    fn a_workspace_written_before_matrices_existed_loads_without_one() {
+        let factory = AudioCueFactory;
+        let mut json = AudioCue::new().serialize();
+        json.as_object_mut().unwrap().remove("level_matrix");
+
+        let rebuilt = factory.from_json(json).unwrap();
+
+        assert_eq!(rebuilt.serialize()["level_matrix"], serde_json::Value::Null);
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -511,6 +511,14 @@ pub fn update_cue(
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    // Snapshot the patch table before borrowing the cue list: a live matrix
+    // edit needs the same channel mapping the GO path used.
+    let patch_channels_by_id: Vec<(Uuid, Vec<u16>)> = ws
+        .output_patches
+        .iter()
+        .map(|p| (p.id, p.channels.clone()))
+        .collect();
+    let default_patch_id = ws.default_output_patch_id;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
     // Serialise → merge → rebuild, working recursively so child cues inside
@@ -545,6 +553,14 @@ pub fn update_cue(
     // Push live level/pan changes to the cue's currently-playing voice so an
     // inspector edit (volume, pan) takes effect immediately without restarting.
     let live = new_cue.live_audio_params();
+    // Matrix columns address the cue's Output Patch, so they need the same
+    // channel list the GO path used.
+    let live_patch_channels: Vec<u16> = new_cue
+        .output_patch_id()
+        .or(default_patch_id)
+        .and_then(|id| patch_channels_by_id.iter().find(|(pid, _)| *pid == id))
+        .map(|(_, channels)| channels.clone())
+        .unwrap_or_default();
     // Geometry + compositing edits apply live too, when this cue is currently
     // on the output window.
     let live_visual = new_cue
@@ -563,6 +579,13 @@ pub fn update_cue(
             .unwrap_or(p.voice_id);
         let _ = state.audio_engine.set_voice_gain(audio_voice, p.gain);
         let _ = state.audio_engine.set_voice_pan(audio_voice, p.pan);
+        let matrix = p
+            .level_matrix
+            .as_ref()
+            .and_then(|spec| crate::cue::audio_cue::build_level_matrix(spec, &live_patch_channels));
+        let _ = state
+            .audio_engine
+            .set_voice_level_matrix(audio_voice, matrix.as_ref());
     }
     if let Some((voice_id, geometry, layer_style)) = live_visual {
         if let Some(geometry) = geometry {
@@ -696,6 +719,81 @@ pub fn get_waveform_peaks(
         rms,
         file_duration_s: file_duration.as_secs_f64(),
     })
+}
+
+/// Push a level change straight to a playing cue's voice, **without** touching
+/// the workspace or the undo stack.
+///
+/// This is the drag path: an inspector slider calls it continuously while it
+/// moves, then persists once on release via `update_cue`. Routing every drag
+/// step through `update_cue` instead would re-serialise the cue and push an
+/// undo snapshot per pixel.
+///
+/// A no-op when the cue is not playing.
+#[tauri::command]
+pub fn set_live_level(
+    cue_id: String,
+    volume_db: f64,
+    pan: f32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let Some(cue_list) = ws.active_cue_list() else { return Ok(()) };
+    let Some(cue) = cue_list.get_recursive(&id) else { return Ok(()) };
+    let Some(params) = cue.live_audio_params() else { return Ok(()) };
+
+    // A Video Cue reports its visual voice; the sound is on the paired one.
+    let voice = state
+        .output_engine
+        .video_audio_voice(params.voice_id)
+        .unwrap_or(params.voice_id);
+    let _ = state
+        .audio_engine
+        .set_voice_gain(voice, crate::cue::types::db_to_linear(volume_db) as f32);
+    let _ = state.audio_engine.set_voice_pan(voice, pan);
+    Ok(())
+}
+
+/// Push one crosspoint of a playing cue's level matrix, live and without an
+/// undo snapshot — the matrix-grid equivalent of [`set_live_level`].
+///
+/// Sends a single cell rather than the whole matrix: dragging one cell would
+/// otherwise flood the real-time ring buffer with 32 commands per step.
+#[tauri::command]
+pub fn set_live_crosspoint(
+    cue_id: String,
+    input: u8,
+    output: u8,
+    gain_db: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    let Some(cue_list) = ws.active_cue_list() else { return Ok(()) };
+    let Some(cue) = cue_list.get_recursive(&id) else { return Ok(()) };
+    let Some(params) = cue.live_audio_params() else { return Ok(()) };
+
+    // Resolve the column onto the patch channel, exactly as the GO path does.
+    let patch_channels: Vec<u16> = cue
+        .output_patch_id()
+        .or(ws.default_output_patch_id)
+        .and_then(|pid| ws.output_patches.iter().find(|p| p.id == pid))
+        .map(|p| p.channels.clone())
+        .unwrap_or_default();
+    let device = patch_channels
+        .get(output as usize)
+        .map(|&c| c as u8)
+        .unwrap_or(output);
+
+    let voice = state
+        .output_engine
+        .video_audio_voice(params.voice_id)
+        .unwrap_or(params.voice_id);
+    state
+        .audio_engine
+        .set_voice_crosspoint(voice, input, device, crate::cue::types::db_to_linear(gain_db) as f32)
+        .map_err(|e| e.to_string())
 }
 
 /// Compute the `volume_db` that normalises this audio cue's peak to 0 dBFS.

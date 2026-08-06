@@ -141,6 +141,9 @@ export interface AudioCueData extends CueSummary {
   notes: string;
   volume_db: number;
   pan: number;
+  /** Crosspoint levels in dB, `[input channel][patch channel]`. `null` = the
+   *  cue routes with Pan instead. Replaces pan when set. */
+  level_matrix?: number[][] | null;
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;
   fade_out_ms: number | null;
@@ -213,6 +216,8 @@ export const DEFAULT_LAYER_STYLE: LayerStyle = {
 export interface VideoCueData extends CueSummary {
   notes: string;
   volume_db: number;
+  /** Crosspoint levels in dB for the video's audio track. See AudioCueData. */
+  level_matrix?: number[][] | null;
   /** Audio track fade-in. */
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;
