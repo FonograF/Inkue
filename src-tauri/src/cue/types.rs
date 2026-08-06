@@ -59,6 +59,9 @@ pub enum CueType {
     Arm,
     /// Disables its target cues.
     Disarm,
+
+    /// Runs an external command or script (QLab's Script Cue, made portable).
+    Script,
 }
 
 impl std::fmt::Display for CueType {
@@ -88,6 +91,7 @@ impl std::fmt::Display for CueType {
             CueType::Goto     => write!(f, "goto"),
             CueType::Arm      => write!(f, "arm"),
             CueType::Disarm   => write!(f, "disarm"),
+            CueType::Script   => write!(f, "script"),
         }
     }
 }

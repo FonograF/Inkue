@@ -22,6 +22,7 @@ pub mod memo_cue;
 pub mod osc_cue;
 pub mod osc_types;
 pub mod registry;
+pub mod script_cue;
 pub mod stop_cue;
 pub mod text_cue;
 pub mod traits;

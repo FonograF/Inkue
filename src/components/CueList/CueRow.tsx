@@ -64,6 +64,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   goto: "↪",
   arm: "🔓",
   disarm: "🔒",
+  script: "⚙",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

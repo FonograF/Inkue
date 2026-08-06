@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera" | CommandCueType;
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera" | "script" | CommandCueType;
 
 /** Cues whose action is performed on *other* cues (QLab's control cues).
  *  Distinct types — own colour, own row label, 1:1 with QLab on import — over
@@ -55,7 +55,18 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   goto:     "#0ea5e9",
   arm:      "#fb923c",
   disarm:   "#f97316",
+  script:   "#94a3b8",       // slate — a utility cue, not a stage element
 };
+
+/** Script Cue payload. Arguments are pre-split: no shell is involved, so a
+ *  path containing spaces is one argument and needs no quoting. */
+export interface ScriptCueData extends CueSummary {
+  notes: string;
+  command: string;
+  args: string[];
+  working_dir: string | null;
+  timeout_ms: number;
+}
 
 export type CueState = "standby" | "running" | "paused" | "completed";
 

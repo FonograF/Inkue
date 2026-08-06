@@ -89,6 +89,7 @@ impl AppState {
         registry.register(CueType::Text,     Box::new(crate::cue::text_cue::TextCueFactory));
         registry.register(CueType::Camera,   Box::new(crate::cue::camera_cue::CameraCueFactory));
         registry.register(CueType::Wait, Box::new(WaitCueFactory));
+        registry.register(CueType::Script, Box::new(crate::cue::script_cue::ScriptCueFactory));
         // Command cues: eight distinct types over one shared implementation.
         for action in crate::cue::control_cue::ALL_CONTROL_ACTIONS {
             registry.register(

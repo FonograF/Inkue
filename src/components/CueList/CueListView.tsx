@@ -78,6 +78,7 @@ const CUE_TYPES: { type: CueType; label: string; color: string }[] = (
     { type: "goto",     label: "Goto" },
     { type: "arm",      label: "Arm" },
     { type: "disarm",   label: "Disarm" },
+    { type: "script",   label: "Script" },
   ] as { type: CueType; label: string }[]
 ).map((c) => ({ ...c, color: CUE_TYPE_COLORS[c.type] }));
 
