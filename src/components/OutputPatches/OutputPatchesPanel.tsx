@@ -52,7 +52,7 @@ function textToChannels(text: string): number[] {
     .map((n) => n - 1);
 }
 
-export function OutputPatchesPanel() {
+export function OutputPatchesPanel({ backend }: { backend?: string }) {
   const [patches, setPatches] = useState<EditablePatch[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
@@ -69,7 +69,7 @@ export function OutputPatchesPanel() {
   useEffect(() => {
     const refresh = () => {
       reload();
-      listOutputDevices().then(setDevices).catch(console.error);
+      listOutputDevices(backend).then(setDevices).catch(console.error);
     };
     refresh();
     // The preferences window persists hidden between opens, and the device
@@ -81,7 +81,9 @@ export function OutputPatchesPanel() {
       window.removeEventListener("focus", refresh);
       void unlisten.then((u) => u());
     };
-  }, []);
+    // Re-runs when the Backend dropdown changes, so the patch device list
+    // follows the selection instead of waiting for Apply.
+  }, [backend]);
 
   const handleAdd = async () => {
     const device = devices[0]?.id ?? "";

@@ -87,6 +87,7 @@ export const renumberSelectedCues = (ids: CueId[], start: number, increment: num
   invoke<void>("renumber_selected_cues", { ids, start, increment });
 export const clearCueNumbers = () =>
   invoke<void>("clear_cue_numbers");
+
 export const groupCues = (ids: CueId[]) =>
   invoke<CueId>("group_cues", { ids });
 export const ungroup = (groupId: CueId) =>
@@ -272,8 +273,10 @@ export const openPreferencesWindow = () => invoke<void>("open_preferences_window
 // Devices
 // ---------------------------------------------------------------------------
 
-export const listOutputDevices = () =>
-  invoke<DeviceInfo[]>("list_output_devices");
+/** Devices an Output Patch may target. Pass the backend currently selected in
+ *  Preferences to see its device universe before it has been applied. */
+export const listOutputDevices = (backend?: string) =>
+  invoke<DeviceInfo[]>("list_output_devices", { backend: backend ?? null });
 
 /** Workspace Output Patch table + default patch id. */
 export interface OutputPatchTable {

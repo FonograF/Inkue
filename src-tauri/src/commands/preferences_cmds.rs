@@ -62,7 +62,7 @@ fn asio_drivers_installed() -> bool {
 /// Channels and sample rate are left at defaults — ASIO drivers report their
 /// actual capabilities only after they are opened.
 #[cfg(all(windows, feature = "asio-support"))]
-fn list_asio_drivers_from_registry() -> Vec<crate::engine::device_manager::DeviceInfo> {
+pub(crate) fn list_asio_drivers_from_registry() -> Vec<crate::engine::device_manager::DeviceInfo> {
     use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let Ok(key) = hklm.open_subkey("SOFTWARE\\ASIO") else {

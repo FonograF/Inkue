@@ -325,7 +325,7 @@ function AudioContent({
           </Select>
         </Row>
         <div style={{ marginTop: 8 }}>
-          <OutputPatchesPanel />
+          <OutputPatchesPanel backend={machineConfig.backend} />
         </div>
         <div style={{ marginTop: 12 }}>
           <InputPatchesPanel />

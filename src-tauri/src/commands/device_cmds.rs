@@ -19,8 +19,16 @@ use crate::{
 /// endpoints are held exclusively by ASIO anyway, and the patch channels route
 /// inside the full-width main ASIO stream.  On shared backends the normal
 /// WASAPI/CoreAudio/ALSA devices are listed (no ASIO entries).
+/// `backend` overrides the persisted one so the Preferences panel can show the
+/// device universe of the backend **currently selected in the UI**, before it
+/// has been applied — switching the Backend dropdown to ASIO used to keep
+/// listing WASAPI endpoints until Apply was clicked, which made it look as
+/// though ASIO patches were impossible.
 #[tauri::command]
-pub fn list_output_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
+pub fn list_output_devices(
+    backend: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<DeviceInfo>, String> {
     #[cfg(target_os = "linux")]
     use crate::engine::device_manager::linux_devices;
 
@@ -37,8 +45,25 @@ pub fn list_output_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>
     {
         use crate::preferences::AudioBackend;
         let config = crate::machine_config::load();
+        // What the operator is looking at wins over what is running.
+        let selected = match backend.as_deref() {
+            Some("asio") => AudioBackend::Asio,
+            Some("wasapi_exclusive") => AudioBackend::WasapiExclusive,
+            Some("wasapi_shared") => AudioBackend::WasapiShared,
+            Some("system_default") => AudioBackend::SystemDefault,
+            _ => config.backend.clone(),
+        };
+
+        // ASIO selected but not applied: the engine does not hold the driver
+        // yet, so the live stream cannot describe it. Read the driver list
+        // from the registry — fast, no cpal, safe to call either way.
+        #[cfg(all(windows, feature = "asio-support"))]
+        if matches!(selected, AudioBackend::Asio) && !matches!(config.backend, AudioBackend::Asio) {
+            return Ok(crate::commands::preferences_cmds::list_asio_drivers_from_registry());
+        }
+
         if cfg!(all(windows, feature = "asio-support"))
-            && matches!(config.backend, AudioBackend::Asio)
+            && matches!(selected, AudioBackend::Asio)
         {
             // ASIO drivers are single-client and already held by the engine's
             // main stream — re-enumerating the ASIO host here fails or hangs.
