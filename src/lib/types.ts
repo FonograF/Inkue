@@ -2,7 +2,7 @@
 
 export type CueId = string; // UUID as string
 
-export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "light" | "mic" | "timecode" | "text" | "camera" | "script" | CommandCueType;
+export type CueType = "audio" | "memo" | "wait" | "group" | "fade" | "stop" | "devamp" | "video" | "image" | "osc" | "midi" | "midi_file" | "light" | "mic" | "timecode" | "text" | "camera" | "script" | CommandCueType;
 
 /** Cues whose action is performed on *other* cues (QLab's control cues).
  *  Distinct types — own colour, own row label, 1:1 with QLab on import — over
@@ -37,6 +37,7 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   wait:     "#fb923c",
   group:    "#fde047",
   midi:     "var(--wc-accent)", // the green audio used to be
+  midi_file: "#2dd4bf",         // teal — a MIDI cue, but one that has a length
   osc:      "#06b6d4",
   light:    "#fbbf24",
   mic:      "#22d3ee",          // cyan
@@ -57,6 +58,20 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   disarm:   "#f97316",
   script:   "#94a3b8",       // slate — a utility cue, not a stage element
 };
+
+/** MIDI File Cue payload. `sequence_duration_ms`, `track_count`, `channels`
+ *  and `parse_error` are read-only: the backend derives them from the file
+ *  every time it is parsed, and ignores them on the way back in. */
+export interface MidiFileCueData extends CueSummary {
+  notes: string;
+  file_path: string | null;
+  port_name: string;
+  playback_rate: number;
+  sequence_duration_ms: number | null;
+  track_count: number | null;
+  channels: number[] | null;
+  parse_error: string | null;
+}
 
 /** Script Cue payload. Arguments are pre-split: no shell is involved, so a
  *  path containing spaces is one argument and needs no quoting. */

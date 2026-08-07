@@ -76,6 +76,7 @@ impl AppState {
         registry.register(CueType::Audio, Box::new(AudioCueFactory));
         registry.register(CueType::Fade,  Box::new(FadeCueFactory));
         registry.register(CueType::Midi,  Box::new(MidiCueFactory));
+        registry.register(CueType::MidiFile, Box::new(crate::cue::midi_file_cue::MidiFileCueFactory));
         registry.register(CueType::Group, Box::new(GroupCueFactory));
         registry.register(CueType::Light, Box::new(LightCueFactory));
         registry.register(CueType::Memo, Box::new(MemoCueFactory));

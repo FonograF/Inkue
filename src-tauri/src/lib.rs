@@ -24,8 +24,8 @@ use commands::{
         list_camera_devices, list_video_screens, move_cue, move_cues, preview_cue,
         clear_cue_numbers, renumber_cues, renumber_selected_cues,
         move_to_top_level, remove_cue, remove_cues, remove_cue_from_group,
-        set_audio_file, set_group_mode, set_playlist_loop, set_image_file, set_playhead,
-        set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
+        set_audio_file, set_group_mode, set_playlist_loop, set_image_file, set_midi_file,
+        set_playhead, set_video_file, stop_preview, toggle_output_window, ungroup, update_cue,
     },
     cue_list_cmds::{
         add_cue_list, get_cue_lists, remove_cue_list, rename_cue_list,
@@ -421,6 +421,7 @@ pub fn run() {
             set_audio_file,
             set_video_file,
             set_image_file,
+            set_midi_file,
             get_waveform_peaks,
             get_normalize_db,
             set_live_level,

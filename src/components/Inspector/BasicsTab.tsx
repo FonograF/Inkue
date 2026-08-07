@@ -12,21 +12,25 @@ export function BasicsTab({
   isAudio,
   isVideo,
   isImage,
+  isMidiFile,
   onSave,
   onBrowse,
   onBrowseVideo,
   onBrowseImage,
+  onBrowseMidi,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cue: any;
   isAudio: boolean;
   isVideo?: boolean;
   isImage?: boolean;
+  isMidiFile?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onSave: (p: Partial<any>) => void;
   onBrowse: () => void;
   onBrowseVideo?: () => void;
   onBrowseImage?: () => void;
+  onBrowseMidi?: () => void;
 }) {
   return (
     <>
@@ -61,7 +65,7 @@ export function BasicsTab({
         </Field>
       </Section>
 
-      {(isAudio || isVideo || isImage) && (
+      {(isAudio || isVideo || isImage || isMidiFile) && (
         <Section title="Media">
           {(isVideo || isImage) && cue.file_path && (
             <MediaThumbnail path={cue.file_path} seekInto={!!isVideo} />
@@ -84,7 +88,12 @@ export function BasicsTab({
                 fontSize: 12,
                 flexShrink: 0,
               }}
-              onClick={isVideo ? onBrowseVideo : isImage ? onBrowseImage : onBrowse}
+              onClick={
+                isVideo ? onBrowseVideo
+                : isImage ? onBrowseImage
+                : isMidiFile ? onBrowseMidi
+                : onBrowse
+              }
             >
               Browse…
             </button>

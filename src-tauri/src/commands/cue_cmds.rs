@@ -74,7 +74,7 @@ pub struct CueSummary {
 /// Returns `true` when a media cue's file was assigned but is missing from disk.
 fn check_broken(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> bool {
     match cue.cue_type() {
-        CueType::Audio | CueType::Video | CueType::Image => {
+        CueType::Audio | CueType::Video | CueType::Image | CueType::MidiFile => {
             match cue.media_file_path() {
                 None => false,
                 Some(p) if p.as_os_str().is_empty() => false,
@@ -94,7 +94,7 @@ fn check_broken(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>) -> bool 
 /// Returns a warning message for non-critical problems, or `None` if the cue is healthy.
 fn check_warning(cue: &dyn Cue) -> Option<String> {
     match cue.cue_type() {
-        CueType::Audio | CueType::Video | CueType::Image => {
+        CueType::Audio | CueType::Video | CueType::Image | CueType::MidiFile => {
             match cue.media_file_path() {
                 None => Some("No file assigned".to_string()),
                 Some(p) if p.as_os_str().is_empty() => Some("No file assigned".to_string()),
@@ -1264,6 +1264,51 @@ pub fn set_image_file(
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     drop(registry);
     cue_list.cues[idx] = new_cue;
+
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// MIDI file management
+// ---------------------------------------------------------------------------
+
+/// Set the file path of a MIDI File Cue.
+///
+/// The rebuild parses the new file, so the cue's duration is correct by the
+/// time the command returns — MIDI files are small enough that no background
+/// decode is warranted.
+#[tauri::command]
+pub fn set_midi_file(
+    cue_id: String,
+    file_path: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    super::undo_cmds::push_current_snapshot(&state)?;
+    let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let registry = state.registry.lock().map_err(|e| e.to_string())?;
+    let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
+    ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+
+    let json = {
+        let cue = cue_list.get_mut_recursive(&id).ok_or("Cue not found")?;
+        if cue.cue_type() != CueType::MidiFile {
+            return Err("set_midi_file only applies to MIDI File Cues".to_string());
+        }
+        stop_if_live(cue, &state, stop_fade_ms);
+        let mut json = cue.serialize();
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert("file_path".to_string(), serde_json::json!(file_path));
+        }
+        json
+    };
+    let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
+    drop(registry);
+    cue_list.replace_cue_recursive(&id, new_cue);
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())

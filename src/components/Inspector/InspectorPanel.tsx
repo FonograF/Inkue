@@ -6,10 +6,10 @@
 // type are shown.
 
 import { useEffect, useState } from "react";
-import type { ScriptCueData, AudioCueData, CameraCueData, CueSummary, CueType, DevampCueData, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import type { ScriptCueData, AudioCueData, CameraCueData, CueSummary, CueType, DevampCueData, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, MidiFileCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { isCommandCueType } from "../../lib/types";
-import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile } from "../../lib/commands";
-import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS } from "../../lib/mediaTypes";
+import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile, setMidiFile } from "../../lib/commands";
+import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS, MIDI_EXTENSIONS } from "../../lib/mediaTypes";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BasicsTab } from "./BasicsTab";
 import { TimeTab } from "./TimeTab";
@@ -24,6 +24,7 @@ import { GroupTab } from "./GroupTab";
 import { LayerTab } from "./LayerTab";
 import { GeometryTab } from "./GeometryTab";
 import { MidiTab } from "./MidiTab";
+import { MidiFileTab } from "./MidiFileTab";
 import { OscTab } from "./OscTab";
 import { LightTab } from "./LightTab";
 import { MicTab } from "./MicTab";
@@ -47,7 +48,7 @@ interface Props {
 type Tab =
   | "basics" | "time" | "levels" | "fade" | "layer" | "geometry" | "messages"
   | "fade-cue" | "stop" | "devamp" | "group" | "light" | "mic" | "timecode"
-  | "text" | "camera" | "triggers" | "command" | "script";
+  | "text" | "camera" | "triggers" | "command" | "script" | "midi-file";
 
 type CueData =
   | AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData
@@ -59,7 +60,7 @@ const CUE_ICONS: Partial<Record<CueType, string>> = {
   midi: "🎹", osc: "📡", stop: "⏹", light: "💡", mic: "🎤", timecode: "🕐",
   text: "🔤", camera: "📷", devamp: "🔁",
   start: "▶", pause: "⏸", resume: "⏯", load: "⏏", reset: "⏮",
-  goto: "↪", arm: "🔓", disarm: "🔒", script: "⚙",
+  goto: "↪", arm: "🔓", disarm: "🔒", script: "⚙", midi_file: "🎼",
 };
 
 /** Ordered tab list for a cue type: identity first, the type's main tab next,
@@ -77,6 +78,7 @@ function tabsFor(type: CueType): { id: Tab; label: string }[] {
   if (type === "group") tabs.push({ id: "group", label: "Group" });
   if (type === "camera") tabs.push({ id: "camera", label: "Camera" });
   if (type === "osc" || type === "midi") tabs.push({ id: "messages", label: "Messages" });
+  if (type === "midi_file") tabs.push({ id: "midi-file", label: "MIDI File" });
   if (type === "light") tabs.push({ id: "light", label: "Light" });
   if (type === "mic") tabs.push({ id: "mic", label: "Mic" });
   if (type === "timecode") tabs.push({ id: "timecode", label: "Timecode" });
@@ -137,6 +139,7 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
   const isWait  = type === "wait";
   const isFade  = type === "fade";
   const isCamera = type === "camera";
+  const isMidiFile = type === "midi_file";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const save = async (partial: Partial<any>) => {
@@ -160,13 +163,14 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
     onCueSaved?.();
   };
 
-  const browseMedia = (kind: "audio" | "video" | "image") => async () => {
+  const browseMedia = (kind: "audio" | "video" | "image" | "midi") => async () => {
     const filters = {
       audio: { name: "Audio Files", extensions: [...AUDIO_EXTENSIONS] },
       video: { name: "Video Files", extensions: [...VIDEO_EXTENSIONS] },
       image: { name: "Image Files", extensions: [...IMAGE_EXTENSIONS] },
+      midi: { name: "MIDI Files", extensions: [...MIDI_EXTENSIONS] },
     }[kind];
-    const setFile = { audio: setAudioFile, video: setVideoFile, image: setImageFile }[kind];
+    const setFile = { audio: setAudioFile, video: setVideoFile, image: setImageFile, midi: setMidiFile }[kind];
     const result = await open({ multiple: false, filters: [filters] });
     if (typeof result === "string") {
       await setFile(cueData.id, result).catch(console.error);
@@ -246,10 +250,12 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
             isAudio={isAudio}
             isVideo={isVideo}
             isImage={isImage}
+            isMidiFile={isMidiFile}
             onSave={save}
             onBrowse={browseMedia("audio")}
             onBrowseVideo={browseMedia("video")}
             onBrowseImage={browseMedia("image")}
+            onBrowseMidi={browseMedia("midi")}
           />
         )}
         {activeTab === "fade-cue" && isFade && (
@@ -303,6 +309,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
         )}
         {activeTab === "messages" && type === "midi" && (
           <MidiTab cue={cueData as MidiCueData} onSave={save} />
+        )}
+        {activeTab === "midi-file" && isMidiFile && (
+          <MidiFileTab cue={cueData as unknown as MidiFileCueData} onSave={save} />
         )}
         {activeTab === "light" && type === "light" && (
           <LightTab cue={cueData as LightCueData} onSave={save} />

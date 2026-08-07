@@ -25,6 +25,8 @@ pub enum CueType {
     Osc,
     /// Sends one or more MIDI messages when triggered.
     Midi,
+    /// Plays a Standard MIDI File out to a MIDI port.
+    MidiFile,
     /// Fades patched DMX fixtures to a target look (DMX-over-IP).
     Light,
     /// Routes a live audio input through the engine (mic / line).
@@ -77,6 +79,7 @@ impl std::fmt::Display for CueType {
             CueType::Image    => write!(f, "image"),
             CueType::Osc      => write!(f, "osc"),
             CueType::Midi     => write!(f, "midi"),
+            CueType::MidiFile => write!(f, "midi_file"),
             CueType::Light    => write!(f, "light"),
             CueType::Mic      => write!(f, "mic"),
             CueType::Timecode => write!(f, "timecode"),

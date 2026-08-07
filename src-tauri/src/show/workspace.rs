@@ -155,14 +155,16 @@ fn unique_filename(orig: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
-/// Recursively collect `(cue_type, abs_path)` for every Audio / Video / Image
-/// cue in the tree, including those nested inside groups.
+/// Recursively collect `(cue_type, abs_path)` for every cue that carries a
+/// media file, including those nested inside groups.
 fn collect_all_media_paths(
     cues: &[Box<dyn Cue>],
     out: &mut Vec<(CueType, PathBuf)>,
 ) {
     for cue in cues {
-        if let ct @ (CueType::Audio | CueType::Video | CueType::Image) = cue.cue_type() {
+        if let ct @ (CueType::Audio | CueType::Video | CueType::Image | CueType::MidiFile) =
+            cue.cue_type()
+        {
             if let Some(path) = cue.media_file_path() {
                 if !path.as_os_str().is_empty() {
                     out.push((ct, path.to_path_buf()));
@@ -403,7 +405,7 @@ impl Workspace {
     }
 
     /// Copy all media files referenced by this workspace into
-    /// `{target_dir}/{workspace_name}/audio|video|images/` and write a
+    /// `{target_dir}/{workspace_name}/audio|video|images|midi/` and write a
     /// self-contained `.inkue` file with updated relative paths.
     ///
     /// The workspace in memory is **not modified** — this is a pure export.
@@ -415,7 +417,7 @@ impl Workspace {
         };
 
         let project_dir = target_dir.join(&safe_name);
-        for sub in &["audio", "video", "images"] {
+        for sub in &["audio", "video", "images", "midi"] {
             std::fs::create_dir_all(project_dir.join(sub))
                 .with_context(|| format!("Cannot create {}/{sub}", project_dir.display()))?;
         }
@@ -430,7 +432,12 @@ impl Workspace {
             raw.into_iter().filter(|(_, p)| seen.insert(p.clone())).collect();
 
         // Per-subfolder used-filename sets for conflict resolution.
-        let mut used: HashMap<&str, HashSet<String>> = [("audio", HashSet::new()), ("video", HashSet::new()), ("images", HashSet::new())]
+        let mut used: HashMap<&str, HashSet<String>> = [
+            ("audio", HashSet::new()),
+            ("video", HashSet::new()),
+            ("images", HashSet::new()),
+            ("midi", HashSet::new()),
+        ]
             .into_iter()
             .collect();
 
@@ -449,6 +456,7 @@ impl Workspace {
                 CueType::Audio => "audio",
                 CueType::Video => "video",
                 CueType::Image => "images",
+                CueType::MidiFile => "midi",
                 _ => continue,
             };
 

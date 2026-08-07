@@ -16,9 +16,14 @@ export const IMAGE_EXTENSIONS = [
   "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg",
 ] as const;
 
+// Standard MIDI Files. `.kar` is a karaoke SMF and parses identically; `.rmi`
+// is a RIFF wrapper and is deliberately absent — the parser rejects it.
+export const MIDI_EXTENSIONS = ["mid", "midi", "smf", "kar"] as const;
+
 export const AUDIO_EXTS = new Set<string>(AUDIO_EXTENSIONS);
 export const VIDEO_EXTS = new Set<string>(VIDEO_EXTENSIONS);
 export const IMAGE_EXTS = new Set<string>(IMAGE_EXTENSIONS);
+export const MIDI_EXTS = new Set<string>(MIDI_EXTENSIONS);
 
 /** Lowercased extension of a path (without the dot), or "" if none. */
 export function extensionOf(path: string): string {

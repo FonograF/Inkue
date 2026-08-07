@@ -9,9 +9,9 @@ import { RunningLed } from "../common/RunningLed";
 import type { CueSummary, CueType } from "../../lib/types";
 import {
   addCue, goCue, moveCue, stopCue,
-  setAudioFile, setVideoFile, setImageFile, updateCue,
+  setAudioFile, setVideoFile, setImageFile, setMidiFile, updateCue,
 } from "../../lib/commands";
-import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, extensionOf } from "../../lib/mediaTypes";
+import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, MIDI_EXTS, extensionOf } from "../../lib/mediaTypes";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -20,7 +20,7 @@ import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, extensionOf } from "../../lib/media
 const CUE_TYPE_ICONS: Record<string, string> = {
   audio: "🔊", memo: "📝", wait: "⏱", group: "📁",
   fade: "📉", stop: "⬛", video: "🎬", image: "🖼",
-  osc: "📡", midi: "🎹", light: "💡", mic: "🎤", timecode: "🕐", text: "🔤",
+  osc: "📡", midi: "🎹", midi_file: "🎼", light: "💡", mic: "🎤", timecode: "🕐", text: "🔤",
 };
 
 const COLOR_SWATCHES: Record<string, string> = {
@@ -46,14 +46,22 @@ function formatDuration(ms: number): string {
 const isAudioPath = (p: string) => AUDIO_EXTS.has(extensionOf(p));
 const isVideoPath = (p: string) => VIDEO_EXTS.has(extensionOf(p));
 const isImagePath = (p: string) => IMAGE_EXTS.has(extensionOf(p));
-function cueTypeForPath(p: string): "video" | "image" | "audio" {
+const isMidiPath  = (p: string) => MIDI_EXTS.has(extensionOf(p));
+const isMediaPath = (p: string) =>
+  isAudioPath(p) || isVideoPath(p) || isImagePath(p) || isMidiPath(p);
+
+type MediaCueType = "audio" | "video" | "image" | "midi_file";
+
+function cueTypeForPath(p: string): MediaCueType {
   if (isVideoPath(p)) return "video";
   if (isImagePath(p)) return "image";
+  if (isMidiPath(p)) return "midi_file";
   return "audio";
 }
-async function setFileForCue(cueType: "audio" | "video" | "image", cueId: string, path: string) {
+async function setFileForCue(cueType: MediaCueType, cueId: string, path: string) {
   if (cueType === "video") await setVideoFile(cueId, path);
   else if (cueType === "image") await setImageFile(cueId, path);
+  else if (cueType === "midi_file") await setMidiFile(cueId, path);
   else await setAudioFile(cueId, path);
 }
 function basenameNoExt(p: string) {
@@ -538,7 +546,7 @@ export function CartView({ onRefresh }: { onRefresh: () => void }) {
           setInsertIndex(null);
           const paths: string[] = (event.payload as { paths?: string[] }).paths ?? [];
           const pos = event.payload.position;
-          const mediaPaths = paths.filter(p => isAudioPath(p) || isVideoPath(p) || isImagePath(p));
+          const mediaPaths = paths.filter(isMediaPath);
           if (mediaPaths.length === 0) return;
           let at = pos ? calcInsertIndex(pos.x, pos.y) : cuesRef.current.length;
           for (const p of mediaPaths) {

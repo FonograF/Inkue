@@ -14,6 +14,7 @@ pub mod fade_cue;
 pub mod group_cue;
 pub mod light_cue;
 pub mod midi_cue;
+pub mod midi_file_cue;
 pub mod mic_cue;
 pub mod timecode_cue;
 pub mod image_cue;

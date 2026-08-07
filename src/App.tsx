@@ -1093,6 +1093,13 @@ export default function App() {
     await refreshCues();
   };
 
+  const handleAddMidiFile = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("midi_file", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
   const handleAddLight = async () => {
     const { selectedCueId, cues } = useWorkspaceStore.getState();
     const idx = cues.findIndex((c) => c.id === selectedCueId);
@@ -1356,6 +1363,12 @@ export default function App() {
             title="Add MIDI Cue after selection · Drag to insert at position"
             onAdd={handleAddMidi}
             onDragStart={(e) => dispatchCueDrag("midi", e)}
+          />
+          <CueToolbarButton
+            type="midi_file" label="MIDI File"
+            title="Add MIDI File Cue (play a .mid to a MIDI port) · Drag to insert at position"
+            onAdd={handleAddMidiFile}
+            onDragStart={(e) => dispatchCueDrag("midi_file", e)}
           />
           <CueToolbarButton
             type="osc" label="OSC"

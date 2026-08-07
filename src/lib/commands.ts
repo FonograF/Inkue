@@ -126,7 +126,12 @@ export const canRedo = () => invoke<boolean>("can_redo");
 export const copyCue = (cueId: CueId) => invoke<void>("copy_cue", { cueId });
 export const pasteCue = (afterCueId?: CueId | null) =>
   invoke<CueId>("paste_cue", { afterCueId: afterCueId ?? null });
-export const updateCue = (cueId: CueId, properties: Partial<AudioCueData>) =>
+/** Properties merged into a cue. Deliberately loose: the backend merges this
+ *  JSON into the cue's serialised form and rebuilds it, so every cue type's
+ *  fields are valid here — typing it as one concrete cue was always a fiction. */
+export type CueProperties = Record<string, unknown>;
+
+export const updateCue = (cueId: CueId, properties: CueProperties) =>
   invoke<void>("update_cue", { cueId, properties });
 export const setAudioFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_audio_file", { cueId, filePath });
@@ -162,6 +167,8 @@ export const previewOutputTimer = (
 ) => invoke<void>("preview_output_timer", { font, fontSize: fontSize, position, margin, text });
 export const setImageFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_image_file", { cueId, filePath });
+export const setMidiFile = (cueId: CueId, filePath: string) =>
+  invoke<void>("set_midi_file", { cueId, filePath });
 
 export const previewCue = (cueId: CueId, startMs?: number, endMs?: number) =>
   invoke<string>("preview_cue", {

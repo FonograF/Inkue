@@ -197,6 +197,7 @@ pub fn full_registry() -> CueRegistry {
     r.register(CueType::Wait, Box::new(WaitCueFactory));
     r.register(CueType::Camera, Box::new(inkue_lib::cue::camera_cue::CameraCueFactory));
     r.register(CueType::Script, Box::new(inkue_lib::cue::script_cue::ScriptCueFactory));
+    r.register(CueType::MidiFile, Box::new(inkue_lib::cue::midi_file_cue::MidiFileCueFactory));
     for action in inkue_lib::cue::control_cue::ALL_CONTROL_ACTIONS {
         r.register(
             action.cue_type(),
@@ -208,7 +209,7 @@ pub fn full_registry() -> CueRegistry {
 
 /// Every built-in cue type — the single source of truth for "what should the
 /// registry contain".
-pub const ALL_CUE_TYPES: [CueType; 25] = [
+pub const ALL_CUE_TYPES: [CueType; 26] = [
     CueType::Audio,
     CueType::Memo,
     CueType::Wait,
@@ -235,6 +236,7 @@ pub const ALL_CUE_TYPES: [CueType; 25] = [
     CueType::Arm,
     CueType::Disarm,
     CueType::Script,
+    CueType::MidiFile,
 ];
 
 // ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ import {
 } from "./columns";
 import type { CueSummary, CueType } from "../../lib/types";
 import { CUE_TYPE_COLORS } from "../../lib/types";
-import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, extensionOf } from "../../lib/mediaTypes";
+import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, MIDI_EXTS, extensionOf } from "../../lib/mediaTypes";
 import {
   addCue,
   removeCue,
@@ -40,6 +40,7 @@ import {
   setAudioFile,
   setVideoFile,
   setImageFile,
+  setMidiFile,
   setPlayhead,
   updateCue,
 } from "../../lib/commands";
@@ -62,6 +63,7 @@ const CUE_TYPES: { type: CueType; label: string; color: string }[] = (
     { type: "wait",     label: "Wait" },
     { type: "group",    label: "Group" },
     { type: "midi",     label: "MIDI" },
+    { type: "midi_file", label: "MIDI File" },
     { type: "osc",      label: "OSC" },
     { type: "light",    label: "Light" },
     { type: "mic",      label: "Mic" },
@@ -87,6 +89,17 @@ const FILE_FILTERS: Partial<Record<CueType, { name: string; extensions: string[]
   audio: { name: "Audio Files", extensions: [...AUDIO_EXTS] },
   video: { name: "Video Files", extensions: [...VIDEO_EXTS] },
   image: { name: "Image Files", extensions: [...IMAGE_EXTS] },
+  midi_file: { name: "MIDI Files", extensions: [...MIDI_EXTS] },
+};
+
+/** Cue types that own a file, as far as drop and "Assign … File…" go. */
+type MediaCueType = "audio" | "video" | "image" | "midi_file";
+
+const ASSIGN_FILE_LABELS: Record<MediaCueType, string> = {
+  audio: "Audio",
+  video: "Video",
+  image: "Image",
+  midi_file: "MIDI",
 };
 
 function isAudioPath(p: string) {
@@ -98,18 +111,22 @@ function isVideoPath(p: string) {
 function isImagePath(p: string) {
   return IMAGE_EXTS.has(extensionOf(p));
 }
-function cueTypeForPath(p: string): "video" | "image" | "audio" {
+function isMidiPath(p: string) {
+  return MIDI_EXTS.has(extensionOf(p));
+}
+function isMediaPath(p: string) {
+  return isAudioPath(p) || isVideoPath(p) || isImagePath(p) || isMidiPath(p);
+}
+function cueTypeForPath(p: string): MediaCueType {
   if (isVideoPath(p)) return "video";
   if (isImagePath(p)) return "image";
+  if (isMidiPath(p)) return "midi_file";
   return "audio";
 }
-async function setFileForCue(
-  cueType: "audio" | "video" | "image",
-  cueId: string,
-  path: string,
-) {
+async function setFileForCue(cueType: MediaCueType, cueId: string, path: string) {
   if (cueType === "video") await setVideoFile(cueId, path);
   else if (cueType === "image") await setImageFile(cueId, path);
+  else if (cueType === "midi_file") await setMidiFile(cueId, path);
   else await setAudioFile(cueId, path);
 }
 function basenameNoExt(p: string) {
@@ -948,9 +965,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
           setFileDragInsertIdx(null);
           const paths: string[] = (event.payload as { paths?: string[] }).paths ?? [];
           const pos = event.payload.position;
-          const mediaPaths = paths.filter(
-            (p) => isAudioPath(p) || isVideoPath(p) || isImagePath(p),
-          );
+          const mediaPaths = paths.filter(isMediaPath);
           if (mediaPaths.length === 0) return;
 
           const { insertIdx, assignId, groupId } = pos
@@ -1046,7 +1061,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     await removeCue(contextMenu.cueId).catch(console.error);
     await onRefresh();
   };
-  const ctxAssignFile = async (cueType: "audio" | "video" | "image") => {
+  const ctxAssignFile = async (cueType: MediaCueType) => {
     const cueId = contextMenu?.cueId;
     closeCtx();
     if (!cueId) return;
@@ -1482,8 +1497,10 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                 );
               }
               const ctxType = flatItems.find((fi) => fi.cue.id === contextMenu.cueId)?.cue.cue_type ?? null;
-              const assignType =
-                ctxType === "audio" || ctxType === "video" || ctxType === "image" ? ctxType : null;
+              const assignType: MediaCueType | null =
+                ctxType === "audio" || ctxType === "video" || ctxType === "image" || ctxType === "midi_file"
+                  ? ctxType
+                  : null;
               return (
               <>
                 {!contextMenu.parentGroupId && (
@@ -1581,7 +1598,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
                   <>
                     <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
                     <CtxItem
-                      label={`Assign ${assignType[0].toUpperCase()}${assignType.slice(1)} File…`}
+                      label={`Assign ${ASSIGN_FILE_LABELS[assignType]} File…`}
                       onClick={() => ctxAssignFile(assignType)}
                     />
                   </>

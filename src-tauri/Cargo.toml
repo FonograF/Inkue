@@ -58,6 +58,9 @@ rosc = "0.10"
 
 # MIDI
 midir = "0.11"
+# Standard MIDI File parsing for the MIDI File Cue.  `parallel` (rayon) is off:
+# show files are kilobytes, and a thread pool is not worth the dependency.
+midly = { version = "0.5", default-features = false, features = ["std", "alloc"] }
 
 # Logging
 log = { version = "0.4", features = ["std"] }

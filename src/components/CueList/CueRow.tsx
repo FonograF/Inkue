@@ -65,6 +65,7 @@ const CUE_TYPE_ICONS: Record<string, string> = {
   arm: "🔓",
   disarm: "🔒",
   script: "⚙",
+  midi_file: "🎼",
 };
 
 const CONTINUE_LABELS: Record<string, string> = {

@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 300 pass, 0 failures** (verified 2026-08-05; run the full
+**`cargo test --lib` → 365 pass, 0 failures** (verified 2026-08-06; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -26,7 +26,10 @@ Stop-at-End**; **VideoGeometry (serde roundtrip/defaults, log2 zoom, fit props,
 pixel-crop math + clamping), EOF-fade window math (audio + picture), hwdec
 failure detection + software-decode latch, geometry/hold serialization
 roundtrips, output-screen resolution fallback, OutputTransform composition +
-TestPattern URLs**. Plus integration suites
+TestPattern URLs**; **MIDI file tempo map (mid-file Set Tempo, conductor track,
+SMPTE timing, format 2) + the playback scheduler driven against a recording
+sink (order, timing, pause, notes released on stop, mid-file start)**. Plus
+integration suites
 (`cue_behavior_tests`, `transport_go_tests`, …): group completion end-to-end, fade
 drives every group child voice, logger flood guard.
 
@@ -46,6 +49,7 @@ drives every group child voice, logger flood guard.
 | Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues, incl. **Groups** and cues nested in a group — voices collected via `all_voice_ids()` recursively); audio fade of **volume and/or pan** (gain/pan interpolation at 30 fps); visual fade for Video/Image (overlay alpha at 30 fps, `set_overlay_alpha_direct`); configurable curve; **Stop at End** now hard-stops the target *cues* (not just their voices) via the event loop + emits state/refresh so the UI clears; sectioned inspector (Targets / Fade / Audio / Visual / On Complete) + searchable target picker with chips |
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /inkue/pause_toggle; /inkue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
+| MIDI File | ✅ **Functional** | Plays a `.mid` to one MIDI port (QLab parity: destination + playback-rate multiplier). Tempo-map-aware parsing (`midly`) so a mid-file Set Tempo moves everything after it; real duration → completes and Auto-Follows on its own; pause/resume and seek; 1 ms timer resolution on Windows; stop releases every note the player started and lifts the sustain pedal |
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
 | Mic      | ✅ **Functional** | (see 0.9.5) |
 | Timecode | ✅ **Functional** | SMPTE timecode generation (MTC out via `TimecodeCue`) + receive (MTC in via `TimecodeReceiver`); per-cue TC triggers + CueList sync toggle; LTC encoder/decoder (`ltc.rs`); TC status indicator in TransportBar; Triggers inspector tab on every cue; TC Preferences (Network tab). LTC out = planned v2; drop-frame 29.97 fully tested. | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
@@ -82,6 +86,8 @@ drives every group child voice, logger flood guard.
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; loop support; `file_duration()` override returns raw `cached_duration` |
 | ImageCue | `cue/image_cue.rs` | ✅ `display_duration_ms: Option<u64>` — None = hold, Some = timed auto-complete |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete |
+| MidiFileCue | `cue/midi_file_cue.rs` | ✅ Plays a `.mid` via `engine/midi_file.rs`; parsed in `from_json` so the row has a real duration; `restore_runtime_state` restarts the player at the position reached, so an inspector edit does not silence a playing cue |
+| MIDI file engine | `engine/midi_file.rs` | ✅ Tempo-map-aware SMF parser (pure, byte-driven) + `MidiFilePlayer` thread; sends through a `MidiSink` trait so the scheduler is testable without a port; 1 ms timer resolution on Windows |
 | StopCue | `cue/stop_cue.rs` | ✅ UUID-based multi-target (`target_cue_ids: Vec<CueId>`); empty = stop all; backward-compat with old single-UUID format; `resolve_stop_target` handles number→UUID migration |
 | FadeCue | `cue/fade_cue.rs` | ✅ UUID-based multi-target (`target_cue_ids: Vec<CueId>`); audio fade via `audio_engine.set_voice_gain()` at 30 fps; visual fade via `output_engine.set_overlay_alpha_direct()` at 30 fps; `has_visual_target` + `visual_start/target_alpha`; `stop_at_end` for audio + visual; backward-compat with old `target_cue_number` |
 | VoiceState / FadeState | `engine/voice.rs` | ✅ Complete — `out_l`, `out_r` for channel routing |
@@ -206,6 +212,76 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-08-06) — MIDI File Cue
+
+Closes the last gap in QLab cue-type parity (`WHATSNEXT.md` bloc 1d): every
+QLab cue type now has an Inkue equivalent, so the importer no longer has a
+reason to emit a Memo placeholder for a type it recognises.
+
+QLab's MIDI File cue has exactly two settings and so does this one: a
+destination port and a playback-rate multiplier. Everything else about the
+performance is written into the file.
+
+- **`engine/midi_file.rs`** (new) — parsing and playback, split so the parser
+  is pure and testable from bytes.
+  - `parse_midi_bytes` flattens an SMF into absolutely-timed events. **The
+    tempo map is the whole reason this module exists**: a Set Tempo meta can
+    appear anywhere, so a tick has no fixed duration. Tracks are merged onto
+    one timeline first (stable sort by tick, then track order) and time is
+    accumulated as the merged stream is walked — a tempo change in the
+    conductor track therefore moves the events of every other track that
+    follows it. SMPTE-timed files (`Timing::Timecode`) ignore tempo entirely.
+    Format 2 tracks are concatenated, each with its own tempo map. Duration
+    includes the silent tail before End of Track. New dep `midly` 0.5, with
+    `parallel` (rayon) off — show files are kilobytes.
+  - `MidiFilePlayer` owns the sending thread: pause/resume, start-at-offset,
+    and a **1 ms timer resolution on Windows** (`timeBeginPeriod`, winmm is
+    already linked by midir) because the default 15.6 ms scheduler tick
+    audibly quantises notes. Sleeps stop 1 ms short of each event and yield
+    the rest.
+  - **Stopping never leaves a note hanging.** The player tracks which notes it
+    turned on (`[u128; 16]`) and releases exactly those, lifts the sustain
+    pedal, then sends All Notes Off — but only on channels the file actually
+    used, so it does not disturb other gear on a shared port.
+  - Sends go through a `MidiSink` trait, so the scheduler is tested against a
+    recording sink. No CI machine has a MIDI port and not every dev machine
+    has one that loops back (checked: none of this one's virtual ports do).
+
+- **`cue/midi_file_cue.rs`** (new) — the cue. Parsed in `from_json`, so a row
+  has its real duration the moment the workspace opens and completes /
+  Auto-Follows on its own like an Audio Cue. `file_path` uses that exact key,
+  which is what makes the path relative in the `.inkue` for free. Soft and
+  hard stop are the same cut (MIDI has no fade).
+  **Editing a playing cue no longer silences it**: every `update_cue` rebuild
+  drops the player thread, so `restore_runtime_state` restarts it at the
+  position reached, replaying the channel state (program, controllers, bend)
+  the file had established and skipping notes already sounding rather than
+  re-attacking them. `seek()` uses the same machinery.
+
+- **Plumbing** — `CueType::MidiFile`; registry; `set_midi_file` command;
+  `media_file_path` (so preflight's missing-file check and relink cover it
+  with no new code); broken/warning row states; Collect & Save copies `.mid`
+  into a new `midi/` subfolder. Preflight also reports a file that exists but
+  will not parse, an absent port, and an out-of-range rate.
+
+- **Frontend** — `MidiFileTab.tsx` (port, rate, and a read-only summary of
+  what was parsed: length, length at rate, track count, channels — a MIDI file
+  gives no other confirmation you picked the right one). Toolbar button, cue
+  list menu entry, 🎼 icon, `.mid`/`.midi`/`.smf`/`.kar` drag-and-drop onto the
+  cue list and Cart, and "Assign MIDI File…" in the context menu.
+
+**Tests** — 329 → **365** lib tests. The parser tests build SMF bytes inline
+(no fixture files): 120 BPM default, mid-file tempo change, conductor-track
+tempo applying across tracks, SMPTE ignoring tempo, format 2 concatenation,
+silent tail, merge ordering, Note On velocity 0 as a release, SysEx reframing,
+channel mask. The scheduler tests drive the real play loop: event order and
+timing, rate compression, pause holding the file, stop releasing held notes and
+the pedal, end-of-file release, a mid-file start replaying channel state without
+re-attacking notes, and — caught by working the units through rather than by a
+failing test — that the start offset is *played* time, so the rate is applied
+once and not twice (at 2×, seeking to 250 ms had landed 1000 ms into the file). `cargo clippy --all-targets` and `tsc --noEmit`
+clean; frontend vitest 20 pass (the IPC contract test covers `set_midi_file`).
 
 ### 1.3.2 (2026-08-05) — GitHub issues #4 and #5
 
@@ -1657,6 +1733,7 @@ not just a console trigger.
 | 21. OSC Cue | ✅ Send multiple OSC messages on GO; workspace patches; inspector Messages tab; receive server with allowlist; Preferences OSC tab; activity dot in transport bar |
 | 22. Fade Cue | ✅ Volume fade to target dB, configurable curve (Linear/S-Curve/Exponential), stop-at-end, pause/resume, pre-wait |
 | 23. MIDI Cue | ✅ Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir) |
+| 23b. MIDI File Cue | ✅ Plays a `.mid` to one port; tempo-map-aware parsing (`midly`), playback-rate multiplier, pause/resume/seek, notes released on stop; `engine/midi_file.rs` + `cue/midi_file_cue.rs` |
 | 24. Unified GL output | ✅ mpv Render API on all 3 OS — winit window (Windows/Linux) + AppKit `NSWindow` via objc2 (macOS); legacy Win32+D3D11 behind a feature flag |
 | 25. DMX lighting (Light Cue) | ✅ sACN + Art-Net engine, fixture patch, Light Cue (M1–M4); M5 (NIC machine-config) + effects = next, see `LIGHT.md` |
 | 27. Timecode (MTC/LTC) | ✅ `engine/timecode_types.rs` (SMPTE math, DF 29.97), `timecode_receiver.rs` (MTC QF + SysEx + flywheel), `timecode_generator.rs` (MTC OUT thread), `ltc.rs` (biphase encoder/decoder); `TimecodeCue` (MTC gen, start/end frame, multi-stream); per-cue `TcTrigger` + CueList `tc_config`; dispatcher in event loop; `timecode_cmds.rs`; frontend: TriggersTab, TimecodeTab, TcStatusIndicator, TcPreferences, + TC toolbar, 🕐 icon. LTC OUT/IN = v2. |
