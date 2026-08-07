@@ -1,7 +1,9 @@
 # Rust / Cargo
 target/
 # Isolated target dir used to validate while `pnpm tauri dev` holds target/.
-src-tauri/target-check/
+# Matched at any depth: a relative CARGO_TARGET_DIR resolves against the shell's
+# cwd, so the cache lands wherever cargo was invoked from — once inside src/.
+target-check/
 **/*.rs.bk
 # Cargo.lock is committed (this is an application, not a library) so CI and
 # release builds use the exact dependency versions developed/tested against.
