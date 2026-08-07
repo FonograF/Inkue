@@ -139,6 +139,44 @@ pub struct TcMachineConfig {
 }
 
 
+// ---------------------------------------------------------------------------
+// MIDI trigger machine config
+// ---------------------------------------------------------------------------
+
+/// Which MIDI input drives per-cue triggers on **this machine**.
+///
+/// Machine config, not workspace config: the port name belongs to the hardware
+/// in front of the operator, so a show file carried to another rig keeps its
+/// triggers but picks up that rig's input.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct MidiTriggerMachineConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// MIDI input port name. `None` = the first available port.
+    #[serde(default)]
+    pub port: Option<String>,
+}
+
+fn midi_trigger_config_path() -> std::path::PathBuf {
+    config_base_dir().join("Inkue").join("midi_triggers.json")
+}
+
+pub fn load_midi_trigger_config() -> MidiTriggerMachineConfig {
+    std::fs::read_to_string(midi_trigger_config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_midi_trigger_config(config: &MidiTriggerMachineConfig) -> anyhow::Result<()> {
+    let path = midi_trigger_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(config)?)?;
+    Ok(())
+}
+
 fn tc_config_path() -> std::path::PathBuf {
     config_base_dir().join("Inkue").join("timecode.json")
 }

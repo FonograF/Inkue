@@ -1,9 +1,10 @@
-// Inspector tab shown for every cue: sets an optional timecode trigger.
+// Inspector tab shown for every cue: optional timecode and MIDI triggers.
 
 import { useEffect, useState } from "react";
 import type { CueSummary, TcRate, TcTrigger } from "../../lib/types";
 import { getCueTcTrigger, setCueTcTrigger } from "../../lib/commands";
 import { Select } from "../common/Select";
+import { MidiTriggerSection } from "./MidiTriggerSection";
 
 interface Props {
   cue: CueSummary;
@@ -163,6 +164,8 @@ export function TriggersTab({ cue, onSave }: Props) {
           Enable to fire this cue at a specific timecode position when TC sync is active for this Cue List.
         </p>
       )}
+
+      <MidiTriggerSection cueId={cue.id} onSave={onSave} />
     </div>
   );
 }

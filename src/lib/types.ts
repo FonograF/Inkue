@@ -59,6 +59,28 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   script:   "#94a3b8",       // slate — a utility cue, not a stage element
 };
 
+/** Kinds of MIDI message that can fire a cue. */
+export type MidiTriggerType = "note_on" | "note_off" | "control_change" | "program_change";
+
+/** A MIDI message bound to a cue. Stored on the Cue List, not the cue, so any
+ *  cue type can carry one and it survives the rebuild every inspector edit does. */
+export interface MidiTrigger {
+  message_type: MidiTriggerType;
+  /** 1–16, or 0 for any channel (omni). */
+  channel: number;
+  /** Note number, controller number, or program number. */
+  data1: number;
+  /** Required velocity / value. `null` = any — right for a note, whereas a
+   *  footswitch that also sends 0 on release wants 127. */
+  data2: number | null;
+}
+
+/** Machine-level MIDI trigger settings: which input drives per-cue triggers. */
+export interface MidiTriggerConfig {
+  enabled: boolean;
+  port: string | null;
+}
+
 /** Memo Cue payload. A Memo performs no action; `memo_text` is its whole
  *  point — the note the operator reads in the cue list. */
 export interface MemoCueData extends CueSummary {

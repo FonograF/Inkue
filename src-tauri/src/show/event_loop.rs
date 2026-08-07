@@ -48,6 +48,7 @@ pub fn run(
     dmx_engine: Arc<DmxEngine>,
     workspace: Arc<Mutex<Workspace>>,
     tc_rx: Option<crossbeam_channel::Receiver<TcEvent>>,
+    midi_listener: Arc<Mutex<Option<Arc<crate::engine::midi_trigger::MidiTriggerListener>>>>,
 ) {
     // Spawn a dedicated thread that refreshes the OSD timer overlay at ~60 fps.
     // This is independent of the main 30 fps tick so the millisecond display
@@ -88,6 +89,7 @@ pub fn run(
             &dmx_engine,
             &workspace,
             tc_rx.as_ref(),
+            &midi_listener,
             &mut prev_tc_frame,
             &mut auto_follow_pending,
             &mut prev_group_state,
@@ -269,6 +271,7 @@ fn tick(
     dmx_engine: &Arc<DmxEngine>,
     workspace: &Arc<Mutex<Workspace>>,
     tc_rx:           Option<&crossbeam_channel::Receiver<TcEvent>>,
+    midi_listener:   &Arc<Mutex<Option<Arc<crate::engine::midi_trigger::MidiTriggerListener>>>>,
     prev_tc_frame:   &mut Option<u64>,
     auto_follow_pending: &mut HashMap<CueId, (Instant, uuid::Uuid)>,
     prev_group_state:    &mut HashMap<CueId, (Option<CueId>, bool)>,
@@ -334,6 +337,39 @@ fn tick(
                             // Verify the cue exists, then queue it for the real GO
                             // path below (the engine context isn't assembled here).
                             if cl.get_mut_recursive(&cue_id).is_none() { continue };
+                            tc_fire.push((cl.id, cue_id));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 0b. Drain incoming MIDI and fire cues bound to what arrived.
+    // ------------------------------------------------------------------
+    // Joins `tc_fire`: both are "something outside told us to GO", and both go
+    // through the same real GO path in section 9b so playback actually starts
+    // and Auto-Continue / Auto-Follow still chain.
+    //
+    // Unlike TC there is no monotone guard — a MIDI message *is* the event, so
+    // pressing the same key twice fires the cue twice, which is what an
+    // operator with a pad expects.
+    {
+        let messages = midi_listener
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|l| l.drain()))
+            .unwrap_or_default();
+        if !messages.is_empty() {
+            if let Ok(ws) = workspace.try_lock() {
+                for message in &messages {
+                    for cl in &ws.cue_lists {
+                        for cue_id in cl.midi_triggers_matching(message) {
+                            // A trigger left behind by a deleted cue fires nothing.
+                            if cl.get_recursive(&cue_id).is_none() {
+                                continue;
+                            }
                             tc_fire.push((cl.id, cue_id));
                         }
                     }

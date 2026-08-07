@@ -34,6 +34,7 @@ import { OscPatchesPanel } from "../OscPatches/OscPatchesPanel";
 import { InputPatchesPanel } from "../InputPatches/InputPatchesPanel";
 import { OutputPatchesPanel } from "../OutputPatches/OutputPatchesPanel";
 import { TcPreferences } from "../Timecode/TcPreferences";
+import { MidiTriggerPreferences } from "./MidiTriggerPreferences";
 import { NetworkInterfaceSection } from "./NetworkInterfaceSection";
 import { ProjectorToolsSection } from "./ProjectorToolsSection";
 import { listInputDevices } from "../../lib/commands";
@@ -1334,6 +1335,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                       }}
                     />
                     <TcPreferences />
+                    <MidiTriggerPreferences />
                   </>
                 )}
               </>

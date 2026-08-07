@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::cue::{registry::CueRegistry, traits::Cue, types::CueId};
+use crate::engine::midi_trigger::MidiTrigger;
 use crate::engine::timecode_types::{CueListTcConfig, TcTrigger};
 
 // ---------------------------------------------------------------------------
@@ -160,6 +161,11 @@ pub struct CueList {
     /// A trigger at frame `tf` fires when `last < tf <= current`. `0` means
     /// nothing has been covered yet, so every trigger is still armed.
     pub tc_last_triggered_frame: u64,
+    /// Per-cue MIDI triggers: cue_id → MidiTrigger.  On the list for the same
+    /// reason as [`Self::tc_triggers`] — every cue type gains MIDI triggering
+    /// without a per-type code change, and a trigger survives the cue rebuild
+    /// that every inspector edit performs.
+    pub midi_triggers: HashMap<CueId, MidiTrigger>,
     /// Runtime mirror of `GeneralPreferences::auto_renumber_on_reorder`
     /// (not persisted). When `false` (default), structural mutations leave cue
     /// numbers untouched; when `true`, they resequence via [`renumber_all`].
@@ -179,8 +185,21 @@ impl CueList {
             tc_config: CueListTcConfig::default(),
             tc_triggers: HashMap::new(),
             tc_last_triggered_frame: 0,
+            midi_triggers: HashMap::new(),
             auto_renumber: false,
         }
+    }
+
+    /// Cue ids whose MIDI trigger matches `message`.
+    ///
+    /// More than one cue may be bound to the same message; all of them fire,
+    /// which is how an operator builds a one-button "everything goes" pad.
+    pub fn midi_triggers_matching(&self, message: &[u8]) -> Vec<CueId> {
+        self.midi_triggers
+            .iter()
+            .filter(|(_, trigger)| trigger.matches(message))
+            .map(|(&id, _)| id)
+            .collect()
     }
 
     /// Cue ids whose TC trigger position falls in the half-open window
@@ -750,8 +769,30 @@ impl CueList {
     // Serialisation
     // -----------------------------------------------------------------------
 
+    /// Every cue id in this list, descending into groups.
+    pub fn all_cue_ids(&self) -> HashSet<CueId> {
+        fn walk(cues: &[Box<dyn Cue>], out: &mut HashSet<CueId>) {
+            for cue in cues {
+                out.insert(cue.id());
+                if let Some(children) = cue.child_cues() {
+                    walk(children, out);
+                }
+            }
+        }
+        let mut ids = HashSet::new();
+        walk(&self.cues, &mut ids);
+        ids
+    }
+
     /// Serialise this cue list to a JSON [`serde_json::Value`].
+    ///
+    /// Triggers whose cue no longer exists are dropped here rather than on
+    /// removal: several "remove" paths are really the first half of a move
+    /// (ungroup, move-to-top-level), so purging there would lose a trigger the
+    /// operator still wants. Filtering at save time is unambiguous, and stops
+    /// deleted cues' triggers accumulating in the file forever.
     pub fn to_json(&self) -> serde_json::Value {
+        let live_ids = self.all_cue_ids();
         let cues_json: Vec<serde_json::Value> = self.cues.iter().map(|c| c.serialize()).collect();
         serde_json::json!({
             "id": self.id,
@@ -759,9 +800,14 @@ impl CueList {
             "mode": self.mode,
             "playhead_cue_id": self.playhead_cue_id,
             "tc_config": self.tc_config,
-            "tc_triggers": self.tc_triggers.iter().map(|(id, t)| {
-                serde_json::json!({ "cue_id": id, "trigger": t })
-            }).collect::<Vec<_>>(),
+            "tc_triggers": self.tc_triggers.iter()
+                .filter(|(id, _)| live_ids.contains(id))
+                .map(|(id, t)| serde_json::json!({ "cue_id": id, "trigger": t }))
+                .collect::<Vec<_>>(),
+            "midi_triggers": self.midi_triggers.iter()
+                .filter(|(id, _)| live_ids.contains(id))
+                .map(|(id, t)| serde_json::json!({ "cue_id": id, "trigger": t }))
+                .collect::<Vec<_>>(),
             "cues": cues_json,
         })
     }
@@ -836,6 +882,21 @@ impl CueList {
             })
             .unwrap_or_default();
 
+        let midi_triggers: HashMap<CueId, MidiTrigger> = value
+            .get("midi_triggers")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().filter_map(|item| {
+                    let id: CueId = item.get("cue_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse().ok())?;
+                    let trigger: MidiTrigger = serde_json::from_value(
+                        item.get("trigger")?.clone()).ok()?;
+                    Some((id, trigger))
+                }).collect()
+            })
+            .unwrap_or_default();
+
         Ok(Self {
             id,
             name,
@@ -845,6 +906,7 @@ impl CueList {
             tc_config,
             tc_triggers,
             tc_last_triggered_frame: 0,
+            midi_triggers,
             auto_renumber: false,
         })
     }
@@ -1248,5 +1310,92 @@ mod tests {
         // Jump back: the event loop lowers the guard to the rewound position.
         list.tc_last_triggered_frame = 0;
         assert_eq!(list.tc_triggers_crossed(tf), vec![id], "must re-fire after rewind");
+    }
+
+    // -----------------------------------------------------------------------
+    // MIDI triggers
+    // -----------------------------------------------------------------------
+
+    fn list_with_midi_trigger(trigger: MidiTrigger) -> (CueList, CueId) {
+        let mut list = CueList::new("Test");
+        let cue = memo();
+        let id = cue.id();
+        list.push(cue);
+        list.midi_triggers.insert(id, trigger);
+        (list, id)
+    }
+
+    #[test]
+    fn a_midi_trigger_fires_its_cue() {
+        let (list, id) = list_with_midi_trigger(MidiTrigger::default());
+        assert_eq!(list.midi_triggers_matching(&[0x90, 60, 100]), vec![id]);
+    }
+
+    #[test]
+    fn an_unrelated_message_fires_nothing() {
+        let (list, _) = list_with_midi_trigger(MidiTrigger::default());
+        assert!(list.midi_triggers_matching(&[0x90, 61, 100]).is_empty());
+    }
+
+    #[test]
+    fn one_message_can_fire_several_cues() {
+        // A single pad wired to a whole set of cues is a real operator layout.
+        let (mut list, first) = list_with_midi_trigger(MidiTrigger::default());
+        let second = memo();
+        let second_id = second.id();
+        list.push(second);
+        list.midi_triggers.insert(second_id, MidiTrigger::default());
+
+        let mut fired = list.midi_triggers_matching(&[0x90, 60, 64]);
+        fired.sort();
+        let mut expected = vec![first, second_id];
+        expected.sort();
+        assert_eq!(fired, expected);
+    }
+
+    #[test]
+    fn the_same_message_fires_again_every_time() {
+        // Unlike a TC trigger there is no monotone guard: the message *is* the
+        // event, so pressing the key twice must fire the cue twice.
+        let (list, id) = list_with_midi_trigger(MidiTrigger::default());
+        assert_eq!(list.midi_triggers_matching(&[0x90, 60, 100]), vec![id]);
+        assert_eq!(list.midi_triggers_matching(&[0x90, 60, 100]), vec![id]);
+    }
+
+    #[test]
+    fn midi_triggers_survive_a_save_and_reload() {
+        let (list, id) = list_with_midi_trigger(MidiTrigger {
+            message_type: crate::engine::midi_trigger::MidiTriggerType::ControlChange,
+            channel: 0,
+            data1: 7,
+            data2: Some(127),
+        });
+        use crate::cue::{memo_cue::MemoCueFactory, registry::CueRegistry};
+        let mut registry = CueRegistry::new();
+        registry.register(CueType::Memo, Box::new(MemoCueFactory));
+
+        let json = list.to_json();
+        let reloaded = CueList::from_json(json, &registry).unwrap();
+        let trigger = reloaded.midi_triggers.get(&id).expect("trigger persisted");
+        assert_eq!(trigger.data1, 7);
+        assert_eq!(trigger.data2, Some(127));
+        assert_eq!(trigger.channel, 0, "omni survives the roundtrip");
+    }
+
+    #[test]
+    fn saving_drops_triggers_whose_cue_is_gone() {
+        // Both trigger maps outlive their cue on removal (several remove paths
+        // are really the first half of a move), so the file must not keep them.
+        let (mut list, id) = list_with_midi_trigger(MidiTrigger::default());
+        list.tc_triggers.insert(id, TcTrigger {
+            position: crate::engine::timecode_types::TcPosition::new(
+                1, 0, 0, 0, crate::engine::timecode_types::TcRate::Fps25),
+            real_time: false,
+        });
+        list.remove(&id).unwrap();
+
+        let json = list.to_json();
+        assert_eq!(json["midi_triggers"].as_array().unwrap().len(), 0);
+        assert_eq!(json["tc_triggers"].as_array().unwrap().len(), 0);
     }
 }

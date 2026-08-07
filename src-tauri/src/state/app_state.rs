@@ -59,6 +59,9 @@ pub struct AppState {
     pub last_go_at: Arc<AtomicU64>,
     /// Timecode receiver (MTC / LTC) — `None` until the first `set_tc_config`.
     pub tc_receiver: Arc<Mutex<Option<Arc<TimecodeReceiver>>>>,
+    /// MIDI input listener driving per-cue MIDI triggers — `None` while
+    /// triggers are disabled for this machine.
+    pub midi_listener: Arc<Mutex<Option<Arc<crate::engine::midi_trigger::MidiTriggerListener>>>>,
 }
 
 impl AppState {
@@ -111,6 +114,7 @@ impl AppState {
             clipboard: Arc::new(Mutex::new(None)),
             last_go_at: Arc::new(AtomicU64::new(0)),
             tc_receiver: Arc::new(Mutex::new(tc_receiver)),
+            midi_listener: Arc::new(Mutex::new(None)),
         }
     }
 }

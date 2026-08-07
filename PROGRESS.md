@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 370 pass, 0 failures** (verified 2026-08-06; run the full
+**`cargo test --lib` → 391 pass, 0 failures** (verified 2026-08-06; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -50,6 +50,7 @@ drives every group child voice, logger flood guard.
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /inkue/pause_toggle; /inkue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 | MIDI File | ✅ **Functional** | Plays a `.mid` to one MIDI port (QLab parity: destination + playback-rate multiplier). Tempo-map-aware parsing (`midly`) so a mid-file Set Tempo moves everything after it; real duration → completes and Auto-Follows on its own; pause/resume and seek; 1 ms timer resolution on Windows; stop releases every note the player started and lifts the sustain pedal |
+| Triggers (all cues) | ✅ **Functional** | Two kinds, both stored on the Cue List so every cue type gets them: **timecode** (SMPTE or real-time offset) and **MIDI** (note / CC / program change, omni or per-channel, optional exact value, with Learn). MIDI input port + enable are machine config; Note On velocity 0 correctly counts as a release. Hotkey and wall-clock triggers are not implemented |
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
 | Mic      | ✅ **Functional** | (see 0.9.5) |
 | Timecode | ✅ **Functional** | SMPTE timecode generation (MTC out via `TimecodeCue`) + receive (MTC in via `TimecodeReceiver`); per-cue TC triggers + CueList sync toggle; LTC encoder/decoder (`ltc.rs`); TC status indicator in TransportBar; Triggers inspector tab on every cue; TC Preferences (Network tab). LTC out = planned v2; drop-frame 29.97 fully tested. | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
@@ -86,6 +87,7 @@ drives every group child voice, logger flood guard.
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; loop support; `file_duration()` override returns raw `cached_duration` |
 | ImageCue | `cue/image_cue.rs` | ✅ `display_duration_ms: Option<u64>` — None = hold, Some = timed auto-complete |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete — `memo_text()` trait override feeds the Target column; 5 unit tests |
+| MIDI triggers | `engine/midi_trigger.rs` | ✅ Pure `MidiTrigger::matches` (byte-driven, fully tested) + `MidiTriggerListener` input thread with MIDI learn; triggers stored in `CueList::midi_triggers`, dispatched by the event loop through the real GO path |
 | MidiFileCue | `cue/midi_file_cue.rs` | ✅ Plays a `.mid` via `engine/midi_file.rs`; parsed in `from_json` so the row has a real duration; `restore_runtime_state` restarts the player at the position reached, so an inspector edit does not silence a playing cue |
 | MIDI file engine | `engine/midi_file.rs` | ✅ Tempo-map-aware SMF parser (pure, byte-driven) + `MidiFilePlayer` thread; sends through a `MidiSink` trait so the scheduler is testable without a port; 1 ms timer resolution on Windows |
 | StopCue | `cue/stop_cue.rs` | ✅ UUID-based multi-target (`target_cue_ids: Vec<CueId>`); empty = stop all; backward-compat with old single-UUID format; `resolve_stop_target` handles number→UUID migration |
@@ -212,6 +214,66 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-08-06) — Per-cue MIDI triggers
+
+Fires any cue from an incoming MIDI message. The last big gap for importing a
+QLab show faithfully: every QLab cue carries a `midiTrigger`, and Inkue had
+**no** MIDI triggering at all — neither per-cue nor global (`WHATSNEXT.md`
+claimed otherwise; corrected).
+
+- **`engine/midi_trigger.rs`** (new) — a pure matcher plus a listener thread,
+  the same split as `midi_file.rs`.
+  - `MidiTrigger { message_type, channel, data1, data2 }`. Channel `0` = omni.
+    `data2: None` = any velocity/value; `Some(127)` is what a footswitch that
+    also sends 0 on release needs.
+  - `matches()` is where the MIDI awkwardness lives, and it is byte-driven so
+    all of it is testable: **a Note On with velocity 0 is a release**, so it
+    fires a Note Off trigger and never a Note On (many keyboards never send
+    0x8n at all — without this, cues fire when you *let go* of the key);
+    Program Change has no second data byte, so a value requirement cannot
+    block it; system messages (clock, SysEx, MTC) carry no channel and never
+    match.
+  - `MidiTriggerListener` owns the `midir` input connection, ignores clock and
+    active sensing (a clocked device would otherwise flood the queue at 24
+    ppqn), and keeps the last message for **MIDI learn**. It knows nothing
+    about cues — the show layer drains and decides — so the layering holds.
+
+- **`show/cue_list.rs`** — `midi_triggers: HashMap<CueId, MidiTrigger>`, on the
+  list exactly like `tc_triggers`: every cue type gains triggering with no
+  per-type change, and a trigger survives the cue rebuild that every inspector
+  edit performs. `midi_triggers_matching()` returns **all** matching cues, so
+  one pad can fire a whole set. Unlike TC there is deliberately no monotone
+  guard — the message *is* the event, so pressing a key twice fires twice.
+
+- **Fixed while here: triggers outlived their cue.** `remove()` never cleaned
+  up `tc_triggers`, so deleted cues' triggers accumulated in the `.inkue`
+  forever. Both maps are now filtered at `to_json` time against the live cue
+  ids — the safe place, because several "remove" paths (ungroup,
+  move-to-top-level) are really the first half of a move and purging there
+  would lose a trigger the operator still wants.
+
+- **Dispatch** — the event loop drains the listener each tick and pushes
+  matches onto the same queue the TC dispatcher uses, so MIDI-fired cues go
+  through the real GO path (`go_by_id`) and Auto-Continue / Auto-Follow chain
+  normally.
+
+- **Machine config** (`midi_triggers.json`, beside `timecode.json`): enabled +
+  input port. Machine-level, not workspace-level — the port belongs to the rig
+  in front of the operator, so a show carried elsewhere keeps its triggers and
+  picks up that rig's input.
+
+- **Frontend** — `MidiTriggerSection.tsx` on every cue's Triggers tab, with a
+  **Learn** button that fills the trigger in from whatever you press (far more
+  reliable than knowing your controller's note numbers); `MidiTriggerPreferences.tsx`
+  in Preferences → Network. Seven new commands.
+
+**Tests** — 370 → **391**. 15 on the matcher (velocity-0 release, omni, exact
+value, Program Change's missing byte, system messages, learn, serde) and 6 on
+the list (fires, multi-cue, re-fires on repeat, save/reload, orphan purge).
+The listener was smoke-tested against real hardware; the wire itself cannot be
+covered automatically — this machine has 15 MIDI inputs and **none loops back**
+(checked, not assumed).
 
 ### Unreleased (2026-08-06) — Memo Cue reachable, and its text finally visible
 

@@ -50,7 +50,11 @@ use commands::{
         list_builtin_fixture_types, remove_fixture, remove_fixture_group, update_fixture,
         update_fixture_group,
     },
-    midi_cmds::{list_midi_output_ports, send_midi_test},
+    midi_cmds::{
+        clear_midi_learn, get_cue_midi_trigger, get_midi_trigger_config, learn_midi_trigger,
+        list_midi_input_ports, list_midi_output_ports, send_midi_test, set_cue_midi_trigger,
+        set_midi_trigger_config,
+    },
     network_cmds::{get_network_config, list_network_interfaces, set_network_config},
     osc_cmds::{
         add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
@@ -211,10 +215,27 @@ pub fn run() {
                 .tc_receiver.lock().ok()
                 .and_then(|opt| opt.as_ref().map(|r| r.subscribe()));
 
+            // Start the per-cue MIDI trigger listener if this machine has it on.
+            let midi_listener = app.state::<AppState>().midi_listener.clone();
+            {
+                let config = crate::machine_config::load_midi_trigger_config();
+                if config.enabled {
+                    if let Ok(mut slot) = midi_listener.lock() {
+                        *slot = Some(Arc::new(
+                            crate::engine::midi_trigger::MidiTriggerListener::new(config.port),
+                        ));
+                    }
+                }
+            }
+            let midi_listener_for_loop = midi_listener.clone();
+
             std::thread::Builder::new()
                 .name("inkue-event-loop".to_string())
                 .spawn(move || {
-                    crate::show::event_loop::run(handle, a_engine, o_engine, d_engine, workspace, tc_event_rx);
+                    crate::show::event_loop::run(
+                        handle, a_engine, o_engine, d_engine, workspace, tc_event_rx,
+                        midi_listener_for_loop,
+                    );
                 })
                 .expect("Failed to spawn event loop thread");
 
@@ -512,6 +533,13 @@ pub fn run() {
             // MIDI
             list_midi_output_ports,
             send_midi_test,
+            list_midi_input_ports,
+            get_midi_trigger_config,
+            set_midi_trigger_config,
+            get_cue_midi_trigger,
+            set_cue_midi_trigger,
+            learn_midi_trigger,
+            clear_midi_learn,
             // Network
             list_network_interfaces,
             get_network_config,

@@ -25,6 +25,7 @@ pub mod dmx_sink;
 pub mod engine_traits;
 pub mod fixture;
 pub mod midi_file;
+pub mod midi_trigger;
 pub mod mpv_sys;
 pub mod net_interface;
 pub mod osc_feedback;

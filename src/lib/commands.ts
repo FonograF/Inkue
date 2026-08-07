@@ -28,6 +28,8 @@ import type {
   HealthAlert,
   InputPatch,
   LogLine,
+  MidiTrigger,
+  MidiTriggerConfig,
   OscPatch,
   TcMachineConfig,
   TcPosition,
@@ -402,6 +404,19 @@ export const sendMidiTest = (
   data1: number,
   data2: number,
 ) => invoke<void>("send_midi_test", { portName, messageType, channel, data1, data2 });
+
+// Per-cue MIDI triggers
+export const listMidiInputPorts = () => invoke<string[]>("list_midi_input_ports");
+export const getMidiTriggerConfig = () =>
+  invoke<MidiTriggerConfig>("get_midi_trigger_config");
+export const setMidiTriggerConfig = (config: MidiTriggerConfig) =>
+  invoke<void>("set_midi_trigger_config", { config });
+export const getCueMidiTrigger = (cueId: CueId) =>
+  invoke<MidiTrigger | null>("get_cue_midi_trigger", { cueId });
+export const setCueMidiTrigger = (cueId: CueId, trigger: MidiTrigger | null) =>
+  invoke<void>("set_cue_midi_trigger", { cueId, trigger });
+export const learnMidiTrigger = () => invoke<MidiTrigger | null>("learn_midi_trigger");
+export const clearMidiLearn = () => invoke<void>("clear_midi_learn");
 
 // ---------------------------------------------------------------------------
 // DMX / Lighting
