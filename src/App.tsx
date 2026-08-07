@@ -13,6 +13,7 @@ import { ActiveCuesView } from "./components/ActiveCues/ActiveCuesView";
 import { CueListTabs } from "./components/CueList/CueListTabs";
 import { InspectorPanel } from "./components/Inspector/InspectorPanel";
 import { ClipEditorDock } from "./components/Editor/ClipEditorDock";
+import { CurveEditorDock } from "./components/Curve/CurveEditorDock";
 import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -746,6 +747,7 @@ export default function App() {
   const [showSearchBar, setShowSearchBar]         = useState(() => loadUiLayout().showSearchBar);
   const [inspectorWidth, setInspectorWidth]       = useState(() => loadUiLayout().inspectorWidth);
   const [editorCueId, setEditorCueId]             = useState<string | null>(null);
+  const [curveCueId, setCurveCueId]               = useState<string | null>(null);
   const [inspectorReload, setInspectorReload]     = useState(0);
   const [editorReload, setEditorReload]           = useState(0);
   const [showMode, setShowMode]                   = useState(false);
@@ -1510,6 +1512,19 @@ export default function App() {
                 })()
               )}
 
+              {/* Curve editor dock — fade shapes for the opened Fade Cue */}
+              {curveCueId && (
+                <CurveEditorDock
+                  cueId={curveCueId}
+                  onClose={() => setCurveCueId(null)}
+                  onSaved={() => {
+                    void handleRefresh();
+                    setInspectorReload((n) => n + 1);
+                  }}
+                  reloadToken={editorReload}
+                />
+              )}
+
               {/* Clip editor dock — trim + slices for the opened cue */}
               {editorCueId && (
                 <ClipEditorDock
@@ -1565,6 +1580,7 @@ export default function App() {
                   selectedCueIds={selectedCueIds}
                   onRefresh={handleRefresh}
                   onOpenEditor={(id) => setEditorCueId(id)}
+                  onOpenCurveEditor={(id) => setCurveCueId(id)}
                   reloadToken={inspectorReload}
                   onCueSaved={() => setEditorReload((n) => n + 1)}
                 />

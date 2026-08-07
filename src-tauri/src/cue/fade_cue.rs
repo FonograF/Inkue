@@ -22,6 +22,7 @@ use crate::{
 
 use super::{
     context::{CueContext, CueEvent},
+    curve::{CurveKind, FadeShapes},
     traits::{Cue, CueFactory, RuntimeState},
     types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCurve},
 };
@@ -67,8 +68,10 @@ pub struct FadeCue {
     pub fade_volume: bool,
     /// Fade duration in milliseconds.
     pub fade_duration_ms: u64,
-    /// Fade curve shape.
-    pub fade_curve: FadeCurve,
+    /// Rising and falling envelopes. Which one applies is decided per target:
+    /// in one Fade Cue some voices may be coming up while others go down, and
+    /// QLab shapes those differently on purpose.
+    pub shapes: FadeShapes,
     /// Stop the target cue(s) after the fade completes.
     pub stop_at_end: bool,
     is_disabled: bool,
@@ -113,7 +116,7 @@ impl FadeCue {
             target_pan: None,
             fade_volume: true,
             fade_duration_ms: 2000,
-            fade_curve: FadeCurve::SCurve,
+            shapes: FadeShapes::default(),
             stop_at_end: false,
             is_disabled: false,
             target_voices: Vec::new(),
@@ -129,6 +132,16 @@ impl FadeCue {
             FadeCurve::Linear => EngineFadeCurve::Linear,
             FadeCurve::SCurve => EngineFadeCurve::SCurve,
             FadeCurve::Exponential => EngineFadeCurve::Exponential,
+        }
+    }
+
+    /// The legacy single-curve name for this cue, so an older Inkue opening the
+    /// file still gets approximately the right shape.
+    fn legacy_curve(&self) -> FadeCurve {
+        match self.shapes.up.kind {
+            CurveKind::Linear => FadeCurve::Linear,
+            CurveKind::Exponential => FadeCurve::Exponential,
+            _ => FadeCurve::SCurve,
         }
     }
 }
@@ -267,14 +280,19 @@ impl Cue for FadeCue {
         let elapsed_ms = self.action_elapsed().as_millis() as f64;
         let duration_ms = self.fade_duration_ms as f64;
         let t = if duration_ms <= 0.0 { 1.0_f64 } else { (elapsed_ms / duration_ms).clamp(0.0, 1.0) };
-        let curved_t = self.fade_curve.apply(t) as f32;
+        // Both directions sampled once; each target picks the one that matches
+        // the way its own value is travelling.
+        let rising_t = self.shapes.sample(t, true) as f32;
+        let falling_t = self.shapes.sample(t, false) as f32;
+        let curved_t = rising_t;
 
         // Interpolate gain for each audio voice (skipped for a pan-only fade so
         // the level is left exactly where it was).
         if self.fade_volume {
             let target_gain = db_to_linear(self.target_volume_db) as f32;
             for &(vid, start_gain, _) in &self.target_voices {
-                let gain = start_gain + (target_gain - start_gain) * curved_t;
+                let progress = if target_gain >= start_gain { rising_t } else { falling_t };
+                let gain = start_gain + (target_gain - start_gain) * progress;
                 let _ = context.audio_engine.set_voice_gain(vid, gain);
             }
         }
@@ -282,7 +300,8 @@ impl Cue for FadeCue {
         // Interpolate pan for each audio voice when a pan target is set.
         if let Some(target_pan) = self.target_pan {
             for &(vid, _, start_pan) in &self.target_voices {
-                let pan = start_pan + (target_pan - start_pan) * curved_t;
+                let progress = if target_pan >= start_pan { rising_t } else { falling_t };
+                let pan = start_pan + (target_pan - start_pan) * progress;
                 let _ = context.audio_engine.set_voice_pan(vid, pan);
             }
         }
@@ -301,7 +320,7 @@ impl Cue for FadeCue {
             if self.stop_at_end {
                 // Immediate audio cut (the fade already reached the target level).
                 for &(vid, _, _) in &self.target_voices {
-                    let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.fade_curve));
+                    let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.legacy_curve()));
                 }
                 for &(vid, _) in &self.visual_targets {
                     let _ = context.output_engine.stop_voice(vid, 0);
@@ -374,7 +393,7 @@ impl Cue for FadeCue {
             target_gain_linear: db_to_linear(self.target_volume_db) as f32,
             target_visual_alpha: Some(visual_alpha),
             duration_ms: self.fade_duration_ms,
-            curve: self.fade_curve,
+            curve: self.legacy_curve(),
             stop_at_end: self.stop_at_end,
         })
     }
@@ -452,7 +471,8 @@ impl Cue for FadeCue {
             "target_pan": self.target_pan,
             "fade_volume": self.fade_volume,
             "fade_duration_ms": self.fade_duration_ms,
-            "fade_curve": self.fade_curve,
+            "fade_curve": self.legacy_curve(),
+            "fade_shapes": self.shapes,
             "stop_at_end": self.stop_at_end,
             "is_disabled": self.is_disabled,
         })
@@ -529,9 +549,20 @@ impl CueFactory for FadeCueFactory {
         if let Some(ms) = value.get("fade_duration_ms").and_then(|v| v.as_u64()) {
             cue.fade_duration_ms = ms;
         }
+        // A file written before curve shapes existed carries only the name;
+        // turn it into the equivalent locked pair so nothing changes for it.
         if let Some(c) = value.get("fade_curve") {
-            if let Ok(curve) = serde_json::from_value(c.clone()) {
-                cue.fade_curve = curve;
+            if let Ok(curve) = serde_json::from_value::<FadeCurve>(c.clone()) {
+                cue.shapes = FadeShapes::of_kind(match curve {
+                    FadeCurve::Linear => CurveKind::Linear,
+                    FadeCurve::SCurve => CurveKind::SCurve,
+                    FadeCurve::Exponential => CurveKind::Exponential,
+                });
+            }
+        }
+        if let Some(s) = value.get("fade_shapes") {
+            if let Ok(shapes) = serde_json::from_value(s.clone()) {
+                cue.shapes = shapes;
             }
         }
         if let Some(b) = value.get("stop_at_end").and_then(|v| v.as_bool()) {
@@ -662,5 +693,48 @@ mod tests {
         let spec = cue.fade_specification().unwrap();
         // UUIDs not resolved yet (no workspace loaded), but number is stored.
         assert!(spec.target_cue_ids.is_empty());
+    }
+
+    #[test]
+    fn a_show_written_before_curve_shapes_still_loads_its_curve() {
+        // Only "fade_curve" — the pre-shapes format. It must come back as the
+        // same shape, locked, so the fade behaves exactly as it always did.
+        let json = serde_json::json!({
+            "type": "fade", "id": Uuid::new_v4().to_string(), "name": "Old",
+            "fade_duration_ms": 2000, "fade_curve": "exponential",
+        });
+        let rebuilt = FadeCueFactory.from_json(json).unwrap();
+        let out = rebuilt.serialize();
+        assert_eq!(out["fade_shapes"]["up"]["kind"], "exponential");
+        assert_eq!(out["fade_shapes"]["mirrored"], true);
+        assert_eq!(out["fade_curve"], "exponential", "legacy name still written");
+    }
+
+    #[test]
+    fn curve_shapes_survive_a_roundtrip_and_win_over_the_legacy_name() {
+        use crate::cue::curve::{CurvePoint, CurveShape};
+        let mut cue = FadeCue::new();
+        cue.shapes.mirrored = false;
+        cue.shapes.up.kind = CurveKind::Linear;
+        cue.shapes.up.points = vec![CurvePoint::new(0.3, 0.8)];
+        cue.shapes.down = CurveShape::of_kind(CurveKind::Parametric);
+
+        let rebuilt = FadeCueFactory.from_json(cue.serialize()).unwrap();
+        let out = rebuilt.serialize();
+        assert_eq!(out["fade_shapes"]["up"]["kind"], "linear");
+        assert_eq!(out["fade_shapes"]["up"]["points"][0]["t"], 0.3);
+        assert_eq!(out["fade_shapes"]["down"]["kind"], "parametric");
+        assert_eq!(out["fade_shapes"]["mirrored"], false);
+    }
+
+    #[test]
+    fn the_legacy_name_written_out_reflects_the_shape_that_is_set() {
+        let mut cue = FadeCue::new();
+        cue.shapes = FadeShapes::of_kind(CurveKind::Linear);
+        assert_eq!(cue.serialize()["fade_curve"], "linear");
+        // A parametric shape has no legacy equivalent — S-Curve is the honest
+        // approximation for an older build reading the file.
+        cue.shapes = FadeShapes::of_kind(CurveKind::Parametric);
+        assert_eq!(cue.serialize()["fade_curve"], "s_curve");
     }
 }

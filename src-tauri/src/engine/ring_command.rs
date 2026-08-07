@@ -10,12 +10,69 @@ use uuid::Uuid;
 /// A unique identifier for an audio voice (a single playing stream).
 pub type VoiceId = Uuid;
 
+/// Number of samples in a baked [`CurveTable`].
+///
+/// 32 segments. The audio callback interpolates between samples, so the error
+/// against a smooth analytic curve is under 0.1 % — inaudible on a gain
+/// envelope — while keeping the table at 132 bytes.
+pub const CURVE_TABLE_POINTS: usize = 33;
+
+/// An arbitrary fade envelope, pre-sampled into a fixed-size table.
+///
+/// This is how a **custom** curve reaches the audio callback at all: control
+/// points live in a `Vec` at the cue layer, which cannot be evaluated on the
+/// RT thread (no allocation, and no deallocation either — dropping an `Arc`
+/// there would be a bug). Baking to a plain `Copy` array sidesteps both.
+/// QLab does the same thing; its `resolution` field is the giveaway.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurveTable {
+    samples: [f32; CURVE_TABLE_POINTS],
+}
+
+impl CurveTable {
+    /// Bake a table by sampling `shape` at evenly spaced points.
+    pub fn from_fn(shape: impl Fn(f64) -> f64) -> Self {
+        let mut samples = [0.0_f32; CURVE_TABLE_POINTS];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            let t = index as f64 / (CURVE_TABLE_POINTS - 1) as f64;
+            *sample = shape(t).clamp(0.0, 1.0) as f32;
+        }
+        Self { samples }
+    }
+
+    /// Read the envelope at `t ∈ [0, 1]`, interpolating between samples.
+    /// Called from the audio callback: no branches beyond the bounds check,
+    /// no allocation.
+    pub fn eval(&self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        let scaled = t * (CURVE_TABLE_POINTS - 1) as f64;
+        let index = scaled as usize;
+        if index >= CURVE_TABLE_POINTS - 1 {
+            return self.samples[CURVE_TABLE_POINTS - 1] as f64;
+        }
+        let frac = scaled - index as f64;
+        let a = self.samples[index] as f64;
+        let b = self.samples[index + 1] as f64;
+        a + (b - a) * frac
+    }
+
+    /// The raw samples, for tests and for drawing the curve in the inspector.
+    pub fn samples(&self) -> &[f32; CURVE_TABLE_POINTS] {
+        &self.samples
+    }
+}
+
 /// Fade curve shape used when applying soft fades.
 ///
 /// Defined here (engine layer) so the audio callback has no dependency on
-/// the cue layer.  [`crate::cue::types::FadeCurve`] has a matching variant
-/// set; [`crate::cue::audio_cue`] performs the conversion at the boundary.
-#[derive(Debug, Clone, Copy)]
+/// the cue layer.  [`crate::cue::curve::CurveShape`] is the authoring model and
+/// bakes into [`FadeCurve::Table`] at the boundary.
+///
+/// The three analytic variants stay as variants rather than being baked too:
+/// they cost one byte, they are what the vast majority of fades use, and
+/// keeping them exact avoids any question about sampling error. Only a custom
+/// shape pays for the table.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FadeCurve {
     /// Constant-rate gain change.
     Linear,
@@ -23,6 +80,8 @@ pub enum FadeCurve {
     SCurve,
     /// Exponential (logarithmic perception) curve.
     Exponential,
+    /// A baked custom envelope — any shape the operator drew.
+    Table(CurveTable),
 }
 
 impl FadeCurve {
@@ -38,6 +97,7 @@ impl FadeCurve {
                 const K: f64 = 5.0;
                 (K * t).exp_m1() / K.exp_m1()
             }
+            FadeCurve::Table(table) => table.eval(t),
         }
     }
 }

@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 420 pass, 0 failures** (verified 2026-08-06; run the full
+**`cargo test --lib` → 449 pass, 0 failures** (verified 2026-08-06; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -50,9 +50,9 @@ drives every group child voice, logger flood guard.
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /inkue/pause_toggle; /inkue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 | MIDI File | ✅ **Functional** | Plays a `.mid` to one MIDI port (QLab parity: destination + playback-rate multiplier). Tempo-map-aware parsing (`midly`) so a mid-file Set Tempo moves everything after it; real duration → completes and Auto-Follows on its own; pause/resume and seek; 1 ms timer resolution on Windows; stop releases every note the player started and lifts the sustain pedal |
-| Triggers (all cues) | ✅ **Functional** | Two kinds, both stored on the Cue List so every cue type gets them: **timecode** (SMPTE or real-time offset) and **MIDI** (note / CC / program change, omni or per-channel, optional exact value, with Learn). MIDI input port + enable are machine config; Note On velocity 0 correctly counts as a release. Hotkey and wall-clock triggers are not implemented |
 | Light | ✅ **Functional** | DMX-over-IP (sACN + Art-Net); fixture patch in the workspace (6 built-in types, embedded layout, address-clash warnings, identify); Light Cue fades fixture params to a target look (tracking + LTP via DmxEngine); inspector Light tab (targets + fade time/curve); DMX panel Fixtures section |
 | Mic      | ✅ **Functional** | (see 0.9.5) |
+| Triggers (all cues) | ✅ **Functional** | Two kinds, both stored on the Cue List so every cue type gets them: **timecode** (SMPTE or real-time offset) and **MIDI** (note / CC / program change, omni or per-channel, optional exact value, with Learn). MIDI input port + enable are machine config; Note On velocity 0 correctly counts as a release. Hotkey and wall-clock triggers are not implemented |
 | Timecode | ✅ **Functional** | SMPTE timecode generation (MTC out via `TimecodeCue`) + receive (MTC in via `TimecodeReceiver`); per-cue TC triggers + CueList sync toggle; LTC encoder/decoder (`ltc.rs`); TC status indicator in TransportBar; Triggers inspector tab on every cue; TC Preferences (Network tab). LTC out = planned v2; drop-frame 29.97 fully tested. | Routes a live audio input (QLab Mic Cue) through the engine: persistent cpal input stream (instant GO), separate in/out devices + adaptive drift resampler, multichannel Input Patch routed to an Output Patch via a live `Voice` (gain/pan/fade/VU); runs until stopped; inspector Mic tab; Input Patches panel in Preferences → Audio |
 | Text     | ✅ **Functional** | Renders styled text on the mpv output surface via the `osd-overlay` command (`format=ass-events`) + ASS inline tags; independent of OSD timer. Font, size, hex colour, 9-point position grid, optional auto-complete duration. Stop-on-next-go. |
 | Camera   | ✅ **Functional** | Live feed (webcam / USB camera / HDMI capture via DirectShow-V4L2-AVFoundation, or any network stream — RTSP/HTTP/UDP, covers IP cams + phone apps) shown on the output like any visual cue; low-latency load opts (`cache=no`, `video-latency-hacks`); video fade in/out (overlay), per-cue Geometry, warp applies; runs until stopped (layers with other visual cues, never auto-stopped); device picker (per-OS enumeration) or URL in the Camera inspector tab |
@@ -87,9 +87,9 @@ drives every group child voice, logger flood guard.
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; loop support; `file_duration()` override returns raw `cached_duration` |
 | ImageCue | `cue/image_cue.rs` | ✅ `display_duration_ms: Option<u64>` — None = hold, Some = timed auto-complete |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete — `memo_text()` trait override feeds the Target column; 5 unit tests |
+| MidiFileCue | `cue/midi_file_cue.rs` | ✅ Plays a `.mid` via `engine/midi_file.rs`; parsed in `from_json` so the row has a real duration; `restore_runtime_state` restarts the player at the position reached, so an inspector edit does not silence a playing cue |
 | QLab import | `qlab_import/` | ✅ Native, no Python — `archive.rs` (NSKeyedArchiver graph), `cues.rs` (mapping), `patches.rs`; all 24 QLab 5 classes, verified against an all-cue-types workspace |
 | MIDI triggers | `engine/midi_trigger.rs` | ✅ Pure `MidiTrigger::matches` (byte-driven, fully tested) + `MidiTriggerListener` input thread with MIDI learn; triggers stored in `CueList::midi_triggers`, dispatched by the event loop through the real GO path |
-| MidiFileCue | `cue/midi_file_cue.rs` | ✅ Plays a `.mid` via `engine/midi_file.rs`; parsed in `from_json` so the row has a real duration; `restore_runtime_state` restarts the player at the position reached, so an inspector edit does not silence a playing cue |
 | MIDI file engine | `engine/midi_file.rs` | ✅ Tempo-map-aware SMF parser (pure, byte-driven) + `MidiFilePlayer` thread; sends through a `MidiSink` trait so the scheduler is testable without a port; 1 ms timer resolution on Windows |
 | StopCue | `cue/stop_cue.rs` | ✅ UUID-based multi-target (`target_cue_ids: Vec<CueId>`); empty = stop all; backward-compat with old single-UUID format; `resolve_stop_target` handles number→UUID migration |
 | FadeCue | `cue/fade_cue.rs` | ✅ UUID-based multi-target (`target_cue_ids: Vec<CueId>`); audio fade via `audio_engine.set_voice_gain()` at 30 fps; visual fade via `output_engine.set_overlay_alpha_direct()` at 30 fps; `has_visual_target` + `visual_start/target_alpha`; `stop_at_end` for audio + visual; backward-compat with old `target_cue_number` |
@@ -215,6 +215,69 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-08-07) — Custom fade curves (QLab's Curve tab)
+
+Fades are no longer limited to three fixed shapes. Decoded from a real QLab 5
+workspace rather than guessed: QLab stores a `FadeShapesFunction` with an
+`upShape` and a `downShape`, a `mirrorShape` lock, and `shapeEntries` — plain
+`(t, v)` control points, normalised.
+
+- **Two envelopes, not one.** An envelope that sounds natural coming up is not
+  the one that sounds natural going down. `FadeShapes { up, down, mirrored }`;
+  `mirrored` defaults true, which is exactly what every existing show did
+  (`FadeState::gain` derived the fall by inverting the rise). In a Fade Cue the
+  direction is decided **per target** — one cue can bring some voices up while
+  others go down, and each picks its own shape.
+- **`cue/curve.rs`** (new) — `CurveKind` (S-Curve, Linear/editable, Parametric,
+  plus Inkue's legacy Exponential), `CurvePoint`, `CurveShape`, `FadeShapes`.
+  Endpoints (0,0) and (1,1) are implicit and unstorable, so a curve can never
+  fail to reach its target.
+- **Adding a point makes a corner, not a curve.** The point-based kind draws
+  straight segments; shaping is Alt's job. An earlier pass smoothed a monotone
+  spline through the points automatically, which turned every added point into
+  an S-bend the operator had not asked for — explicit control beats guessing,
+  and Alt-bending does the same job better. The separate "Custom" smoothing
+  kind was merged into `Linear` (kept as a serde alias so a file written in
+  between still opens).
+- **RT safety.** The audio callback cannot evaluate a `Vec` of points (no
+  allocation, and no deallocation either). `CurveTable` bakes any shape into a
+  33-point `Copy` array the callback interpolates — which is what QLab's
+  `resolution` field implies it does too. The three analytic shapes stay exact
+  variants; only a drawn curve pays for sampling. Added as a `FadeCurve::Table`
+  variant rather than replacing the type, so none of the 41 existing call sites
+  moved.
+- **Compatibility.** `fade_curve` is still read (a pre-shapes file becomes the
+  equivalent locked pair) and still written (an older build opening the file
+  gets the nearest shape). Three tests pin this.
+- **Frontend** — `lib/curve.ts` mirrors the Rust so the editor draws exactly
+  what the engine plays, with `__tests__/curve.test.ts` asserting the same
+  properties as the Rust tests so the two cannot drift. `CurveEditor.tsx`:
+  shape menu, Intensity, both curves side by side, the lock, click-to-add /
+  drag / Delete control points, Reset to Default Shape. Embedded compact in the
+  Fade inspector, and full-size in `CurveEditorDock.tsx` under the cue list —
+  the same dock pattern as the clip editor, opened by ⤢.
+
+- **Alt-drag bends a segment** without adding a point. Each gap between
+  control points carries a bow (`CurveShape::bends`), applied by warping the
+  segment's *local parameter* rather than its values — so a bowed segment stays
+  monotone and still lands exactly on both of its endpoints, however hard it is
+  pushed. `bend_through` inverts the warp, so the curve passes under the cursor
+  instead of drifting by some arbitrary amount. Bends live beside the points,
+  not on them: a segment belongs to two points, and the outer segments touch
+  the implicit endpoints, which have nowhere to store anything. Adding or
+  removing a point splices the list so neighbouring segments keep their shape.
+- The falling panel draws the **value falling away** (top-left → bottom-right)
+  rather than progress climbing, as QLab does — otherwise it looked identical
+  to the rising one. Flipped consistently: path, control points, reference
+  diagonal, **and the click mapping**, or added points would land mirrored.
+
+**Tests** — 420 → **449** Rust (+26 curve incl. 8 on bowing, +3 Fade Cue compat)
+and 20 → **39** frontend (mirroring the same properties, plus the drawing flip).
+
+*Still to come:* the same shapes on Audio/Video/Image/Camera fade in/out and on
+the Light Cue, and mapping QLab's `upShape`/`downShape` in the importer (still
+hard-coded to `s_curve`).
 
 ### Unreleased (2026-08-06) — File → Import QLab Workspace…
 
@@ -354,7 +417,6 @@ Two defects, found because the Memo Cue could not be created from the UI at all.
 **Tests** — 365 → **370**. `memo_cue.rs` had no tests at all; it now covers the
 type, the note exposed through the trait, `Some("")` on a fresh cue, a
 serialize roundtrip carrying an importer-style placeholder, and no duration.
-
 
 ### Unreleased (2026-08-06) — MIDI File Cue
 

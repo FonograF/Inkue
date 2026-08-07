@@ -40,6 +40,8 @@ interface Props {
   onRefresh: () => void;
   /** Open the clip editor dock (trim + slices) for a cue. */
   onOpenEditor?: (cueId: string) => void;
+  /** Open the fade curve editor dock for a cue. */
+  onOpenCurveEditor?: (cueId: string) => void;
   /** Bump to force a re-fetch of the inspected cue (dock edits). */
   reloadToken?: number;
   /** Called after every inspector save, so the clip editor dock can reload. */
@@ -95,7 +97,7 @@ function tabsFor(type: CueType): { id: Tab; label: string }[] {
   return tabs;
 }
 
-export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenEditor, reloadToken, onCueSaved }: Props) {
+export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenEditor, onOpenCurveEditor, reloadToken, onCueSaved }: Props) {
   const [cueData, setCueData] = useState<CueData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("basics");
 
@@ -261,7 +263,13 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
           />
         )}
         {activeTab === "fade-cue" && isFade && (
-          <FadeCueTab cue={cueData as FadeCueData} onSave={save} />
+          <FadeCueTab
+            cue={cueData as FadeCueData}
+            onSave={save}
+            onOpenCurveEditor={
+              onOpenCurveEditor ? () => onOpenCurveEditor(cueData.id) : undefined
+            }
+          />
         )}
         {activeTab === "script" && type === "script" && (
           <ScriptTab cue={cueData as unknown as ScriptCueData} onSave={save} />

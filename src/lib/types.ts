@@ -59,6 +59,52 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   script:   "#94a3b8",       // slate — a utility cue, not a stage element
 };
 
+/** Kinds of fade curve. `linear` is the hand-editable one: points set where
+ *  the curve goes, Alt-dragging a segment sets how it gets there. (An earlier
+ *  build had a separate smoothing mode; Alt-bending replaced it.) */
+export type CurveKind = "linear" | "s_curve" | "exponential" | "parametric";
+
+/** One control point. Both axes normalised 0..1: `t` is elapsed fade time,
+ *  `v` is progress towards the target. The (0,0) and (1,1) endpoints are
+ *  implicit and never stored, so a curve always reaches its target. */
+export interface CurvePoint {
+  t: number;
+  v: number;
+}
+
+/** One fade envelope. */
+export interface CurveShape {
+  kind: CurveKind;
+  /** Shaping parameter for the parametric kind, roughly -10..10. */
+  intensity: number;
+  /** Control points, meaningful for the linear and custom kinds. */
+  points: CurvePoint[];
+  /** Per-segment bow, -1..1, one per gap between resolved points. Alt-drag on
+   *  a segment sets it; 0 leaves the segment as the kind draws it. */
+  bends: number[];
+}
+
+/** The rising and falling envelopes of one fade. QLab's lock button mirrors
+ *  them; `mirrored` is that lock, and is the default because a single curve
+ *  used to drive both directions. */
+export interface FadeShapes {
+  up: CurveShape;
+  down: CurveShape;
+  mirrored: boolean;
+}
+
+export const DEFAULT_CURVE_SHAPE: CurveShape = { kind: "s_curve", intensity: 0, points: [], bends: [] };
+
+export const CURVE_KIND_LABELS: Record<CurveKind, string> = {
+  s_curve: "S-Curve",
+  linear: "Linear (editable)",
+  parametric: "Parametric Curve",
+  exponential: "Exponential",
+};
+
+/** Whether control points do anything for this kind. */
+export const curveUsesPoints = (kind: CurveKind) => kind === "linear";
+
 /** One line of the QLab import report: what a QLab cue became. */
 export interface ImportedCue {
   qlab_class: string;
@@ -432,8 +478,11 @@ export interface FadeCueData extends CueSummary {
   fade_volume: boolean;
   /** Fade duration in milliseconds. */
   fade_duration_ms: number;
-  /** Fade curve shape. */
+  /** Legacy single-curve name. Still written for older builds; `fade_shapes`
+   *  is what the engine uses. */
   fade_curve: FadeCurve;
+  /** Rising and falling envelopes — QLab's Curve tab. */
+  fade_shapes: FadeShapes;
   /** Stop the target cue(s) once the fade completes. */
   stop_at_end: boolean;
 }

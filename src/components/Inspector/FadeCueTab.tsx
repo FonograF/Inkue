@@ -1,18 +1,29 @@
 // Fade Cue main tab: targets, fade parameters, audio/visual goals, on-complete.
 // Extracted from BasicsTab so Basics stays identity-only.
 
-import type { CueSummary, FadeCueData } from "../../lib/types";
+import type { CueSummary, FadeCueData, FadeShapes } from "../../lib/types";
+import { CurveEditor } from "../Curve/CurveEditor";
+
+/** Locked S-Curve — what a fade has always done, for a cue saved before
+ *  shapes existed and re-read before the backend fills them in. */
+const DEFAULT_FADE_SHAPES: FadeShapes = {
+  up: { kind: "s_curve", intensity: 0, points: [], bends: [] },
+  down: { kind: "s_curve", intensity: 0, points: [], bends: [] },
+  mirrored: true,
+};
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { Grid2, MiniField, NumberInput, Section, SliderRow, ToggleRow } from "./Field";
 import { CueTargetPicker } from "./CueTargetPicker";
-import { CurveSelect } from "../common/CurveSelect";
 
 export function FadeCueTab({
   cue,
   onSave,
+  onOpenCurveEditor,
 }: {
   cue: FadeCueData;
   onSave: (p: Partial<FadeCueData>) => void;
+  /** Opens the full-size curve editor in the dock under the cue list. */
+  onOpenCurveEditor?: () => void;
 }) {
   const allCues = useWorkspaceStore((s) => s.cues);
 
@@ -66,13 +77,28 @@ export function FadeCueTab({
               onCommit={(v) => onSave({ fade_duration_ms: Math.round(v * 1000) })}
             />
           </MiniField>
-          <MiniField label="Curve">
-            <CurveSelect
-              value={cue.fade_curve ?? "s_curve"}
-              onChange={(v) => onSave({ fade_curve: v })}
-            />
-          </MiniField>
         </Grid2>
+      </Section>
+
+      <Section title="Curve">
+        <CurveEditor
+          compact
+          shapes={cue.fade_shapes ?? DEFAULT_FADE_SHAPES}
+          onChange={(fade_shapes) => onSave({ fade_shapes })}
+        />
+        {onOpenCurveEditor && (
+          <button
+            onClick={onOpenCurveEditor}
+            title="Open the curve editor below the cue list"
+            style={{
+              marginTop: 8, padding: "3px 10px",
+              background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
+              borderRadius: 4, color: "var(--wc-text-secondary)", fontSize: 11, cursor: "pointer",
+            }}
+          >
+            ⤢ Open curve editor
+          </button>
+        )}
       </Section>
 
       {showVolume && (

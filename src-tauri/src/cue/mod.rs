@@ -9,6 +9,7 @@ pub mod audio_cue;
 pub mod camera_cue;
 pub mod context;
 pub mod control_cue;
+pub mod curve;
 pub mod devamp_cue;
 pub mod fade_cue;
 pub mod group_cue;
