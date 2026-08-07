@@ -133,6 +133,14 @@ pub trait Cue: Send {
         None
     }
 
+    /// Memo Cue only: the note it carries.  A Memo has no file, so the cue
+    /// list shows this in the Target column instead — which is the whole point
+    /// of the cue type, and what makes an imported `[Unconverted …]`
+    /// placeholder readable in the stack.
+    fn memo_text(&self) -> Option<&str> {
+        None
+    }
+
     // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------

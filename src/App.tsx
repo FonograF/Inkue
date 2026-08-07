@@ -1093,6 +1093,13 @@ export default function App() {
     await refreshCues();
   };
 
+  const handleAddMemo = async () => {
+    const { selectedCueId, cues } = useWorkspaceStore.getState();
+    const idx = cues.findIndex((c) => c.id === selectedCueId);
+    await addCue("memo", idx >= 0 ? idx + 1 : -1).catch(console.error);
+    await refreshCues();
+  };
+
   const handleAddMidiFile = async () => {
     const { selectedCueId, cues } = useWorkspaceStore.getState();
     const idx = cues.findIndex((c) => c.id === selectedCueId);
@@ -1405,6 +1412,12 @@ export default function App() {
             title="Add Camera Cue (live webcam / capture / IP stream) · Drag to insert at position"
             onAdd={handleAddCamera}
             onDragStart={(e) => dispatchCueDrag("camera", e)}
+          />
+          <CueToolbarButton
+            type="memo" label="Memo"
+            title="Add Memo Cue (a note in the stack — does nothing on GO) · Drag to insert at position"
+            onAdd={handleAddMemo}
+            onDragStart={(e) => dispatchCueDrag("memo", e)}
           />
           <CueToolbarButton
             type="devamp" label="Devamp"

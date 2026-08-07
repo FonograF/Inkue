@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 365 pass, 0 failures** (verified 2026-08-06; run the full
+**`cargo test --lib` → 370 pass, 0 failures** (verified 2026-08-06; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -41,7 +41,7 @@ drives every group child voice, logger flood guard.
 |---|---|---|
 | Audio | ✅ **Functional** | Pre/post-wait, fade-in/out, loop (finite + infinite), rate, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking; SR conversion in `fill_buffer` (44.1k/48k/96k all correct); formats via symphonia incl. **AIFF/PCM** (decoded natively, no MP3-demuxer log flood); **Output Patch routing (device + channels)** — see note below the table |
 | Stop  | ✅ **Functional** | UUID-based targeting; multi-target (stop any subset of cues); target All Cues or specific cues; Soft (fade) or Hard (cut) |
-| Memo  | ✅ **Functional** | Read-only, no audio action |
+| Memo  | ✅ **Functional** | A note in the stack; no action, completes instantly so chains pass through. `memo_text` shows in the cue list's Target column and is edited in the inspector's Memo tab. Creatable from the toolbar and the Add Cue menu (2026-08-06 — before that it existed only in the backend and could only arrive via import) |
 | Video | ✅ **Functional** | Unified GL Render API path (Windows); paused-load start (no frame-0 freeze), dip-to-black fades (GL quad), scrub/seek; pause/resume; loop (finite + infinite); **Fade tab in the inspector (video fade in/out was engine-only before), fade-out at natural EOF (was hard cut), Hold Last Frame at EOF (`keep-open`), per-cue Geometry (fit/fill/stretch, position, scale, rotation, crop) with live-apply** |
 | Image | ✅ **Functional** | Same GL output window as Video via libmpv Render API; dip-to-black fades incl. **fade-out landing on the end of a timed display duration**; layers with other visual cues (never auto-stopped — `stop_on_next_visual` removed 2026-07-11); loop support; **per-cue Geometry (same system as Video)** |
 | Group | ✅ **Functional** | Four QLab-parity modes: **Simultaneous** (all at once, incl. Timeline via child pre-waits), **Sequential** (start-first), **Playlist** (exclusive one-at-a-time + optional loop), **Start Random** (one random child per GO, shuffle-bag); holds playhead + GO absorption for the ordered modes; drag-into-group |
@@ -85,7 +85,7 @@ drives every group child voice, logger flood guard.
 | AudioCue | `cue/audio_cue.rs` | ✅ Functional — pre-wait, fade-in/out, loop (finite + infinite, `u32::MAX`), rate, pan; pause freezes elapsed; seek while paused; SR correction in `fill_buffer`. ⚠️ Output Patch routing is inert (no UI; engine ignores `device_id`) — see correction note above |
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; loop support; `file_duration()` override returns raw `cached_duration` |
 | ImageCue | `cue/image_cue.rs` | ✅ `display_duration_ms: Option<u64>` — None = hold, Some = timed auto-complete |
-| MemoCue | `cue/memo_cue.rs` | ✅ Complete |
+| MemoCue | `cue/memo_cue.rs` | ✅ Complete — `memo_text()` trait override feeds the Target column; 5 unit tests |
 | MidiFileCue | `cue/midi_file_cue.rs` | ✅ Plays a `.mid` via `engine/midi_file.rs`; parsed in `from_json` so the row has a real duration; `restore_runtime_state` restarts the player at the position reached, so an inspector edit does not silence a playing cue |
 | MIDI file engine | `engine/midi_file.rs` | ✅ Tempo-map-aware SMF parser (pure, byte-driven) + `MidiFilePlayer` thread; sends through a `MidiSink` trait so the scheduler is testable without a port; 1 ms timer resolution on Windows |
 | StopCue | `cue/stop_cue.rs` | ✅ UUID-based multi-target (`target_cue_ids: Vec<CueId>`); empty = stop all; backward-compat with old single-UUID format; `resolve_stop_target` handles number→UUID migration |
@@ -212,6 +212,36 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-08-06) — Memo Cue reachable, and its text finally visible
+
+Two defects, found because the Memo Cue could not be created from the UI at all.
+
+- **No way to make one.** `MemoCue` has been implemented and registered since
+  early on, but `memo` was absent from both the toolbar and the cue-list "Add
+  Cue" menu — the only way to get one into a workspace was to import a QLab
+  show, where every unconverted cue becomes a Memo placeholder. Added to both,
+  with the 📝 icon it already had everywhere else.
+
+- **`memo_text` was written and then never shown.** The field round-tripped
+  through the `.inkue` file and its doc comment said "text displayed in the cue
+  list target column", but a `grep` for it found hits in `memo_cue.rs` and
+  nowhere else: not in `CueSummary`, not in any component. So the note was
+  unreadable and uneditable in the app. That matters most for the importer,
+  whose `map_memo` puts the `[Unconverted QLab …]` explanation there — the one
+  place telling the operator what needs rebuilding was invisible.
+
+  New `Cue::memo_text()` (default `None`, so no other cue type is touched and
+  the extensibility rule holds) → `CueSummary.memo_text` → the Target column,
+  which shows the note where a media cue shows its filename. New `MemoTab.tsx`
+  makes it editable. A fresh Memo returns `Some("")` rather than `None`: the
+  cue type always owns that column, so an empty Memo shows nothing rather than
+  falling through to a filename it does not have.
+
+**Tests** — 365 → **370**. `memo_cue.rs` had no tests at all; it now covers the
+type, the note exposed through the trait, `Some("")` on a fresh cue, a
+serialize roundtrip carrying an importer-style placeholder, and no duration.
+
 
 ### Unreleased (2026-08-06) — MIDI File Cue
 

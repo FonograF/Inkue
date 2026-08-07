@@ -36,6 +36,10 @@ pub struct CueSummary {
     pub duration_ms: Option<u64>,
     /// File path for audio cues, None for others.
     pub file_path: Option<String>,
+    /// Memo Cue only: the note shown in the Target column, where a media cue
+    /// shows its filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memo_text: Option<String>,
     /// True while the audio file is being decoded in a background thread.
     pub is_loading: bool,
     /// True when this cue is disabled — skipped by the transport on GO.
@@ -165,6 +169,7 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>, patches: &P
         post_wait_ms: cue.post_wait().as_millis() as u64,
         duration_ms: cue.duration().map(|d| d.as_millis() as u64),
         file_path: cue.media_file_path().map(|p| p.to_string_lossy().into_owned()),
+        memo_text: cue.memo_text().map(str::to_string),
         is_loading: false,
         is_disabled: cue.is_disabled(),
         is_broken: check_broken(cue, workspace_dir),

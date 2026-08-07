@@ -279,6 +279,11 @@ function CueRowImpl({
     ? cue.file_path.split(/[\\/]/).pop() ?? cue.file_path
     : "";
 
+  // A Memo has no file, so its note takes the Target column — that note is the
+  // entire content of the cue, and it is where an imported "[Unconverted …]"
+  // placeholder explains itself.
+  const targetText = cue.cue_type === "memo" ? cue.memo_text ?? "" : filename;
+
   const renderCell = (id: string) => {
     switch (id) {
       case "playhead":
@@ -376,8 +381,9 @@ function CueRowImpl({
               fontSize: 12,
               paddingLeft: 5,
             }}
+            title={targetText}
           >
-            {filename}
+            {targetText}
           </span>
         );
 

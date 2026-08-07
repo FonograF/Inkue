@@ -108,6 +108,10 @@ impl Cue for MemoCue {
         self.state
     }
 
+    fn memo_text(&self) -> Option<&str> {
+        Some(&self.memo_text)
+    }
+
     fn load(&mut self, _context: &CueContext) -> Result<()> {
         // Nothing to load for a memo.
         Ok(())
@@ -258,5 +262,59 @@ impl CueFactory for MemoCueFactory {
         }
 
         Ok(Box::new(cue))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cue_type_is_memo() {
+        assert_eq!(MemoCue::new().cue_type(), CueType::Memo);
+    }
+
+    #[test]
+    fn the_note_is_exposed_for_the_target_column() {
+        // The cue list reads this through the trait; before it existed the
+        // field round-tripped through the file and was never shown anywhere.
+        let mut cue = MemoCue::new();
+        cue.memo_text = "Houselights to half".into();
+        assert_eq!(cue.memo_text(), Some("Houselights to half"));
+    }
+
+    #[test]
+    fn a_fresh_memo_has_an_empty_note_rather_than_none() {
+        // Some("") not None: the cue type always owns the Target column, so an
+        // empty Memo shows nothing there instead of falling back to a filename.
+        assert_eq!(MemoCue::new().memo_text(), Some(""));
+    }
+
+    #[test]
+    fn serialize_roundtrip_preserves_the_note() {
+        let mut cue = MemoCue::new();
+        cue.set_name("Act 1".into());
+        cue.memo_text = "[Unconverted QLab ScriptCue] Fire confetti".into();
+        cue.set_continue_mode(ContinueMode::AutoFollow);
+
+        let rebuilt = MemoCueFactory.from_json(cue.serialize()).unwrap();
+        let json = rebuilt.serialize();
+
+        assert_eq!(json["name"], "Act 1");
+        assert_eq!(json["memo_text"], "[Unconverted QLab ScriptCue] Fire confetti");
+        assert_eq!(json["cue_type"], "memo");
+        assert_eq!(
+            rebuilt.memo_text(),
+            Some("[Unconverted QLab ScriptCue] Fire confetti")
+        );
+    }
+
+    #[test]
+    fn a_memo_has_no_duration_so_it_never_blocks_a_chain() {
+        assert_eq!(MemoCue::new().duration(), None);
     }
 }

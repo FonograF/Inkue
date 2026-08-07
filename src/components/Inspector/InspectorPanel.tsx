@@ -6,7 +6,7 @@
 // type are shown.
 
 import { useEffect, useState } from "react";
-import type { ScriptCueData, AudioCueData, CameraCueData, CueSummary, CueType, DevampCueData, FadeCueData, ImageCueData, LightCueData, MicCueData, MidiCueData, MidiFileCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
+import type { ScriptCueData, AudioCueData, CameraCueData, CueSummary, CueType, DevampCueData, FadeCueData, ImageCueData, LightCueData, MemoCueData, MicCueData, MidiCueData, MidiFileCueData, OscCueData, StopCueData, TextCueData, TimecodeCueData, VideoCueData, WaitCueData } from "../../lib/types";
 import { isCommandCueType } from "../../lib/types";
 import { getCue, updateCue, setAudioFile, setVideoFile, setImageFile, setMidiFile } from "../../lib/commands";
 import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS, MIDI_EXTENSIONS } from "../../lib/mediaTypes";
@@ -25,6 +25,7 @@ import { LayerTab } from "./LayerTab";
 import { GeometryTab } from "./GeometryTab";
 import { MidiTab } from "./MidiTab";
 import { MidiFileTab } from "./MidiFileTab";
+import { MemoTab } from "./MemoTab";
 import { OscTab } from "./OscTab";
 import { LightTab } from "./LightTab";
 import { MicTab } from "./MicTab";
@@ -48,7 +49,7 @@ interface Props {
 type Tab =
   | "basics" | "time" | "levels" | "fade" | "layer" | "geometry" | "messages"
   | "fade-cue" | "stop" | "devamp" | "group" | "light" | "mic" | "timecode"
-  | "text" | "camera" | "triggers" | "command" | "script" | "midi-file";
+  | "text" | "camera" | "triggers" | "command" | "script" | "midi-file" | "memo";
 
 type CueData =
   | AudioCueData | VideoCueData | ImageCueData | WaitCueData | FadeCueData
@@ -60,7 +61,7 @@ const CUE_ICONS: Partial<Record<CueType, string>> = {
   midi: "🎹", osc: "📡", stop: "⏹", light: "💡", mic: "🎤", timecode: "🕐",
   text: "🔤", camera: "📷", devamp: "🔁",
   start: "▶", pause: "⏸", resume: "⏯", load: "⏏", reset: "⏮",
-  goto: "↪", arm: "🔓", disarm: "🔒", script: "⚙", midi_file: "🎼",
+  goto: "↪", arm: "🔓", disarm: "🔒", script: "⚙", midi_file: "🎼", memo: "📝",
 };
 
 /** Ordered tab list for a cue type: identity first, the type's main tab next,
@@ -79,6 +80,7 @@ function tabsFor(type: CueType): { id: Tab; label: string }[] {
   if (type === "camera") tabs.push({ id: "camera", label: "Camera" });
   if (type === "osc" || type === "midi") tabs.push({ id: "messages", label: "Messages" });
   if (type === "midi_file") tabs.push({ id: "midi-file", label: "MIDI File" });
+  if (type === "memo") tabs.push({ id: "memo", label: "Memo" });
   if (type === "light") tabs.push({ id: "light", label: "Light" });
   if (type === "mic") tabs.push({ id: "mic", label: "Mic" });
   if (type === "timecode") tabs.push({ id: "timecode", label: "Timecode" });
@@ -312,6 +314,9 @@ export function InspectorPanel({ selectedCue, selectedCueIds, onRefresh, onOpenE
         )}
         {activeTab === "midi-file" && isMidiFile && (
           <MidiFileTab cue={cueData as unknown as MidiFileCueData} onSave={save} />
+        )}
+        {activeTab === "memo" && type === "memo" && (
+          <MemoTab cue={cueData as unknown as MemoCueData} onSave={save} />
         )}
         {activeTab === "light" && type === "light" && (
           <LightTab cue={cueData as LightCueData} onSave={save} />

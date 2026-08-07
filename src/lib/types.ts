@@ -59,6 +59,13 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   script:   "#94a3b8",       // slate — a utility cue, not a stage element
 };
 
+/** Memo Cue payload. A Memo performs no action; `memo_text` is its whole
+ *  point — the note the operator reads in the cue list. */
+export interface MemoCueData extends CueSummary {
+  notes: string;
+  memo_text: string;
+}
+
 /** MIDI File Cue payload. `sequence_duration_ms`, `track_count`, `channels`
  *  and `parse_error` are read-only: the backend derives them from the file
  *  every time it is parsed, and ignores them on the way back in. */
@@ -123,6 +130,9 @@ export interface CueSummary {
   post_wait_ms: number;
   duration_ms: number | null;
   file_path: string | null;
+  /** Memo Cue only: the note shown in the Target column, where a media cue
+   *  shows its filename. */
+  memo_text?: string;
   /** True while the audio file is being decoded in a background thread. */
   is_loading: boolean;
   /** True when this cue is disabled — skipped by the transport on GO. */
