@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 391 pass, 0 failures** (verified 2026-08-06; run the full
+**`cargo test --lib` → 420 pass, 0 failures** (verified 2026-08-06; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -87,6 +87,7 @@ drives every group child voice, logger flood guard.
 | VideoCue | `cue/video_cue.rs` | ✅ Uses `output_engine.show_content()` / `stop_voice()` / `pause_voice()` / `resume_voice()`; loop support; `file_duration()` override returns raw `cached_duration` |
 | ImageCue | `cue/image_cue.rs` | ✅ `display_duration_ms: Option<u64>` — None = hold, Some = timed auto-complete |
 | MemoCue | `cue/memo_cue.rs` | ✅ Complete — `memo_text()` trait override feeds the Target column; 5 unit tests |
+| QLab import | `qlab_import/` | ✅ Native, no Python — `archive.rs` (NSKeyedArchiver graph), `cues.rs` (mapping), `patches.rs`; all 24 QLab 5 classes, verified against an all-cue-types workspace |
 | MIDI triggers | `engine/midi_trigger.rs` | ✅ Pure `MidiTrigger::matches` (byte-driven, fully tested) + `MidiTriggerListener` input thread with MIDI learn; triggers stored in `CueList::midi_triggers`, dispatched by the event loop through the real GO path |
 | MidiFileCue | `cue/midi_file_cue.rs` | ✅ Plays a `.mid` via `engine/midi_file.rs`; parsed in `from_json` so the row has a real duration; `restore_runtime_state` restarts the player at the position reached, so an inspector edit does not silence a playing cue |
 | MIDI file engine | `engine/midi_file.rs` | ✅ Tempo-map-aware SMF parser (pure, byte-driven) + `MidiFilePlayer` thread; sends through a `MidiSink` trait so the scheduler is testable without a port; 1 ms timer resolution on Windows |
@@ -112,7 +113,7 @@ drives every group child voice, logger flood guard.
 | Cue commands | `commands/cue_cmds.rs` | ✅ Complete — `CueSummary` now includes `notes`, `file_duration_ms` |
 | Cue List commands | `commands/cue_list_cmds.rs` | ✅ Complete |
 | OSC commands | `commands/osc_cmds.rs` | ✅ Complete |
-| Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete |
+| Workspace commands | `commands/workspace_cmds.rs` | ✅ Complete — incl. `import_qlab_workspace` |
 | Device commands | `commands/device_cmds.rs` | ✅ Complete |
 | Preferences commands | `commands/preferences_cmds.rs` | ✅ Complete |
 | Undo commands | `commands/undo_cmds.rs` | ✅ Complete |
@@ -214,6 +215,56 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-08-06) — File → Import QLab Workspace…
+
+QLab import is now **native and in-app**. No Python at runtime: the standalone
+`qlab2inkue` converter stays as the reference implementation and test bed (it
+decodes an unknown `.qlab5` offline, and `test_mapping.py` guards the mapping),
+but Inkue ships none of it — requiring an interpreter would be a runtime
+dependency and would break the three-OS guarantee.
+
+- **`qlab_import/archive.rs`** (new) — NSKeyedArchiver graph resolution, the
+  only genuinely novel code. A `.qlab4`/`.qlab5` is an Apple binary plist whose
+  `$objects` array references itself by `Uid`; the `plist` crate (1.10, which
+  exposes `Uid`) reads the bytes and this rebuilds the tree into
+  `serde_json::Value` tagged with `"__class__"`. Memoised with a placeholder
+  so the graph's real cycles (a cue points at its parent, which lists the cue)
+  terminate instead of recursing. Foundation containers are unwrapped;
+  `NSAttributedString` keeps its text.
+- **`qlab_import/cues.rs`** — the mapping, ported from the proven Python.
+- **`qlab_import/patches.rs`** — network → OSC patches, camera/MIDI names.
+- **`commands/workspace_cmds.rs`** — `import_qlab_workspace` decodes, loads via
+  `Workspace::from_json_str` **with the bundle folder as base**, and installs it
+  through the same `install_workspace` path as File → Open.
+
+**Media policy (the one real design decision).** The document carries
+bundle-relative paths and is loaded against the QLab bundle folder, so the show
+plays immediately and **nothing is written into the user's QLab project**. The
+imported workspace deliberately has no `file_path` and is marked modified: Save
+As is the next step, Collect and Save makes it self-contained afterwards.
+
+**Frontend** — `File → Import QLab Workspace…`, and `QlabImportDialog.tsx`,
+which reports what needs hands rather than celebrating success: the cues QLab
+could describe and Inkue cannot, and any media that did not resolve.
+
+**Legal note** (also in the module header and About): reading a format to
+import work the *user already owns* is interoperability. No QLab code is
+involved and the container is Apple's, not Figure 53's. About now carries
+"QLab is a trademark of Figure 53, LLC. Inkue is not affiliated with…".
+
+**Verified against a real workspace** holding one cue of every QLab 5 type: 24
+cues, **0 skipped on load**, 3/3 media resolved, the OSC patch built, and the
+MIDI File cue parsing its real `.mid` to 237.6 s. Two bugs the fixture caught
+during the port: `FadeCue` initially fell through to Memo (the fade mapping,
+incl. pan start/target, was not ported), and the report's `unconverted` count
+included the Script cue, which *is* converted — renamed `needs_attention`.
+
+**Tests** — 391 → **420**: 3 on the archive resolver, 21 on the mapping
+(continue modes, armed→disabled, uniqueID reuse, infinite loop, level matrix
+incl. QLab's silent Mic default, QLab 4/5 media targets, script preservation,
+OSC arg typing, MIDI voice types, F53 timecode ticks through the 1000/1001
+pull-down, group modes, media counting), 5 on the patch tables.
 
 ### Unreleased (2026-08-06) — Per-cue MIDI triggers
 

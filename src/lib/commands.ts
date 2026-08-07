@@ -26,6 +26,7 @@ import type {
   CueListTcConfig,
   GroupMode,
   HealthAlert,
+  ImportReport,
   InputPatch,
   LogLine,
   MidiTrigger,
@@ -199,6 +200,8 @@ export const saveWorkspace = (path: string) =>
   invoke<void>("save_workspace", { path });
 export const loadWorkspace = (path: string) =>
   invoke<void>("load_workspace", { path });
+export const importQlabWorkspace = (path: string) =>
+  invoke<ImportReport>("import_qlab_workspace", { path });
 export const getWorkspaceInfo = () => invoke<WorkspaceInfo>("get_workspace_info");
 export const collectAndSave = (targetDir: string) =>
   invoke<CollectReport>("collect_and_save_workspace", { targetDir });

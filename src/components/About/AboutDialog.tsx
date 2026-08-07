@@ -105,6 +105,10 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
           Inkue loads it at runtime as an unmodified shared library (source: <span style={{ fontFamily: "monospace" }}>mpv.io</span>).
           <br />
           ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+          <br />
+          QLab is a trademark of Figure 53, LLC. Inkue is not affiliated with,
+          endorsed by, or sponsored by Figure 53; its QLab import reads the
+          user&rsquo;s own workspace files for interoperability only.
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>

@@ -17,7 +17,7 @@ import { TransportBar } from "./components/Transport/TransportBar";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { addCue, collectAndSave, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists, checkRecovery, restoreRecovery, discardRecovery } from "./lib/commands";
+import { addCue, collectAndSave, importQlabWorkspace, saveWorkspace, loadWorkspace, newWorkspace, setPlayhead, toggleOutputWindow, getOutputWindowVisible, openPreferencesWindow, getCueLists, checkRecovery, restoreRecovery, discardRecovery } from "./lib/commands";
 import { AboutDialog } from "./components/About/AboutDialog";
 import { UpdateDialog } from "./components/Update/UpdateDialog";
 import { useUpdateStore } from "./stores/updateStore";
@@ -25,7 +25,8 @@ import { InkueMark } from "./components/common/InkueMark";
 import { PreflightModal } from "./components/Preflight/PreflightModal";
 import { LogViewerModal } from "./components/Logs/LogViewerModal";
 import { HealthBanner } from "./components/Health/HealthBanner";
-import type { CollectReport, RecoveryInfo, CueType } from "./lib/types";
+import type { CollectReport, ImportReport, RecoveryInfo, CueType } from "./lib/types";
+import { QlabImportDialog } from "./components/Import/QlabImportDialog";
 import type { CueSummary } from "./lib/types";
 import { COMMAND_CUE_TYPES, CUE_TYPE_COLORS } from "./lib/types";
 
@@ -394,6 +395,7 @@ function FileMenu({
   onSaveAs,
   onOpen,
   onNew,
+  onImportQlab,
   onCollect,
   onCheck,
   onLogs,
@@ -406,6 +408,7 @@ function FileMenu({
   onSaveAs: () => void;
   onOpen: () => void;
   onNew: () => void;
+  onImportQlab: () => void;
   onCollect: () => void;
   onCheck: () => void;
   onLogs: () => void;
@@ -447,6 +450,8 @@ function FileMenu({
     { type: "item", label: "Save",              shortcut: "Ctrl+S",         action: act(onSave) },
     { type: "item", label: "Save As…",         shortcut: "Ctrl+Shift+S",   action: act(onSaveAs) },
     { type: "item", label: "Collect and Save…",                            action: act(onCollect) },
+    { type: "separator" },
+    { type: "item", label: "Import QLab Workspace…",                       action: act(onImportQlab) },
     { type: "separator" },
     { type: "item", label: "Check Workspace…",                             action: act(onCheck) },
     { type: "item", label: "Logs…",                                        action: act(onLogs) },
@@ -749,6 +754,7 @@ export default function App() {
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
   const [loadError, setLoadError]                 = useState<string | null>(null);
   const [collectReport, setCollectReport]         = useState<CollectReport | null>(null);
+  const [importReport, setImportReport]           = useState<ImportReport | null>(null);
   const [recentFiles, setRecentFiles]             = useState<string[]>(loadRecentFiles);
   const [showAbout, setShowAbout]                 = useState(false);
   const [preflightOpen, setPreflightOpen]         = useState(false);
@@ -912,6 +918,23 @@ export default function App() {
   const handleNew = useCallback(async () => {
     await newWorkspace().catch(console.error);
     // cue-lists-changed and workspace-modified are emitted by the backend.
+  }, []);
+
+  const handleImportQlab = useCallback(async () => {
+    const path = await openDialog({
+      multiple: false,
+      filters: [{ name: "QLab Workspace", extensions: ["qlab5", "qlab4"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      // The import replaces the current show and is deliberately left unsaved:
+      // media resolves against the QLab bundle folder, so nothing is written
+      // into the user's QLab project. Save As is the operator's next step.
+      setImportReport(await importQlabWorkspace(path));
+      setSearchQuery("");
+    } catch (err) {
+      setLoadError(String(err));
+    }
   }, []);
 
   const handleCollectAndSave = useCallback(async () => {
@@ -1215,6 +1238,9 @@ export default function App() {
       )}
 
       {/* Collect & Save result dialog */}
+      {importReport && (
+        <QlabImportDialog report={importReport} onClose={() => setImportReport(null)} />
+      )}
       {collectReport && (
         <CollectResultDialog
           report={collectReport}
@@ -1258,6 +1284,7 @@ export default function App() {
           onSaveAs={() => void handleSaveAs()}
           onOpen={() => void handleOpen()}
           onNew={() => void handleNew()}
+          onImportQlab={() => void handleImportQlab()}
           onCollect={() => void handleCollectAndSave()}
           onCheck={() => setPreflightOpen(true)}
           onLogs={() => setLogsOpen(true)}

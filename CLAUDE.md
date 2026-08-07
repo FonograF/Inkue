@@ -25,6 +25,14 @@ Show control app (QLab-inspired), **cross-platform Windows / macOS / Linux**. Ta
 
 **Frontend ↔ backend**: `invoke()` commands in → `emit()` events out. Never poll from the frontend.
 
+**QLab import** (`qlab_import/`): native Rust, **never shell out to Python**. The
+standalone converter at `C:\qlab2inkue` is the reference implementation and test
+bed (it decodes an unknown `.qlab5` offline; `test_mapping.py` guards the mapping
+against a fixture holding one cue of every QLab 5 type) — decode a real file
+there before assuming a QLab property name, and **keep the two mappings in sync**.
+Reading the format is interoperability: no QLab code is used, the container is
+Apple's `NSKeyedArchiver`. Keep the trademark disclaimer in About.
+
 ## Coding standards
 
 **Rust**: `thiserror` for errors, no `.unwrap()` without a safety comment, `///` on all public items, fix all clippy warnings, `Duration` in public API (ms only for JSON serialization).

@@ -292,3 +292,39 @@ pub fn get_workspace_info(
         "file_path": ws.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
     }))
 }
+
+// ---------------------------------------------------------------------------
+// QLab import
+// ---------------------------------------------------------------------------
+
+/// Import a QLab workspace (`.qlab4` / `.qlab5`) and make it the current show.
+///
+/// The imported workspace is **unsaved and has no file path**: media paths are
+/// resolved against the QLab bundle folder, so the show plays straight away
+/// without anything being written into the user's QLab project. Save As puts
+/// it where the operator wants it; Collect and Save makes it self-contained.
+#[tauri::command]
+pub fn import_qlab_workspace(
+    path: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::qlab_import::ImportReport, String> {
+    let source = PathBuf::from(&path);
+    let (document, report) =
+        crate::qlab_import::import_workspace(&source).map_err(|e| format!("{e:#}"))?;
+
+    // The bundle folder is the base for the document's relative media paths.
+    let base_dir = source.parent().map(|p| p.to_path_buf());
+    let registry = state.registry.lock().map_err(|e| e.to_string())?;
+    let mut imported = Workspace::from_json_str(&document, base_dir.as_deref(), &registry)
+        .map_err(|e| format!("{e:#}"))?;
+    drop(registry);
+
+    // No file path: this is an import, not an open. The title bar shows it as
+    // modified, and Save As is the next step.
+    imported.file_path = None;
+    imported.mark_modified();
+
+    install_workspace(state.inner(), &app_handle, imported)?;
+    Ok(report)
+}

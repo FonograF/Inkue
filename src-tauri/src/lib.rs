@@ -8,6 +8,7 @@ pub mod health;
 pub mod logger;
 pub mod machine_config;
 pub mod preferences;
+pub mod qlab_import;
 pub mod recovery;
 pub mod show;
 pub mod state;
@@ -77,7 +78,10 @@ use commands::{
     log_cmds::{clear_logs, get_recent_logs, open_logs_folder},
     preflight_cmds::{check_workspace, relink_media},
     recovery_cmds::{check_recovery, discard_recovery, restore_recovery},
-    workspace_cmds::{collect_and_save_workspace, get_workspace_info, load_workspace, new_workspace, save_workspace},
+    workspace_cmds::{
+        collect_and_save_workspace, get_workspace_info, import_qlab_workspace, load_workspace,
+        new_workspace, save_workspace,
+    },
 };
 use engine::{AudioEngine, DmxEngine, OscServer, OutputEngine};
 use state::AppState;
@@ -468,6 +472,7 @@ pub fn run() {
             new_workspace,
             save_workspace,
             load_workspace,
+            import_qlab_workspace,
             get_workspace_info,
             collect_and_save_workspace,
             check_recovery,

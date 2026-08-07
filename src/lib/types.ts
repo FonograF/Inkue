@@ -59,6 +59,28 @@ export const CUE_TYPE_COLORS: Record<CueType, string> = {
   script:   "#94a3b8",       // slate — a utility cue, not a stage element
 };
 
+/** One line of the QLab import report: what a QLab cue became. */
+export interface ImportedCue {
+  qlab_class: string;
+  cue_number: string | null;
+  cue_name: string;
+  inkue_type: string;
+  /** Set when the cue could not be represented faithfully. */
+  note: string | null;
+}
+
+/** Outcome of importing a QLab workspace. */
+export interface ImportReport {
+  workspace_name: string;
+  cue_count: number;
+  cue_list_count: number;
+  /** Cues needing a look — placeholders, or imported deliberately incomplete. */
+  needs_attention: number;
+  media_found: number;
+  media_missing: string[];
+  cues: ImportedCue[];
+}
+
 /** Kinds of MIDI message that can fire a cue. */
 export type MidiTriggerType = "note_on" | "note_off" | "control_change" | "program_change";
 
