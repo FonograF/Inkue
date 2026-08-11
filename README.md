@@ -49,6 +49,20 @@ Inkue still starts without it — audio, MIDI, OSC, timecode and lighting all wo
 else (a missing display server, no audio device) degrades the same way rather
 than preventing the app from opening.
 
+### Linux: blank white window
+
+On **1.3.3 and earlier**, the AppImage can open a completely blank window while
+the terminal shows `Could not create default EGL display: EGL_BAD_PARAMETER`.
+WebKitGTK's accelerated rendering fails when the WebKitGTK bundled in the
+AppImage does not match the host's graphics stack. Run it with:
+
+```
+WEBKIT_DISABLE_DMABUF_RENDERER=1 ./Inkue_x.y.z_amd64.AppImage
+```
+
+Later versions set this themselves; pass `WEBKIT_DISABLE_DMABUF_RENDERER=0` if
+you want the fast path back.
+
 > Inkue is young software. If something breaks during a show-critical moment,
 > please [open an issue](https://github.com/FonograF/Inkue/issues) with the log
 > (File → Logs… → Open folder).
