@@ -94,17 +94,10 @@ pub fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, Str
 ///   switching to `pnpm tauri:dev` (with ASIO) restores the real choice automatically.
 #[tauri::command]
 pub fn get_machine_audio_config() -> MachineAudioConfig {
-    #[allow(unused_mut)]
-    let mut config = crate::machine_config::load();
-    #[cfg(not(target_os = "windows"))]
-    if !matches!(config.backend, crate::preferences::AudioBackend::SystemDefault) {
-        config.backend = crate::preferences::AudioBackend::SystemDefault;
-    }
-    #[cfg(all(windows, not(feature = "asio-support")))]
-    if matches!(config.backend, crate::preferences::AudioBackend::Asio) {
-        config.backend = crate::preferences::AudioBackend::WasapiShared;
-    }
-    config
+    // `machine_config::load` already coerces a backend this OS cannot offer
+    // (see `AudioBackend::for_this_platform`), so the panel always shows a
+    // value that is in `get_available_backends`.
+    crate::machine_config::load()
 }
 
 /// Persist machine audio config to `%APPDATA%\Inkue\audio.json` and re-open the

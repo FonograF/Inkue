@@ -16,16 +16,59 @@ use crate::cue::types::FadeCurve;
 ///
 /// `WasapiShared` / `WasapiExclusive` / `Asio` are Windows-specific.
 /// `SystemDefault` is used on Mac / Linux where cpal picks CoreAudio or ALSA.
-/// Unknown values from old configs are deserialized as `WasapiShared` on Windows
-/// and normalised to `SystemDefault` on Mac / Linux by `get_machine_audio_config`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// The `Default` impl is therefore per-OS, and every load goes through
+/// [`AudioBackend::for_this_platform`] — see it for why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBackend {
-    #[default]
+    #[cfg_attr(target_os = "windows", default)]
     WasapiShared,
     WasapiExclusive,
     Asio,
+    #[cfg_attr(not(target_os = "windows"), default)]
     SystemDefault,
+}
+
+impl AudioBackend {
+    /// Whether this backend can exist on the OS Inkue is running on.
+    ///
+    /// Driver *presence* is deliberately not considered: ASIO stays selectable
+    /// on a Windows build with the feature compiled in even when no driver is
+    /// installed, because `open_stream_inner` already falls back to the default
+    /// host with a warning and a developer's saved config must survive.
+    pub fn is_available_here(self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            #[cfg(feature = "asio-support")]
+            {
+                !matches!(self, AudioBackend::SystemDefault)
+            }
+            #[cfg(not(feature = "asio-support"))]
+            {
+                matches!(self, AudioBackend::WasapiShared | AudioBackend::WasapiExclusive)
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            matches!(self, AudioBackend::SystemDefault)
+        }
+    }
+
+    /// This backend, or this platform's default when it cannot exist here.
+    ///
+    /// A machine config travels: copied between machines, restored from a
+    /// backup, or simply written by a build whose default was Windows-only.
+    /// Without this, Linux ran on `WasapiShared` — harmless (both resolve to
+    /// `cpal::default_host()`) but it logged `backend=WasapiShared` on ALSA and
+    /// left Preferences displaying a backend it could not offer.
+    #[must_use]
+    pub fn for_this_platform(self) -> Self {
+        if self.is_available_here() {
+            self
+        } else {
+            Self::default()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -392,4 +435,41 @@ pub struct AppPreferences {
     pub network: NetworkPreferences,
     #[serde(default)]
     pub display: DisplayPreferences,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_platform_default_backend_is_one_this_os_has() {
+        // Guards the per-OS `#[default]`: a Linux/macOS build defaulting to
+        // WASAPI logged "backend=WasapiShared" on ALSA and left Preferences
+        // showing a backend `get_available_backends` never offers.
+        assert!(AudioBackend::default().is_available_here());
+    }
+
+    #[test]
+    fn a_backend_from_another_os_is_coerced_on_load() {
+        let foreign = if cfg!(target_os = "windows") {
+            AudioBackend::SystemDefault
+        } else {
+            AudioBackend::WasapiShared
+        };
+        assert!(!foreign.is_available_here());
+        assert_eq!(foreign.for_this_platform(), AudioBackend::default());
+    }
+
+    #[test]
+    fn a_backend_this_os_supports_is_left_alone() {
+        let native = AudioBackend::default();
+        assert_eq!(native.for_this_platform(), native);
+    }
+
+    #[test]
+    fn machine_config_json_roundtrips_through_the_platform_backend() {
+        let json = serde_json::to_string(&AudioBackend::default()).unwrap();
+        let back: AudioBackend = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.for_this_platform(), AudioBackend::default());
+    }
 }

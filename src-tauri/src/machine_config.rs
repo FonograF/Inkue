@@ -48,10 +48,15 @@ fn config_path() -> PathBuf {
 /// on first run or if the file cannot be read/parsed.
 pub fn load() -> MachineAudioConfig {
     let path = config_path();
-    std::fs::read_to_string(&path)
+    let mut config: MachineAudioConfig = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Normalise here, not in the Preferences command: the engine reads this
+    // same function at startup, and a backend from another OS would otherwise
+    // reach the audio log and the stream builder unchanged.
+    config.backend = config.backend.for_this_platform();
+    config
 }
 
 /// Persist the machine audio config to disk, creating `%APPDATA%\Inkue\` if needed.

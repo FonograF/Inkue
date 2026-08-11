@@ -51,7 +51,7 @@ pub fn list_output_devices(
             Some("wasapi_exclusive") => AudioBackend::WasapiExclusive,
             Some("wasapi_shared") => AudioBackend::WasapiShared,
             Some("system_default") => AudioBackend::SystemDefault,
-            _ => config.backend.clone(),
+            _ => config.backend,
         };
 
         // ASIO selected but not applied: the engine does not hold the driver
