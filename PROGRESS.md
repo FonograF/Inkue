@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-11
 
-## Current version: 1.3.3 released — a failed engine no longer kills the app at startup (the Linux "flashes and disappears" report); QLab import labelled BETA
+## Current version: 1.3.3 released — first release shipping QLab workspace import (BETA), per-cue MIDI triggers, custom fade curves and ten new cue types; plus: a failed engine no longer kills the app at startup
 
 ## cargo build result
 
