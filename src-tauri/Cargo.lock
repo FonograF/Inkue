@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "inkue"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "arc-swap",

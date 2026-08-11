@@ -452,7 +452,7 @@ function FileMenu({
     { type: "item", label: "Save As…",         shortcut: "Ctrl+Shift+S",   action: act(onSaveAs) },
     { type: "item", label: "Collect and Save…",                            action: act(onCollect) },
     { type: "separator" },
-    { type: "item", label: "Import QLab Workspace…",                       action: act(onImportQlab) },
+    { type: "item", label: "Import QLab Workspace… (BETA)",                action: act(onImportQlab) },
     { type: "separator" },
     { type: "item", label: "Check Workspace…",                             action: act(onCheck) },
     { type: "item", label: "Logs…",                                        action: act(onLogs) },

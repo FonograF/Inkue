@@ -41,6 +41,17 @@ export function QlabImportDialog({
       <div style={panel} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: "0 0 4px", fontSize: 15, color: "var(--wc-text)" }}>
           Imported “{report.workspace_name}”
+          <span
+            title="QLab import is in beta: cue types are covered, some properties are not yet mapped."
+            style={{
+              marginLeft: 8, padding: "1px 6px", borderRadius: 4, fontSize: 10,
+              letterSpacing: 0.5, verticalAlign: "middle",
+              background: "rgba(251,191,36,0.16)", border: "1px solid rgba(251,191,36,0.55)",
+              color: "#fcd34d",
+            }}
+          >
+            BETA
+          </span>
         </h3>
         <div style={{ fontSize: 12, color: "var(--wc-text-muted)", marginBottom: 16 }}>
           {report.cue_count} cue{report.cue_count !== 1 ? "s" : ""} in{" "}

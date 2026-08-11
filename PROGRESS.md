@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-11
 
-## Current version: 1.3.2 released — fade-out now lands on a cue's natural end; automatic fallback to software decoding when hwdec init fails
+## Current version: 1.3.3 released — a failed engine no longer kills the app at startup (the Linux "flashes and disappears" report); QLab import labelled BETA
 
 ## cargo build result
 
@@ -217,7 +217,49 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
-### Unreleased (2026-08-07) — Custom fade curves (QLab's Curve tab)
+### 1.3.3 (2026-08-11) — A failed engine no longer kills the app at startup
+
+Reported on Discord: on Arch Linux the AppImage shows a window for a split
+second and the process dies, identically on 1.0 and 1.3.2. Cause: Tauri creates
+the main window **before** `setup()` runs, so an engine that failed to start
+tore the process down with the window already on screen — and the reason went
+only to `stderr`, invisible when launching from a desktop icon or by
+double-clicking an AppImage. The trigger on that machine is almost certainly
+libmpv: the `.deb` declares `libmpv2 | libmpv1`, but **an AppImage cannot
+declare dependencies** and nothing told the user to install it.
+
+- **`engine/output_engine/mod.rs`** — `mpv_lib`/`mpv_ctx` become
+  `mpv: Option<MpvHandles>`, plus `OutputEngine::new_headless()`. The `Option`
+  is what makes this safe: the compiler forces the guard on all 13 mpv
+  accesses, so **no path can dereference a null context**. `show_content`
+  returns `NO_VIDEO_OUTPUT`; every other visual operation is a no-op.
+  `render::init()` failing now destroys the context and publishes nothing to
+  the globals, so the headless fallback leaves no orphan mpv behind.
+- **`engine/audio_engine.rs`** — `AudioEngine::new_silent()` for "no device
+  openable at all" (`_stream` was already `Option`). Both constructors assemble
+  the same engine through the new `EngineCore`, so silent mode cannot drift
+  from the live one. `fall_back_to_default()` only claims the default device
+  took over when the restart actually succeeded.
+- **`lib.rs`** — `setup()` has no fatal path left. Both failures become a
+  `HealthAlert` in the existing banner, naming the package to install per OS.
+  The device watchdog retries every 10 s (immediately on first detection, so a
+  device lost mid-show still switches over at once) and clears the banner by
+  itself when an interface is plugged in.
+- **`cue/{video,image,camera}_cue.rs`** — a cue whose action failed to start
+  stayed stuck at **RUNNING**, freezing the UI on a cue that never played (the
+  invariant `CLAUDE.md` documents). `start_action_or_reset()` returns it to
+  Standby, on GO *and* after a pre-wait — `VideoCue::tick` propagated a `?`
+  where Image and Camera already reset.
+
+**Tests** — 449 → **453** lib (silent engine health/format/desired-device),
+plus 3 integration (headless visual cues incl. the pre-wait path) and a
+`RecOutput { headless }` double; **528 across the suite**, 0 failures.
+
+**QLab import is labelled BETA** in the File menu and in the report dialog:
+the 24 QLab 5 cue classes are mapped, but per-cue MIDI triggers, video
+geometry, the full level matrix and fade in/out durations are not yet.
+
+### 1.3.3 (2026-08-07) — Custom fade curves (QLab's Curve tab)
 
 Fades are no longer limited to three fixed shapes. Decoded from a real QLab 5
 workspace rather than guessed: QLab stores a `FadeShapesFunction` with an
@@ -280,7 +322,7 @@ and 20 → **39** frontend (mirroring the same properties, plus the drawing flip
 the Light Cue, and mapping QLab's `upShape`/`downShape` in the importer (still
 hard-coded to `s_curve`).
 
-### Unreleased (2026-08-06) — File → Import QLab Workspace…
+### 1.3.3 (2026-08-06) — File → Import QLab Workspace…
 
 QLab import is now **native and in-app**. No Python at runtime: the standalone
 `qlab2inkue` converter stays as the reference implementation and test bed (it
@@ -330,7 +372,7 @@ incl. QLab's silent Mic default, QLab 4/5 media targets, script preservation,
 OSC arg typing, MIDI voice types, F53 timecode ticks through the 1000/1001
 pull-down, group modes, media counting), 5 on the patch tables.
 
-### Unreleased (2026-08-06) — Per-cue MIDI triggers
+### 1.3.3 (2026-08-06) — Per-cue MIDI triggers
 
 Fires any cue from an incoming MIDI message. The last big gap for importing a
 QLab show faithfully: every QLab cue carries a `midiTrigger`, and Inkue had
@@ -390,7 +432,7 @@ The listener was smoke-tested against real hardware; the wire itself cannot be
 covered automatically — this machine has 15 MIDI inputs and **none loops back**
 (checked, not assumed).
 
-### Unreleased (2026-08-06) — Memo Cue reachable, and its text finally visible
+### 1.3.3 (2026-08-06) — Memo Cue reachable, and its text finally visible
 
 Two defects, found because the Memo Cue could not be created from the UI at all.
 
@@ -419,7 +461,7 @@ Two defects, found because the Memo Cue could not be created from the UI at all.
 type, the note exposed through the trait, `Some("")` on a fresh cue, a
 serialize roundtrip carrying an importer-style placeholder, and no duration.
 
-### Unreleased (2026-08-06) — MIDI File Cue
+### 1.3.3 (2026-08-06) — MIDI File Cue
 
 Closes the last gap in QLab cue-type parity (`WHATSNEXT.md` bloc 1d): every
 QLab cue type now has an Inkue equivalent, so the importer no longer has a
