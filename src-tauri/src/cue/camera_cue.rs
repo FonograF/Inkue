@@ -156,6 +156,22 @@ impl CameraCue {
     }
 
     /// Open the feed on the output window.
+    /// [`Self::start_camera_action`], returning the cue to Standby when it fails.
+    ///
+    /// A cue whose action never started must not stay at `Running` with no
+    /// voice: the UI only leaves Running on a state change it is told about, so
+    /// it would freeze on the cue forever (the classic symptom when the output
+    /// engine is headless and refuses every `show_content`).
+    fn start_action_or_reset(&mut self, context: &CueContext) -> Result<()> {
+        let result = self.start_camera_action(context);
+        if result.is_err() {
+            self.state = CueState::Standby;
+            self.started_at = None;
+            self.in_pre_wait = false;
+        }
+        result
+    }
+
     fn start_camera_action(&mut self, context: &CueContext) -> Result<()> {
         let fade_in_ms = self.video_fade_in.as_ref().map(|f| f.duration_ms as u32).unwrap_or(0);
         let url = PathBuf::from(self.source.mpv_url());
@@ -249,7 +265,7 @@ impl Cue for CameraCue {
             return Ok(());
         }
 
-        self.start_camera_action(context)
+        self.start_action_or_reset(context)
     }
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
@@ -304,9 +320,8 @@ impl Cue for CameraCue {
 
     fn tick(&mut self, context: &CueContext) -> Result<()> {
         if self.in_pre_wait && self.elapsed() >= self.pre_wait {
-            if let Err(e) = self.start_camera_action(context) {
+            if let Err(e) = self.start_action_or_reset(context) {
                 log::warn!("CameraCue '{}' failed to start: {e}", self.name);
-                self.state = CueState::Standby;
             }
         }
         Ok(())

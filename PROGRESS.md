@@ -13,7 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 449 pass, 0 failures** (verified 2026-08-06; run the full
+**`cargo test --lib` → 453 pass, 0 failures** (528 across the whole suite;
+verified 2026-08-11; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).

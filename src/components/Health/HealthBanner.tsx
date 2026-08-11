@@ -61,7 +61,10 @@ export function HealthBanner() {
             }}
           >
             <span style={{ flexShrink: 0, fontSize: 10 }}>{s.icon}</span>
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span
+              title={a.message}
+              style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
               {a.message}
             </span>
             {a.action && a.action_label && (

@@ -115,6 +115,22 @@ impl ImageCue {
         }
     }
 
+    /// [`Self::start_image_action`], returning the cue to Standby when it fails.
+    ///
+    /// A cue whose action never started must not stay at `Running` with no
+    /// voice: the UI only leaves Running on a state change it is told about, so
+    /// it would freeze on the cue forever (the classic symptom when the output
+    /// engine is headless and refuses every `show_content`).
+    fn start_action_or_reset(&mut self, context: &CueContext) -> Result<()> {
+        let result = self.start_image_action(context);
+        if result.is_err() {
+            self.state = CueState::Standby;
+            self.started_at = None;
+            self.in_pre_wait = false;
+        }
+        result
+    }
+
     /// Start the actual image display action.
     fn start_image_action(&mut self, context: &CueContext) -> Result<()> {
         let path = self.file_path.as_ref().ok_or_else(|| {
@@ -219,7 +235,7 @@ impl Cue for ImageCue {
             return Ok(());
         }
 
-        self.start_image_action(context)
+        self.start_action_or_reset(context)
     }
 
     fn preload(&mut self, context: &CueContext) -> Result<()> {
@@ -318,9 +334,8 @@ impl Cue for ImageCue {
 
     fn tick(&mut self, context: &CueContext) -> Result<()> {
         if self.in_pre_wait && self.elapsed() >= self.pre_wait {
-            if let Err(e) = self.start_image_action(context) {
+            if let Err(e) = self.start_action_or_reset(context) {
                 log::warn!("ImageCue '{}' failed to start action: {e}", self.name);
-                self.state = CueState::Standby;
             }
         }
 

@@ -1119,8 +1119,9 @@ pub fn set_video_file(
         std::thread::Builder::new()
             .name("inkue-video-load".into())
             .spawn(move || {
-                let lib = output_engine.mpv_lib();
-                let duration = crate::engine::OutputEngine::probe_duration(lib, &path);
+                let duration = output_engine
+                    .try_mpv_lib()
+                    .and_then(|lib| crate::engine::OutputEngine::probe_duration(lib, &path));
                 let audio = crate::cue::media_decode::decode_audio_track(&path);
 
                 // Search all cue lists — the user may have switched lists while loading.
@@ -1332,7 +1333,10 @@ pub async fn get_media_thumbnail(
     seek_into: bool,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let lib = state.output_engine.mpv_lib_arc();
+    let lib = state
+        .output_engine
+        .try_mpv_lib_arc()
+        .ok_or_else(|| crate::engine::output_engine::NO_VIDEO_OUTPUT.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::engine::thumbnails::media_thumbnail(&lib, std::path::Path::new(&path), seek_into)
             .map_err(|e| e.to_string())
@@ -1351,7 +1355,10 @@ pub async fn get_video_filmstrip(
     tile_width: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let lib = state.output_engine.mpv_lib_arc();
+    let lib = state
+        .output_engine
+        .try_mpv_lib_arc()
+        .ok_or_else(|| crate::engine::output_engine::NO_VIDEO_OUTPUT.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::engine::thumbnails::video_filmstrip(
             &lib,
@@ -1376,7 +1383,10 @@ pub async fn get_video_filmstrip_range(
     tile_width: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let lib = state.output_engine.mpv_lib_arc();
+    let lib = state
+        .output_engine
+        .try_mpv_lib_arc()
+        .ok_or_else(|| crate::engine::output_engine::NO_VIDEO_OUTPUT.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::engine::thumbnails::video_filmstrip_range(
             &lib,

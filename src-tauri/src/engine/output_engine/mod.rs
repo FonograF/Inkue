@@ -158,14 +158,48 @@ fn release_overlay_surface_if_idle() {
     render::wake();
 }
 
+/// Initialise every global that does not depend on libmpv.
+///
+/// Shared by both constructors so a headless engine behaves exactly like a
+/// live one minus the video output — the timer, transform and geometry state
+/// all keep working (and keep serialising) with no output window attached.
+fn init_shared_globals(status_tx: &Sender<OutputStatus>) {
+    OUTPUT_STATUS_TX.get_or_init(|| status_tx.clone());
+    OUTPUT_CURRENT_VOICE.get_or_init(|| Mutex::new(None));
+    OUTPUT_CURRENT_FADE_OUT_MS.get_or_init(|| Mutex::new(0));
+    OUTPUT_PENDING_VIDEO_START.get_or_init(|| Mutex::new(None));
+    OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
+    PENDING_CROP.get_or_init(|| Mutex::new(None));
+    OUTPUT_TRANSFORM.get_or_init(|| Mutex::new(OutputTransform::default()));
+    LAST_CUE_GEOMETRY.get_or_init(|| Mutex::new(VideoGeometry::default()));
+    FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
+    TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
+    FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
+    // Empty sentinel (never a real font name) so the first set_timer_style()
+    // call always emits float-timer-font, regardless of what the persisted
+    // preference happens to be — the float-timer window's own React state
+    // has no other way to learn the current font.
+    FLOAT_TIMER_FONT.get_or_init(|| Mutex::new(String::new()));
+}
+
 // ---------------------------------------------------------------------------
 // OutputEngine
 // ---------------------------------------------------------------------------
 
+/// Error surfaced by every visual operation attempted in headless mode.
+pub const NO_VIDEO_OUTPUT: &str =
+    "Video output unavailable — libmpv is not loaded (see the startup log)";
+
+/// libmpv handles for the overlay context, owned by [`OutputEngine`].
+struct MpvHandles {
+    lib: Arc<MpvLib>,
+    ctx: Arc<MpvCtx>,
+}
+
 /// Manages the output window + libmpv context for all video and image output.
 pub struct OutputEngine {
-    mpv_lib: Arc<MpvLib>,
-    mpv_ctx: Arc<MpvCtx>,
+    /// `None` in **headless mode** — see [`OutputEngine::new_headless`].
+    mpv: Option<MpvHandles>,
     current_voice: Arc<Mutex<Option<VoiceId>>>,
     voices: Mutex<HashMap<VoiceId, OutputVoice>>,
     #[allow(dead_code)]
@@ -264,28 +298,20 @@ impl OutputEngine {
         let mpv_ctx = Arc::new(MpvCtx(ctx));
         let go_sent_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
-        OUTPUT_MPV_CTX.get_or_init(|| Arc::clone(&mpv_ctx));
-        OUTPUT_MPV_LIB.get_or_init(|| Arc::clone(&lib));
-        OUTPUT_STATUS_TX.get_or_init(|| status_tx.clone());
-        OUTPUT_CURRENT_VOICE.get_or_init(|| Mutex::new(None));
-        OUTPUT_CURRENT_FADE_OUT_MS.get_or_init(|| Mutex::new(0));
-        OUTPUT_PENDING_VIDEO_START.get_or_init(|| Mutex::new(None));
-        OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
-        PENDING_CROP.get_or_init(|| Mutex::new(None));
-        OUTPUT_TRANSFORM.get_or_init(|| Mutex::new(OutputTransform::default()));
-        LAST_CUE_GEOMETRY.get_or_init(|| Mutex::new(VideoGeometry::default()));
-        FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
-        TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
-        FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
-        // Empty sentinel (never a real font name) so the first set_timer_style()
-        // call always emits float-timer-font, regardless of what the persisted
-        // preference happens to be — the float-timer window's own React state
-        // has no other way to learn the current font.
-        FLOAT_TIMER_FONT.get_or_init(|| Mutex::new(String::new()));
+        init_shared_globals(&status_tx);
 
         // Create the winit/GL output window and block until mpv's render
-        // context is live, so no `loadfile` can race ahead of it.
-        render::init(&app_handle, Arc::clone(&lib), Arc::clone(&mpv_ctx))?;
+        // context is live, so no `loadfile` can race ahead of it.  On failure
+        // the context is destroyed here: nothing has been published to the
+        // globals yet, so the caller can fall back to a headless engine
+        // without leaving an orphan mpv instance behind.
+        if let Err(e) = render::init(&app_handle, Arc::clone(&lib), Arc::clone(&mpv_ctx)) {
+            unsafe { (lib.mpv_terminate_destroy)(mpv_ctx.0) };
+            return Err(e);
+        }
+
+        OUTPUT_MPV_CTX.get_or_init(|| Arc::clone(&mpv_ctx));
+        OUTPUT_MPV_LIB.get_or_init(|| Arc::clone(&lib));
 
         {
             let lib2   = Arc::clone(&lib);
@@ -303,8 +329,7 @@ impl OutputEngine {
         }
 
         Ok(Self {
-            mpv_lib: lib,
-            mpv_ctx,
+            mpv: Some(MpvHandles { lib, ctx: mpv_ctx }),
             current_voice,
             voices: Mutex::new(HashMap::new()),
             status_tx,
@@ -317,15 +342,51 @@ impl OutputEngine {
         })
     }
 
-    /// Expose the loaded `MpvLib` so callers can use it for probing.
-    pub fn mpv_lib(&self) -> &MpvLib {
-        &self.mpv_lib
+    /// Construct a **headless** engine: no libmpv, no output window.
+    ///
+    /// The fallback when [`Self::new`] fails — libmpv absent (the common case
+    /// on a fresh Linux install: the AppImage does not bundle it), or no
+    /// display server / GL context available.  The show still runs for audio,
+    /// MIDI, OSC, timecode and lighting; every visual operation is a no-op or
+    /// returns [`NO_VIDEO_OUTPUT`], and the operator sees a health banner
+    /// instead of the process disappearing at startup.
+    pub fn new_headless(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Self {
+        let (status_tx, status_rx) = crossbeam_channel::unbounded();
+        init_shared_globals(&status_tx);
+
+        Self {
+            mpv: None,
+            current_voice: Arc::new(Mutex::new(None)),
+            voices: Mutex::new(HashMap::new()),
+            status_tx,
+            status_rx: Mutex::new(status_rx),
+            default_surface_id: Uuid::new_v4(),
+            audio_engine,
+            go_sent_at: Arc::new(Mutex::new(None)),
+            visible: Arc::new(AtomicBool::new(false)),
+            app_handle,
+        }
+    }
+
+    /// `false` when the engine is headless: no video or image cue can play.
+    pub fn is_available(&self) -> bool {
+        self.mpv.is_some()
+    }
+
+    /// The loaded `MpvLib` for probing, or `None` in headless mode.
+    pub fn try_mpv_lib(&self) -> Option<&MpvLib> {
+        self.mpv.as_ref().map(|m| &*m.lib)
     }
 
     /// Owned handle to the loaded `MpvLib` for background work
     /// (e.g. thumbnail generation on a blocking task).
-    pub fn mpv_lib_arc(&self) -> Arc<MpvLib> {
-        Arc::clone(&self.mpv_lib)
+    pub fn try_mpv_lib_arc(&self) -> Option<Arc<MpvLib>> {
+        self.mpv.as_ref().map(|m| Arc::clone(&m.lib))
+    }
+
+    /// `(lib, ctx)` of the overlay context, or `None` in headless mode.
+    fn overlay(&self) -> Option<(&MpvLib, *mut c_void)> {
+        self.mpv.as_ref().map(|m| (&*m.lib, m.ctx.0))
     }
 
     /// Probe the duration of a video file without displaying it.
@@ -502,6 +563,9 @@ impl OutputEngine {
     /// `req.layer_style`) — nothing is replaced; stopping other cues is the
     /// transport's policy, not the engine's.
     pub fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
+        let Some(lib) = self.mpv.as_ref().map(|m| &m.lib) else {
+            return Err(anyhow!("{NO_VIDEO_OUTPUT}"));
+        };
         let voice_id = Uuid::new_v4();
 
         self.voices.lock().unwrap().insert(
@@ -515,7 +579,7 @@ impl OutputEngine {
         // opacity handles the actual reveal fade.
         fade::set_overlay_alpha(0);
 
-        let slot = slot::acquire_slot(&self.mpv_lib, &self.audio_engine)?;
+        let slot = slot::acquire_slot(lib, &self.audio_engine)?;
         slot::load_into_slot(&slot, slot::SlotLoad {
             voice_id,
             audio_voice_id: req.audio_voice_id,
@@ -597,10 +661,12 @@ impl OutputEngine {
         // Silence every video slot without needing voice ids.
         slot::panic_all();
 
-        unsafe {
-            let stop = cs("stop");
-            let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
-            (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+        if let Some((lib, ctx)) = self.overlay() {
+            unsafe {
+                let stop = cs("stop");
+                let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
+                (lib.mpv_command)(ctx, args.as_ptr());
+            }
         }
         fade::set_overlay_alpha(255);
 
@@ -772,11 +838,9 @@ impl OutputEngine {
     }
 
     pub fn pause_voice(&self, voice_id: VoiceId) -> Result<()> {
-        if let Some(ctx) = self.voice_mpv_ctx(voice_id) {
+        if let (Some(lib), Some(ctx)) = (self.try_mpv_lib(), self.voice_mpv_ctx(voice_id)) {
             unsafe {
-                (self.mpv_lib.mpv_set_property_string)(
-                    ctx, cs("pause").as_ptr(), cs("yes").as_ptr(),
-                );
+                (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("yes").as_ptr());
             }
         }
         if let Some(aid) = self.video_audio_voice(voice_id) {
@@ -786,11 +850,9 @@ impl OutputEngine {
     }
 
     pub fn resume_voice(&self, voice_id: VoiceId) -> Result<()> {
-        if let Some(ctx) = self.voice_mpv_ctx(voice_id) {
+        if let (Some(lib), Some(ctx)) = (self.try_mpv_lib(), self.voice_mpv_ctx(voice_id)) {
             unsafe {
-                (self.mpv_lib.mpv_set_property_string)(
-                    ctx, cs("pause").as_ptr(), cs("no").as_ptr(),
-                );
+                (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
             }
         }
         if let Some(aid) = self.video_audio_voice(voice_id) {
@@ -808,7 +870,9 @@ impl OutputEngine {
 
     /// Seek a voice's video (and re-anchor its paired audio voice).
     pub fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64) {
-        let Some(ctx) = self.voice_mpv_ctx(voice_id) else { return };
+        let (Some(lib), Some(ctx)) = (self.try_mpv_lib(), self.voice_mpv_ctx(voice_id)) else {
+            return;
+        };
         let pos_str = format!("{:.3}", position_ms as f64 / 1000.0);
         let cmd_cstr = cs("seek");
         let pos_cstr = cs(&pos_str);
@@ -820,7 +884,7 @@ impl OutputEngine {
                 mode_cstr.as_ptr(),
                 std::ptr::null(),
             ];
-            (self.mpv_lib.mpv_command)(ctx, args.as_ptr());
+            (lib.mpv_command)(ctx, args.as_ptr());
         }
         if let Some(aid) = self.video_audio_voice(voice_id) {
             let _ = self.audio_engine.seek_voice_ms(aid, position_ms);
@@ -1066,6 +1130,10 @@ impl OutputEngine {
     /// [`OutputTransform`] applies, which is exactly what alignment and
     /// colorimetry need.
     pub fn show_test_pattern(&self, pattern: &TestPattern, screen_index: Option<u32>) {
+        let Some((lib, ctx)) = self.overlay() else {
+            log::warn!("[output] test pattern ignored: {NO_VIDEO_OUTPUT}");
+            return;
+        };
         self.hard_stop_current();
         self.position_window(screen_index);
 
@@ -1081,17 +1149,13 @@ impl OutputEngine {
             .unwrap_or((1920, 1080));
         let url = pattern.mpv_url(w, h);
 
-        apply_geometry_props(&self.mpv_lib, self.mpv_ctx.0, &VideoGeometry::default());
+        apply_geometry_props(lib, ctx, &VideoGeometry::default());
 
         unsafe {
             // Patterns behave like images: play immediately, no paused-load
             // handshake, and no keep-open (a previous held video may have set it).
-            (self.mpv_lib.mpv_set_property_string)(
-                self.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
-            );
-            (self.mpv_lib.mpv_set_property_string)(
-                self.mpv_ctx.0, cs("keep-open").as_ptr(), cs("no").as_ptr(),
-            );
+            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
+            (lib.mpv_set_property_string)(ctx, cs("keep-open").as_ptr(), cs("no").as_ptr());
             if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
                 if let Ok(mut p) = m.lock() {
                     *p = None;
@@ -1119,7 +1183,7 @@ impl OutputEngine {
                 cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
                 idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
             ];
-            let ret = (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+            let ret = (lib.mpv_command)(ctx, args.as_ptr());
             if ret < 0 {
                 log::warn!("[output] test pattern loadfile failed: {ret} ({url})");
             }
@@ -1130,10 +1194,12 @@ impl OutputEngine {
 
     /// Clear the test pattern: stop playback and return to opaque black.
     pub fn clear_test_pattern(&self) {
-        unsafe {
-            let stop = cs("stop");
-            let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
-            (self.mpv_lib.mpv_command)(self.mpv_ctx.0, args.as_ptr());
+        if let Some((lib, ctx)) = self.overlay() {
+            unsafe {
+                let stop = cs("stop");
+                let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
+                (lib.mpv_command)(ctx, args.as_ptr());
+            }
         }
         TEST_PATTERN_ACTIVE.store(false, Ordering::Relaxed);
         // Timer/Text OSD may still be live — give them their surface back.
@@ -1263,7 +1329,9 @@ impl OutputEngine {
 
 impl Drop for OutputEngine {
     fn drop(&mut self) {
-        unsafe { (self.mpv_lib.mpv_terminate_destroy)(self.mpv_ctx.0) };
+        if let Some(m) = &self.mpv {
+            unsafe { (m.lib.mpv_terminate_destroy)(m.ctx.0) };
+        }
     }
 }
 
@@ -1500,5 +1568,12 @@ mod tests {
         let (target, missing) = resolve_output_screen(&[], Some(1));
         assert!(missing);
         assert!(target.is_none());
+    }
+
+    #[test]
+    fn headless_error_names_the_missing_piece() {
+        // The operator reads this on a cue that will not fire; it has to say
+        // what is wrong, not just that something is.
+        assert!(NO_VIDEO_OUTPUT.contains("libmpv"));
     }
 }

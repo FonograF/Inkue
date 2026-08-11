@@ -246,7 +246,9 @@ fn spawn_media_preload(
         .name("inkue-relink-preload".into())
         .spawn(move || {
             let duration = if is_video {
-                crate::engine::OutputEngine::probe_duration(output_engine.mpv_lib(), &path)
+                output_engine
+                    .try_mpv_lib()
+                    .and_then(|lib| crate::engine::OutputEngine::probe_duration(lib, &path))
             } else {
                 None
             };

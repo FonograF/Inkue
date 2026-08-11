@@ -16,8 +16,8 @@ use std::net::UdpSocket;
 use std::time::{Duration, Instant};
 
 use common::{
-    full_registry, recording_context, recording_context_with, recording_context_with_video_audio,
-    EngineCall,
+    full_registry, recording_context, recording_context_headless, recording_context_with,
+    recording_context_with_video_audio, EngineCall,
 };
 use inkue_lib::cue::group_cue::GroupCue;
 use inkue_lib::cue::light_cue::{LightCue, ParamTarget};
@@ -636,5 +636,69 @@ fn pan_only_fade_moves_voice_pan_and_leaves_gain_untouched() {
     assert!(
         !calls.iter().any(|c| matches!(c, EngineCall::AudioSetGain { .. })),
         "a pan-only fade must not change the voice gain",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Headless output engine (libmpv missing)
+// ---------------------------------------------------------------------------
+// When libmpv cannot be loaded the app now starts with a headless OutputEngine
+// instead of dying during `setup()`. Every visual cue then fails to start — and
+// must fail *cleanly*: report why, and leave nothing stuck at Running (the UI
+// only leaves Running on a state change it is told about).
+
+#[test]
+fn video_cue_reports_the_missing_video_output() {
+    let reg = full_registry();
+    let (ctx, _rx, _log) = recording_context_headless();
+
+    let mut vj = reg.create(&CueType::Video).unwrap().serialize();
+    vj["file_path"] = serde_json::json!("video/prologue.mp4");
+    let mut cue = reg.from_json(vj).unwrap();
+
+    let err = cue.go(&ctx).expect_err("no video output means no playback");
+    assert!(err.to_string().contains("libmpv"), "the reason must name libmpv, got: {err}");
+    assert_eq!(
+        cue.state(),
+        CueState::Standby,
+        "a cue whose action never started must not sit at Running",
+    );
+}
+
+#[test]
+fn image_cue_reports_the_missing_video_output() {
+    let reg = full_registry();
+    let (ctx, _rx, _log) = recording_context_headless();
+
+    let mut ij = reg.create(&CueType::Image).unwrap().serialize();
+    ij["file_path"] = serde_json::json!("image/logo.png");
+    let mut cue = reg.from_json(ij).unwrap();
+
+    assert!(cue.go(&ctx).is_err());
+    assert_eq!(cue.state(), CueState::Standby);
+}
+
+#[test]
+fn visual_cue_does_not_hang_after_its_pre_wait() {
+    // The pre-wait path starts the action from tick(), not go() — the same
+    // reset must apply there or the cue hangs at Running one tick later.
+    let reg = full_registry();
+    let (ctx, _rx, _log) = recording_context_headless();
+
+    let mut ij = reg.create(&CueType::Image).unwrap().serialize();
+    ij["file_path"] = serde_json::json!("image/logo.png");
+    ij["pre_wait_ms"] = serde_json::json!(10);
+    let mut cue = reg.from_json(ij).unwrap();
+
+    cue.go(&ctx).expect("the pre-wait itself starts fine");
+    assert_eq!(cue.state(), CueState::Running, "the cue is waiting out its pre-wait");
+
+    std::thread::sleep(Duration::from_millis(30));
+    cue.tick(&ctx).unwrap();
+
+    assert_eq!(
+        cue.state(),
+        CueState::Standby,
+        "a failed post-pre-wait start must release the cue, not freeze it",
     );
 }

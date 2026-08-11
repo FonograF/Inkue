@@ -31,7 +31,23 @@ Grab the latest installer for your platform from the **[Releases page](https://g
 |---|---|---|
 | **Windows 10 / 11** | `Inkue_x.y.z_x64-setup.exe` or `.msi` | libmpv is bundled — nothing else to install |
 | **macOS** (Apple Silicon + Intel) | `Inkue_x.y.z_universal.dmg` | self-contained — libmpv bundled |
-| **Linux** (x86-64) | `.deb` / `.AppImage` | `.deb` pulls in `libmpv` automatically |
+| **Linux** (x86-64) | `.deb` / `.AppImage` | `.deb` pulls in `libmpv` automatically; **the AppImage does not** — see below |
+
+### Linux: libmpv is a system dependency
+
+Video and image cues run on libmpv. The `.deb` declares it, but an AppImage
+cannot declare dependencies, so install it yourself before running the AppImage:
+
+| Distribution | Command |
+|---|---|
+| Debian / Ubuntu / Mint | `sudo apt install libmpv2` (older releases: `libmpv1`) |
+| Arch / Manjaro | `sudo pacman -S mpv` |
+| Fedora | `sudo dnf install mpv-libs` |
+
+Inkue still starts without it — audio, MIDI, OSC, timecode and lighting all work
+— and shows a banner explaining that video output is unavailable. Everything
+else (a missing display server, no audio device) degrades the same way rather
+than preventing the app from opening.
 
 > Inkue is young software. If something breaks during a show-critical moment,
 > please [open an issue](https://github.com/FonograF/Inkue/issues) with the log

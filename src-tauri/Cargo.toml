@@ -120,10 +120,9 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-# windows-sys — monitor enumeration, camera COM enumeration, lib.rs error dialog.
+# windows-sys — monitor enumeration, camera COM enumeration, font registration.
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_LibraryLoader",
     "Win32_Graphics_Gdi",

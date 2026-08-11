@@ -376,9 +376,13 @@ impl AudioEngineApi for RecAudio {
 /// `video_audio` is the voice a Video Cue's audio track would occupy on the
 /// real engine — `None` (the default) models a silent video, `Some(id)` a
 /// video whose sound the cue can fade.
+///
+/// `headless` models the real [`OutputEngine::new_headless`]: libmpv could not
+/// be loaded, so every `show_content` is refused.
 struct RecOutput {
     log: CallLog,
     video_audio: Option<VoiceId>,
+    headless: bool,
 }
 impl OutputEngineApi for RecOutput {
     fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
@@ -387,6 +391,9 @@ impl OutputEngineApi for RecOutput {
             is_image: req.is_image,
             preload: req.preload,
         });
+        if self.headless {
+            anyhow::bail!("{}", inkue_lib::engine::output_engine::NO_VIDEO_OUTPUT);
+        }
         Ok(Uuid::new_v4())
     }
     fn stop_content(&self, _v: VoiceId, _vf: u32, _af: u32) {
@@ -442,13 +449,19 @@ pub fn recording_context_with(
     fixtures: Vec<inkue_lib::engine::fixture::PatchedFixture>,
     input_patches: Vec<inkue_lib::engine::audio_input::InputPatch>,
 ) -> (CueContext, Receiver<CueEvent>, CallLog) {
-    build_recording_context(osc_patches, fixtures, input_patches, None)
+    build_recording_context(osc_patches, fixtures, input_patches, None, false)
 }
 
 /// [`recording_context`] whose output double reports a paired audio voice for
 /// every visual voice — i.e. a Video Cue that carries a sound track.
 pub fn recording_context_with_video_audio() -> (CueContext, Receiver<CueEvent>, CallLog) {
-    build_recording_context(Vec::new(), Vec::new(), Vec::new(), Some(Uuid::new_v4()))
+    build_recording_context(Vec::new(), Vec::new(), Vec::new(), Some(Uuid::new_v4()), false)
+}
+
+/// [`recording_context`] running on a headless output engine — the state the
+/// app falls back to when libmpv is missing.
+pub fn recording_context_headless() -> (CueContext, Receiver<CueEvent>, CallLog) {
+    build_recording_context(Vec::new(), Vec::new(), Vec::new(), None, true)
 }
 
 fn build_recording_context(
@@ -456,12 +469,13 @@ fn build_recording_context(
     fixtures: Vec<inkue_lib::engine::fixture::PatchedFixture>,
     input_patches: Vec<inkue_lib::engine::audio_input::InputPatch>,
     video_audio: Option<VoiceId>,
+    headless: bool,
 ) -> (CueContext, Receiver<CueEvent>, CallLog) {
     let log: CallLog = Arc::new(Mutex::new(Vec::new()));
     let (tx, rx) = unbounded();
     let ctx = CueContext::new(
         Arc::new(RecAudio(log.clone())),
-        Arc::new(RecOutput { log: log.clone(), video_audio }),
+        Arc::new(RecOutput { log: log.clone(), video_audio, headless }),
         tx,
         500,
         Vec::new(),

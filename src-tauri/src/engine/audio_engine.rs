@@ -250,61 +250,84 @@ pub struct AudioHealth {
 unsafe impl Send for AudioEngine {}
 unsafe impl Sync for AudioEngine {}
 
-impl AudioEngine {
-    /// Open an output device according to `config` and start the audio callback.
-    pub fn new(config: &MachineAudioConfig) -> Result<Arc<Self>> {
-        let master_gain = Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0_f32)));
-        let voices = VoicePool::new();
-        let voices_rt = voices.rt_handle();
-        let input_feeds: Arc<Mutex<Vec<InputFeed>>> = Arc::new(Mutex::new(Vec::new()));
-        let output_period = Arc::new(std::sync::atomic::AtomicU32::new(256));
-        let output_callbacks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+/// The stream-independent half of an [`AudioEngine`], built before any device
+/// is opened and shared with every stream the engine goes on to open.
+///
+/// Exists so the normal and the silent constructor assemble exactly the same
+/// engine — the only difference being whether a [`StreamResult`] is available.
+struct EngineCore {
+    voices: VoicePool,
+    input_feeds: Arc<Mutex<Vec<InputFeed>>>,
+    master_gain: Arc<std::sync::atomic::AtomicU32>,
+    output_period: Arc<std::sync::atomic::AtomicU32>,
+    output_callbacks: Arc<std::sync::atomic::AtomicU64>,
+}
 
-        let stream_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+impl EngineCore {
+    fn new() -> Self {
+        Self {
+            voices: VoicePool::new(),
+            input_feeds: Arc::new(Mutex::new(Vec::new())),
+            master_gain: Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0_f32))),
+            output_period: Arc::new(std::sync::atomic::AtomicU32::new(256)),
+            output_callbacks: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
 
-        let open = |cfg: &MachineAudioConfig| {
-            open_stream_inner(
-                cfg,
-                Arc::clone(&voices_rt),
-                Arc::clone(&input_feeds),
-                Arc::clone(&master_gain),
-                Arc::clone(&output_period),
-                Arc::clone(&stream_failed),
-                Arc::clone(&output_callbacks),
-            )
-        };
+    fn open(
+        &self,
+        config: &MachineAudioConfig,
+        stream_failed: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<StreamResult> {
+        open_stream_inner(
+            config,
+            self.voices.rt_handle(),
+            Arc::clone(&self.input_feeds),
+            Arc::clone(&self.master_gain),
+            Arc::clone(&self.output_period),
+            stream_failed,
+            Arc::clone(&self.output_callbacks),
+        )
+    }
 
-        // Resilient startup: if the configured device is absent (unplugged since
-        // it was saved), fall back to the system default rather than crashing.
-        // The device watchdog then raises the banner and offers a restore when it
-        // returns.  `desired_config` keeps the operator's original choice.
-        let (sr, started_in_fallback) = match open(config) {
-            Ok(sr) => (sr, false),
-            Err(e) if config.device_id.is_some() => {
-                log::warn!(
-                    "Configured audio device unavailable at startup ({e}); \
-                     falling back to the system default"
-                );
-                let fallback = MachineAudioConfig { device_id: None, ..config.clone() };
-                (open(&fallback)?, true)
+    /// Build the engine around an open stream, or around none (silent mode).
+    fn assemble(
+        self,
+        config: &MachineAudioConfig,
+        stream: Option<StreamResult>,
+        stream_failed: Arc<std::sync::atomic::AtomicBool>,
+        started_in_fallback: bool,
+    ) -> Arc<AudioEngine> {
+        // In silent mode the ring buffers have no consumer: `send_command`
+        // fills the queue and then reports "ring buffer full", which callers
+        // already treat as a non-fatal playback error.  A later `restart()`
+        // replaces both halves with the new stream's.
+        let (cmd_prod, status_cons, stream, sample_rate, channels, out_offset) = match stream {
+            Some(sr) => (
+                sr.cmd_prod, sr.status_cons, Some(sr.stream),
+                sr.sample_rate, sr.channels, sr.default_out_offset,
+            ),
+            None => {
+                let (cmd_prod, _) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
+                let (_, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
+                (cmd_prod, status_cons, None, 48_000, 2, 0)
             }
-            Err(e) => return Err(e),
         };
 
-        let engine = Arc::new(Self {
+        let engine = Arc::new(AudioEngine {
             device_manager: Mutex::new(DeviceManager::new()),
-            cmd_prod: Mutex::new(sr.cmd_prod),
-            status_cons: Mutex::new(sr.status_cons),
-            voices,
+            cmd_prod: Mutex::new(cmd_prod),
+            status_cons: Mutex::new(status_cons),
+            voices: self.voices,
             aux_streams: Mutex::new(Vec::new()),
-            input_feeds,
-            _stream: Mutex::new(Some(sr.stream)),
-            sample_rate: std::sync::atomic::AtomicU32::new(sr.sample_rate),
-            output_channels: std::sync::atomic::AtomicU32::new(sr.channels),
-            default_out_offset: std::sync::atomic::AtomicU32::new(sr.default_out_offset),
-            master_gain,
-            output_period,
-            output_callbacks,
+            input_feeds: self.input_feeds,
+            _stream: Mutex::new(stream),
+            sample_rate: std::sync::atomic::AtomicU32::new(sample_rate),
+            output_channels: std::sync::atomic::AtomicU32::new(channels),
+            default_out_offset: std::sync::atomic::AtomicU32::new(out_offset),
+            master_gain: self.master_gain,
+            output_period: self.output_period,
+            output_callbacks: self.output_callbacks,
             stream_failed: Mutex::new(stream_failed),
             // `desired_config` keeps the operator's choice even when we started on
             // the fallback, so the watchdog can offer a restore when it returns.
@@ -316,9 +339,9 @@ impl AudioEngine {
         });
 
         // A broken configured device (HDMI with no display, unplugged interface)
-        // is now handled continuously by the device watchdog (lib.rs), which
-        // falls back to the default device and surfaces a banner — no one-shot
-        // startup watchdog needed.
+        // is handled continuously by the device watchdog (lib.rs), which falls
+        // back to the default device and surfaces a banner — no one-shot startup
+        // watchdog needed.
 
         // Warm the device cache off the main thread.  `DeviceManager::new()` no
         // longer enumerates (that blocked app startup on a slow/hung Windows
@@ -340,7 +363,49 @@ impl AudioEngine {
                 });
         }
 
-        Ok(engine)
+        engine
+    }
+}
+
+impl AudioEngine {
+    /// Open an output device according to `config` and start the audio callback.
+    pub fn new(config: &MachineAudioConfig) -> Result<Arc<Self>> {
+        let core = EngineCore::new();
+        let stream_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Resilient startup: if the configured device is absent (unplugged since
+        // it was saved), fall back to the system default rather than crashing.
+        // The device watchdog then raises the banner and offers a restore when it
+        // returns.  `desired_config` keeps the operator's original choice.
+        let (sr, started_in_fallback) = match core.open(config, Arc::clone(&stream_failed)) {
+            Ok(sr) => (sr, false),
+            Err(e) if config.device_id.is_some() => {
+                log::warn!(
+                    "Configured audio device unavailable at startup ({e}); \
+                     falling back to the system default"
+                );
+                let fallback = MachineAudioConfig { device_id: None, ..config.clone() };
+                (core.open(&fallback, Arc::clone(&stream_failed))?, true)
+            }
+            Err(e) => return Err(e),
+        };
+
+        Ok(core.assemble(config, Some(sr), stream_failed, started_in_fallback))
+    }
+
+    /// Construct a **silent** engine: no device opened, no output callback.
+    ///
+    /// The fallback when no audio device can be opened at all — no sound card,
+    /// or no ALSA/PipeWire server running.  The workspace still loads and
+    /// video, MIDI, OSC, timecode and lighting cues still run, so the operator
+    /// gets a working app plus a health banner instead of a process that
+    /// vanishes at startup.  The device watchdog keeps retrying and brings
+    /// audio up as soon as a device appears.
+    pub fn new_silent(config: &MachineAudioConfig) -> Arc<Self> {
+        // Pre-failed so `audio_health()` reports the fault immediately instead
+        // of waiting for the watchdog's callback-stall heuristic.
+        let stream_failed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        EngineCore::new().assemble(config, None, stream_failed, false)
     }
 
     // ── Device resilience ─────────────────────────────────────────────────────
@@ -404,16 +469,46 @@ impl AudioEngine {
     }
 
     /// Automatically fall back to the system default after the desired device was
-    /// lost, keeping the show audible.  Returns the lost device id for the banner.
+    /// lost, keeping the show audible.
+    ///
+    /// Returns the lost device id when the default device **actually took
+    /// over**, `None` when there was nothing to fall back to either — the
+    /// engine then stays silent and `in_fallback` stays false, so the watchdog
+    /// keeps retrying instead of reporting a fallback that never happened.
     pub fn fall_back_to_default(&self) -> Option<String> {
         let desired = self.desired_config.lock().ok().map(|c| c.clone())?;
         let lost = desired.device_id.clone();
         let fallback = MachineAudioConfig { device_id: None, ..desired };
-        self.in_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Err(e) = self.restart(&fallback) {
-            log::error!("Audio fallback restart failed: {e}");
+        match self.restart(&fallback) {
+            Ok(()) => {
+                self.in_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+                lost
+            }
+            Err(e) => {
+                log::error!("Audio fallback restart failed: {e}");
+                None
+            }
         }
-        lost
+    }
+
+    /// Retry the configured device after a *total* failure — no device could be
+    /// opened at startup, or the machine has none at all.
+    ///
+    /// Unlike [`Self::fall_back_to_default`] there is nothing to fall back to,
+    /// so this is a plain retry: `true` means audio is live again and the
+    /// watchdog clears the banner on its next tick.  A failed attempt is silent
+    /// (it runs on a timer and must not spam the log).
+    pub fn retry_output_stream(&self) -> bool {
+        let Ok(desired) = self.desired_config.lock().map(|c| c.clone()) else {
+            return false;
+        };
+        match self.restart(&desired) {
+            Ok(()) => {
+                log::info!("Audio output device opened on retry");
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Re-open the operator's chosen device after it returned (manual restore).
@@ -2280,5 +2375,41 @@ mod tests {
         let mut out = vec![0.0f32; 256 * 2];
         fill_buffer(&mut out, 2, 48_000, &pool.rt, &feeds, &mut cmd_cons, &mut status_prod, &master, &period);
         assert!(out.iter().any(|s| s.abs() > 0.1), "the published tone must reach the output");
+    }
+
+    // ── Silent mode (no audio device at all) ─────────────────────────────────
+
+    #[test]
+    fn silent_engine_reports_a_failed_stream() {
+        let engine = AudioEngine::new_silent(&MachineAudioConfig::default());
+
+        let health = engine.audio_health();
+        assert!(health.failed, "silent mode must report the fault immediately");
+        assert!(!health.in_fallback, "there was no device to fall back from");
+        assert_eq!(engine.callback_count(), 0, "no callback can fire without a stream");
+    }
+
+    #[test]
+    fn silent_engine_keeps_a_usable_format() {
+        // The rest of the app (decode, resampling, patch routing) reads these;
+        // they must be sane defaults rather than zeroes.
+        let engine = AudioEngine::new_silent(&MachineAudioConfig::default());
+        assert_eq!(engine.sample_rate(), 48_000);
+        assert_eq!(engine.output_channels(), 2);
+    }
+
+    #[test]
+    fn silent_engine_preserves_the_operator_device_choice() {
+        // `desired_config` drives the watchdog banner and the manual restore —
+        // starting silent must not silently rewrite the operator's selection.
+        let config = MachineAudioConfig {
+            device_id: Some("Focusrite Scarlett".into()),
+            ..MachineAudioConfig::default()
+        };
+        let engine = AudioEngine::new_silent(&config);
+        assert_eq!(
+            engine.audio_health().desired_device.as_deref(),
+            Some("Focusrite Scarlett"),
+        );
     }
 }

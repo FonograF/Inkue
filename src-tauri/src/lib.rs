@@ -128,16 +128,39 @@ pub fn run() {
                 // it after app.manage() below.
             }
             let startup_buffer_size = machine_config.buffer_size;
-            let audio_engine = AudioEngine::new(&machine_config).map_err(|e| {
-                show_fatal_error(&format!("Audio engine failed to start:\n\n{e}"));
-                Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
-            })?;
+
+            // Neither engine failing is fatal.  A `setup()` that returns Err
+            // tears the process down after the window is already on screen —
+            // the app "flashes and disappears" with the reason going only to
+            // stderr, which nobody sees when launching from a desktop icon or
+            // an AppImage.  Both engines degrade instead, and the reason lands
+            // in the health banner where the operator can act on it.
+            let audio_engine = match AudioEngine::new(&machine_config) {
+                Ok(engine) => engine,
+                Err(e) => {
+                    log::error!("[startup] no audio output device ({e}) — running silent");
+                    AudioEngine::new_silent(&machine_config)
+                }
+            };
             let output_engine = Arc::new(
-                OutputEngine::new(Arc::clone(&audio_engine), app.handle().clone())
-                    .map_err(|e| {
-                        show_fatal_error(&format!("Output engine failed to start:\n\n{e}"));
-                        Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
-                    })?,
+                match OutputEngine::new(Arc::clone(&audio_engine), app.handle().clone()) {
+                    Ok(engine) => engine,
+                    Err(e) => {
+                        log::error!("[startup] video output unavailable ({e}) — running headless");
+                        // The banner is one line: it carries the fix, not the
+                        // diagnosis — the full error (searched paths, GL/window
+                        // failure) is in the log the operator can open.
+                        crate::health::set(crate::health::HealthAlert::new(
+                            "video-output",
+                            crate::health::HealthLevel::Error,
+                            format!("Video output unavailable — {}", install_libmpv_hint()),
+                        ));
+                        OutputEngine::new_headless(
+                            Arc::clone(&audio_engine),
+                            app.handle().clone(),
+                        )
+                    }
+                },
             );
 
             // Pin all network traffic to the configured interface (must run
@@ -342,8 +365,13 @@ pub fn run() {
                         use tauri::Emitter;
                         use crate::health::{self, HealthAlert, HealthLevel};
 
+                        /// Watchdog ticks between two retries when the machine
+                        /// has no usable output device at all (2 s per tick).
+                        const RETRY_EVERY_TICKS: u32 = 5;
+
                         let mut last_seq = 0u64;
                         let mut last_count = engine.callback_count();
+                        let mut ticks_since_retry = 0u32;
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(2));
 
@@ -357,21 +385,48 @@ pub fn run() {
                             let h = engine.audio_health();
                             let failed = h.failed || stalled;
                             if failed && !h.in_fallback {
-                                if h.desired_device.is_some() {
-                                    let lost = engine.fall_back_to_default().unwrap_or_default();
-                                    health::set(HealthAlert::new(
-                                        "audio-device",
-                                        HealthLevel::Error,
-                                        format!(
-                                            "Audio device \"{lost}\" lost — switched to the default device"
-                                        ),
-                                    ));
-                                } else {
-                                    health::set(HealthAlert::new(
-                                        "audio-device",
-                                        HealthLevel::Error,
-                                        "Default audio device unavailable",
-                                    ));
+                                // Recover on first detection — a device lost
+                                // mid-show must switch over now, not in 10 s —
+                                // then only every RETRY_EVERY_TICKS, so a
+                                // machine with no usable device at all does not
+                                // re-enumerate (and log) on every tick.
+                                let attempt =
+                                    ticks_since_retry == 0 || ticks_since_retry >= RETRY_EVERY_TICKS;
+                                ticks_since_retry = if attempt { 1 } else { ticks_since_retry + 1 };
+
+                                match h.desired_device.clone() {
+                                    Some(dev) => {
+                                        let took_over =
+                                            attempt && engine.fall_back_to_default().is_some();
+                                        if took_over {
+                                            last_count = engine.callback_count();
+                                        }
+                                        health::set(HealthAlert::new(
+                                            "audio-device",
+                                            HealthLevel::Error,
+                                            if took_over {
+                                                format!("Audio device \"{dev}\" lost — switched to the default device")
+                                            } else {
+                                                format!("Audio device \"{dev}\" unavailable — no audio output")
+                                            },
+                                        ));
+                                    }
+                                    // Nothing to fall back to: the machine has no
+                                    // usable output device (silent startup, or the
+                                    // last one was unplugged).  Audio returns by
+                                    // itself once an interface is plugged in.
+                                    None => {
+                                        if attempt && engine.retry_output_stream() {
+                                            last_count = engine.callback_count();
+                                            health::clear("audio-device");
+                                        } else {
+                                            health::set(HealthAlert::new(
+                                                "audio-device",
+                                                HealthLevel::Error,
+                                                "No audio output device available",
+                                            ));
+                                        }
+                                    }
                                 }
                             } else if h.in_fallback {
                                 let dev = h.desired_device.clone().unwrap_or_default();
@@ -394,6 +449,9 @@ pub fn run() {
                                     ));
                                 }
                             } else {
+                                // Healthy: arm an immediate recovery attempt
+                                // for the next failure.
+                                ticks_since_retry = 0;
                                 health::clear("audio-device");
                             }
 
@@ -583,26 +641,19 @@ pub fn run() {
         .expect("error while running Inkue");
 }
 
-/// Show a blocking error dialog — used when a fatal startup error occurs in
-/// a release build where there is no console to read stderr from.
-#[cfg(target_os = "windows")]
-fn show_fatal_error(message: &str) {
-    use std::ffi::OsStr;
-    use std::iter::once;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-
-    let title: Vec<u16> = OsStr::new("Inkue — Startup Error")
-        .encode_wide()
-        .chain(once(0))
-        .collect();
-    let body: Vec<u16> = OsStr::new(message).encode_wide().chain(once(0)).collect();
-    unsafe {
-        MessageBoxW(0, body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+/// Per-OS instruction for restoring video output, appended to the health banner.
+///
+/// libmpv is bundled on Windows and inside the macOS `.app`, so there it points
+/// at a broken install.  On Linux it is a system dependency the `.deb` pulls in
+/// but the AppImage cannot declare — the one case where the operator genuinely
+/// has to install something.
+fn install_libmpv_hint() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "install libmpv (Arch: mpv · Debian/Ubuntu: libmpv2 · Fedora: mpv-libs) and restart"
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn show_fatal_error(message: &str) {
-    eprintln!("FATAL: {message}");
+    #[cfg(not(target_os = "linux"))]
+    {
+        "reinstall Inkue to restore the bundled libmpv"
+    }
 }

@@ -358,6 +358,22 @@ impl VideoCue {
 
     /// Kick off video playback.  Called directly from `go()` when there is no
     /// pre-wait, or from `tick()` once the pre-wait timer has elapsed.
+    /// [`Self::start_video_action`], returning the cue to Standby when it fails.
+    ///
+    /// A cue whose action never started must not stay at `Running` with no
+    /// voice: the UI only leaves Running on a state change it is told about, so
+    /// it would freeze on the cue forever (the classic symptom when the output
+    /// engine is headless and refuses every `show_content`).
+    fn start_action_or_reset(&mut self, context: &CueContext) -> Result<()> {
+        let result = self.start_video_action(context);
+        if result.is_err() {
+            self.state = CueState::Standby;
+            self.started_at = None;
+            self.in_pre_wait = false;
+        }
+        result
+    }
+
     fn start_video_action(&mut self, context: &CueContext) -> Result<()> {
         let start_ms = self.start_time.map(|d| d.as_millis() as u64);
         let end_ms = self.end_time.map(|d| d.as_millis() as u64);
@@ -504,7 +520,7 @@ impl Cue for VideoCue {
             return Ok(());
         }
 
-        self.start_video_action(context)
+        self.start_action_or_reset(context)
     }
 
     fn preload(&mut self, context: &CueContext) -> Result<()> {
@@ -643,7 +659,9 @@ impl Cue for VideoCue {
     fn tick(&mut self, context: &CueContext) -> Result<()> {
         // Once the pre-wait timer expires, start the video action.
         if self.in_pre_wait && self.elapsed() >= self.pre_wait {
-            self.start_video_action(context)?;
+            if let Err(e) = self.start_action_or_reset(context) {
+                log::warn!("VideoCue '{}' failed to start action: {e}", self.name);
+            }
         }
         self.tick_eof_fade(context);
         Ok(())
