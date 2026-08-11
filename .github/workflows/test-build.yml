@@ -1,0 +1,99 @@
+name: Test build (Linux AppImage)
+
+# Manually-triggered build for handing a testable binary to a bug reporter.
+#
+# Deliberately NOT a release: no tag, no GitHub release, no `latest.json` — so
+# nothing reaches the auto-updater. The AppImage comes back as a workflow
+# artifact, downloadable from the run page, and is renamed with the short SHA so
+# nobody confuses it with a published build.
+#
+#   gh workflow run test-build.yml --ref <branch>
+#   gh run watch <id> && gh run download <id>
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "What is being tested (shown in the run summary)"
+        required: false
+        default: ""
+
+jobs:
+  appimage:
+    # Same image as release.yml: the AppImage bundles this runner's WebKitGTK
+    # and links its glibc, so a newer runner would raise the floor for users.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libssl-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev \
+            libasound2-dev libmpv-dev
+
+      - name: Build the AppImage
+        env:
+          # `bundle.createUpdaterArtifacts` is on, so the bundler needs the key
+          # even for a build that will never be published.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage
+
+      - name: Stamp the filename with the commit
+        id: stamp
+        run: |
+          set -euo pipefail
+          dir=src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage
+          src=$(ls "$dir"/*.AppImage)
+          sha=$(git rev-parse --short HEAD)
+          dest="${src%.AppImage}-test-${sha}.AppImage"
+          mv "$src" "$dest"
+          echo "path=$dest" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$dest")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stamp.outputs.name }}
+          path: ${{ steps.stamp.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Run summary
+        run: |
+          {
+            echo "### Test AppImage"
+            echo
+            echo "- **File:** \`${{ steps.stamp.outputs.name }}\`"
+            echo "- **Commit:** \`${{ github.sha }}\` on \`${{ github.ref_name }}\`"
+            echo "- **Testing:** ${{ inputs.notes }}"
+            echo
+            echo "Download it from the Artifacts section of this run, unzip, then:"
+            echo '```'
+            echo "chmod +x ${{ steps.stamp.outputs.name }}"
+            echo "./${{ steps.stamp.outputs.name }}"
+            echo '```'
+            echo
+            echo "Not a release: no tag, no updater entry."
+          } >> "$GITHUB_STEP_SUMMARY"
