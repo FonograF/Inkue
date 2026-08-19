@@ -271,6 +271,13 @@ impl TimecodeReceiver {
     pub fn is_running(&self) -> bool {
         self.flywheel.lock().map(|f| f.is_running()).unwrap_or(false)
     }
+    /// Re-anchor the flywheel to a specific position (e.g. after an MMC Locate).
+    pub fn reanchor_flywheel(&self, pos: TcPosition) {
+        if let Ok(mut f) = self.flywheel.lock() {
+            f.update(pos);
+        }
+    }
+
 
     // ── Internal ─────────────────────────────────────────────────────────
 
@@ -353,10 +360,20 @@ fn mtc_thread(
         "inkue-tc",
         move |_stamp, message, _| {
             if shutdown2.load(Ordering::Relaxed) { return; }
-            let Some(pos) = decode_mtc_message(message, &asm2) else { return };
-            let started = flywheel2.lock().map(|mut f| f.update(pos)).unwrap_or(false);
-            if started { let _ = tx2.send(TcEvent::Started(pos)); }
-            let _ = tx2.send(TcEvent::Position(pos));
+            // MTC (quarter-frame / full-frame SysEx). Drives the 500 ms TC
+            // flywheel — its decode path is untouched by MMC.
+            if let Some(pos) = decode_mtc_message(message, &asm2) {
+                let started = flywheel2.lock().map(|mut f| f.update(pos)).unwrap_or(false);
+                if started { let _ = tx2.send(TcEvent::Started(pos)); }
+                let _ = tx2.send(TcEvent::Position(pos));
+                return;
+            }
+            // MMC (MIDI Machine Control) — the MPC transport master. Routed as
+            // a `TcEvent::Mmc` to the event loop; the flywheel is still driven
+            // by the accompanying MTC frames on this same port.
+            if let Some(cmd) = crate::engine::mmc::decode_mmc(message) {
+                let _ = tx2.send(TcEvent::Mmc(cmd));
+            }
         },
         (),
     );

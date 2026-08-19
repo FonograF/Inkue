@@ -24,8 +24,9 @@ use crate::{
     engine::{
         output_engine::{OutputEngine, OutputStatus},
         ring_command::AudioStatus,
+        timecode_receiver::TimecodeReceiver,
         timecode_types::TcEvent,
-        AudioEngine, DmxEngine,
+        AudioEngine, DmxEngine, MmcCommand,
     },
     show::{transport::Transport, workspace::Workspace},
 };
@@ -40,6 +41,56 @@ const TIMER_TICK_MS: u64 = 16;
 /// ~tens-of-ms gap, below a perceptible delay.
 const AUDIO_FREEZE_MS: u64 = 250;
 
+/// Minimum spacing (ms) between two identical MMC commands before the second is
+/// treated as a repeat of the same intent (pad held, MPC re-arm, etc.).
+const MMC_DEBOUNCE_MS: u64 = 50;
+
+// ---------------------------------------------------------------------------
+// MPC transport-master state (external transport master → slaved audio engine)
+// ---------------------------------------------------------------------------
+//
+// Lives only for the lifetime of the event loop — **not** persisted to the
+// `.inkue` show schema. CC30 selects the target Cue Group; MMC commands drive
+// that group through the existing `Transport` / `Cue` API. The 500 ms TC
+// flywheel / MTC path is untouched; an MMC Locate re-seeds the per-list TC
+// guard (`tc_last_triggered_frame`) so the intentional reposition is never
+// misread as a jump.
+
+/// In-memory transport-master state for the MPC.
+#[derive(Default)]
+struct MpcTransport {
+    /// Currently selected group, as `(cue_list_id, group_cue_id)`.
+    selected_group: Option<(uuid::Uuid, CueId)>,
+    /// Pending absolute playback position (ms) set by MMC Locate while the
+    /// group was stopped; applied (and cleared) on the next MMC Play.
+    /// Survives CC30 selection so "Locate → Select → Play" still works; is
+    /// only cleared when the position is consumed (Play), explicitly dropped
+    /// (Stop), or applied to a running group (Locate-on-running).
+    pending_position_ms: Option<u64>,
+    /// Last ms the selected group was intentionally seeked to (Locate dedupe).
+    last_seeked_ms: Option<u64>,
+    /// Per-MMC-command last-seen instant, for deduping repeated Stop/Play.
+    last_mmc: HashMap<u8, Instant>,
+    /// Last accepted CC30 value (the MPC sends duplicate value pairs — dedupe).
+    last_cc30_value: Option<u8>,
+}
+
+/// `true` when `message` is a Control-Change on controller 30 (`0xBn 30 V`).
+fn is_cc30(message: &[u8]) -> bool {
+    message.len() == 3 && (message[0] & 0xF0) == 0xB0 && message[1] == 30
+}
+
+/// A stable dedupe key for an MMC command (the command byte; Locate is further
+/// deduped by target position via `MpcTransport::last_seeked_ms`).
+fn mmc_dedupe_key(cmd: &MmcCommand) -> u8 {
+    match cmd {
+        MmcCommand::Stop => 0x01,
+        MmcCommand::Play => 0x02,
+        MmcCommand::DeferredPlay => 0x03,
+        MmcCommand::Locate { .. } => 0x44,
+    }
+}
+
 /// Entry point for the event loop thread.  Loops indefinitely.
 pub fn run(
     handle: tauri::AppHandle,
@@ -49,6 +100,7 @@ pub fn run(
     workspace: Arc<Mutex<Workspace>>,
     tc_rx: Option<crossbeam_channel::Receiver<TcEvent>>,
     midi_listener: Arc<Mutex<Option<Arc<crate::engine::midi_trigger::MidiTriggerListener>>>>,
+    tc_receiver: Arc<Mutex<Option<Arc<TimecodeReceiver>>>>,
 ) {
     // Spawn a dedicated thread that refreshes the OSD timer overlay at ~60 fps.
     // This is independent of the main 30 fps tick so the millisecond display
@@ -66,6 +118,8 @@ pub fn run(
     let mut auto_follow_pending: HashMap<CueId, (Instant, uuid::Uuid)> = HashMap::new();
     // Last TC position seen — for the TC dispatcher monotone guard.
     let mut prev_tc_frame: Option<u64> = None;
+    // External transport-master state for the MPC (CC30 select / MMC dispatch).
+    let mut mpc = MpcTransport::default();
     // Per-group snapshot: (active_child_id, any_child_running).
     // Used to detect inner-sequence progress and emit cue-list-refresh.
     let mut prev_group_state: HashMap<CueId, (Option<CueId>, bool)> = HashMap::new();
@@ -90,7 +144,9 @@ pub fn run(
             &workspace,
             tc_rx.as_ref(),
             &midi_listener,
+            &tc_receiver,
             &mut prev_tc_frame,
+            &mut mpc,
             &mut auto_follow_pending,
             &mut prev_group_state,
             &mut prev_running_cues,
@@ -272,7 +328,9 @@ fn tick(
     workspace: &Arc<Mutex<Workspace>>,
     tc_rx:           Option<&crossbeam_channel::Receiver<TcEvent>>,
     midi_listener:   &Arc<Mutex<Option<Arc<crate::engine::midi_trigger::MidiTriggerListener>>>>,
+    tc_receiver:     &Arc<Mutex<Option<Arc<TimecodeReceiver>>>>,
     prev_tc_frame:   &mut Option<u64>,
+    mpc:             &mut MpcTransport,
     auto_follow_pending: &mut HashMap<CueId, (Instant, uuid::Uuid)>,
     prev_group_state:    &mut HashMap<CueId, (Option<CueId>, bool)>,
     prev_running_cues:   &mut Vec<CueId>,
@@ -289,6 +347,12 @@ fn tick(
     // (list_id, cue_id) pairs whose TC trigger was crossed this tick. Fired via
     // the real GO path further down, once the engine context is assembled.
     let mut tc_fire: Vec<(uuid::Uuid, CueId)> = Vec::new();
+    // MMC transport-master commands collected this tick (drained below, applied
+    // in section 0c once the workspace lock + a CueContext exist).
+    let mut mmc_events: Vec<MmcCommand> = Vec::new();
+    // CC30 selection intents collected from the MIDI drain (value, cue list id,
+    // group id), applied in section 0c — deduped by value already.
+    let mut cc30_selections: Vec<(u8, uuid::Uuid, CueId)> = Vec::new();
     if let Some(rx) = tc_rx {
         // Collect all pending TC events without blocking.
         let mut latest_pos = None;
@@ -300,6 +364,9 @@ fn tick(
                 TcEvent::Stopped => {
                     // On-Stop policy is applied per-list below when ws is locked.
                     let _ = handle.emit("timecode-stopped", serde_json::json!({}));
+                }
+                TcEvent::Mmc(cmd) => {
+                    mmc_events.push(cmd);
                 }
             }
         }
@@ -364,14 +431,35 @@ fn tick(
         if !messages.is_empty() {
             if let Ok(ws) = workspace.try_lock() {
                 for message in &messages {
+                    // Everything whose MIDI trigger matches this message.
+                    let mut matched: Vec<(uuid::Uuid, CueId)> = Vec::new();
                     for cl in &ws.cue_lists {
                         for cue_id in cl.midi_triggers_matching(message) {
                             // A trigger left behind by a deleted cue fires nothing.
                             if cl.get_recursive(&cue_id).is_none() {
                                 continue;
                             }
-                            tc_fire.push((cl.id, cue_id));
+                            matched.push((cl.id, cue_id));
                         }
+                    }
+                    // A CC30 message bound to a cue is an MPC sequence / Cue-Group
+                    // **selection**, not a fire. Record it (idempotent — the MPC
+                    // sends duplicate value pairs; dedupe by value) and skip the
+                    // legacy GO. Unbound messages (incl. an unbound CC30) fall
+                    // through to the fire path below, exactly as before.
+                    if is_cc30(message) && !matched.is_empty() {
+                        let value = message[2];
+                        if mpc.last_cc30_value != Some(value) {
+                            mpc.last_cc30_value = Some(value);
+                            if let Some((cl_id, group_id)) = matched.into_iter().next() {
+                                cc30_selections.push((value, cl_id, group_id));
+                            }
+                        }
+                        continue; // selection only — never a GO
+                    }
+                    // Legacy behavior: fire every bound cue via the real GO path.
+                    for (cl_id, cue_id) in matched {
+                        tc_fire.push((cl_id, cue_id));
                     }
                 }
             }
@@ -537,6 +625,115 @@ fn tick(
         auto_paused.clear();
     }
     *audio_frozen = frozen_now;
+
+    // ------------------------------------------------------------------
+    // 0c. External transport master (MPC): CC30 → select; MMC → play/stop/locate.
+    //     Drives the *selected* Cue Group via the existing Transport path. MTC
+    //     is never chased/slaved here (no continuous seeking); an MMC Locate
+    //     re-seeds the per-list TC trigger guard so the follow-up MTC full-frame
+    //     is not misread as an independent jump.
+    // ------------------------------------------------------------------
+    if !cc30_selections.is_empty() || !mmc_events.is_empty() {
+        let ctx = tick_ctx.clone();
+        let mut transport = Transport::new(ctx.clone());
+
+        // CC30 selects a group (deduped by value in the MIDI drain). Selecting a
+        // *different* group while another is still running stops the previous
+        // group first — but never starts the new one (MMC Play does).
+        for (_value, list_id, new_group_id) in cc30_selections {
+            if let Some((prev_list_id, prev_group_id)) = mpc.selected_group {
+                if (prev_list_id, prev_group_id) != (list_id, new_group_id) {
+                    if let Some(cl) = ws.cue_list_by_id_mut(prev_list_id) {
+                        let _ = transport.hard_stop_cue(cl, &prev_group_id);
+                    }
+                }
+            }
+            mpc.selected_group = Some((list_id, new_group_id));
+        }
+
+        // MMC transport commands, applied to the selected group.
+        for mmc in mmc_events {
+            let Some((list_id, group_id)) = mpc.selected_group else {
+                log::debug!("MMC {mmc:?} arrived with no Cue Group selected — ignored.");
+                continue;
+            };
+            // Idempotency: a repeat of the same command within the debounce
+            // window is a duplicate (the MPC re-sends many MIDI events).
+            let key = mmc_dedupe_key(&mmc);
+            let now = Instant::now();
+            if let Some(last) = mpc.last_mmc.get(&key) {
+                if now.duration_since(*last) < Duration::from_millis(MMC_DEBOUNCE_MS) {
+                    continue;
+                }
+            }
+            mpc.last_mmc.insert(key, now);
+
+            let cl = match ws.cue_list_by_id_mut(list_id) {
+                Some(cl) => cl,
+                None => continue,
+            };
+            match mmc {
+                MmcCommand::Stop => {
+                    let _ = transport.hard_stop_cue(cl, &group_id);
+                    // A stored Locate is meaningless once stopped.
+                    mpc.pending_position_ms = None;
+                }
+                MmcCommand::Play | MmcCommand::DeferredPlay => {
+                    // Idempotent: never *restart* an already-playing group.
+                    match cl.get_mut_recursive(&group_id).map(|g| g.state()) {
+                        Some(CueState::Paused) => {
+                            let _ = cl.get_mut_recursive(&group_id).map(|g| g.resume(&ctx));
+                        }
+                        Some(CueState::Running) => continue,
+                        _ => {
+                            if let Some(pending_ms) = mpc.pending_position_ms {
+                                // Start, then apply the Locate's stored position.
+                                if transport.go_by_id(cl, &group_id).is_ok() {
+                                    if let Some(group) = cl.get_mut_recursive(&group_id) {
+                                        group.seek(pending_ms, &ctx);
+                                    }
+                                    mpc.last_seeked_ms = Some(pending_ms);
+                                    mpc.pending_position_ms = None;
+                                }
+                            } else {
+                                let _ = transport.go_by_id(cl, &group_id);
+                            }
+                        }
+                    }
+                }
+                MmcCommand::Locate { position } => {
+                    let target_ms = position.to_millis();
+                    // Duplicate Locate to the same target is a no-op.
+                    if mpc.last_seeked_ms == Some(target_ms) {
+                        continue;
+                    }
+                    let running = cl
+                        .get_mut_recursive(&group_id)
+                        .map(|g| g.is_running() || g.is_paused())
+                        .unwrap_or(false);
+                    if running {
+                        mpc.last_seeked_ms = Some(target_ms);
+                        if let Some(group) = cl.get_mut_recursive(&group_id) {
+                            group.seek(target_ms, &ctx);
+                        }
+                    } else {
+                        // Stopped/absent — park it for the next Play.
+                        mpc.pending_position_ms = Some(target_ms);
+                    }
+                    // Anchor the TC trigger guard at the located frame so the
+                    // incoming MTC does not misfire TC-triggered cues.
+                    cl.tc_last_triggered_frame = position.to_frame_number();
+                    // Re-anchor the flywheel to the new position so it doesn't fight the locate.
+                    if let Ok(slot) = tc_receiver.lock() {
+                        if let Some(r) = slot.as_ref() {
+                            r.reanchor_flywheel(position);
+                        }
+                    }
+                }
+            }
+
+        }
+    }
 
     // ------------------------------------------------------------------
     // 4. Apply video duration updates — search every cue list.
