@@ -251,6 +251,8 @@ pub enum TcEvent {
     Started(TcPosition),
     /// The TC stream stopped (freewheel window expired).
     Stopped,
+    /// An MMC transport command arrived on the TC/MMC port (MPC master).
+    Mmc(crate::engine::mmc::MmcCommand),
 }
 
 // ---------------------------------------------------------------------------

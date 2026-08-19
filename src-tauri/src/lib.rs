@@ -237,9 +237,8 @@ pub fn run() {
             let o_engine = Arc::clone(&output_engine);
             let d_engine = Arc::clone(&dmx_engine);
             let workspace = app.state::<AppState>().workspace.clone();
-            // Subscribe to TC events for the dispatcher in the event loop.
-            let tc_event_rx = app.state::<AppState>()
-                .tc_receiver.lock().ok()
+            let tc_receiver = app.state::<AppState>().tc_receiver.clone();
+            let tc_event_rx = tc_receiver.lock().ok()
                 .and_then(|opt| opt.as_ref().map(|r| r.subscribe()));
 
             // Start the per-cue MIDI trigger listener if this machine has it on.
@@ -262,6 +261,7 @@ pub fn run() {
                     crate::show::event_loop::run(
                         handle, a_engine, o_engine, d_engine, workspace, tc_event_rx,
                         midi_listener_for_loop,
+                        tc_receiver,
                     );
                 })
                 .expect("Failed to spawn event loop thread");
