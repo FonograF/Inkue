@@ -10,11 +10,12 @@
 #
 # Requirements: macOS with Homebrew mpv installed (brew install mpv).
 # The output directory is gitignored; re-run whenever you update libmpv.
+# Override the output directory with INKUE_MPV_DEST (used by the universal CI build).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="$SCRIPT_DIR/../src-tauri/vendor/mpv/macos"
+DEST="${INKUE_MPV_DEST:-$SCRIPT_DIR/../src-tauri/vendor/mpv/macos}"
 
 # ── Locate Homebrew prefix ───────────────────────────────────────────────────
 if [[ -d "/opt/homebrew" ]]; then

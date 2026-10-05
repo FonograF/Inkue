@@ -675,6 +675,31 @@ fn spawn_render_thread(
 // Render thread
 // ---------------------------------------------------------------------------
 
+/// Picks the GL framebuffer config for the output window.
+///
+/// An alpha channel is only a nicety (the output window is opaque), so it is
+/// requested first and dropped when the driver exposes no such config — the
+/// NVIDIA proprietary stack on X11 only offers alpha-less configs for some
+/// visuals, and giving up there left the whole video engine headless.
+fn pick_gl_config(display: &Display, window: RawWindowHandle) -> Result<glutin::config::Config> {
+    for alpha_size in [Some(8u8), None] {
+        let mut template = ConfigTemplateBuilder::new().compatible_with_native_window(window);
+        if let Some(bits) = alpha_size {
+            template = template.with_alpha_size(bits);
+        }
+        let found = unsafe { display.find_configs(template.build()) }
+            .map_err(|e| anyhow!("find_configs: {e}"))?
+            .next();
+        if let Some(config) = found {
+            if alpha_size.is_none() {
+                log::warn!("[render] no GL config with alpha — using an alpha-less one");
+            }
+            return Ok(config);
+        }
+    }
+    Err(anyhow!("no compatible GL config found"))
+}
+
 fn render_thread_main(
     handles:  SendableHandles,
     lib:      Arc<MpvLib>,
@@ -698,16 +723,7 @@ fn render_thread_main(
     let display = try_init!(create_display(handles.rdh, handles.rwh));
 
     // ── 2. GL config ─────────────────────────────────────────────────────────
-    let config_tpl = ConfigTemplateBuilder::new()
-        .compatible_with_native_window(handles.rwh)
-        .with_alpha_size(8)
-        .build();
-    let config = try_init!(unsafe {
-        display.find_configs(config_tpl)
-            .map_err(|e| anyhow!("find_configs: {e}"))?
-            .next()
-            .ok_or_else(|| anyhow!("no compatible GL config found"))
-    });
+    let config = try_init!(pick_gl_config(&display, handles.rwh));
 
     // ── 3. Context (OpenGL Core, not yet current) ────────────────────────────
     // macOS exposes only 3.2 and 4.1 core profiles (no 3.3); request 3.2 there.
