@@ -15,6 +15,7 @@
     "windows": [
       {
         "label": "main",
+        "zoomHotkeysEnabled": true,
         "title": "Inkue",
         "width": 1280,
         "height": 800,
@@ -27,6 +28,7 @@
       },
       {
         "label": "preferences",
+        "zoomHotkeysEnabled": true,
         "title": "Preferences",
         "width": 740,
         "height": 520,
@@ -38,6 +40,7 @@
       },
       {
         "label": "mixer",
+        "zoomHotkeysEnabled": true,
         "title": "Inkue Mixer",
         "width": 480,
         "height": 460,
