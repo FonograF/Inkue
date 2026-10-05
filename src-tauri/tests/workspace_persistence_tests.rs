@@ -227,3 +227,36 @@ fn relative_media_paths_are_absolutised_on_load() {
         resolved.display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Duplicate cue ids (legacy copy/paste of a Group kept its children's ids)
+// ---------------------------------------------------------------------------
+
+fn group_with_child(group_id: &str, child_id: &str) -> serde_json::Value {
+    let mut child = valid_cue(CueType::Memo, "Child");
+    child["id"] = serde_json::json!(child_id);
+    let mut group = valid_cue(CueType::Group, "Group");
+    group["id"] = serde_json::json!(group_id);
+    group["children"] = serde_json::json!([child]);
+    group
+}
+
+#[test]
+fn load_gives_fresh_ids_to_cues_that_share_an_id() {
+    let registry = full_registry();
+    let shared_child = "33333333-3333-4333-8333-333333333333";
+    let cues = vec![
+        group_with_child("44444444-4444-4444-8444-444444444444", shared_child),
+        group_with_child("55555555-5555-4555-8555-555555555555", shared_child),
+    ];
+    let doc = workspace_doc(1, cues);
+
+    let ws = Workspace::from_json_str(&doc, None, &registry).expect("load");
+    let list = ws.active_cue_list().unwrap();
+    let first_child = list.cues[0].child_cues().unwrap()[0].id();
+    let second_child = list.cues[1].child_cues().unwrap()[0].id();
+
+    assert_eq!(first_child.to_string(), shared_child, "first occurrence keeps its id");
+    assert_ne!(first_child, second_child, "the later copy must get its own id");
+    assert!(list.get_recursive(&second_child).is_some());
+}

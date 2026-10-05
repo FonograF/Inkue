@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     cue::{
         audio_cue::AudioCueFactory,
+        decoded_audio::DecodedAudioMap,
         fade_cue::FadeCueFactory,
         group_cue::GroupCueFactory,
         light_cue::LightCueFactory,
@@ -32,6 +33,14 @@ use crate::{
     show::{undo_stack::UndoStack, Workspace},
 };
 
+/// A cue copied to the in-app clipboard.
+pub struct ClipboardCue {
+    /// Serialised cue (a Group carries its children).
+    pub json: serde_json::Value,
+    /// Decoded audio of the cue and its descendants at copy time.
+    pub audio: DecodedAudioMap,
+}
+
 /// The Tauri managed state object.
 pub struct AppState {
     /// The current workspace (project file).
@@ -51,8 +60,9 @@ pub struct AppState {
     pub loading_cues: Arc<Mutex<HashSet<Uuid>>>,
     /// Undo / redo history for the active cue list.
     pub undo_stack: Arc<Mutex<UndoStack>>,
-    /// In-app clipboard: the last cue copied via Ctrl+C (serialised JSON).
-    pub clipboard: Arc<Mutex<Option<serde_json::Value>>>,
+    /// In-app clipboard: the last cue copied via Ctrl+C, with the decoded audio it
+    /// carried so a paste into another list is playable immediately.
+    pub clipboard: Arc<Mutex<Option<ClipboardCue>>>,
     /// Timestamp of the last GO trigger in ms since Unix epoch.
     /// Used to enforce `double_go_protection_ms` — any GO within that window
     /// is silently dropped.  Lock-free so it adds zero latency to the hot path.

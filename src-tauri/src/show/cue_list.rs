@@ -48,6 +48,14 @@ fn renumber_recursive(cues: &mut Vec<Box<dyn Cue>>, prefix: &str) {
     }
 }
 
+/// Whether any cue in the hierarchy already carries `number`.
+fn number_in_use(cues: &[Box<dyn Cue>], number: &str) -> bool {
+    cues.iter().any(|cue| {
+        cue.number() == Some(number)
+            || cue.child_cues().is_some_and(|children| number_in_use(children, number))
+    })
+}
+
 /// Format a cue number so whole steps read as integers ("1", "2") while
 /// fractional ones keep only the digits they need ("1.5", "0.25") — a cue
 /// number is a display string, and "1.0" or "1.500" would be noise.
@@ -362,6 +370,22 @@ impl CueList {
             .max()
             .unwrap_or(0);
         (max + 1).to_string()
+    }
+
+    /// Make `cue`'s number unique in this list before it is inserted — QLab
+    /// numbers are stable, but a pasted/duplicated cue must not shadow the
+    /// number of its source.  A colliding cue takes the next free number and,
+    /// for a Group, its children are re-prefixed to match (`3.1`, `3.2`, …).
+    pub fn ensure_unique_number(&self, cue: &mut dyn Cue) {
+        let Some(number) = cue.number() else { return };
+        if !number_in_use(&self.cues, number) {
+            return;
+        }
+        let fresh = self.next_available_number();
+        cue.set_number(Some(fresh.clone()));
+        if let Some(children) = cue.child_cues_mut() {
+            renumber_recursive(children, &fresh);
+        }
     }
 
     /// Append a cue to the end of the list.
@@ -1397,5 +1421,33 @@ mod tests {
         let json = list.to_json();
         assert_eq!(json["midi_triggers"].as_array().unwrap().len(), 0);
         assert_eq!(json["tc_triggers"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn unique_number_keeps_a_free_number() {
+        let mut list = CueList::new("L");
+        list.push(numbered_memo(Some("1")));
+        let mut incoming = numbered_memo(Some("7"));
+        list.ensure_unique_number(incoming.as_mut());
+        assert_eq!(incoming.number(), Some("7"));
+    }
+
+    #[test]
+    fn unique_number_moves_a_colliding_cue_to_the_next_free_number() {
+        let mut list = CueList::new("L");
+        list.push(numbered_memo(Some("1")));
+        list.push(numbered_memo(Some("2")));
+        let mut incoming = numbered_memo(Some("1"));
+        list.ensure_unique_number(incoming.as_mut());
+        assert_eq!(incoming.number(), Some("3"));
+    }
+
+    #[test]
+    fn unique_number_leaves_an_unnumbered_cue_alone() {
+        let mut list = CueList::new("L");
+        list.push(numbered_memo(Some("1")));
+        let mut incoming = numbered_memo(None);
+        list.ensure_unique_number(incoming.as_mut());
+        assert_eq!(incoming.number(), None);
     }
 }

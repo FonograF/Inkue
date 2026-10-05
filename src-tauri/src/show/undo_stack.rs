@@ -7,20 +7,18 @@
 //! `CueRegistry` and injects the saved audio Arc back, so there is never a
 //! re-decode round-trip on undo/redo.
 
-use std::sync::Arc;
-use std::time::Duration;
+use crate::cue::decoded_audio::DecodedAudioMap;
 
 /// Maximum number of undo levels kept in memory.
 const MAX_UNDO: usize = 50;
 
-/// Snapshot of a single cue: its serialised state plus (optionally) the decoded
-/// audio samples it already had in memory.
+/// Snapshot of a single cue: its serialised state plus the decoded audio it
+/// (and, for a Group, each of its children) already had in memory.
 pub struct CueSnapshot {
     /// Full serialised form produced by [`crate::cue::traits::Cue::serialize`].
     pub json: serde_json::Value,
-    /// Decoded audio, if the cue had already loaded it.
-    /// Tuple: (samples Arc, channel count, sample rate Hz, total duration).
-    pub decoded: Option<(Arc<Vec<f32>>, u16, u32, Duration)>,
+    /// Decoded audio of the cue and its descendants, keyed by cue id.
+    pub decoded: DecodedAudioMap,
 }
 
 /// Complete snapshot of the active cue list at a single point in time.

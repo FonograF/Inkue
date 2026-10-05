@@ -84,6 +84,34 @@ fn absolutize_paths(value: &mut serde_json::Value, base: &std::path::Path) {
     }
 }
 
+/// Give every cue whose id already appeared earlier in the document a fresh id.
+///
+/// Older versions pasted/duplicated a Group with its children's ids unchanged,
+/// so two lists could hold cues sharing an id — and every by-id command
+/// (relink, decode, seek) then hit the first match, i.e. the wrong list.
+/// Returns how many ids were replaced.
+fn dedupe_cue_ids(value: &mut serde_json::Value, seen: &mut HashSet<String>) -> usize {
+    match value {
+        serde_json::Value::Array(items) => items.iter_mut().map(|item| dedupe_cue_ids(item, seen)).sum(),
+        serde_json::Value::Object(obj) => {
+            let mut replaced = 0;
+            if let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(str::to_owned) {
+                if !seen.insert(id) {
+                    let fresh = Uuid::new_v4().to_string();
+                    seen.insert(fresh.clone());
+                    obj.insert("id".into(), serde_json::Value::String(fresh));
+                    replaced += 1;
+                }
+            }
+            if let Some(children) = obj.get_mut("children") {
+                replaced += dedupe_cue_ids(children, seen);
+            }
+            replaced
+        }
+        _ => 0,
+    }
+}
+
 /// Recursively walk cue JSON and replace `file_path` values using `path_map`
 /// (absolute path → new relative path).  Paths not present in the map are
 /// left unchanged so the subsequent `relativize_paths` pass can handle them.
@@ -629,9 +657,14 @@ impl Workspace {
             .unwrap_or_default();
 
         let mut cue_lists = Vec::new();
+        let mut seen_cue_ids = HashSet::new();
         for mut cl_val in cue_lists_val {
-            if let Some(base) = base_dir {
-                if let Some(cues) = cl_val.get_mut("cues") {
+            if let Some(cues) = cl_val.get_mut("cues") {
+                let replaced = dedupe_cue_ids(cues, &mut seen_cue_ids);
+                if replaced > 0 {
+                    log::warn!("[workspace] {replaced} duplicate cue id(s) repaired on load");
+                }
+                if let Some(base) = base_dir {
                     absolutize_paths(cues, base);
                 }
             }

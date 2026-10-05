@@ -400,7 +400,7 @@ pub fn seek_cue(
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let context = make_context(&state, stop_fade_ms);
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    if let Some(cue) = cue_list.get_mut(&id) {
+    if let Some(cue) = cue_list.get_mut_recursive(&id) {
         cue.seek(position_ms, &context);
     }
     Ok(())

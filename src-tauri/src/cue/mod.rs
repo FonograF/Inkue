@@ -10,6 +10,7 @@ pub mod camera_cue;
 pub mod context;
 pub mod control_cue;
 pub mod curve;
+pub mod decoded_audio;
 pub mod devamp_cue;
 pub mod fade_cue;
 pub mod group_cue;

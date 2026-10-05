@@ -12,13 +12,21 @@
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
+use super::preflight_cmds::spawn_media_preload;
+
 use crate::{
-    cue::registry::CueRegistry,
+    cue::{
+        decoded_audio::{
+            apply_decoded_audio, apply_decoded_audio_to_copy, assign_fresh_ids,
+            collect_decoded_audio, media_cues_needing_decode,
+        },
+        registry::CueRegistry,
+    },
     show::{
         cue_list::CueList,
         undo_stack::{CueSnapshot, Snapshot},
     },
-    state::AppState,
+    state::{AppState, ClipboardCue},
 };
 
 // ---------------------------------------------------------------------------
@@ -36,7 +44,7 @@ pub fn take_snapshot(cue_list: &CueList) -> Snapshot {
             .iter()
             .map(|c| CueSnapshot {
                 json: c.serialize(),
-                decoded: c.extract_decoded_audio(),
+                decoded: collect_decoded_audio(c.as_ref()),
             })
             .collect(),
         playhead_id: cue_list.playhead_cue_id,
@@ -53,9 +61,7 @@ fn restore_snapshot(
     cue_list.cues.clear();
     for cs in snapshot.cues {
         let mut cue = registry.from_json(cs.json)?;
-        if let Some((samples, channels, sr, dur)) = cs.decoded {
-            cue.accept_preloaded_audio(samples, channels, sr, dur);
-        }
+        apply_decoded_audio(cue.as_mut(), &cs.decoded);
         cue_list.cues.push(cue);
     }
     // Restore playhead; clear it if the referenced cue no longer exists.
@@ -193,7 +199,8 @@ pub fn redo(
 ///
 /// The clipboard is internal to Inkue — it does not interact with the OS
 /// clipboard.  Only one cue is stored at a time; copying a new one replaces
-/// the previous entry.
+/// the previous entry.  The cue's decoded audio (and its children's, for a
+/// Group) travels with it, so pasting into another cue list stays playable.
 #[tauri::command]
 pub fn copy_cue(
     cue_id: String,
@@ -202,10 +209,13 @@ pub fn copy_cue(
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
-    let cue = cue_list.get(&id).ok_or("Cue not found")?;
-    let json = cue.serialize();
+    let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
+    let entry = ClipboardCue {
+        json: cue.serialize(),
+        audio: collect_decoded_audio(cue),
+    };
     drop(ws);
-    *state.clipboard.lock().map_err(|e| e.to_string())? = Some(json);
+    *state.clipboard.lock().map_err(|e| e.to_string())? = Some(entry);
     Ok(())
 }
 
@@ -223,46 +233,24 @@ pub fn paste_cue(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    // 1. Clone the clipboard JSON (brief clipboard lock).
-    let template = {
+    // 1. Take a copy of the clipboard entry (brief clipboard lock).
+    let (mut new_json, source_audio) = {
         let clip = state.clipboard.lock().map_err(|e| e.to_string())?;
-        clip.clone().ok_or("Clipboard is empty — copy a cue first")?
+        let entry = clip.as_ref().ok_or("Clipboard is empty — copy a cue first")?;
+        (entry.json.clone(), entry.audio.clone())
     };
 
-    // 2. Try to transfer decoded audio from the original cue (still in the
-    //    workspace) so the paste is playable immediately without re-decoding.
-    //    This mirrors the strategy used by duplicate_cue.
-    let original_id: Option<Uuid> = template["id"]
-        .as_str()
-        .and_then(|s| s.parse().ok());
-    let preserved_audio = original_id.and_then(|orig_id| {
-        let ws = state.workspace.lock().ok()?;
-        let cue_list = ws.active_cue_list()?;
-        let cue = cue_list.get(&orig_id)?;
-        cue.extract_decoded_audio()
-    });
-
-    // 3. Assign a fresh ID and rebuild the cue via the registry.
-    let mut new_json = template;
-    new_json["id"] = serde_json::json!(Uuid::new_v4().to_string());
-    // Also capture file_path for a potential background decode fallback.
-    let file_path_for_decode = if preserved_audio.is_none() {
-        new_json["file_path"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(std::path::PathBuf::from)
-    } else {
-        None
-    };
+    // 2. Fresh ids for the cue and its children (a Group's children would
+    //    otherwise share ids with the original), then rebuild via the registry
+    //    and re-attach the decoded audio of the whole subtree.
+    let new_to_old = assign_fresh_ids(&mut new_json);
     let mut new_cue = {
         let registry = state.registry.lock().map_err(|e| e.to_string())?;
         registry.from_json(new_json).map_err(|e| e.to_string())?
     };
-    // Transfer the decoded audio Arc (cheap ref-count bump, not a data copy).
-    if let Some((samples, channels, sample_rate, duration)) = preserved_audio {
-        new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
-    }
+    apply_decoded_audio_to_copy(new_cue.as_mut(), &source_audio, &new_to_old);
     let new_id = new_cue.id().to_string();
+    let pending_decodes = media_cues_needing_decode(new_cue.as_ref());
 
     // 3. Push undo snapshot before mutating.
     push_current_snapshot(&state)?;
@@ -283,63 +271,16 @@ pub fn paste_cue(
         None => cue_list.cues.len(),
     };
 
+    cue_list.ensure_unique_number(new_cue.as_mut());
     cue_list.insert(insert_idx, new_cue);
+    drop(ws);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
 
-    // 5. Fallback: if the original cue was no longer in the workspace (e.g. it
-    //    was deleted before paste), trigger a background decode so the pasted
-    //    cue still becomes playable.
-    if let Some(file_path_buf) = file_path_for_decode {
-        let new_id_uuid: Uuid = new_id.parse().expect("we just created this UUID");
-        {
-            let mut loading = state.loading_cues.lock().map_err(|e| e.to_string())?;
-            loading.insert(new_id_uuid);
-        }
-        drop(ws);
-        let workspace = state.workspace.clone();
-        let loading_cues = state.loading_cues.clone();
-        let app_handle2 = app_handle.clone();
-        std::thread::Builder::new()
-            .name("inkue-preload-paste".into())
-            .spawn(move || {
-                #[cfg(windows)]
-                // SAFETY: only changes the scheduling priority of this thread.
-                unsafe {
-                    use std::os::raw::c_void;
-                    extern "system" {
-                        fn GetCurrentThread() -> *mut c_void;
-                        fn SetThreadPriority(h_thread: *mut c_void, n_priority: i32) -> i32;
-                    }
-                    SetThreadPriority(GetCurrentThread(), -1);
-                }
-                match crate::cue::audio_cue::AudioCue::decode_file(&file_path_buf) {
-                    Ok((samples, channels, sample_rate)) => {
-                        let duration = std::time::Duration::from_secs_f64(
-                            samples.len() as f64 / channels as f64 / sample_rate as f64,
-                        );
-                        let samples = std::sync::Arc::new(samples);
-                        if let Ok(mut ws) = workspace.lock() {
-                            if let Some(cl) = ws.active_cue_list_mut() {
-                                if let Some(cue) = cl.get_mut(&new_id_uuid) {
-                                    cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
-                                }
-                            }
-                        }
-                        if let Ok(mut loading) = loading_cues.lock() {
-                            loading.remove(&new_id_uuid);
-                        }
-                        let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
-                    }
-                    Err(e) => {
-                        if let Ok(mut loading) = loading_cues.lock() {
-                            loading.remove(&new_id_uuid);
-                        }
-                        log::warn!("Background preload (paste fallback) failed for {:?}: {e}", file_path_buf);
-                        let _ = app_handle2.emit("workspace-modified", serde_json::json!({}));
-                    }
-                }
-            })
-            .expect("Failed to spawn preload thread");
+    // 5. Anything whose audio could not be carried over (the source was never
+    //    decoded, e.g. a file that was missing at copy time) decodes in the
+    //    background so the pasted cue still becomes playable.
+    for (cue_id, cue_type, path) in pending_decodes {
+        spawn_media_preload(state.inner(), &app_handle, cue_id, cue_type, path);
     }
 
     Ok(new_id)

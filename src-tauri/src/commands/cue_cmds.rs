@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use crate::{
     cue::{
+        decoded_audio::{
+            apply_decoded_audio, apply_decoded_audio_to_copy, assign_fresh_ids, collect_decoded_audio,
+        },
         traits::Cue,
         types::{ContinueMode, CueColor, CueState, CueType, GroupMode},
     },
@@ -412,27 +415,27 @@ pub fn duplicate_cue(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
 
-    let (json, preserved_audio) = {
+    let (json, source_audio, new_to_old) = {
         let cue_list = ws.active_cue_list().ok_or("No active cue list")?;
         let cue = cue_list.get_recursive(&id).ok_or("Cue not found")?;
         let mut j = cue.serialize();
-        // Assign a new UUID to the copy.
-        j["id"] = serde_json::json!(Uuid::new_v4().to_string());
-        // Transfer decoded audio so the copy is playable immediately,
-        // without requiring a background re-decode.
-        let audio = cue.extract_decoded_audio();
-        (j, audio)
+        // Fresh ids for the copy and (for a Group) every child.  The decoded
+        // audio travels with it so the copy is playable immediately, without a
+        // background re-decode.
+        let new_to_old = assign_fresh_ids(&mut j);
+        (j, collect_decoded_audio(cue), new_to_old)
     };
 
     let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
-    if let Some((samples, channels, sample_rate, duration)) = preserved_audio {
-        new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
-    }
+    apply_decoded_audio_to_copy(new_cue.as_mut(), &source_audio, &new_to_old);
     let new_id = new_cue.id().to_string();
     drop(registry);
 
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    if cue_list.index_of(&id).is_some() {
+        cue_list.ensure_unique_number(new_cue.as_mut());
+    }
     // Insert the copy right after its source, wherever it lives — so duplicating
     // a cue nested in a group keeps the copy in that same group.
     cue_list
@@ -471,9 +474,8 @@ pub fn duplicate_cues(
             .map(|id| {
                 let cue = cue_list.get_recursive(id).ok_or_else(|| format!("Cue {id:?} not found"))?;
                 let mut j = cue.serialize();
-                j["id"] = serde_json::json!(Uuid::new_v4().to_string());
-                let audio = cue.extract_decoded_audio();
-                Ok((*id, j, audio))
+                let new_to_old = assign_fresh_ids(&mut j);
+                Ok((*id, j, collect_decoded_audio(cue), new_to_old))
             })
             .collect::<Result<Vec<_>, String>>()?
     };
@@ -481,10 +483,11 @@ pub fn duplicate_cues(
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
     let mut new_ids = Vec::with_capacity(copies.len());
-    for (src_id, json, audio) in copies {
+    for (src_id, json, source_audio, new_to_old) in copies {
         let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
-        if let Some((samples, channels, sample_rate, duration)) = audio {
-            new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
+        apply_decoded_audio_to_copy(new_cue.as_mut(), &source_audio, &new_to_old);
+        if cue_list.index_of(&src_id).is_some() {
+            cue_list.ensure_unique_number(new_cue.as_mut());
         }
         new_ids.push(new_cue.id().to_string());
         cue_list
@@ -542,7 +545,10 @@ pub fn update_cue(
         }
 
         let new_file_path = json.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let preserved_audio = if old_file_path == new_file_path { cue.extract_decoded_audio() } else { None };
+        let mut preserved_audio = collect_decoded_audio(cue);
+        if old_file_path != new_file_path {
+            preserved_audio.remove(&id);
+        }
         let runtime = cue.runtime_state();
         (json, preserved_audio, runtime)
     };
@@ -551,9 +557,7 @@ pub fn update_cue(
     let _ = &mut json;
 
     let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
-    if let Some((samples, channels, sample_rate, duration)) = preserved_audio {
-        new_cue.accept_preloaded_audio(samples, channels, sample_rate, duration);
-    }
+    apply_decoded_audio(new_cue.as_mut(), &preserved_audio);
     new_cue.restore_runtime_state(runtime);
     // Push live level/pan changes to the cue's currently-playing voice so an
     // inspector edit (volume, pan) takes effect immediately without restarting.
@@ -952,7 +956,7 @@ pub fn set_audio_file(
                     if let Ok(mut ws) = workspace.lock() {
                         'store: {
                             for cl in ws.cue_lists.iter_mut() {
-                                if let Some(cue) = cl.get_mut(&id) {
+                                if let Some(cue) = cl.get_mut_recursive(&id) {
                                     cue.accept_preloaded_audio(
                                         samples, channels, sample_rate, duration,
                                     );
@@ -1086,17 +1090,17 @@ pub fn set_video_file(
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
-    let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
-    if cue_list.cues[idx].cue_type() != CueType::Video {
+    let cue = cue_list.get_mut_recursive(&id).ok_or("Cue not found")?;
+    if cue.cue_type() != CueType::Video {
         return Err("set_video_file only applies to Video Cues".to_string());
     }
 
-    stop_if_live(cue_list.cues[idx].as_mut(), &state, stop_fade_ms);
-    let mut json = cue_list.cues[idx].serialize();
+    stop_if_live(cue, &state, stop_fade_ms);
+    let mut json = cue.serialize();
     set_file_path_resetting_clip(&mut json, &file_path);
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     drop(registry);
-    cue_list.cues[idx] = new_cue;
+    cue_list.replace_cue_recursive(&id, new_cue);
 
     // Mark as loading — the audio track is decoded off-thread (the indicator
     // clears when decoding finishes), mirroring Audio Cues.
@@ -1128,9 +1132,9 @@ pub fn set_video_file(
                 if let Ok(mut ws) = workspace2.lock() {
                     'store: {
                         for cl in ws.cue_lists.iter_mut() {
-                            if let Some(idx2) = cl.index_of(&cue_id) {
+                            if let Some(cue) = cl.get_mut_recursive(&cue_id) {
                                 if let Some(dur) = duration {
-                                    cl.cues[idx2].set_runtime_duration(dur);
+                                    cue.set_runtime_duration(dur);
                                 }
                                 match audio {
                                     Ok(Some((samples, channels, sample_rate))) => {
@@ -1139,7 +1143,7 @@ pub fn set_video_file(
                                                 / channels.max(1) as f64
                                                 / sample_rate.max(1) as f64,
                                         );
-                                        cl.cues[idx2].accept_preloaded_audio(
+                                        cue.accept_preloaded_audio(
                                             std::sync::Arc::new(samples),
                                             channels,
                                             sample_rate,
@@ -1257,19 +1261,19 @@ pub fn set_image_file(
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
 
-    let idx = cue_list.index_of(&id).ok_or("Cue not found")?;
-    if cue_list.cues[idx].cue_type() != CueType::Image {
+    let cue = cue_list.get_mut_recursive(&id).ok_or("Cue not found")?;
+    if cue.cue_type() != CueType::Image {
         return Err("set_image_file only applies to Image Cues".to_string());
     }
 
-    stop_if_live(cue_list.cues[idx].as_mut(), &state, stop_fade_ms);
-    let mut json = cue_list.cues[idx].serialize();
+    stop_if_live(cue, &state, stop_fade_ms);
+    let mut json = cue.serialize();
     if let Some(obj) = json.as_object_mut() {
         obj.insert("file_path".to_string(), serde_json::json!(file_path));
     }
     let new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     drop(registry);
-    cue_list.cues[idx] = new_cue;
+    cue_list.replace_cue_recursive(&id, new_cue);
 
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
@@ -1471,7 +1475,7 @@ pub fn set_group_mode(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    let cue = cue_list.get_mut(&id).ok_or("Group cue not found")?;
+    let cue = cue_list.get_mut_recursive(&id).ok_or("Group cue not found")?;
     cue.set_group_mode(group_mode);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
@@ -1490,7 +1494,7 @@ pub fn set_playlist_loop(
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    let cue = cue_list.get_mut(&id).ok_or("Group cue not found")?;
+    let cue = cue_list.get_mut_recursive(&id).ok_or("Group cue not found")?;
     cue.set_playlist_loop(loop_on);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())

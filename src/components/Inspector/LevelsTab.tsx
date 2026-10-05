@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AudioCueData, OutputPatch, VideoCueData } from "../../lib/types";
 import { getNormalizeDb, getOutputPatchTable, setLiveLevel } from "../../lib/commands";
-import { Field, inputStyle } from "./Field";
+import { Field, NumberInput, inputStyle } from "./Field";
 import { Select } from "../common/Select";
 import { LevelMatrixGrid } from "./LevelMatrixGrid";
-import { DragNumber } from "../common/DragNumber";
 
 export function LevelsTab({
   cue,
@@ -106,14 +105,13 @@ export function LevelsTab({
             }}
             onMouseUp={() => commitVolume(volumeDb)}
           />
-          <DragNumber
-            style={{ ...inputStyle, width: 60 }}
-            step="0.5"
-            min="-60"
-            max="12"
-            value={volumeDb.toFixed(1)}
-            onChange={(e) => setVolumeDb(parseFloat(e.target.value))}
-            onBlur={() => commitVolume(volumeDb)}
+          <NumberInput
+            width={60}
+            step={0.5}
+            min={-60}
+            max={12}
+            value={Math.round(volumeDb * 10) / 10}
+            onCommit={(v) => { setVolumeDb(v); previewLevels(v, pan); commitVolume(v); }}
           />
         </div>
       </Field>
@@ -170,14 +168,13 @@ export function LevelsTab({
               onMouseUp={() => commitPan(pan)}
             />
             <span style={{ color: "var(--wc-text-secondary)", fontSize: 11, flexShrink: 0 }}>R</span>
-            <DragNumber
-              style={{ ...inputStyle, width: 60 }}
-              step="0.05"
-              min="-1"
-              max="1"
-              value={pan.toFixed(2)}
-              onChange={(e) => setPan(parseFloat(e.target.value))}
-              onBlur={() => commitPan(pan)}
+            <NumberInput
+              width={60}
+              step={0.05}
+              min={-1}
+              max={1}
+              value={Math.round(pan * 100) / 100}
+              onCommit={(v) => { setPan(v); previewLevels(volumeDb, v); commitPan(v); }}
             />
           </div>
         </Field>

@@ -223,7 +223,7 @@ pub fn relink_media(
 
 /// Background preload after a relink: probe video duration + decode the audio
 /// track so the re-pointed cue is ready to play.  Image cues need nothing.
-fn spawn_media_preload(
+pub(crate) fn spawn_media_preload(
     state: &AppState,
     app_handle: &tauri::AppHandle,
     cue_id: CueId,

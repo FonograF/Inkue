@@ -41,6 +41,7 @@ export function BasicsTab({
               style={inputStyle}
               defaultValue={cue.number ?? ""}
               onBlur={(e) => onSave({ number: e.target.value || null })}
+              onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
             />
           </MiniField>
           <MiniField label="Color">
@@ -54,6 +55,7 @@ export function BasicsTab({
             style={inputStyle}
             defaultValue={cue.name}
             onBlur={(e) => onSave({ name: e.target.value })}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
           />
         </Field>
         <Field label="Notes">

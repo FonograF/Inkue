@@ -143,6 +143,9 @@ export function DragNumber({
         onKeyDown={(e) => {
           if (e.key === "ArrowUp") { e.preventDefault(); nudge(1, e.shiftKey); }
           if (e.key === "ArrowDown") { e.preventDefault(); nudge(-1, e.shiftKey); }
+          // Enter commits exactly like leaving the field — blurring fires the
+          // one `onBlur` save path every caller already has.
+          if (e.key === "Enter") e.currentTarget.blur();
         }}
         style={{
           width: "100%",
