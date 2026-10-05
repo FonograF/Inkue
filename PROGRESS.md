@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-07-11
 
-## Current version: 1.3.3 released — first release shipping QLab workspace import (BETA), per-cue MIDI triggers, custom fade curves and ten new cue types; plus: a failed engine no longer kills the app at startup
+## Current version: 1.3.4 — fix release: cues in Groups keep their audio, video on NVIDIA/X11 and Intel Macs, UI zoom (1.3.3 shipped QLab workspace import (BETA), per-cue MIDI triggers, custom fade curves and ten new cue types)
 
 ## cargo build result
 
@@ -13,7 +13,7 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 453 pass, 0 failures** (528 across the whole suite;
+**`cargo test --lib` → 465 pass, 0 failures** (verified 2026-10-05;
 verified 2026-08-11; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
@@ -216,6 +216,27 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### 1.3.4 (2026-10-05) — Cues in Groups, Intel Mac video, UI zoom
+
+Issues #7, #8, #9.
+
+- **`cue/decoded_audio.rs`** (new) — collect/apply decoded audio over a whole
+  subtree + `assign_fresh_ids`. A Group's `extract_decoded_audio` is `None`, so every
+  rebuild (undo snapshot, `update_cue`, duplicate, paste) dropped its children's
+  samples. Clipboard is now `ClipboardCue { json, audio }` (`state/app_state.rs`).
+- **Duplicate ids** — copying a Group kept its children's ids, so by-id commands hit
+  the other list. Copies get fresh ids; `workspace.rs::dedupe_cue_ids` repairs saved
+  shows on load.
+- `set_audio/video/image_file`, `seek_cue`, `set_group_mode`, `set_playlist_loop`,
+  `preload` used top-level lookups → now `get_mut_recursive`.
+- `CueList::ensure_unique_number` for paste/duplicate of top-level cues.
+- `DragNumber`: Enter commits; `LevelsTab` Volume/Pan use `NumberInput` (no NaN).
+- `render.rs::pick_gl_config`: alpha first, then alpha-less (NVIDIA/X11 headless).
+- Release: universal libmpv on macOS (`libmpv-macos-x86_64` job +
+  `scripts/merge_universal_macos_libs.sh`), `minimumSystemVersion` 12.0.
+  **CI path not yet exercised.**
+- `zoomHotkeysEnabled` on main/preferences/mixer.
 
 ### 1.3.3 (2026-08-11) — A failed engine no longer kills the app at startup
 
