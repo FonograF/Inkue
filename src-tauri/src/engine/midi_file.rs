@@ -33,6 +33,9 @@ const SPIN_MARGIN: Duration = Duration::from_millis(1);
 /// Longest single sleep. Caps how long a stop or pause takes to be noticed.
 const MAX_SLEEP: Duration = Duration::from_millis(20);
 
+/// How often a paused player looks at its flags.
+const PAUSE_POLL: Duration = Duration::from_millis(2);
+
 /// Tempo assumed until the file says otherwise: 120 BPM, per the SMF spec.
 const DEFAULT_US_PER_BEAT: f64 = 500_000.0;
 
@@ -357,6 +360,35 @@ impl MidiSink for midir::MidiOutputConnection {
     }
 }
 
+/// Time source of the playback thread.
+///
+/// Playback uses the OS clock; the scheduler tests drive a virtual one, so the
+/// times they assert are exact on any machine instead of depending on how
+/// punctually a loaded CI runner wakes a sleeping thread.
+trait Clock {
+    fn now(&self) -> Instant;
+    /// Block for at most `duration`; returning early is allowed.
+    fn wait(&self, duration: Duration);
+}
+
+/// The OS clock.
+struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn wait(&self, duration: Duration) {
+        if duration > SPIN_MARGIN {
+            std::thread::sleep(duration - SPIN_MARGIN);
+        } else {
+            // Inside the margin the OS timer is too coarse to help.
+            std::thread::yield_now();
+        }
+    }
+}
+
 /// Shared flags the playback thread polls.
 #[derive(Debug, Default)]
 struct PlayerControl {
@@ -399,7 +431,7 @@ impl MidiFilePlayer {
         std::thread::Builder::new()
             .name("inkue-midi-file".into())
             .spawn(move || {
-                play(sequence, connection, rate, played_offset, thread_control, label);
+                play(sequence, connection, SystemClock, rate, played_offset, thread_control, label);
             })
             .map_err(MidiFileError::Io)?;
 
@@ -451,9 +483,10 @@ impl ActiveNotes {
 }
 
 /// The playback thread body.
-fn play<S: MidiSink>(
+fn play<S: MidiSink, C: Clock>(
     sequence: Arc<MidiSequence>,
     mut sink: S,
+    clock: C,
     rate: f64,
     played_offset: Duration,
     control: Arc<PlayerControl>,
@@ -477,14 +510,14 @@ fn play<S: MidiSink>(
         }
     }
 
-    let mut origin = Instant::now() - played_offset;
+    let mut origin = clock.now() - played_offset;
     log::info!(
         "[midi-file] {label}: playing {} events at {rate}x from {played_offset:?}",
         sequence.events.len() - start_index,
     );
 
     for event in &sequence.events[start_index..] {
-        if !wait_until(&mut origin, scale(event.at, rate), &control) {
+        if !wait_until(&clock, &mut origin, scale(event.at, rate), &control) {
             break;
         }
         if let Err(e) = sink.send(&event.data) {
@@ -497,7 +530,7 @@ fn play<S: MidiSink>(
     // Let the tail of the file play out: a note released on the last tick
     // still needs its silence honoured before the cue reports done.
     if !control.stop.load(Ordering::Relaxed) {
-        wait_until(&mut origin, scale(sequence.duration, rate), &control);
+        wait_until(&clock, &mut origin, scale(sequence.duration, rate), &control);
     }
 
     silence(&mut sink, &active, sequence.channels_used);
@@ -512,36 +545,30 @@ fn scale(at: Duration, rate: f64) -> Duration {
 /// Block until `origin + due`, absorbing pauses by pushing `origin` forward.
 ///
 /// Returns `false` if the player was stopped while waiting.
-fn wait_until(origin: &mut Instant, due: Duration, control: &PlayerControl) -> bool {
+fn wait_until<C: Clock>(clock: &C, origin: &mut Instant, due: Duration, control: &PlayerControl) -> bool {
     loop {
         if control.stop.load(Ordering::Relaxed) {
             return false;
         }
         if control.paused.load(Ordering::Relaxed) {
-            let paused_at = Instant::now();
+            let paused_at = clock.now();
             while control.paused.load(Ordering::Relaxed) {
                 if control.stop.load(Ordering::Relaxed) {
                     return false;
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                clock.wait(PAUSE_POLL);
             }
             // The file did not advance while paused.
-            *origin += paused_at.elapsed();
+            *origin += clock.now() - paused_at;
             continue;
         }
 
         let deadline = *origin + due;
-        let now = Instant::now();
+        let now = clock.now();
         if now >= deadline {
             return true;
         }
-        let remaining = deadline - now;
-        if remaining > SPIN_MARGIN {
-            std::thread::sleep((remaining - SPIN_MARGIN).min(MAX_SLEEP));
-        } else {
-            // Inside the margin the OS timer is too coarse to help.
-            std::thread::yield_now();
-        }
+        clock.wait((deadline - now).min(MAX_SLEEP));
     }
 }
 
@@ -838,7 +865,7 @@ mod tests {
         let control = PlayerControl::default();
         let mut origin = Instant::now();
         let started = Instant::now();
-        assert!(wait_until(&mut origin, Duration::from_millis(30), &control));
+        assert!(wait_until(&SystemClock, &mut origin, Duration::from_millis(30), &control));
         assert!(started.elapsed() >= Duration::from_millis(28), "did not actually wait");
     }
 
@@ -854,7 +881,7 @@ mod tests {
         let mut origin = Instant::now();
         let started = Instant::now();
         // An hour away: only the stop can end this wait.
-        assert!(!wait_until(&mut origin, Duration::from_secs(3600), &control));
+        assert!(!wait_until(&SystemClock, &mut origin, Duration::from_secs(3600), &control));
         assert!(started.elapsed() < Duration::from_secs(2), "stop was not noticed");
     }
 
@@ -872,7 +899,7 @@ mod tests {
 
         let mut origin = Instant::now();
         let started = Instant::now();
-        assert!(wait_until(&mut origin, Duration::from_millis(30), &control));
+        assert!(wait_until(&SystemClock, &mut origin, Duration::from_millis(30), &control));
         let waited = started.elapsed();
         assert!(
             waited >= Duration::from_millis(65),
@@ -886,7 +913,7 @@ mod tests {
         // Origin an hour ago: everything in the file is overdue.
         let mut origin = Instant::now() - Duration::from_secs(3600);
         let started = Instant::now();
-        assert!(wait_until(&mut origin, Duration::from_millis(500), &control));
+        assert!(wait_until(&SystemClock, &mut origin, Duration::from_millis(500), &control));
         assert!(started.elapsed() < Duration::from_millis(50));
     }
 
@@ -894,31 +921,104 @@ mod tests {
     //
     // These drive the real `play` loop against a recording sink, so ordering,
     // timing, mid-file starts and what a stop leaves behind are covered
-    // without a MIDI port.
+    // without a MIDI port. Time is virtual: the test advances it one
+    // millisecond at a time and waits for the player to block on the clock
+    // again before taking the next step, so every timing below is exact.
 
-    use std::sync::Mutex;
+    use std::sync::{Condvar, Mutex};
 
-    /// `(milliseconds since the player started, message bytes)`.
+    #[derive(Default)]
+    struct VirtualTime {
+        elapsed: Duration,
+        /// Bumped by every advance; a player parked on an older epoch wakes.
+        epoch: u64,
+        /// Epoch the player is currently blocked on, if it is blocked.
+        parked_on: Option<u64>,
+        finished: bool,
+    }
+
+    /// A clock only the test moves.
+    struct ManualClock {
+        base: Instant,
+        state: Mutex<VirtualTime>,
+        changed: Condvar,
+    }
+
+    impl ManualClock {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { base: Instant::now(), state: Mutex::default(), changed: Condvar::new() })
+        }
+
+        fn elapsed_ms(&self) -> u64 {
+            self.state.lock().unwrap().elapsed.as_millis() as u64
+        }
+
+        /// Wait until the player has done everything due by now: it is blocked
+        /// on the clock again, or it has returned.
+        fn settle(&self) {
+            let mut state = self.state.lock().unwrap();
+            while !(state.finished || state.parked_on == Some(state.epoch)) {
+                state = self.changed.wait(state).unwrap();
+            }
+        }
+
+        fn bump(&self, by: Duration) {
+            let mut state = self.state.lock().unwrap();
+            state.elapsed += by;
+            state.epoch += 1;
+            self.changed.notify_all();
+        }
+
+        /// Let `ms` milliseconds of virtual time pass, one at a time.
+        fn run_for(&self, ms: u64) {
+            for _ in 0..ms {
+                self.bump(Duration::from_millis(1));
+                self.settle();
+            }
+        }
+
+        fn finish(&self) {
+            self.state.lock().unwrap().finished = true;
+            self.changed.notify_all();
+        }
+    }
+
+    impl Clock for Arc<ManualClock> {
+        fn now(&self) -> Instant {
+            self.base + self.state.lock().unwrap().elapsed
+        }
+
+        fn wait(&self, duration: Duration) {
+            let mut state = self.state.lock().unwrap();
+            let until = state.elapsed + duration;
+            let epoch = state.epoch;
+            state.parked_on = Some(epoch);
+            self.changed.notify_all();
+            while state.elapsed < until && state.epoch == epoch {
+                state = self.changed.wait(state).unwrap();
+            }
+            state.parked_on = None;
+        }
+    }
+
+    /// `(virtual milliseconds since the player started, message bytes)`.
     type SentLog = Arc<Mutex<Vec<(u64, Vec<u8>)>>>;
 
-    #[derive(Clone)]
     struct RecordingSink {
-        started: Instant,
+        clock: Arc<ManualClock>,
         log: SentLog,
     }
 
     impl MidiSink for RecordingSink {
         fn send(&mut self, data: &[u8]) -> Result<(), String> {
-            self.log
-                .lock()
-                .unwrap()
-                .push((self.started.elapsed().as_millis() as u64, data.to_vec()));
+            self.log.lock().unwrap().push((self.clock.elapsed_ms(), data.to_vec()));
             Ok(())
         }
     }
 
     struct Running {
         control: Arc<PlayerControl>,
+        clock: Arc<ManualClock>,
         log: SentLog,
         handle: Option<std::thread::JoinHandle<()>>,
     }
@@ -930,31 +1030,37 @@ mod tests {
         fn timed(&self) -> Vec<(u64, Vec<u8>)> {
             self.log.lock().unwrap().clone()
         }
+        fn run_for(&self, ms: u64) {
+            self.clock.run_for(ms);
+        }
+        fn set_paused(&self, paused: bool) {
+            self.control.paused.store(paused, Ordering::Relaxed);
+        }
         fn stop_and_join(&mut self) {
             self.control.stop.store(true, Ordering::Relaxed);
+            // Wake the parked player so it sees the stop.
+            self.clock.bump(Duration::ZERO);
             if let Some(h) = self.handle.take() {
                 h.join().unwrap();
             }
         }
     }
 
+    /// Start the player and let it send what is due at time zero.
     fn run(bytes: &[u8], rate: f64, offset: Duration) -> Running {
         let sequence = Arc::new(parse_midi_bytes(bytes).unwrap());
+        let clock = ManualClock::new();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let sink = RecordingSink { started: Instant::now(), log: Arc::clone(&log) };
+        let sink = RecordingSink { clock: Arc::clone(&clock), log: Arc::clone(&log) };
         let control = Arc::new(PlayerControl::default());
         let thread_control = Arc::clone(&control);
+        let thread_clock = Arc::clone(&clock);
         let handle = std::thread::spawn(move || {
-            play(sequence, sink, rate, offset, thread_control, "test".into());
+            play(sequence, sink, Arc::clone(&thread_clock), rate, offset, thread_control, "test".into());
+            thread_clock.finish();
         });
-        Running { control, log, handle: Some(handle) }
-    }
-
-    /// Timing assertions have to survive a loaded CI box; ±70 ms is loose
-    /// enough not to flake and tight enough to catch a real scheduling bug.
-    fn assert_near(actual: u64, expected: u64) {
-        let drift = actual.abs_diff(expected);
-        assert!(drift <= 70, "expected ~{expected} ms, got {actual} ms");
+        clock.settle();
+        Running { control, clock, log, handle: Some(handle) }
     }
 
     #[test]
@@ -970,27 +1076,24 @@ mod tests {
             ])],
         );
         let mut running = run(&bytes, 1.0, Duration::ZERO);
-        std::thread::sleep(Duration::from_millis(350));
+        running.run_for(350);
         running.stop_and_join();
 
         let timed = running.timed();
-        assert_eq!(timed[0].1, vec![0x90, 60, 100]);
-        assert_eq!(timed[1].1, vec![0x90, 62, 100]);
-        assert_eq!(timed[2].1, vec![0x90, 64, 100]);
-        assert_near(timed[0].0, 0);
-        assert_near(timed[1].0, 100);
-        assert_near(timed[2].0, 200);
+        assert_eq!(timed[0], (0, vec![0x90, 60, 100]));
+        assert_eq!(timed[1], (100, vec![0x90, 62, 100]));
+        assert_eq!(timed[2], (200, vec![0x90, 64, 100]));
     }
 
     #[test]
     fn the_playback_rate_compresses_the_wall_clock() {
         let bytes = smf(0, 480, &[track(&[(0, note_on(0, 60, 100)), (192, note_on(0, 62, 100))])]);
         let mut running = run(&bytes, 2.0, Duration::ZERO);
-        std::thread::sleep(Duration::from_millis(300));
+        running.run_for(300);
         running.stop_and_join();
 
         // 200 ms as written, 100 ms at 2×.
-        assert_near(running.timed()[1].0, 100);
+        assert_eq!(running.timed()[1].0, 100);
     }
 
     #[test]
@@ -1006,7 +1109,7 @@ mod tests {
             ])],
         );
         let mut running = run(&bytes, 1.0, Duration::ZERO);
-        std::thread::sleep(Duration::from_millis(120));
+        running.run_for(120);
         running.stop_and_join();
 
         let messages = running.messages();
@@ -1024,7 +1127,7 @@ mod tests {
         // Nothing releases note 60 before End of Track — the player must.
         let bytes = smf(0, 480, &[track(&[(0, note_on(2, 60, 100)), (48, note_on(2, 62, 100))])]);
         let mut running = run(&bytes, 1.0, Duration::ZERO);
-        std::thread::sleep(Duration::from_millis(250));
+        running.run_for(250);
 
         let messages = running.messages();
         assert!(messages.contains(&vec![0x82, 60, 0]));
@@ -1048,15 +1151,15 @@ mod tests {
             ])],
         );
         let mut running = run(&bytes, 1.0, Duration::from_millis(100));
-        std::thread::sleep(Duration::from_millis(250));
+        running.run_for(250);
         running.stop_and_join();
 
-        let messages = running.messages();
-        assert_eq!(messages[0], vec![0xC0, 42], "program is restored");
-        assert_eq!(messages[1], vec![0xB0, 7, 90], "volume is restored");
-        assert_eq!(messages[2], vec![0x90, 67, 100], "playback resumes at the offset");
+        let timed = running.timed();
+        assert_eq!(timed[0].1, vec![0xC0, 42], "program is restored");
+        assert_eq!(timed[1].1, vec![0xB0, 7, 90], "volume is restored");
+        assert_eq!(timed[2], (100, vec![0x90, 67, 100]), "playback resumes at the offset");
         assert!(
-            !messages[..3].contains(&vec![0x90, 60, 100]),
+            !timed[..3].iter().any(|(_, m)| m == &vec![0x90, 60, 100]),
             "a note already sounding is not re-attacked"
         );
     }
@@ -1080,28 +1183,29 @@ mod tests {
             ])],
         );
         let mut running = run(&bytes, 2.0, Duration::from_millis(250));
-        std::thread::sleep(Duration::from_millis(250));
+        running.run_for(250);
         running.stop_and_join();
 
-        let messages = running.messages();
-        assert_eq!(messages[0], vec![0x90, 64, 100], "resumed at the third note");
-        assert_eq!(messages[1], vec![0x90, 66, 100]);
+        let timed = running.timed();
+        assert_eq!(timed[0], (0, vec![0x90, 64, 100]), "resumed at the third note");
+        assert_eq!(timed[1], (125, vec![0x90, 66, 100]));
     }
 
     #[test]
     fn pausing_holds_the_file_where_it_is() {
         let bytes = smf(0, 480, &[track(&[(0, note_on(0, 60, 100)), (96, note_on(0, 62, 100))])]);
         let mut running = run(&bytes, 1.0, Duration::ZERO);
-        // Let the event due at 0 go out, then freeze 40 ms into the file.
-        std::thread::sleep(Duration::from_millis(40));
-        running.control.paused.store(true, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(200));
+        running.run_for(40);
+        // The player notices the pause on its next wake-up, 1 ms later: 41 ms
+        // of the file have played when it freezes.
+        running.set_paused(true);
+        running.run_for(200);
         assert_eq!(running.messages().len(), 1, "the file must not advance while paused");
 
-        running.control.paused.store(false, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(200));
-        // 100 ms of file remained, so the second note lands ~300 ms in.
-        assert_near(running.timed()[1].0, 300);
+        running.set_paused(false);
+        running.run_for(200);
+        // Frozen from 41 to 241 ms: the note due at 100 ms lands at 300.
+        assert_eq!(running.timed()[1], (300, vec![0x90, 62, 100]));
         running.stop_and_join();
     }
 
