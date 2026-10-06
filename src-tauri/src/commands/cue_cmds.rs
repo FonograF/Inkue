@@ -559,6 +559,11 @@ pub fn update_cue(
     let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     apply_decoded_audio(new_cue.as_mut(), &preserved_audio);
     new_cue.restore_runtime_state(runtime);
+    // Only now that the rebuild succeeded may the old instance give up what
+    // its run still needs (a Fade's targets and crossfade).
+    if let Some(extra) = cue_list.get_mut_recursive(&id).and_then(|old| old.take_runtime_extra()) {
+        new_cue.restore_runtime_extra(extra);
+    }
     // Push live level/pan changes to the cue's currently-playing voice so an
     // inspector edit (volume, pan) takes effect immediately without restarting.
     let live = new_cue.live_audio_params();
@@ -1196,29 +1201,33 @@ pub async fn list_camera_devices(
 /// Monotonic token so a rapid second Identify cancels the first one's cleanup.
 static IDENTIFY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Flash a big identification label on the output window, positioned on the
-/// given screen, so the operator can verify before a show that "Screen 2"
-/// really is the projector.  Cleans up after ~2.5 s: the label is removed and
-/// the window is hidden again if it was hidden before.
+/// Flash a big identification label on `screen`, using an output's window
+/// (`output_id` absent = the main output), so the operator can verify before a
+/// show that "Screen 2" really is the projector.  Cleans up after ~2.5 s: the
+/// label is removed and the window goes back to where the show wants it (or is
+/// hidden again if it was hidden before).
 #[tauri::command]
 pub fn identify_output_screen(
     screen_index: Option<u32>,
+    output_id: Option<String>,
     state: tauri::State<crate::state::AppState>,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
 
+    let output = super::output_cmds::parse_output_id(output_id.as_deref())?;
     let engine = std::sync::Arc::clone(&state.output_engine);
     let was_visible = engine.is_output_visible();
     let generation = IDENTIFY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
 
-    let label = match screen_index {
+    let screen_label = match screen_index {
         Some(idx) => format!("SCREEN {}", idx + 1),
         None => "OUTPUT WINDOW".to_string(),
     };
     let ass = format!(
-        "{{\\an5\\fs140\\bord6\\1c&H00FFFFFF&\\3c&H00000000&}}{label}\\N{{\\fs42}}Inkue output identification",
+        "{{\\an5\\fs140\\bord6\\1c&H00FFFFFF&\\3c&H00000000&}}{screen_label}\\N{{\\fs42}}{}",
+        engine.output_name(output),
     );
-    engine.show_text_overlay(&ass, screen_index);
+    engine.identify_screen(output, screen_index, &ass).map_err(|e| e.to_string())?;
 
     std::thread::Builder::new()
         .name("inkue-identify-screen".into())
@@ -1228,10 +1237,7 @@ pub fn identify_output_screen(
             if IDENTIFY_GENERATION.load(Ordering::Relaxed) != generation {
                 return;
             }
-            engine.clear_text_overlay();
-            if !was_visible {
-                engine.hide_output();
-            }
+            engine.end_identify(output, was_visible);
         })
         .map_err(|e| e.to_string())?;
     Ok(())

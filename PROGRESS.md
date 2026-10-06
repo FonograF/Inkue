@@ -1,6 +1,6 @@
-# Inkue — Project state as of 2026-07-11
+# Inkue — Project state as of 2026-10-06
 
-## Current version: 1.3.4 — fix release: cues in Groups keep their audio, video on NVIDIA/X11 and Intel Macs, UI zoom (1.3.3 shipped QLab workspace import (BETA), per-cue MIDI triggers, custom fade curves and ten new cue types)
+## Current version: 1.3.5 — Linux AppImage `.DirIcon` fix (1.3.4: cues in Groups keep their audio, video on NVIDIA/X11 and Intel Macs, UI zoom). **Unreleased on `feat/video-outputs`: multiple video outputs + exact crossfades** (WHATSNEXT Priority 2)
 
 ## cargo build result
 
@@ -13,8 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 465 pass, 0 failures** (verified 2026-10-05;
-verified 2026-08-11; run the full
+**`cargo test --lib` → 530 pass, 0 failures** (verified 2026-10-06 on Windows and on
+Linux in WSL Ubuntu 24.04 — clippy clean on both; earlier: 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -29,10 +29,14 @@ failure detection + software-decode latch, geometry/hold serialization
 roundtrips, output-screen resolution fallback, OutputTransform composition +
 TestPattern URLs**; **MIDI file tempo map (mid-file Set Tempo, conductor track,
 SMPTE timing, format 2) + the playback scheduler driven against a recording
-sink (order, timing, pause, notes released on stop, mid-file start)**. Plus
-integration suites
-(`cue_behavior_tests`, `transport_go_tests`, …): group completion end-to-end, fade
-drives every group child voice, logger flood guard.
+sink (order, timing, pause, notes released on stop, mid-file start)**;
+**crossfade (dissolve clock, curves, the weighted-composite plan proven on CPU pixels:
+letterbox bars, no dip, layers above untouched), outputs (registry, threads, timer output,
+banners, screen ordering), QLab stages/surfaces → outputs**. Plus integration suites
+(`cue_behavior_tests`, `transport_go_tests`, `crossfade_tests`, …): group completion
+end-to-end, fade drives every group child voice, logger flood guard, crossfade set-up
+(pre-waits, picture wait, pause/stop, abandon, groups, plain-fade fallback). Opt-in:
+`qlab_import_fixture` imports a real `.qlab5` (`INKUE_QLAB_FIXTURE`).
 
 ---
 
@@ -43,11 +47,11 @@ drives every group child voice, logger flood guard.
 | Audio | ✅ **Functional** | Pre/post-wait, fade-in/out, loop (finite + infinite), rate, pan, master volume, waveform, VU meter, scrub/seek; pause/resume with correct elapsed tracking; SR conversion in `fill_buffer` (44.1k/48k/96k all correct); formats via symphonia incl. **AIFF/PCM** (decoded natively, no MP3-demuxer log flood); **Output Patch routing (device + channels)** — see note below the table |
 | Stop  | ✅ **Functional** | UUID-based targeting; multi-target (stop any subset of cues); target All Cues or specific cues; Soft (fade) or Hard (cut) |
 | Memo  | ✅ **Functional** | A note in the stack; no action, completes instantly so chains pass through. `memo_text` shows in the cue list's Target column and is edited in the inspector's Memo tab. Creatable from the toolbar and the Add Cue menu (2026-08-06 — before that it existed only in the backend and could only arrive via import) |
-| Video | ✅ **Functional** | Unified GL Render API path (Windows); paused-load start (no frame-0 freeze), dip-to-black fades (GL quad), scrub/seek; pause/resume; loop (finite + infinite); **Fade tab in the inspector (video fade in/out was engine-only before), fade-out at natural EOF (was hard cut), Hold Last Frame at EOF (`keep-open`), per-cue Geometry (fit/fill/stretch, position, scale, rotation, crop) with live-apply** |
+| Video | ✅ **Functional** | Unified GL Render API path (Windows); paused-load start (no frame-0 freeze), dip-to-black fades (GL quad), scrub/seek; pause/resume; loop (finite + infinite); **Fade tab in the inspector (video fade in/out was engine-only before), fade-out at natural EOF (was hard cut), Hold Last Frame at EOF (`keep-open`), per-cue Geometry (fit/fill/stretch, position, scale, rotation, crop) with live-apply**; plays on any **video output** (`output_id`) |
 | Image | ✅ **Functional** | Same GL output window as Video via libmpv Render API; dip-to-black fades incl. **fade-out landing on the end of a timed display duration**; layers with other visual cues (never auto-stopped — `stop_on_next_visual` removed 2026-07-11); loop support; **per-cue Geometry (same system as Video)** |
 | Group | ✅ **Functional** | Four QLab-parity modes: **Simultaneous** (all at once, incl. Timeline via child pre-waits), **Sequential** (start-first), **Playlist** (exclusive one-at-a-time + optional loop), **Start Random** (one random child per GO, shuffle-bag); holds playhead + GO absorption for the ordered modes; drag-into-group |
 | Wait  | ✅ **Functional** | Fixed duration delay cue; registered in CueRegistry |
-| Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues, incl. **Groups** and cues nested in a group — voices collected via `all_voice_ids()` recursively); audio fade of **volume and/or pan** (gain/pan interpolation at 30 fps); visual fade for Video/Image (overlay alpha at 30 fps, `set_overlay_alpha_direct`); configurable curve; **Stop at End** now hard-stops the target *cues* (not just their voices) via the event loop + emits state/refresh so the UI clears; sectioned inspector (Targets / Fade / Audio / Visual / On Complete) + searchable target picker with chips |
+| Fade  | ✅ **Functional** | UUID-based multi-target (any subset of cues, incl. **Groups** and cues nested in a group — audio voices via `all_voice_ids()`, pictures via `visual_voice_ids()`, both recursive); audio fade of **volume and/or pan**; visual fade of each target's own layer opacity; rising/falling curves; **Stop at End** hard-stops the target *cues*; **Crossfade** (`crossfade_into`): exact dissolve into a Video/Image/Camera cue, clock on its first frame, sound with the picture, cross-output, plain-fade fallback; a running Fade survives inspector edits |
 | OSC   | ✅ **Functional** | Sends UDP OSC messages on GO; multiple messages per cue; inspector Messages tab + Test send button; workspace-level patches; receive server with IP allowlist + dedup cache; /inkue/pause_toggle; /inkue/select/next\|previous |
 | MIDI  | ✅ **Functional** | Sends Note On/Off, CC, Program Change on GO; multiple messages per cue; dynamic port enumeration (midir); inspector Messages tab + Test send button; cross-platform (WinMM/CoreMIDI) |
 | MIDI File | ✅ **Functional** | Plays a `.mid` to one MIDI port (QLab parity: destination + playback-rate multiplier). Tempo-map-aware parsing (`midly`) so a mid-file Set Tempo moves everything after it; real duration → completes and Auto-Follows on its own; pause/resume and seek; 1 ms timer resolution on Windows; stop releases every note the player started and lifts the sustain pedal |
@@ -216,6 +220,45 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-10-06) — Multiple video outputs, exact crossfades
+
+WHATSNEXT Priority 2, branch `feat/video-outputs`. A first pass had been marked done
+by mistake: a session rewind deleted the files it created but kept the ones it patched,
+and it left gaps. Recovered from the transcript, reviewed, then completed:
+
+- **Outputs** (`output_engine/output.rs`, `window.rs`, `overlay.rs`, `lifecycle.rs`,
+  `screens.rs`, `commands/output_cmds.rs`, Preferences → Outputs): one `Output` per window
+  (render thread, overlay, slot pool); `Workspace::video_outputs`; cues carry `output_id`.
+  Outputs open in the background as soon as declared (`create_in_background`,
+  `adopt_output`); a dropped output is **destroyed** in libmpv/GL order (render contexts
+  on the GL thread, then event threads, window, cores by `Drop`). winit windows are
+  created and dropped on the event-loop thread; macOS windows only ever built on the main
+  thread (a non-main GO reports "still opening" instead of deadlocking). Monitor list
+  cached on Linux/macOS (Tauri's call waits for the main thread). Window titles follow
+  output names.
+- **Timer on any output**: `DisplayPreferences::timer_output`, style on every output.
+- **Crossfade** (`output_engine/crossfade.rs`, `show/crossfade.rs`, `cue/fade_cue.rs`):
+  `plan_dissolves` renders a dissolve as weighted composites of the whole stack (with /
+  without the incoming layer, 2ⁿ for n in flight, approximation beyond 2), mixed in a
+  ping-pong pair (`render.rs`, mix shader). `DissolveClock` anchored on the incoming
+  first frame, paused with the Fade; the Fade anchors its action clock on it
+  (`CrossfadePhase::Started`) so sound and picture move together. Cross-output targets
+  fade on their own window. Set-up waits for both pre-waits (`advance_pending`, event
+  loop step 5); plain-fade fallback; the started incoming cue is reported as triggered.
+- `OutputStatus::Withdrawn` — content taken off an output (slot stolen, test pattern,
+  output deleted) resets its cue without Auto-Follow.
+- Fixes found on the way: a Fade on a Group never faded its pictures
+  (`Cue::visual_voice_ids`); falling visual fades used the rising curve; a running Fade
+  lost its targets on any inspector edit (`take_runtime_extra`); dead
+  `CueContext::output_screen` removed; Linux-only unused-parameter warning in
+  `device_cmds.rs`.
+- **QLab**: stages (QLab 5, `viewportID`) / surfaces (QLab 4, `surfaceID`) → outputs, in
+  `qlab_import/outputs.rs` and in `qlab2inkue` (mirror tests on both sides).
+- Validation: crossfade into a deleted / picture-less cue, or into one of the targets;
+  cue on a deleted output.
+- Verified: Windows (tests, clippy, tsc, vitest), Linux in WSL (clippy, tests).
+  **macOS compiles in CI only** — `macos_window.rs` (`destroy`, `set_title`) is unbuilt here.
 
 ### 1.3.4 (2026-10-05) — Cues in Groups, Intel Mac video, UI zoom
 

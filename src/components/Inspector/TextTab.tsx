@@ -3,6 +3,7 @@ import type { TextCueData, TextPosition } from "../../lib/types";
 import { listSystemFonts } from "../../lib/commands";
 import { Field, inputStyle } from "./Field";
 import { DragNumber } from "../common/DragNumber";
+import { OutputPicker } from "./OutputPicker";
 
 const POSITION_GRID: { value: TextPosition; label: string }[] = [
   { value: "top_left",      label: "↖" },
@@ -58,6 +59,8 @@ export function TextTab({
           ))}
         </select>
       </Field>
+
+      <OutputPicker value={cue.output_id ?? null} onChange={(output_id) => void onSave({ output_id })} />
 
       <Field label="Size">
         <DragNumber

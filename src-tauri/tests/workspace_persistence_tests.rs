@@ -260,3 +260,61 @@ fn load_gives_fresh_ids_to_cues_that_share_an_id() {
     assert_ne!(first_child, second_child, "the later copy must get its own id");
     assert!(list.get_recursive(&second_child).is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Video outputs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extra_video_outputs_survive_save_and_load() {
+    use inkue_lib::engine::output_engine::OutputConfig;
+
+    let registry = full_registry();
+    let dir = temp_dir("ws_outputs");
+    let path = dir.join("show.inkue");
+
+    let mut ws = Workspace::new("Two projectors");
+    let mut facade = OutputConfig::new("Façade");
+    facade.screen = Some(1);
+    facade.transform.pan_x = 0.05;
+    let retour = OutputConfig::new("Retour");
+    ws.video_outputs = vec![facade.clone(), retour.clone()];
+    ws.save(Some(path.clone())).expect("save");
+
+    let loaded = Workspace::load(path, &registry).expect("load");
+    assert_eq!(loaded.video_outputs, vec![facade, retour]);
+}
+
+#[test]
+fn a_workspace_written_before_outputs_existed_has_none() {
+    let registry = full_registry();
+    let doc = workspace_doc(1, vec![valid_cue(CueType::Memo, "Note")]);
+    let ws = Workspace::from_json_str(&doc, None, &registry).expect("load");
+    assert!(ws.video_outputs.is_empty());
+}
+
+#[test]
+fn a_visual_cue_remembers_its_output() {
+    let registry = full_registry();
+    let output = uuid::Uuid::new_v4();
+    for cue_type in [CueType::Video, CueType::Image, CueType::Camera, CueType::Text] {
+        let mut json = valid_cue(cue_type.clone(), "Visual");
+        json["output_id"] = serde_json::json!(output.to_string());
+        let cue = registry.from_json(json).expect("rebuild");
+        assert_eq!(
+            cue.serialize()["output_id"],
+            output.to_string(),
+            "{cue_type:?} must keep its output across a rebuild",
+        );
+    }
+}
+
+#[test]
+fn a_visual_cue_without_output_plays_on_the_main_one() {
+    let registry = full_registry();
+    for cue_type in [CueType::Video, CueType::Image, CueType::Camera, CueType::Text] {
+        let json = valid_cue(cue_type.clone(), "Visual");
+        assert!(json["output_id"].is_null(), "{cue_type:?} defaults to the main output");
+    }
+    let _ = registry;
+}

@@ -1,13 +1,21 @@
-//! [`FadeCue`] — fades the volume/brightness of one or more running cues.
+//! [`FadeCue`] — fades the volume/brightness of one or more running cues, or
+//! crossfades them into another visual cue.
 //!
-//! On GO the Fade Cue locates its targets by UUID and:
-//! - For **audio** cues: smoothly interpolates the voice gain in `tick()`.
-//! - For **video** cues: interpolates the paired audio voice gain AND animates
-//!   the OutputEngine overlay from current alpha to the target alpha.
-//! - For **image** cues: animates the overlay only (no audio voice).
+//! On GO the show layer (`show/crossfade.rs`) hands the Fade its targets'
+//! voices and the Fade interpolates them in `tick()`:
+//! - **audio** voices (audio cues, video sound tracks, group children): gain
+//!   and/or pan;
+//! - **pictures** (video, image, camera layers — a group's included): their own
+//!   layer opacity, so other layers are untouched.
 //!
 //! `target_gain_linear = 0.0` → fade to black/silence.
 //! `target_gain_linear = 1.0` → fade to full brightness/unity volume.
+//!
+//! With `crossfade_into`, the Fade starts that cue and the output engine
+//! dissolves the targets' pictures into it.  The Fade's action clock starts on
+//! the incoming picture's first frame (and pauses with the dissolve), the
+//! incoming sound rises from silence while the targets' sound falls to it, and
+//! the dissolved targets are stopped at the end — a crossfade replaces them.
 
 use std::time::{Duration, Instant};
 
@@ -17,14 +25,14 @@ use uuid::Uuid;
 
 use crate::{
     cue::types::db_to_linear,
-    engine::ring_command::FadeCurve as EngineFadeCurve,
+    engine::{output_engine::CrossfadePhase, ring_command::FadeCurve as EngineFadeCurve},
 };
 
 use super::{
     context::{CueContext, CueEvent},
     curve::{CurveKind, FadeShapes},
     traits::{Cue, CueFactory, RuntimeState},
-    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCurve},
+    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCrossfade, FadeCurve},
 };
 
 // ---------------------------------------------------------------------------
@@ -74,6 +82,9 @@ pub struct FadeCue {
     pub shapes: FadeShapes,
     /// Stop the target cue(s) after the fade completes.
     pub stop_at_end: bool,
+    /// Crossfade: a visual cue this Fade starts, so the picture dissolves from
+    /// the targets into it (`show/crossfade.rs`, `engine/output_engine/crossfade.rs`).
+    pub crossfade_into: Option<CueId>,
     is_disabled: bool,
 
     // Runtime — injected by transport after go()
@@ -81,6 +92,12 @@ pub struct FadeCue {
     target_voices: Vec<(Uuid, f32, f32)>,
     /// (output_voice_id, start_opacity) for each visual target's layer.
     visual_targets: Vec<(Uuid, f32)>,
+    /// The crossfade this run drives, once the show layer has set it up.
+    crossfade: FadeCrossfade,
+    /// A crossfade holds the whole Fade until the incoming picture is on
+    /// screen: the action clock then starts on that very frame, so sound and
+    /// picture move together.
+    awaiting_picture: bool,
     /// Layer opacity at fade completion (0.0 = black, 1.0 = fully visible).
     visual_target_opacity: f32,
     fade_complete: bool,
@@ -88,6 +105,22 @@ pub struct FadeCue {
     /// `stop_at_end` is on).  The event loop drains this via
     /// [`take_fade_stop_targets`](crate::cue::traits::Cue::take_fade_stop_targets)
     /// and stops the actual cues — the fade itself can't reach the cue list.
+    stop_targets_pending: Vec<CueId>,
+}
+
+/// What a running Fade drives, carried across the inspector's rebuild (see
+/// [`Cue::take_runtime_extra`]) so renaming a Fade mid-fade — or editing its
+/// notes — does not leave its targets half-faded.
+struct FadeRun {
+    in_pre_wait: bool,
+    elapsed_before_pause: Duration,
+    action_elapsed_before_pause: Duration,
+    target_voices: Vec<(Uuid, f32, f32)>,
+    visual_targets: Vec<(Uuid, f32)>,
+    visual_target_opacity: f32,
+    crossfade: FadeCrossfade,
+    awaiting_picture: bool,
+    fade_complete: bool,
     stop_targets_pending: Vec<CueId>,
 }
 
@@ -118,9 +151,12 @@ impl FadeCue {
             fade_duration_ms: 2000,
             shapes: FadeShapes::default(),
             stop_at_end: false,
+            crossfade_into: None,
             is_disabled: false,
             target_voices: Vec::new(),
             visual_targets: Vec::new(),
+            crossfade: FadeCrossfade::None,
+            awaiting_picture: false,
             visual_target_opacity: 0.0,
             fade_complete: false,
             stop_targets_pending: Vec::new(),
@@ -143,6 +179,77 @@ impl FadeCue {
             CurveKind::Exponential => FadeCurve::Exponential,
             _ => FadeCurve::SCurve,
         }
+    }
+
+    /// The incoming picture of the crossfade the output engine is rendering.
+    fn linked_incoming_voice(&self) -> Option<Uuid> {
+        match &self.crossfade {
+            FadeCrossfade::Linked(link) => Some(link.incoming_voice),
+            _ => None,
+        }
+    }
+
+    /// While a crossfade waits for its incoming picture: start the action
+    /// clock on the very frame the dissolve started, or hand a link whose
+    /// incoming content vanished back to the show layer (which links it again
+    /// or falls back to a plain fade).  `true` once the action runs.
+    fn picture_arrived(&mut self, context: &CueContext) -> bool {
+        let FadeCrossfade::Linked(link) = &self.crossfade else {
+            // Pending: the show layer is still setting it up.
+            return false;
+        };
+        match context.output_engine.crossfade_phase(link.incoming_voice) {
+            CrossfadePhase::Waiting => false,
+            CrossfadePhase::Started { started_at } => {
+                self.awaiting_picture = false;
+                self.action_started_at = Some(started_at);
+                true
+            }
+            CrossfadePhase::None => {
+                self.crossfade = FadeCrossfade::Pending {
+                    incoming_cue: link.incoming_cue,
+                    incoming_started: true,
+                };
+                false
+            }
+        }
+    }
+
+    /// A dissolve whose incoming content left mid-way is over: the crossfaded
+    /// targets are back on screen (the mix stopped), so this Fade no longer
+    /// drives their sound nor stops them at its end.
+    fn drop_abandoned_crossfade(&mut self, context: &CueContext) {
+        let Some(incoming) = self.linked_incoming_voice() else { return };
+        if context.output_engine.crossfade_phase(incoming) == CrossfadePhase::None {
+            log::info!("[fade {}] crossfade abandoned — its incoming cue left", self.id);
+            self.crossfade = FadeCrossfade::None;
+        }
+    }
+
+    /// At the end of the fade: a crossfade always removes what it dissolved
+    /// away; `stop_at_end` stops every other target too.  The targets are
+    /// queued as **cues** for the event loop — stopping voices alone would
+    /// leave them (and group children) in the Running state.
+    fn queue_stops_at_end(&mut self, context: &CueContext) {
+        let mut stops: Vec<CueId> = match &self.crossfade {
+            FadeCrossfade::Linked(link) => link.targets.clone(),
+            _ => Vec::new(),
+        };
+        if self.stop_at_end {
+            // Immediate cut: the fade already reached the target level.
+            for &(vid, _, _) in &self.target_voices {
+                let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.legacy_curve()));
+            }
+            for &(vid, _) in &self.visual_targets {
+                let _ = context.output_engine.stop_voice(vid, 0);
+            }
+            stops.extend(self.target_cue_ids.iter().copied());
+        }
+        // Never the cue this Fade dissolves into, even if listed as a target.
+        stops.retain(|&id| Some(id) != self.crossfade_into);
+        stops.sort_unstable();
+        stops.dedup();
+        self.stop_targets_pending = stops;
     }
 }
 
@@ -179,6 +286,8 @@ impl Cue for FadeCue {
         self.action_elapsed_before_pause = Duration::ZERO;
         self.target_voices = Vec::new();
         self.visual_targets = Vec::new();
+        self.crossfade = FadeCrossfade::None;
+        self.awaiting_picture = false;
         self.visual_target_opacity = 0.0;
         self.fade_complete = false;
         self.stop_targets_pending.clear();
@@ -197,6 +306,11 @@ impl Cue for FadeCue {
     }
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
+        // Like any stopped fade, a dissolve in progress stays where it is; one
+        // that has not started yet is called off.
+        if let Some(incoming) = self.linked_incoming_voice() {
+            context.output_engine.release_crossfade(incoming);
+        }
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
@@ -207,7 +321,7 @@ impl Cue for FadeCue {
         Ok(())
     }
 
-    fn pause(&mut self, _context: &CueContext) -> Result<()> {
+    fn pause(&mut self, context: &CueContext) -> Result<()> {
         if self.state == CueState::Running {
             if let Some(t) = self.started_at.take() {
                 self.elapsed_before_pause += t.elapsed();
@@ -217,16 +331,23 @@ impl Cue for FadeCue {
                     self.action_elapsed_before_pause += t.elapsed();
                 }
             }
+            if let Some(incoming) = self.linked_incoming_voice() {
+                context.output_engine.hold_crossfade(incoming, true);
+            }
             self.state = CueState::Paused;
         }
         Ok(())
     }
 
-    fn resume(&mut self, _context: &CueContext) -> Result<()> {
+    fn resume(&mut self, context: &CueContext) -> Result<()> {
         if self.state == CueState::Paused {
-            self.started_at = Some(Instant::now());
-            if !self.in_pre_wait {
-                self.action_started_at = Some(Instant::now());
+            let now = Instant::now();
+            self.started_at = Some(now);
+            if !self.in_pre_wait && !self.awaiting_picture {
+                self.action_started_at = Some(now);
+            }
+            if let Some(incoming) = self.linked_incoming_voice() {
+                context.output_engine.hold_crossfade(incoming, false);
             }
             self.state = CueState::Running;
         }
@@ -246,6 +367,8 @@ impl Cue for FadeCue {
         self.action_elapsed_before_pause = Duration::ZERO;
         self.target_voices = Vec::new();
         self.visual_targets = Vec::new();
+        self.crossfade = FadeCrossfade::None;
+        self.awaiting_picture = false;
         self.visual_target_opacity = 0.0;
         self.fade_complete = false;
         self.stop_targets_pending.clear();
@@ -261,30 +384,39 @@ impl Cue for FadeCue {
             if let Some(st) = self.started_at {
                 if st.elapsed() >= self.pre_wait {
                     self.in_pre_wait = false;
-                    self.action_started_at = Some(Instant::now());
+                    // A crossfade's action starts with its picture, not here.
+                    if !self.awaiting_picture {
+                        self.action_started_at = Some(Instant::now());
+                    }
                     context.emit(CueEvent::ActionStarted { cue_id: self.id });
                 }
             }
             return Ok(());
         }
 
+        if self.awaiting_picture && !self.picture_arrived(context) {
+            return Ok(());
+        }
         if self.action_started_at.is_none() {
             return Ok(());
         }
 
         // No targets → nothing to drive; just wait for duration to expire.
-        if self.target_voices.is_empty() && self.visual_targets.is_empty() {
+        let crossfading = matches!(self.crossfade, FadeCrossfade::Linked(_));
+        if self.target_voices.is_empty() && self.visual_targets.is_empty() && !crossfading {
             return Ok(());
         }
 
         let elapsed_ms = self.action_elapsed().as_millis() as f64;
         let duration_ms = self.fade_duration_ms as f64;
         let t = if duration_ms <= 0.0 { 1.0_f64 } else { (elapsed_ms / duration_ms).clamp(0.0, 1.0) };
+        if t < 1.0 {
+            self.drop_abandoned_crossfade(context);
+        }
         // Both directions sampled once; each target picks the one that matches
         // the way its own value is travelling.
         let rising_t = self.shapes.sample(t, true) as f32;
         let falling_t = self.shapes.sample(t, false) as f32;
-        let curved_t = rising_t;
 
         // Interpolate gain for each audio voice (skipped for a pan-only fade so
         // the level is left exactly where it was).
@@ -306,31 +438,28 @@ impl Cue for FadeCue {
             }
         }
 
+        // Crossfade: the incoming sound rises and the outgoing sound falls to
+        // silence on the same clock as the picture.
+        if let FadeCrossfade::Linked(link) = &self.crossfade {
+            for &(vid, level) in &link.incoming_audio {
+                let _ = context.audio_engine.set_voice_gain(vid, level * rising_t);
+            }
+            for &(vid, start) in &link.outgoing_audio {
+                let _ = context.audio_engine.set_voice_gain(vid, start * (1.0 - falling_t));
+            }
+        }
+
         // Interpolate each visual target's layer opacity (per-slot — a Fade
         // on one video no longer dips the whole output to black).
         for &(vid, start_opacity) in &self.visual_targets {
-            let opacity =
-                start_opacity + (self.visual_target_opacity - start_opacity) * curved_t;
+            let progress = if self.visual_target_opacity >= start_opacity { rising_t } else { falling_t };
+            let opacity = start_opacity + (self.visual_target_opacity - start_opacity) * progress;
             context.output_engine.set_voice_opacity(vid, opacity);
         }
 
-        // At fade completion, optionally stop targets.
         if t >= 1.0 && !self.fade_complete {
             self.fade_complete = true;
-            if self.stop_at_end {
-                // Immediate audio cut (the fade already reached the target level).
-                for &(vid, _, _) in &self.target_voices {
-                    let _ = context.audio_engine.stop_voice(vid, 0, Self::engine_curve(self.legacy_curve()));
-                }
-                for &(vid, _) in &self.visual_targets {
-                    let _ = context.output_engine.stop_voice(vid, 0);
-                }
-                // Queue the target CUES to be stopped by the event loop: stopping
-                // voices alone leaves the target cue (and group children) in the
-                // Running state.  The event loop drains this and calls their
-                // hard_stop(), which resets state and recurses into groups.
-                self.stop_targets_pending = self.target_cue_ids.clone();
-            }
+            self.queue_stops_at_end(context);
         }
 
         Ok(())
@@ -395,7 +524,33 @@ impl Cue for FadeCue {
             duration_ms: self.fade_duration_ms,
             curve: self.legacy_curve(),
             stop_at_end: self.stop_at_end,
+            crossfade_into: self.crossfade_into,
+            up_curve: self.shapes.up.to_engine(),
+            down_curve: self.shapes.for_direction(false).to_engine(),
         })
+    }
+
+    fn set_crossfade(&mut self, crossfade: FadeCrossfade) {
+        let waits = !matches!(crossfade, FadeCrossfade::None);
+        if waits && !self.awaiting_picture {
+            // The action clock starts with the incoming picture, not at GO.
+            self.awaiting_picture = true;
+            self.action_started_at = None;
+        } else if !waits && self.awaiting_picture {
+            // No picture to wait for after all: a plain fade, from now.
+            self.awaiting_picture = false;
+            if !self.in_pre_wait && self.state == CueState::Running {
+                self.action_started_at = Some(Instant::now());
+            }
+        }
+        self.crossfade = crossfade;
+    }
+
+    fn pending_crossfade(&self) -> Option<(CueId, bool)> {
+        match self.crossfade {
+            FadeCrossfade::Pending { incoming_cue, incoming_started } => Some((incoming_cue, incoming_started)),
+            _ => None,
+        }
     }
 
     fn set_fade_voices(
@@ -433,6 +588,20 @@ impl Cue for FadeCue {
         if self.target_cue_ids.is_empty() && self.target_cue_numbers.is_empty() {
             issues.push(CueIssue::warning("No target selected"));
         }
+        if let Some(id) = self.crossfade_into {
+            if !ctx.all_cue_ids.contains(&id) {
+                issues.push(CueIssue::error("Crossfade cue not found (cue deleted)"));
+            } else if !ctx.visual_cue_ids.contains(&id) {
+                issues.push(CueIssue::error(
+                    "Crossfade cue shows no picture — pick a Video, Image or Camera cue",
+                ));
+            }
+            if self.target_cue_ids.contains(&id) {
+                issues.push(CueIssue::warning(
+                    "The crossfade cue is also a target — it is left out of the fade",
+                ));
+            }
+        }
         issues
     }
 
@@ -450,6 +619,38 @@ impl Cue for FadeCue {
         self.started_at = snap.started_at;
         self.action_started_at = snap.action_started_at;
         self.in_pre_wait = snap.action_started_at.is_none() && snap.state == CueState::Running;
+    }
+
+    fn take_runtime_extra(&mut self) -> Option<Box<dyn std::any::Any + Send>> {
+        if self.state == CueState::Standby {
+            return None;
+        }
+        Some(Box::new(FadeRun {
+            in_pre_wait: self.in_pre_wait,
+            elapsed_before_pause: self.elapsed_before_pause,
+            action_elapsed_before_pause: self.action_elapsed_before_pause,
+            target_voices: std::mem::take(&mut self.target_voices),
+            visual_targets: std::mem::take(&mut self.visual_targets),
+            visual_target_opacity: self.visual_target_opacity,
+            crossfade: std::mem::replace(&mut self.crossfade, FadeCrossfade::None),
+            awaiting_picture: self.awaiting_picture,
+            fade_complete: self.fade_complete,
+            stop_targets_pending: std::mem::take(&mut self.stop_targets_pending),
+        }))
+    }
+
+    fn restore_runtime_extra(&mut self, extra: Box<dyn std::any::Any + Send>) {
+        let Ok(run) = extra.downcast::<FadeRun>() else { return };
+        self.in_pre_wait = run.in_pre_wait;
+        self.elapsed_before_pause = run.elapsed_before_pause;
+        self.action_elapsed_before_pause = run.action_elapsed_before_pause;
+        self.target_voices = run.target_voices;
+        self.visual_targets = run.visual_targets;
+        self.visual_target_opacity = run.visual_target_opacity;
+        self.crossfade = run.crossfade;
+        self.awaiting_picture = run.awaiting_picture;
+        self.fade_complete = run.fade_complete;
+        self.stop_targets_pending = run.stop_targets_pending;
     }
 
     fn serialize(&self) -> Value {
@@ -474,6 +675,7 @@ impl Cue for FadeCue {
             "fade_curve": self.legacy_curve(),
             "fade_shapes": self.shapes,
             "stop_at_end": self.stop_at_end,
+            "crossfade_into_id": self.crossfade_into.map(|id| id.to_string()),
             "is_disabled": self.is_disabled,
         })
     }
@@ -568,6 +770,10 @@ impl CueFactory for FadeCueFactory {
         if let Some(b) = value.get("stop_at_end").and_then(|v| v.as_bool()) {
             cue.stop_at_end = b;
         }
+        cue.crossfade_into = value
+            .get("crossfade_into_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok());
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -583,6 +789,7 @@ impl CueFactory for FadeCueFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue::types::CrossfadeLinked;
 
     #[test]
     fn cue_type_is_fade() {
@@ -736,5 +943,136 @@ mod tests {
         // approximation for an older build reading the file.
         cue.shapes = FadeShapes::of_kind(CurveKind::Parametric);
         assert_eq!(cue.serialize()["fade_curve"], "s_curve");
+    }
+
+    #[test]
+    fn crossfade_target_survives_a_serialize_roundtrip() {
+        let mut cue = FadeCue::new();
+        let into = Uuid::new_v4();
+        cue.crossfade_into = Some(into);
+        let back = FadeCueFactory.from_json(cue.serialize()).unwrap();
+        assert_eq!(back.serialize()["crossfade_into_id"], into.to_string());
+    }
+
+    #[test]
+    fn a_plain_fade_has_no_crossfade() {
+        let cue = FadeCue::new();
+        assert!(cue.serialize()["crossfade_into_id"].is_null());
+        assert!(cue.fade_specification().unwrap().crossfade_into.is_none());
+    }
+
+    #[test]
+    fn crossfade_into_is_exposed_to_the_transport() {
+        let mut cue = FadeCue::new();
+        let into = Uuid::new_v4();
+        cue.crossfade_into = Some(into);
+        assert_eq!(cue.fade_specification().unwrap().crossfade_into, Some(into));
+    }
+
+    #[test]
+    fn the_crossfade_curves_follow_the_fade_shapes() {
+        let mut cue = FadeCue::new();
+        cue.shapes = FadeShapes {
+            up: crate::cue::curve::CurveShape::of_kind(CurveKind::Exponential),
+            down: crate::cue::curve::CurveShape::of_kind(CurveKind::Linear),
+            mirrored: false,
+        };
+        let spec = cue.fade_specification().unwrap();
+        assert_eq!(spec.up_curve, EngineFadeCurve::Exponential);
+        assert_eq!(spec.down_curve, EngineFadeCurve::Linear);
+        cue.shapes.mirrored = true;
+        assert_eq!(
+            cue.fade_specification().unwrap().down_curve,
+            EngineFadeCurve::Exponential,
+            "locked shapes: one curve drives both directions",
+        );
+    }
+
+    fn validation_context(all: &[Uuid], visual: &[Uuid]) -> crate::cue::validation::ValidationContext {
+        crate::cue::validation::ValidationContext {
+            all_cue_ids: all.iter().copied().collect(),
+            fixture_ids: Default::default(),
+            fixture_group_ids: Default::default(),
+            osc_patch_ids: Default::default(),
+            output_patch_ids: Default::default(),
+            midi_ports: Vec::new(),
+            video_output_ids: Default::default(),
+            visual_cue_ids: visual.iter().copied().collect(),
+        }
+    }
+
+    fn crossfade_issues(cue: &FadeCue, ctx: &crate::cue::validation::ValidationContext) -> Vec<String> {
+        cue.validate(ctx).into_iter().map(|i| i.message).filter(|m| m.contains("rossfade")).collect()
+    }
+
+    #[test]
+    fn a_crossfade_into_a_picture_is_valid() {
+        let (target, into) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        cue.crossfade_into = Some(into);
+        assert!(crossfade_issues(&cue, &validation_context(&[target, into], &[target, into])).is_empty());
+    }
+
+    #[test]
+    fn a_crossfade_into_a_cue_without_picture_is_an_error() {
+        let into = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.crossfade_into = Some(into);
+        let issues = cue.validate(&validation_context(&[into], &[]));
+        assert!(issues.iter().any(|i| i.severity == crate::cue::validation::Severity::Error
+            && i.message.contains("no picture")));
+    }
+
+    #[test]
+    fn a_crossfade_into_a_deleted_cue_is_an_error() {
+        let mut cue = FadeCue::new();
+        cue.crossfade_into = Some(Uuid::new_v4());
+        let issues = cue.validate(&validation_context(&[], &[]));
+        assert!(issues.iter().any(|i| i.severity == crate::cue::validation::Severity::Error
+            && i.message.contains("not found")));
+    }
+
+    #[test]
+    fn crossfading_into_one_of_the_targets_is_flagged() {
+        let into = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![into];
+        cue.crossfade_into = Some(into);
+        let issues = crossfade_issues(&cue, &validation_context(&[into], &[into]));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+    }
+
+    #[test]
+    fn a_running_crossfade_survives_the_inspector_rebuild() {
+        // Every inspector edit rebuilds the cue from JSON: a Fade renamed
+        // mid-crossfade must still remove what it dissolved away at its end.
+        let target = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        cue.state = CueState::Running;
+        cue.set_crossfade(FadeCrossfade::Linked(CrossfadeLinked {
+            incoming_cue: Uuid::new_v4(),
+            incoming_voice: Uuid::new_v4(),
+            incoming_audio: Vec::new(),
+            outgoing_audio: Vec::new(),
+            targets: vec![target],
+        }));
+        let incoming_voice = cue.linked_incoming_voice();
+
+        let runtime = cue.runtime_state();
+        let extra = cue.take_runtime_extra().expect("a running fade has something to carry");
+        let mut rebuilt = FadeCue::new();
+        rebuilt.restore_runtime_state(runtime);
+        rebuilt.restore_runtime_extra(extra);
+
+        assert_eq!(rebuilt.linked_incoming_voice(), incoming_voice);
+        assert!(rebuilt.awaiting_picture, "still waiting for its picture");
+        assert!(!rebuilt.in_pre_wait, "waiting for a picture is not a pre-wait");
+    }
+
+    #[test]
+    fn an_idle_fade_carries_nothing_across_the_rebuild() {
+        assert!(FadeCue::new().take_runtime_extra().is_none());
     }
 }

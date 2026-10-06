@@ -409,7 +409,6 @@ pub fn titles(cue: &Value) -> Value {
     out.insert("font_size".into(), json!(48));
     out.insert("text_color".into(), json!("#FFFFFF"));
     out.insert("position".into(), json!("center"));
-    out.insert("screen_index".into(), json!(0));
     out.insert("display_duration_ms".into(), json!(ms(cue, "duration")));
     Value::Object(out)
 }

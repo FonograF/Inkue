@@ -11,6 +11,7 @@
 //! - [`archive`] resolves the NSKeyedArchiver object graph (the only genuinely
 //!   novel code — everything else is mapping).
 //! - [`patches`] reads the workspace's destination tables.
+//! - [`outputs`] turns QLab's video stages / surfaces into Inkue outputs.
 //! - [`cues`] maps one QLab cue to one Inkue cue.
 //!
 //! The reference implementation is the standalone Python converter in
@@ -25,6 +26,7 @@
 
 pub mod archive;
 pub mod cues;
+pub mod outputs;
 pub mod patches;
 
 use std::path::Path;
@@ -33,6 +35,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use outputs::VideoOutputs;
 use patches::Patches;
 
 /// What one QLab cue became, for the post-import report.
@@ -60,6 +63,9 @@ pub struct ImportReport {
     pub needs_attention: usize,
     pub media_found: usize,
     pub media_missing: Vec<String>,
+    /// Extra video outputs created from QLab's stages / surfaces — they need a
+    /// screen before their cues can play anywhere but a floating window.
+    pub video_outputs: Vec<String>,
     pub cues: Vec<ImportedCue>,
 }
 
@@ -92,6 +98,7 @@ pub fn import_workspace(path: &Path) -> Result<(String, ImportReport)> {
         .to_string();
     let settings = outer.get("settings").cloned().unwrap_or(json!({}));
     let patches = Patches::from_settings(&settings);
+    let video_outputs = VideoOutputs::from_settings(&settings);
 
     // The cue tree is a second archive nested inside the first.
     let nested = outer
@@ -104,7 +111,7 @@ pub fn import_workspace(path: &Path) -> Result<(String, ImportReport)> {
     let mut pan_starts = std::collections::HashMap::new();
     cues::collect_pan_starts(&root, &mut pan_starts);
 
-    let mut ctx = MapContext { patches: &patches, pan_starts: &pan_starts };
+    let mut ctx = MapContext { patches: &patches, outputs: &video_outputs, pan_starts: &pan_starts };
     let mut report_cues = Vec::new();
     let mut cue_lists = Vec::new();
     for list in root.get("cues").and_then(Value::as_array).unwrap_or(&Vec::new()) {
@@ -126,6 +133,7 @@ pub fn import_workspace(path: &Path) -> Result<(String, ImportReport)> {
         "workspace": { "name": workspace_name, "created_at": now, "modified_at": now },
         "output_patches": [], "default_output_patch": Value::Null,
         "osc_patches": patches.osc,
+        "video_outputs": video_outputs.extras(),
         "input_patches": [], "universe_outputs": [],
         "fixtures": [], "fixture_groups": [],
         "cue_lists": cue_lists,
@@ -143,6 +151,7 @@ pub fn import_workspace(path: &Path) -> Result<(String, ImportReport)> {
         needs_attention,
         media_found,
         media_missing,
+        video_outputs: video_outputs.names(),
         cues: report_cues,
     };
     Ok((serde_json::to_string(&document)?, report))
@@ -151,6 +160,8 @@ pub fn import_workspace(path: &Path) -> Result<(String, ImportReport)> {
 /// Everything the per-cue mapping needs beyond the cue itself.
 struct MapContext<'a> {
     patches: &'a Patches,
+    /// QLab stage / surface → Inkue output.
+    outputs: &'a VideoOutputs,
     /// Target cue id → the pan a following pan fade starts from.
     pan_starts: &'a std::collections::HashMap<String, f64>,
 }
@@ -275,6 +286,14 @@ fn map_cue(cue: &Value, ctx: &mut MapContext, report: &mut Vec<ImportedCue>) -> 
             }
         }
     };
+
+    // Pictures keep the stage QLab gave them.
+    let mut mapped = mapped;
+    if matches!(mapped["cue_type"].as_str(), Some("video" | "image" | "camera" | "text")) {
+        if let Some(fields) = mapped.as_object_mut() {
+            fields.insert("output_id".into(), json!(ctx.outputs.output_of(cue)));
+        }
+    }
 
     report.push(ImportedCue {
         qlab_class: class,

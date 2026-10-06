@@ -116,7 +116,6 @@ fn make_context(
     stop_fade_ms: u32,
     output_patches: Vec<crate::engine::device_manager::OutputPatch>,
     default_patch_id: Option<uuid::Uuid>,
-    output_screen: Option<u32>,
     osc_patches: Vec<crate::engine::osc_patch::OscPatch>,
     fixtures: Vec<crate::engine::fixture::PatchedFixture>,
     fixture_groups: Vec<crate::engine::fixture::FixtureGroup>,
@@ -131,7 +130,6 @@ fn make_context(
         stop_fade_ms,
         output_patches,
         default_patch_id,
-        output_screen,
         osc_patches,
         dmx_engine.clone(),
         fixtures,
@@ -420,12 +418,19 @@ fn tick(
 
     let mut video_duration_updates: Vec<(CueId, Duration)> = Vec::new();
     let mut emit_workspace_modified = false;
+    // Voices taken off their output (not ended): their cue resets without
+    // chaining, like a stopped cue.
+    let mut withdrawn_voice_ids: Vec<CueId> = Vec::new();
 
     for s in output_statuses {
         match s {
             OutputStatus::Completed { voice_id } => {
                 completed_voice_ids.push(voice_id);
                 output_engine.gc_voice(voice_id);
+            }
+            OutputStatus::Withdrawn { voice_id } => {
+                completed_voice_ids.push(voice_id);
+                withdrawn_voice_ids.push(voice_id);
             }
             OutputStatus::Duration { voice_id, duration_ms } => {
                 video_duration_updates.push((voice_id, Duration::from_millis(duration_ms)));
@@ -467,11 +472,10 @@ fn tick(
     let stop_fade_ms      = ws.preferences.audio.default_fade_out_ms;
     let ws_patches        = ws.output_patches.clone();
     let ws_default_patch  = ws.default_output_patch_id;
-    let ws_output_screen  = ws.preferences.display.output_screen;
     // Keep the engine's projector-alignment mirror in sync with the loaded
     // workspace (no-op unless it actually changed — covers open/new/recovery
     // without hooking every load path).
-    output_engine.set_output_transform(ws.preferences.display.output_transform);
+    output_engine.sync_outputs_config(&ws.outputs_config());
     let ws_osc_patches    = ws.osc_patches.clone();
     let ws_fixtures       = ws.fixtures.clone();
     let ws_fixture_groups = ws.fixture_groups.clone();
@@ -483,7 +487,7 @@ fn tick(
         return;
     }
 
-    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size);
+    let tick_ctx = make_context(audio_engine, output_engine, dmx_engine, stop_fade_ms, ws_patches.clone(), ws_default_patch, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size);
 
     // ------------------------------------------------------------------
     // 3b. Audio-freeze guard.  When the output stream stops producing
@@ -562,6 +566,7 @@ fn tick(
     let mut all_newly_completed: Vec<(CueId, ContinueMode, Duration)> = Vec::new();
     let mut all_time_snapshots:  Vec<(CueId, u64, u64, Option<u64>)>  = Vec::new();
     let mut all_go_triggered:    Vec<CueId>                            = Vec::new();
+    let mut all_crossfade_started: Vec<CueId>                          = Vec::new();
     let mut all_go_stopped:      Vec<CueId>                            = Vec::new();
     let mut all_seq_group_playheads: Vec<Option<CueId>>                = Vec::new();
     let mut group_child_changed  = false;
@@ -587,6 +592,14 @@ fn tick(
                 if cue.state() == CueState::Running {
                     let _ = cue.tick(&tick_ctx);
                 }
+            }
+            // Crossfades that had to wait (the Fade's pre-wait, the incoming
+            // cue's pre-wait or first frame) are set up as soon as they can be.
+            let started = crate::show::crossfade::advance_pending(cl, &tick_ctx);
+            if !started.is_empty() {
+                // The incoming cue may sit in a group: resync the whole tree.
+                group_child_changed = true;
+                all_crossfade_started.extend(started);
             }
         }
 
@@ -654,7 +667,10 @@ fn tick(
                 let group_done = cue.is_complete();
                 if voice_done || time_done || group_done {
                     let id = cue.id();
-                    let cm = cue.continue_mode();
+                    let withdrawn = cue
+                        .playing_voice_id()
+                        .is_some_and(|vid| withdrawn_voice_ids.contains(&vid));
+                    let cm = if withdrawn { ContinueMode::DoNotContinue } else { cue.continue_mode() };
                     let pw = cue.post_wait();
                     if cue.holds_playhead() && current_playhead == Some(id) {
                         advance_playhead_ids.push(id);
@@ -770,7 +786,7 @@ fn tick(
         if let Some(cl) = ws.cue_list_by_id_mut(list_id) {
             let context = make_context(
                 audio_engine, output_engine, dmx_engine, stop_fade_ms,
-                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size,
+                ws_patches.clone(), ws_default_patch, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size,
             );
             let mut transport = Transport::new(context);
             if let Ok(result) = transport.go(cl) {
@@ -787,7 +803,7 @@ fn tick(
         if let Some(cl) = ws.cue_list_by_id_mut(*list_id) {
             let context = make_context(
                 audio_engine, output_engine, dmx_engine, stop_fade_ms,
-                ws_patches.clone(), ws_default_patch, ws_output_screen, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size,
+                ws_patches.clone(), ws_default_patch, ws_osc_patches.clone(), ws_fixtures.clone(), ws_fixture_groups.clone(), ws_input_patches.clone(), ws_buffer_size,
             );
             let mut transport = Transport::new(context);
             if let Ok(result) = transport.go_by_id(cl, cue_id) {
@@ -914,6 +930,13 @@ fn tick(
     for cue_id in &just_resumed {
         let _ = handle.emit("cue-state-changed", serde_json::json!({
             "cue_id": cue_id, "old_state": "paused", "new_state": "running",
+        }));
+    }
+
+    // Cues a crossfade started once its Fade's pre-wait was over.
+    for cue_id in &all_crossfade_started {
+        let _ = handle.emit("cue-state-changed", serde_json::json!({
+            "cue_id": cue_id, "old_state": "standby", "new_state": "running",
         }));
     }
 

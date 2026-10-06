@@ -1,20 +1,32 @@
 //! [`OutputEngine`] — unified output for both video and image cues.
 //!
-//! A native window hosts libmpv via the OpenGL Render API (`vo=libmpv`, see
-//! `render.rs`); the dip-to-black fade is a GL quad drawn in the same surface.
+//! The engine drives one or more **outputs** (see `output.rs`): each is a native
+//! window hosting libmpv via the OpenGL Render API (`vo=libmpv`, see
+//! `render.rs`), with its own layer stack, overlay and dip-to-black curtain.
+//! The **main output** (`MAIN_OUTPUT`, configured by Preferences → Display) always
+//! exists; the workspace may declare extra ones (a façade projector, a return
+//! monitor…), opened in the background as soon as the show declares them and
+//! destroyed when it drops them (`lifecycle.rs`).
+//!
 //! The render loop and fade are identical on every OS — only native window
 //! creation differs (winit on Windows/Linux, AppKit/objc2 on macOS, see
-//! `macos_window.rs`).
+//! `window.rs` / `macos_window.rs`).
 //!
 //! On every OS the floating cue timer is a Tauri WebView window (`float-timer`),
-//! and the on-output timer is mpv's OSD (`osd-msg1`).
+//! and the on-output timer is mpv's OSD (`osd-msg1`) on the output the show
+//! picks for it (the main one by default).
 
 mod blend;
-mod fade;
+mod crossfade;
+mod lifecycle;
 mod mpv_events;
+mod output;
+mod overlay;
 mod render;
+mod screens;
 mod slot;
 mod warp;
+mod window;
 /// macOS-only: AppKit NSWindow creation + control for the GL output path.
 #[cfg(target_os = "macos")]
 mod macos_window;
@@ -22,16 +34,15 @@ mod types;
 
 pub use blend::BlendMode;
 pub use types::{
-    ContentRequest, FitMode, LayerStyle, OutputStatus, OutputSurface, OutputTransform, ScreenInfo,
-    SurfaceId, TestPattern, VideoGeometry, VoiceId,
+    ContentRequest, CrossfadePhase, CrossfadeRequest, FitMode, LayerStyle, OutputConfig, OutputId,
+    OutputStatus, OutputTransform, ScreenInfo, TestPattern, VideoGeometry, VoiceId, MAIN_OUTPUT,
 };
-use types::{compose_display_props, FadeAnimState, MpvCtx, OutputVoice, PendingVideoStart};
+use types::compose_display_props;
 
-use std::collections::HashMap;
-use std::ffi::{c_char, c_void, CString};
+use std::collections::{HashMap, HashSet};
+use std::ffi::{c_void, CString};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -41,138 +52,32 @@ use uuid::Uuid;
 use crate::cue::types::{db_to_linear, FadeSpec};
 use crate::engine::AudioEngine;
 
-use super::mpv_sys::{
-    MpvLib, MpvNode, MpvNodeList, MpvNodeUnion,
-    MPV_FORMAT_INT64, MPV_FORMAT_NODE_MAP, MPV_FORMAT_NONE, MPV_FORMAT_STRING,
-};
+use output::{register, Output, OverlayMpv};
+use screens::resolve as resolve_output_screen;
+use super::mpv_sys::{MpvLib, MPV_FORMAT_INT64};
 
 // ---------------------------------------------------------------------------
-// Global mpv state (cross-platform)
+// Process-wide state
 // ---------------------------------------------------------------------------
 
-pub(super) static FADE_STATE: OnceLock<Mutex<FadeAnimState>> = OnceLock::new();
-pub(super) static OUTPUT_MPV_CTX: OnceLock<Arc<MpvCtx>> = OnceLock::new();
-pub(super) static OUTPUT_MPV_LIB: OnceLock<Arc<MpvLib>> = OnceLock::new();
+/// Where slot event threads report completion / duration / errors.  One channel
+/// for every output: the show event loop does not care which window a voice
+/// plays on.
 pub(super) static OUTPUT_STATUS_TX: OnceLock<Sender<OutputStatus>> = OnceLock::new();
-pub(super) static OUTPUT_CURRENT_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
-pub(super) static OUTPUT_CURRENT_FADE_OUT_MS: OnceLock<Mutex<u32>> = OnceLock::new();
-/// Set when a video `loadfile` is issued paused; consumed by the first
-/// `MPV_EVENT_PLAYBACK_RESTART` to reveal + unpause once frame 0 is ready.
-pub(super) static OUTPUT_PENDING_VIDEO_START: OnceLock<Mutex<Option<PendingVideoStart>>> =
-    OnceLock::new();
-/// The AudioEngine voice carrying the current video's audio track, if any.
-pub(super) static OUTPUT_CURRENT_AUDIO_VOICE: OnceLock<Mutex<Option<Uuid>>> = OnceLock::new();
-/// Geometry whose crop is waiting for the source dimensions.  mpv's
-/// `video-crop` is pixel-based, so a fractional per-cue crop can only be
-/// resolved once `video-params/w|h` are known — the `VIDEO_RECONFIG` event
-/// handler drains this.
-pub(super) static PENDING_CROP: OnceLock<Mutex<Option<VideoGeometry>>> = OnceLock::new();
-/// Global projector-alignment transform, composed on top of every cue's
-/// geometry.  Single source of truth is the workspace display preferences;
-/// this mirror is what the (workspace-agnostic) load path reads.
-pub(super) static OUTPUT_TRANSFORM: OnceLock<Mutex<OutputTransform>> = OnceLock::new();
-/// The cue geometry most recently pushed to mpv — re-composed against the new
-/// transform when the operator edits the alignment in Preferences.
-pub(super) static LAST_CUE_GEOMETRY: OnceLock<Mutex<VideoGeometry>> = OnceLock::new();
 /// When `Some`, the timer refresh loop shows this text instead of live cue time.
 pub(crate) static TIMER_PREVIEW: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 /// Deduplication cache for the floating timer text (avoids redundant Tauri events).
 pub(super) static FLOAT_TIMER_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
 /// Font family mirrored from OSD settings → emitted to the float-timer window.
 pub(super) static FLOAT_TIMER_FONT: OnceLock<Mutex<String>> = OnceLock::new();
-/// `true` while the overlay context has the transparent lavfi dummy loaded.
-///
-/// mpv needs a decoded video surface to composite OSD/text at all — **idle**
-/// renders ignore the OSD *and* clear the target to opaque black on some
-/// libmpv builds (0.41-dev on Windows honours neither `background=none` nor
-/// OSD in idle; measured 2026-07-11).  With a fully transparent RGBA source
-/// loaded, mpv honours the source alpha and composites the OSD with correct
-/// per-pixel alpha, so timer/text float over the video layers below.
-static OVERLAY_HAS_DUMMY: AtomicBool = AtomicBool::new(false);
-/// `true` while the on-output timer (`osd-msg1`) shows text.
-static TIMER_OSD_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// `true` while a test pattern occupies the overlay context.
-static TEST_PATTERN_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// `true` when the overlay context currently shows something (timer OSD, Text
-/// Cue, test pattern) and must be composited on top of the video layers.
-///
-/// **Load-bearing for the compositor**: the overlay context's idle render is
-/// opaque black on some libmpv builds, so compositing it unconditionally
-/// blacks out every video layer below — it must only be composited while one
-/// of these is actually active.
-pub(super) fn overlay_active() -> bool {
-    TIMER_OSD_ACTIVE.load(Ordering::Relaxed)
-        || render::TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed)
-        || TEST_PATTERN_ACTIVE.load(Ordering::Relaxed)
-}
-
-/// mpv `osd-overlay` ID reserved for the Text Cue surface.  Distinct from the
-/// timer (which uses `osd-msg1`, a separate OSD channel).
-const TEXT_OSD_OVERLAY_ID: i64 = 47;
-
-/// Load the transparent lavfi dummy into the overlay context (idempotent).
-///
-/// Called whenever timer/text OSD content appears.  No-op while a test
-/// pattern is showing — the pattern is the overlay surface then.
-fn ensure_overlay_surface() {
-    if TEST_PATTERN_ACTIVE.load(Ordering::Relaxed)
-        || OVERLAY_HAS_DUMMY.swap(true, Ordering::Relaxed)
-    {
-        return;
-    }
-    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-        unsafe {
-            let cmd = cs("loadfile");
-            // Tiny + fully transparent: `format=rgba` keeps the alpha plane,
-            // 10 fps keeps the OSD recomposited without measurable cost.
-            let url = cs("av://lavfi:color=c=black@0.0:s=64x64:r=10,format=rgba");
-            let flags = cs("replace");
-            let idx = cs("0");
-            let opts = cs("audio=no,loop-file=inf");
-            let args: [*const c_char; 6] = [
-                cmd.as_ptr(), url.as_ptr(), flags.as_ptr(),
-                idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
-            ];
-            let ret = (lib.mpv_command)(ctx.0, args.as_ptr());
-            if ret < 0 {
-                log::warn!("[output] overlay dummy loadfile failed: {ret}");
-            }
-        }
-    }
-    render::wake();
-}
-
-/// Unload the overlay dummy once neither the timer nor a Text Cue needs it.
-fn release_overlay_surface_if_idle() {
-    if overlay_active() || !OVERLAY_HAS_DUMMY.swap(false, Ordering::Relaxed) {
-        return;
-    }
-    if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-        unsafe {
-            let stop = cs("stop");
-            let args: [*const c_char; 2] = [stop.as_ptr(), std::ptr::null()];
-            (lib.mpv_command)(ctx.0, args.as_ptr());
-        }
-    }
-    render::wake();
-}
 
 /// Initialise every global that does not depend on libmpv.
 ///
 /// Shared by both constructors so a headless engine behaves exactly like a
-/// live one minus the video output — the timer, transform and geometry state
-/// all keep working (and keep serialising) with no output window attached.
+/// live one minus the video output — the timer keeps working (and keeps
+/// serialising) with no output window attached.
 fn init_shared_globals(status_tx: &Sender<OutputStatus>) {
     OUTPUT_STATUS_TX.get_or_init(|| status_tx.clone());
-    OUTPUT_CURRENT_VOICE.get_or_init(|| Mutex::new(None));
-    OUTPUT_CURRENT_FADE_OUT_MS.get_or_init(|| Mutex::new(0));
-    OUTPUT_PENDING_VIDEO_START.get_or_init(|| Mutex::new(None));
-    OUTPUT_CURRENT_AUDIO_VOICE.get_or_init(|| Mutex::new(None));
-    PENDING_CROP.get_or_init(|| Mutex::new(None));
-    OUTPUT_TRANSFORM.get_or_init(|| Mutex::new(OutputTransform::default()));
-    LAST_CUE_GEOMETRY.get_or_init(|| Mutex::new(VideoGeometry::default()));
-    FADE_STATE.get_or_init(|| Mutex::new(FadeAnimState::idle()));
     TIMER_PREVIEW.get_or_init(|| Mutex::new(None));
     FLOAT_TIMER_TEXT.get_or_init(|| Mutex::new(String::new()));
     // Empty sentinel (never a real font name) so the first set_timer_style()
@@ -183,6 +88,79 @@ fn init_shared_globals(status_tx: &Sender<OutputStatus>) {
 }
 
 // ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+/// What the show says about the outputs: the main output's screen + alignment
+/// (from Preferences → Display) and the workspace's extra outputs.  Pushed to
+/// the engine by the event loop every tick — a no-op unless it changed, which
+/// covers open / new / crash-recovery without hooking every load path.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OutputsConfig {
+    pub main_screen: Option<u32>,
+    pub main_transform: OutputTransform,
+    pub extras: Vec<OutputConfig>,
+    /// The output that shows the on-output timer (`None` = the main one).
+    pub timer_output: Option<OutputId>,
+}
+
+impl OutputsConfig {
+    /// Whether the show declares the extra output `output`.
+    fn has_extra(&self, output: OutputId) -> bool {
+        self.extras.iter().any(|c| c.id == output)
+    }
+
+    /// The output the on-output timer belongs on.
+    fn timer_output_id(&self) -> OutputId {
+        self.timer_output.unwrap_or(MAIN_OUTPUT)
+    }
+
+    /// Screen assigned to `output` (`None` = floating).
+    fn screen_of(&self, output: OutputId) -> Option<u32> {
+        if output == MAIN_OUTPUT {
+            self.main_screen
+        } else {
+            self.extras.iter().find(|c| c.id == output).and_then(|c| c.screen)
+        }
+    }
+
+    /// Alignment transform of `output`.
+    fn transform_of(&self, output: OutputId) -> OutputTransform {
+        if output == MAIN_OUTPUT {
+            self.main_transform
+        } else {
+            self.extras
+                .iter()
+                .find(|c| c.id == output)
+                .map(|c| c.transform)
+                .unwrap_or_default()
+        }
+    }
+
+    /// Operator-facing name of `output`.
+    fn name_of(&self, output: OutputId) -> String {
+        if output == MAIN_OUTPUT {
+            "Main".to_owned()
+        } else {
+            self.extras
+                .iter()
+                .find(|c| c.id == output)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "Output".to_owned())
+        }
+    }
+}
+
+/// Health-banner id for an output's "screen not connected" warning.
+fn screen_alert_id(output: OutputId) -> String {
+    if output == MAIN_OUTPUT {
+        "output-screen".to_owned()
+    } else {
+        format!("output-screen-{output}")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OutputEngine
 // ---------------------------------------------------------------------------
 
@@ -190,36 +168,43 @@ fn init_shared_globals(status_tx: &Sender<OutputStatus>) {
 pub const NO_VIDEO_OUTPUT: &str =
     "Video output unavailable — libmpv is not loaded (see the startup log)";
 
-/// libmpv handles for the overlay context, owned by [`OutputEngine`].
-struct MpvHandles {
-    lib: Arc<MpvLib>,
-    ctx: Arc<MpvCtx>,
-}
-
-/// Manages the output window + libmpv context for all video and image output.
+/// Manages the output windows + libmpv contexts for all video and image output.
 pub struct OutputEngine {
     /// `None` in **headless mode** — see [`OutputEngine::new_headless`].
-    mpv: Option<MpvHandles>,
-    current_voice: Arc<Mutex<Option<VoiceId>>>,
-    voices: Mutex<HashMap<VoiceId, OutputVoice>>,
+    lib: Option<Arc<MpvLib>>,
     #[allow(dead_code)]
     status_tx: Sender<OutputStatus>,
     status_rx: Mutex<Receiver<OutputStatus>>,
-    default_surface_id: SurfaceId,
     audio_engine: Arc<AudioEngine>,
-    go_sent_at: Arc<Mutex<Option<Instant>>>,
-    /// Whether the output window is currently user-visible.
-    visible: Arc<AtomicBool>,
     /// Tauri app handle — used to show/hide and emit events to the float-timer window.
     app_handle: tauri::AppHandle,
+    /// Live outputs by id.  The main output is created at startup; extra ones
+    /// as soon as the show declares them.
+    outputs: Mutex<HashMap<OutputId, Arc<Output>>>,
+    /// Extra outputs being opened in the background.
+    creating: Mutex<HashSet<OutputId>>,
+    config: Mutex<OutputsConfig>,
+    /// The timer OSD style, applied to every output (whichever shows it).
+    timer_style: Mutex<Option<TimerOsdStyle>>,
+    /// The engine itself, for work it hands to its own threads.
+    me: Weak<OutputEngine>,
+}
+
+/// Font, size, alignment and margin of the on-output timer.
+#[derive(Debug, Clone)]
+struct TimerOsdStyle {
+    font: String,
+    size: u32,
+    align: (&'static str, &'static str),
+    margin: String,
 }
 
 impl OutputEngine {
     /// Construct the engine.
     ///
-    /// Creates the native GL output window (hidden) and blocks until mpv's
-    /// render context is live.
-    pub fn new(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Result<Self> {
+    /// Creates the native GL window of the main output (hidden) and blocks
+    /// until mpv's render context is live.
+    pub fn new(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Result<Arc<Self>> {
         let lib = Arc::new(MpvLib::load()?);
 
         // mpv requires LC_NUMERIC=C; set it before mpv_create() on non-Windows.
@@ -228,118 +213,29 @@ impl OutputEngine {
             libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
         }
 
-        let ctx = unsafe { (lib.mpv_create)() };
-        if ctx.is_null() {
-            return Err(anyhow!("mpv_create() returned null"));
-        }
-
-        unsafe {
-            // mpv renders into our own native window via mpv_render_context_render()
-            // instead of creating its own window.
-            {
-                opt_str(&lib, ctx, "vo", "libmpv");
-                // This context is the layer compositor's OVERLAY (timer OSD,
-                // Text Cue, test patterns): idle frames must be transparent
-                // so it never masks the video slots below.  `background=none`
-                // is mpv ≥ 0.38; `alpha=yes` covers older libmpv.
-                opt_str(&lib, ctx, "background", "none");
-                opt_str(&lib, ctx, "alpha", "yes");
-            }
-
-            // The overlay context never decodes real media — it carries the
-            // timer OSD, Text Cues and the lavfi-generated test patterns, all
-            // of which are software sources.  Asking for hardware decoding
-            // here only creates a d3d11/vaapi device that can fail to
-            // initialise and pollute the log (issue #5); it buys nothing.
-            opt_str(&lib, ctx, "hwdec", "no");
-
-            opt_str(&lib, ctx, "osc", "no");
-            opt_str(&lib, ctx, "osd-level", "1");
-            opt_str(&lib, ctx, "input-default-bindings", "no");
-            opt_str(&lib, ctx, "input-vo-keyboard", "no");
-
-            // Under vo=libmpv mpv has no window of its own on any OS — our host window
-            // (winit on Windows/Linux, AppKit NSWindow on macOS) owns all mouse input
-            // (dragging, double-click fullscreen). mpv's cursor handling would only get
-            // in the way, so it stays off everywhere.
-            opt_str(&lib, ctx, "input-cursor", "no");
-
-            opt_str(&lib, ctx, "keep-open", "no");
-            opt_str(&lib, ctx, "idle", "yes");
-
-            // mpv plays VIDEO ONLY.  Each video's audio track is decoded separately
-            // as a normal AudioEngine voice (Output Patch routing, VU, fades).
-            opt_str(&lib, ctx, "ao", "null");
-            opt_str(&lib, ctx, "audio", "no");
-            opt_str(&lib, ctx, "video-sync", "desync");
-
-            let v = cs("v");
-            (lib.mpv_request_log_messages)(ctx, v.as_ptr());
-
-            let ret = (lib.mpv_initialize)(ctx);
-            if ret < 0 {
-                (lib.mpv_terminate_destroy)(ctx);
-                return Err(anyhow!("mpv_initialize() failed with code {ret}"));
-            }
-
-            // OSD style for the cue timer overlay (applied after init as properties).
-            prop_str(&lib, ctx, "osd-font-size",     "120");
-            prop_str(&lib, ctx, "osd-color",         "#FFFFFF");
-            prop_str(&lib, ctx, "osd-border-color",  "#000000");
-            prop_str(&lib, ctx, "osd-border-size",   "3");
-            prop_str(&lib, ctx, "osd-align-x",       "center");
-            prop_str(&lib, ctx, "osd-align-y",       "center");
-            prop_str(&lib, ctx, "osd-margin-x",      "0");
-            prop_str(&lib, ctx, "osd-margin-y",      "0");
-        }
-
         let (status_tx, status_rx) = crossbeam_channel::unbounded();
-        let current_voice: Arc<Mutex<Option<VoiceId>>> = Arc::new(Mutex::new(None));
-        let mpv_ctx = Arc::new(MpvCtx(ctx));
-        let go_sent_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-
         init_shared_globals(&status_tx);
+        screens::watch(&app_handle);
 
-        // Create the winit/GL output window and block until mpv's render
-        // context is live, so no `loadfile` can race ahead of it.  On failure
-        // the context is destroyed here: nothing has been published to the
-        // globals yet, so the caller can fall back to a headless engine
-        // without leaving an orphan mpv instance behind.
-        if let Err(e) = render::init(&app_handle, Arc::clone(&lib), Arc::clone(&mpv_ctx)) {
-            unsafe { (lib.mpv_terminate_destroy)(mpv_ctx.0) };
-            return Err(e);
-        }
-
-        OUTPUT_MPV_CTX.get_or_init(|| Arc::clone(&mpv_ctx));
-        OUTPUT_MPV_LIB.get_or_init(|| Arc::clone(&lib));
-
-        {
-            let lib2   = Arc::clone(&lib);
-            let ctx2   = Arc::clone(&mpv_ctx);
-            let voice2 = Arc::clone(&current_voice);
-            let tx2    = status_tx.clone();
-            let gsa2   = Arc::clone(&go_sent_at);
-            let ae     = Arc::clone(&audio_engine);
-            std::thread::Builder::new()
-                .name("inkue-output-mpv-events".into())
-                .spawn(move || {
-                    mpv_events::mpv_event_loop(lib2, ctx2, voice2, tx2, gsa2, ae)
-                })
-                .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
-        }
-
-        Ok(Self {
-            mpv: Some(MpvHandles { lib, ctx: mpv_ctx }),
-            current_voice,
-            voices: Mutex::new(HashMap::new()),
+        let engine = Arc::new_cyclic(|me| Self {
+            lib: Some(lib),
             status_tx,
             status_rx: Mutex::new(status_rx),
-            default_surface_id: Uuid::new_v4(),
             audio_engine,
-            go_sent_at,
-            visible: Arc::new(AtomicBool::new(false)),
             app_handle,
-        })
+            outputs: Mutex::new(HashMap::new()),
+            creating: Mutex::new(HashSet::new()),
+            config: Mutex::new(OutputsConfig::default()),
+            timer_style: Mutex::new(None),
+            me: me.clone(),
+        });
+
+        // On failure everything the attempt created is torn down, so the
+        // caller can fall back to a headless engine without leaving an orphan
+        // mpv instance behind.
+        let main = engine.spawn_output(MAIN_OUTPUT, "Main")?;
+        engine.adopt_output(main)?;
+        Ok(engine)
     }
 
     /// Construct a **headless** engine: no libmpv, no output window.
@@ -350,43 +246,39 @@ impl OutputEngine {
     /// MIDI, OSC, timecode and lighting; every visual operation is a no-op or
     /// returns [`NO_VIDEO_OUTPUT`], and the operator sees a health banner
     /// instead of the process disappearing at startup.
-    pub fn new_headless(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Self {
+    pub fn new_headless(audio_engine: Arc<AudioEngine>, app_handle: tauri::AppHandle) -> Arc<Self> {
         let (status_tx, status_rx) = crossbeam_channel::unbounded();
         init_shared_globals(&status_tx);
+        screens::watch(&app_handle);
 
-        Self {
-            mpv: None,
-            current_voice: Arc::new(Mutex::new(None)),
-            voices: Mutex::new(HashMap::new()),
+        Arc::new_cyclic(|me| Self {
+            lib: None,
             status_tx,
             status_rx: Mutex::new(status_rx),
-            default_surface_id: Uuid::new_v4(),
             audio_engine,
-            go_sent_at: Arc::new(Mutex::new(None)),
-            visible: Arc::new(AtomicBool::new(false)),
             app_handle,
-        }
+            outputs: Mutex::new(HashMap::new()),
+            creating: Mutex::new(HashSet::new()),
+            config: Mutex::new(OutputsConfig::default()),
+            timer_style: Mutex::new(None),
+            me: me.clone(),
+        })
     }
 
     /// `false` when the engine is headless: no video or image cue can play.
     pub fn is_available(&self) -> bool {
-        self.mpv.is_some()
+        self.lib.is_some()
     }
 
     /// The loaded `MpvLib` for probing, or `None` in headless mode.
     pub fn try_mpv_lib(&self) -> Option<&MpvLib> {
-        self.mpv.as_ref().map(|m| &*m.lib)
+        self.lib.as_deref()
     }
 
     /// Owned handle to the loaded `MpvLib` for background work
     /// (e.g. thumbnail generation on a blocking task).
     pub fn try_mpv_lib_arc(&self) -> Option<Arc<MpvLib>> {
-        self.mpv.as_ref().map(|m| Arc::clone(&m.lib))
-    }
-
-    /// `(lib, ctx)` of the overlay context, or `None` in headless mode.
-    fn overlay(&self) -> Option<(&MpvLib, *mut c_void)> {
-        self.mpv.as_ref().map(|m| (&*m.lib, m.ctx.0))
+        self.lib.clone()
     }
 
     /// Probe the duration of a video file without displaying it.
@@ -457,129 +349,256 @@ impl OutputEngine {
 
     /// Enumerate all connected monitors.  Index 0 is always the primary.
     pub fn list_screens(&self) -> Vec<ScreenInfo> {
-        #[cfg(target_os = "windows")]
-        {
-            let mut screens: Vec<ScreenInfo> = Vec::new();
-            unsafe {
-                use windows_sys::Win32::Graphics::Gdi::{
-                    EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO,
-                };
-                extern "system" fn cb(
-                    hmon: windows_sys::Win32::Graphics::Gdi::HMONITOR,
-                    _hdc: windows_sys::Win32::Graphics::Gdi::HDC,
-                    _rect: *mut windows_sys::Win32::Foundation::RECT,
-                    data: windows_sys::Win32::Foundation::LPARAM,
-                ) -> windows_sys::Win32::Foundation::BOOL {
-                    unsafe {
-                        let list = &mut *(data as *mut Vec<ScreenInfo>);
-                        let mut mi: MONITORINFO = std::mem::zeroed();
-                        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-                        if GetMonitorInfoW(hmon, &mut mi) != 0 {
-                            let r = mi.rcMonitor;
-                            let is_primary = (mi.dwFlags & 1) != 0;
-                            list.push(ScreenInfo {
-                                index: list.len() as u32,
-                                width: (r.right - r.left) as u32,
-                                height: (r.bottom - r.top) as u32,
-                                x: r.left,
-                                y: r.top,
-                                is_primary,
-                            });
-                        }
-                        1
-                    }
+        screens::list(&self.app_handle)
+    }
+
+    // ── Outputs ──────────────────────────────────────────────────────────────
+
+    /// Create an output: native window, GL render thread, overlay mpv context.
+    /// Not yet live — [`Self::adopt_output`] makes it so.
+    fn spawn_output(&self, id: OutputId, name: &str) -> Result<Arc<Output>> {
+        let lib = self.lib.as_ref().ok_or_else(|| anyhow!("{NO_VIDEO_OUTPUT}"))?;
+        let output = Output::new(id, name);
+        let ctx = overlay::create_overlay_context(lib)?;
+        let _ = output.overlay.set(OverlayMpv::new(Arc::clone(lib), Arc::clone(&ctx)));
+
+        // Create the window and block until mpv's render context is live, so no
+        // `loadfile` can race ahead of it.
+        if let Err(e) = render::init(&output, &self.app_handle, Arc::clone(lib), Arc::clone(&ctx)) {
+            if let Some(overlay) = output.overlay.get() {
+                overlay.destroy_on_drop.store(true, std::sync::atomic::Ordering::Release);
+            }
+            return Err(e);
+        }
+
+        let (lib2, ctx2, label) = (Arc::clone(lib), Arc::clone(&ctx), name.to_owned());
+        let stop = Arc::clone(&output.events_stop);
+        let events = std::thread::Builder::new()
+            .name("inkue-output-mpv-events".into())
+            .spawn(move || mpv_events::overlay_event_loop(lib2, ctx2, label, stop))
+            .map_err(|e| anyhow!("Failed to spawn mpv event thread: {e}"))?;
+        output.adopt_thread(events);
+
+        let config = self.config.lock().map(|c| c.clone()).unwrap_or_default();
+        apply_transform(&output, &config.transform_of(id));
+        output.window.set_title(&window::window_title(name));
+        if let Some(style) = self.timer_style.lock().ok().and_then(|s| s.clone()) {
+            output.set_timer_osd_style(&style.font, style.size, style.align, &style.margin);
+        }
+        log::info!("[output] '{name}' created");
+        Ok(output)
+    }
+
+    /// Make a freshly built output live — unless another thread built the same
+    /// one meanwhile (theirs stays) or the show dropped it in the meantime
+    /// (this one is destroyed).
+    fn adopt_output(&self, output: Arc<Output>) -> Result<Arc<Output>> {
+        let wanted = output.id == MAIN_OUTPUT
+            || self.config.lock().map(|c| c.has_extra(output.id)).unwrap_or(false);
+        let existing = {
+            let mut map = self.outputs.lock().unwrap();
+            match map.get(&output.id) {
+                Some(existing) => Some(Arc::clone(existing)),
+                None if wanted => {
+                    map.insert(output.id, Arc::clone(&output));
+                    None
                 }
-                EnumDisplayMonitors(
-                    0,
-                    std::ptr::null(),
-                    Some(cb),
-                    &mut screens as *mut Vec<ScreenInfo> as isize,
-                );
+                None => {
+                    drop(map);
+                    lifecycle::destroy_in_background(output);
+                    return Err(anyhow!(
+                        "This cue's video output no longer exists — pick another output in the cue's inspector"
+                    ));
+                }
             }
-            screens.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then(a.x.cmp(&b.x)));
-            for (i, s) in screens.iter_mut().enumerate() {
-                s.index = i as u32;
+        };
+        match existing {
+            Some(existing) => {
+                lifecycle::destroy_in_background(output);
+                Ok(existing)
             }
-            screens
+            None => {
+                register(&output);
+                Ok(output)
+            }
+        }
+    }
+
+    /// Build the extra output `id` (blocking: a window and a GL context).
+    fn build_extra(&self, id: OutputId) -> Result<Arc<Output>> {
+        let name = self
+            .config
+            .lock()
+            .ok()
+            .and_then(|c| c.extras.iter().find(|e| e.id == id).map(|e| e.name.clone()))
+            .ok_or_else(|| {
+                anyhow!("This cue's video output no longer exists — pick another output in the cue's inspector")
+            })?;
+        let output = self.spawn_output(id, &name)?;
+        self.adopt_output(output)
+    }
+
+    /// Open the extra output `id` on a thread of its own, then light its
+    /// screen the way a workspace load does.  One build per output at a time.
+    fn create_in_background(&self, id: OutputId) {
+        let Some(engine) = self.me.upgrade() else { return };
+        if self.lib.is_none() || !self.creating.lock().unwrap().insert(id) {
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("inkue-output-create".into())
+            .spawn(move || {
+                let built = engine.build_extra(id);
+                engine.creating.lock().unwrap().remove(&id);
+                match built {
+                    Ok(output) => engine.apply_screen_on_load(&output, engine.configured_screen(id)),
+                    Err(e) => log::warn!("[output] could not open output {id}: {e}"),
+                }
+            });
+        if let Err(e) = spawned {
+            self.creating.lock().unwrap().remove(&id);
+            log::error!("[output] could not start the output thread: {e}");
+        }
+    }
+
+    /// The output `id` (`None` = main), opened now if the show declares it but
+    /// it is not open yet.
+    ///
+    /// On macOS a window can only be built on the main thread, and a GO fired
+    /// from another one (the event loop) holds the workspace lock the main
+    /// thread may be waiting for: there the output opens in the background and
+    /// this GO reports it, instead of risking a deadlock.  Outputs normally
+    /// open as soon as the show declares them, long before their first cue.
+    fn output_for(&self, id: Option<OutputId>) -> Result<Arc<Output>> {
+        let id = id.unwrap_or(MAIN_OUTPUT);
+        if let Some(live) = self.live_output(id) {
+            return Ok(live);
+        }
+        if id == MAIN_OUTPUT {
+            return Err(anyhow!("{NO_VIDEO_OUTPUT}"));
+        }
+        ensure_output_exists(&self.config.lock().unwrap(), id)?;
+        if !window::can_create_window_here() {
+            self.create_in_background(id);
+            return Err(anyhow!(
+                "Output '{}' is still opening — GO again in a moment",
+                self.output_name(Some(id)),
+            ));
+        }
+        self.build_extra(id)
+    }
+
+    /// The live output `id`, if it is open.
+    fn live_output(&self, id: OutputId) -> Option<Arc<Output>> {
+        self.outputs.lock().unwrap().get(&id).cloned()
+    }
+
+    /// Snapshot of every live output.
+    fn live_outputs(&self) -> Vec<Arc<Output>> {
+        self.outputs.lock().unwrap().values().cloned().collect()
+    }
+
+    /// Screen the show assigns to `output`.
+    fn configured_screen(&self, output: OutputId) -> Option<u32> {
+        self.config.lock().map(|c| c.screen_of(output)).unwrap_or(None)
+    }
+
+    /// Record what the show says about the outputs and apply it: outputs it
+    /// dropped are destroyed, new ones open in the background, live ones follow
+    /// their name, alignment and screen, and the timer moves with its output.
+    /// Idempotent — cheap when nothing changed (the event loop calls it every
+    /// tick, which covers open / new / crash recovery without hooking each).
+    pub fn sync_outputs_config(&self, config: &OutputsConfig) {
+        let previous = {
+            let mut current = self.config.lock().unwrap();
+            if *current == *config {
+                return;
+            }
+            std::mem::replace(&mut *current, config.clone())
+        };
+        if self.lib.is_none() {
+            return;
         }
 
-        #[cfg(not(target_os = "windows"))]
-        {
-            use tauri::Manager;
-            // Enumerate via the main Tauri window — available on the calling thread.
-            let win = self.app_handle.get_webview_window("main");
-            let Some(win) = win else { return Vec::new(); };
-
-            let all = win.available_monitors().unwrap_or_default();
-            let primary_pos = win.primary_monitor().ok().flatten().map(|p| *p.position());
-
-            let mut screens: Vec<ScreenInfo> = all
-                .iter()
-                .enumerate()
-                .map(|(i, m)| {
-                    let pos = m.position();
-                    let sz  = m.size();
-                    let is_primary = primary_pos
-                        .map(|pp| pp.x == pos.x && pp.y == pos.y)
-                        .unwrap_or(i == 0);
-                    ScreenInfo {
-                        index: i as u32,
-                        width: sz.width,
-                        height: sz.height,
-                        x: pos.x,
-                        y: pos.y,
-                        is_primary,
-                    }
-                })
+        let dropped: Vec<Arc<Output>> = {
+            let mut map = self.outputs.lock().unwrap();
+            let gone: Vec<OutputId> = map
+                .keys()
+                .copied()
+                .filter(|&id| id != MAIN_OUTPUT && !config.has_extra(id))
                 .collect();
-            screens.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then(a.x.cmp(&b.x)));
-            for (i, s) in screens.iter_mut().enumerate() {
-                s.index = i as u32;
+            gone.iter().filter_map(|id| map.remove(id)).collect()
+        };
+        for output in dropped {
+            crate::health::clear(&screen_alert_id(output.id));
+            log::info!("[output] '{}' left the show — closing it", output.name());
+            lifecycle::destroy_in_background(output);
+        }
+
+        for output in self.live_outputs() {
+            output.set_name(&config.name_of(output.id));
+            apply_transform(&output, &config.transform_of(output.id));
+            let moved = output.id != MAIN_OUTPUT
+                && previous.has_extra(output.id)
+                && previous.screen_of(output.id) != config.screen_of(output.id);
+            if moved {
+                self.apply_screen_on_load(&output, config.screen_of(output.id));
             }
-            screens
+        }
+
+        if previous.timer_output_id() != config.timer_output_id() {
+            if let Some(old) = self.live_output(previous.timer_output_id()) {
+                old.set_timer_text("");
+            }
+        }
+
+        for extra in &config.extras {
+            if self.live_output(extra.id).is_none() {
+                self.create_in_background(extra.id);
+            }
         }
     }
 
-    /// The ID of the default "Screen 1" surface.
-    pub fn default_surface_id(&self) -> SurfaceId {
-        self.default_surface_id
-    }
-
-    /// Snapshot of all registered output surfaces.
-    pub fn surfaces(&self) -> Vec<OutputSurface> {
-        vec![OutputSurface {
-            id: self.default_surface_id,
-            name: "Screen 1".into(),
-            label: String::new(),
-        }]
+    /// Set the projector alignment of one output (`None` = main) and apply it
+    /// immediately, so the operator sees the effect live while dragging in the
+    /// alignment editor.  The transform (incl. fractional rotation + corner
+    /// pin) is a dedicated warp render pass — mpv properties are not touched.
+    pub fn set_output_transform(&self, output: Option<OutputId>, transform: OutputTransform) {
+        let id = output.unwrap_or(MAIN_OUTPUT);
+        {
+            let mut config = self.config.lock().unwrap();
+            if id == MAIN_OUTPUT {
+                config.main_transform = transform;
+            } else if let Some(extra) = config.extras.iter_mut().find(|c| c.id == id) {
+                extra.transform = transform;
+            }
+        }
+        if let Some(live) = self.outputs.lock().unwrap().get(&id) {
+            apply_transform(live, &transform);
+        }
     }
 
     // ── Unified content display ──────────────────────────────────────────────
 
-    /// Display content (video, image or live feed) on the output window.
+    /// Display content (video, image or live feed) on an output.
     ///
     /// The content gets its own video slot and is **composited** with
-    /// whatever else is on stage (layer / opacity / blend from
+    /// whatever else is on that output (layer / opacity / blend from
     /// `req.layer_style`) — nothing is replaced; stopping other cues is the
     /// transport's policy, not the engine's.
     pub fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
-        let Some(lib) = self.mpv.as_ref().map(|m| &m.lib) else {
+        let Some(lib) = self.lib.as_ref() else {
             return Err(anyhow!("{NO_VIDEO_OUTPUT}"));
         };
-        let voice_id = Uuid::new_v4();
-
-        self.voices.lock().unwrap().insert(
-            voice_id,
-            OutputVoice { id: voice_id, started_at: Instant::now(), duration: None },
-        );
-
-        self.position_window(req.screen_index);
+        let output = self.output_for(req.output)?;
+        self.place_output(&output)?;
         // The master fade quad is only a blackout curtain now (startup idle,
         // panic, cleared test pattern) — any content GO lifts it; per-slot
         // opacity handles the actual reveal fade.
-        fade::set_overlay_alpha(0);
+        output.set_overlay_alpha(0);
 
-        let slot = slot::acquire_slot(lib, &self.audio_engine)?;
+        let voice_id = Uuid::new_v4();
+        let slot = slot::acquire_slot(&output, lib, &self.audio_engine)?;
         slot::load_into_slot(&slot, slot::SlotLoad {
             voice_id,
             audio_voice_id: req.audio_voice_id,
@@ -606,7 +625,7 @@ impl OutputEngine {
     /// continues into the next slice, or stops at the boundary when
     /// `stop_at_end` is set.  No-op for unsliced content.
     pub fn devamp_voice(&self, voice_id: VoiceId, stop_at_end: bool) {
-        if let Some(slot) = slot::slot_for_voice(voice_id) {
+        if let Some(slot) = output::slot_for_voice(voice_id) {
             slot::devamp_slot(&slot, stop_at_end);
         }
     }
@@ -615,7 +634,7 @@ impl OutputEngine {
     /// mpv's `time-pos`, which reflects ab-loop jumps.  `None` when the voice
     /// is not on a slot (or mpv has no position yet).
     pub fn voice_position_ms(&self, voice_id: VoiceId) -> Option<u64> {
-        let slot = slot::slot_for_voice(voice_id)?;
+        let slot = output::slot_for_voice(voice_id)?;
         slot::position_ms(&slot)
     }
 
@@ -623,8 +642,7 @@ impl OutputEngine {
     /// zero over `visual_fade_ms` (then unload the slot) and fade its audio
     /// voice out over `audio_fade_ms`.  Other layers are untouched.
     pub fn stop_content(&self, voice_id: VoiceId, visual_fade_ms: u32, audio_fade_ms: u32) {
-        self.voices.lock().unwrap().remove(&voice_id);
-        let Some(slot) = slot::slot_for_voice(voice_id) else { return };
+        let Some(slot) = output::slot_for_voice(voice_id) else { return };
 
         // Take the audio voice out of the slot (the engine owns its fade-out;
         // the slot must not hard-cut it again at unload).
@@ -639,60 +657,26 @@ impl OutputEngine {
         }
     }
 
-    /// Hard-stop all content immediately (no fade).
+    /// Hard-stop all content immediately (no fade), on every output.
     pub fn hard_stop_current(&self) {
-        self.voices.lock().unwrap().clear();
         slot::panic_all();
     }
 
-    /// Panic: unconditionally cut whatever the output surface is doing.
+    /// Panic: unconditionally cut whatever the outputs are doing.
     ///
-    /// Unlike [`Self::stop_content`] / [`Self::hard_stop_current`], this does
-    /// not consult the voice bookkeeping at all — it always issues `mpv stop`
-    /// and paints the black quad, so it silences the surface even when a cue
-    /// lost track of its voice (double-Escape backstop).
+    /// Unlike [`Self::stop_content`] / [`Self::hard_stop_current`], this also
+    /// stops every overlay and paints the black curtain, so it silences every
+    /// surface even when a cue lost track of its voice (double-Escape backstop).
     pub fn panic_stop(&self) {
-        *self.current_voice.lock().unwrap() = None;
-        if let Some(cv) = OUTPUT_CURRENT_VOICE.get() {
-            *cv.lock().unwrap() = None;
-        }
-        self.voices.lock().unwrap().clear();
-
-        // Silence every video slot without needing voice ids.
         slot::panic_all();
-
-        if let Some((lib, ctx)) = self.overlay() {
-            unsafe {
-                let stop = cs("stop");
-                let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
-                (lib.mpv_command)(ctx, args.as_ptr());
-            }
-        }
-        fade::set_overlay_alpha(255);
-
-        if let Some(m) = OUTPUT_CURRENT_FADE_OUT_MS.get() {
-            *m.lock().unwrap() = 0;
-        }
-        if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
-            *m.lock().unwrap() = None;
-        }
-        *self.go_sent_at.lock().unwrap() = None;
-
-        if let Some(av) = OUTPUT_CURRENT_AUDIO_VOICE.get() {
-            let audio_id = av.lock().unwrap().take();
-            if let Some(aid) = audio_id {
-                let _ = self.audio_engine.stop_voice(
-                    aid,
-                    0,
-                    crate::engine::ring_command::FadeCurve::Linear,
-                );
-            }
+        for output in self.live_outputs() {
+            output.panic_overlay();
         }
     }
 
-    /// `true` when `voice_id` is content currently on the output window.
+    /// `true` when `voice_id` is content currently on an output window.
     pub fn is_current_voice(&self, voice_id: VoiceId) -> bool {
-        slot::slot_for_voice(voice_id).is_some()
+        output::slot_for_voice(voice_id).is_some()
     }
 
     /// Apply per-cue visual geometry to a voice's content, live.
@@ -700,31 +684,31 @@ impl OutputEngine {
     /// Called from `update_cue` when the operator edits the Geometry tab of a
     /// cue that is on screen; the load path applies geometry itself.
     pub fn apply_geometry(&self, voice_id: VoiceId, geometry: &VideoGeometry) {
-        let Some(slot) = slot::slot_for_voice(voice_id) else { return };
+        let Some(slot) = output::slot_for_voice(voice_id) else { return };
         apply_scalar_geometry(&slot.lib, slot.mpv_ctx.0, geometry);
         let applied = try_apply_crop(&slot.lib, slot.mpv_ctx.0, geometry);
         if let Ok(mut st) = slot.state.lock() {
             st.geometry = *geometry;
             st.crop_applied = applied || !geometry.has_crop();
         }
-        render::wake();
+        slot.wake();
     }
 
     /// Live-apply a cue's compositing properties (layer / opacity / blend).
     pub fn set_layer_props(&self, voice_id: VoiceId, style: &LayerStyle) {
-        if let Some(slot) = slot::slot_for_voice(voice_id) {
+        if let Some(slot) = output::slot_for_voice(voice_id) {
             slot::set_layer_style(&slot, style);
         }
     }
 
     /// Current animated opacity (0.0–1.0) of a voice's layer.
     pub fn get_voice_opacity(&self, voice_id: VoiceId) -> f32 {
-        slot::slot_for_voice(voice_id).map(|s| slot::opacity_of(&s)).unwrap_or(0.0)
+        output::slot_for_voice(voice_id).map(|s| slot::opacity_of(&s)).unwrap_or(0.0)
     }
 
     /// Directly drive a voice's layer opacity — Fade Cue tick at ~30 fps.
     pub fn set_voice_opacity(&self, voice_id: VoiceId, opacity: f32) {
-        if let Some(slot) = slot::slot_for_voice(voice_id) {
+        if let Some(slot) = output::slot_for_voice(voice_id) {
             slot::set_opacity_direct(&slot, opacity);
         }
     }
@@ -736,9 +720,44 @@ impl OutputEngine {
     /// action time drops inside the configured fade-out window.  Returns
     /// `false` (and does nothing) when `voice_id` is no longer on screen.
     pub fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool {
-        let Some(slot) = slot::slot_for_voice(voice_id) else { return false };
+        let Some(slot) = output::slot_for_voice(voice_id) else { return false };
         slot::animate_opacity(&slot, 0.0, fade_ms);
         true
+    }
+
+    /// Start a crossfade (Fade Cue): the request's incoming content dissolves
+    /// in while its outgoing layers leave — mixed exactly by the compositor on
+    /// the incoming output, faded out on any other output — on a clock that
+    /// starts with the incoming content's first frame (see `crossfade.rs`).
+    /// The outgoing content stays loaded; the Fade Cue stops it at its end.
+    ///
+    /// Returns `false` when the incoming content is not on an output.
+    pub fn link_crossfade(&self, request: &CrossfadeRequest) -> bool {
+        output::slot_for_voice(request.incoming)
+            .is_some_and(|incoming| slot::link_crossfade(&incoming, request))
+    }
+
+    /// Where the crossfade into `incoming` stands.
+    pub fn crossfade_phase(&self, incoming: VoiceId) -> CrossfadePhase {
+        output::slot_for_voice(incoming)
+            .map(|slot| slot::crossfade_phase(&slot))
+            .unwrap_or(CrossfadePhase::None)
+    }
+
+    /// Pause (`true`) or resume the crossfade into `incoming` together with
+    /// the Fade Cue that drives it.
+    pub fn hold_crossfade(&self, incoming: VoiceId, paused: bool) {
+        if let Some(slot) = output::slot_for_voice(incoming) {
+            slot::hold_crossfade(&slot, paused);
+        }
+    }
+
+    /// The Fade Cue driving the crossfade into `incoming` was stopped: cancel
+    /// it if it has not started, freeze it where it is otherwise.
+    pub fn release_crossfade(&self, incoming: VoiceId) {
+        if let Some(slot) = output::slot_for_voice(incoming) {
+            slot::release_crossfade(&slot);
+        }
     }
 
     /// Start content that was preloaded (Load Cue): reveal it and unpause.
@@ -746,34 +765,38 @@ impl OutputEngine {
     /// Returns `false` when `voice_id` was not preloaded — the caller should
     /// then resume it the ordinary way.
     pub fn start_preloaded(&self, voice_id: VoiceId) -> bool {
-        slot::slot_for_voice(voice_id)
+        output::slot_for_voice(voice_id)
             .map(|slot| slot::start_preloaded(&slot))
             .unwrap_or(false)
     }
 
-    /// Return the current overlay alpha (0 = transparent, 255 = black).
+    /// Return the main output's master fade alpha (0 = transparent, 255 = black).
     pub fn get_overlay_alpha(&self) -> u8 {
-        FADE_STATE.get()
-            .and_then(|fs| fs.lock().ok())
-            .map(|s| s.current_alpha)
+        self.outputs
+            .lock()
+            .unwrap()
+            .get(&MAIN_OUTPUT)
+            .map(|o| o.overlay_alpha())
             .unwrap_or(0)
     }
 
-    /// Directly set the overlay alpha — called from FadeCue.tick() at ~30 fps.
+    /// Directly set the main output's master fade alpha.
     pub fn set_overlay_alpha_direct(&self, alpha: u8) {
-        fade::set_overlay_alpha(alpha);
+        if let Some(main) = self.outputs.lock().unwrap().get(&MAIN_OUTPUT) {
+            main.set_overlay_alpha(alpha);
+        }
     }
 
     /// Return the AudioEngine voice carrying a video voice's audio track.
     pub fn video_audio_voice(&self, voice_id: VoiceId) -> Option<VoiceId> {
-        let slot = slot::slot_for_voice(voice_id)?;
+        let slot = output::slot_for_voice(voice_id)?;
         let audio = slot.state.lock().ok().and_then(|st| st.audio_voice_id);
         audio
     }
 
     /// Current playback position of a voice's video (mpv `time-pos`), in ms.
     pub fn current_video_position_ms(&self, voice_id: VoiceId) -> Option<u64> {
-        let slot = slot::slot_for_voice(voice_id)?;
+        let slot = output::slot_for_voice(voice_id)?;
         slot::position_ms(&slot)
     }
 
@@ -796,13 +819,12 @@ impl OutputEngine {
     pub fn play_voice(
         &self,
         file_path: &Path,
-        _surface_id: Option<SurfaceId>,
+        output: Option<OutputId>,
         _volume_db: f64,
         loop_count: u32,
         start_ms: Option<u64>,
         end_ms: Option<u64>,
         _fade_in: Option<&FadeSpec>,
-        screen_index: Option<u32>,
     ) -> Result<VoiceId> {
         self.show_content(ContentRequest {
             preload: false,
@@ -812,7 +834,7 @@ impl OutputEngine {
             loop_count,
             start_ms,
             end_ms,
-            screen_index,
+            output,
             audio_voice_id: None,
             display_duration_ms: None,
             hold_last_frame: false,
@@ -834,7 +856,7 @@ impl OutputEngine {
 
     /// The mpv context owning `voice_id` (the voice's slot).
     fn voice_mpv_ctx(&self, voice_id: VoiceId) -> Option<*mut c_void> {
-        slot::slot_for_voice(voice_id).map(|s| s.mpv_ctx.0)
+        output::slot_for_voice(voice_id).map(|s| s.mpv_ctx.0)
     }
 
     pub fn pause_voice(&self, voice_id: VoiceId) -> Result<()> {
@@ -893,62 +915,63 @@ impl OutputEngine {
 
     // ── Window visibility ─────────────────────────────────────────────────────
 
-    /// Toggle the output window visibility (F9 / View menu).
+    /// Toggle the visibility of the output windows (F9 / View menu): hide them
+    /// all when any is visible, otherwise show them all.
     pub fn toggle_visibility(&self) {
-        if self.visible.load(Ordering::Relaxed) {
+        if self.is_visible() {
             self.hide_output();
         } else {
             self.show_output();
         }
     }
 
-    /// Make the output window visible.
+    /// Make every output window visible.
     pub fn show_output(&self) {
-        self.visible.store(true, Ordering::Relaxed);
-        // render.rs owns the native window. On Windows/Linux this calls winit
-        // inline; on macOS it dispatches the AppKit show onto the main thread
-        // (NSWindow methods are main-thread-only).
-        render::show();
-        use tauri::Emitter;
-        let _ = self.app_handle.emit("output-window-visible", true);
+        for output in self.live_outputs() {
+            output.show();
+        }
+        self.emit_visibility(true);
     }
 
-    /// Hide the output window.
+    /// Hide every output window.
     pub fn hide_output(&self) {
-        self.visible.store(false, Ordering::Relaxed);
-        render::hide();
-        use tauri::Emitter;
-        let _ = self.app_handle.emit("output-window-visible", false);
+        for output in self.live_outputs() {
+            output.hide();
+        }
+        self.emit_visibility(false);
     }
 
-    /// Return whether the output window is currently visible.
+    /// Whether any output window is currently visible.
     pub fn is_visible(&self) -> bool {
-        self.visible.load(Ordering::Relaxed)
+        self.live_outputs().iter().any(|o| o.is_visible())
+    }
+
+    /// Whether any output window is currently user-visible.
+    pub fn is_output_visible(&self) -> bool {
+        self.is_visible()
+    }
+
+    fn emit_visibility(&self, visible: bool) {
+        use tauri::Emitter;
+        let _ = self.app_handle.emit("output-window-visible", visible);
     }
 
     // ── OSD / timer ──────────────────────────────────────────────────────────
 
-    /// Update the countdown text shown on the output window timer (mpv OSD).
+    /// The main output, when it exists (not headless).
+    fn main_output(&self) -> Option<Arc<Output>> {
+        self.live_output(MAIN_OUTPUT)
+    }
+
+    /// Update the countdown text of the on-output timer (mpv OSD), on the
+    /// output the show picked for it.  An output that is gone shows it nowhere
+    /// — never on another screen, which may be the audience's.
     ///
     /// Pass `None` (or an empty string) to hide the timer.
     pub fn set_output_timer(&self, text: Option<&str>) {
-        let text = text.unwrap_or("");
-        // The OSD only renders over a decoded surface (see OVERLAY_HAS_DUMMY),
-        // and the overlay is only composited while flagged active.
-        if text.is_empty() {
-            TIMER_OSD_ACTIVE.store(false, Ordering::Relaxed);
-        } else {
-            TIMER_OSD_ACTIVE.store(true, Ordering::Relaxed);
-            ensure_overlay_surface();
-        }
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe {
-                prop_str(lib, ctx.0, "osd-msg1", text);
-            }
-        }
-        if text.is_empty() {
-            release_overlay_surface_if_idle();
-            render::mark_overlay_dirty();
+        let id = self.config.lock().map(|c| c.timer_output_id()).unwrap_or(MAIN_OUTPUT);
+        if let Some(output) = self.live_output(id) {
+            output.set_timer_text(text.unwrap_or(""));
         }
     }
 
@@ -968,26 +991,24 @@ impl OutputEngine {
             use tauri::Emitter;
             let _ = self.app_handle.emit("float-timer-font", font);
         }
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe {
-                prop_str(lib, ctx.0, "osd-font",      font);
-                prop_str(lib, ctx.0, "osd-font-size", &font_size.to_string());
-                let (align_x, align_y) = match position {
-                    TimerPosition::Center      => ("center", "center"),
-                    TimerPosition::TopLeft     => ("left",   "top"),
-                    TimerPosition::TopRight    => ("right",  "top"),
-                    TimerPosition::BottomLeft  => ("left",   "bottom"),
-                    TimerPosition::BottomRight => ("right",  "bottom"),
-                };
-                let margin_str = match position {
-                    TimerPosition::Center => "0".to_string(),
-                    _                    => margin.to_string(),
-                };
-                prop_str(lib, ctx.0, "osd-align-x",  align_x);
-                prop_str(lib, ctx.0, "osd-align-y",  align_y);
-                prop_str(lib, ctx.0, "osd-margin-x", &margin_str);
-                prop_str(lib, ctx.0, "osd-margin-y", &margin_str);
-            }
+        let align = match position {
+            TimerPosition::Center      => ("center", "center"),
+            TimerPosition::TopLeft     => ("left",   "top"),
+            TimerPosition::TopRight    => ("right",  "top"),
+            TimerPosition::BottomLeft  => ("left",   "bottom"),
+            TimerPosition::BottomRight => ("right",  "bottom"),
+        };
+        let margin = match position {
+            TimerPosition::Center => "0".to_string(),
+            _                    => margin.to_string(),
+        };
+        // Every output carries the style, so the timer looks the same
+        // whichever one it moves to; outputs opened later get it at creation.
+        for output in self.live_outputs() {
+            output.set_timer_osd_style(font, font_size, align, &margin);
+        }
+        if let Ok(mut style) = self.timer_style.lock() {
+            *style = Some(TimerOsdStyle { font: font.to_owned(), size: font_size, align, margin });
         }
     }
 
@@ -998,7 +1019,7 @@ impl OutputEngine {
     /// GTK (Linux) and AppKit (macOS) require window show/hide on the main
     /// thread, but Tauri command handlers run on a worker thread.  Marshalling
     /// onto the main thread makes this safe on all three OS — the same
-    /// cross-platform discipline the winit output window follows.
+    /// cross-platform discipline the output windows follow.
     pub fn set_floating_timer_visible(&self, visible: bool) {
         let app = self.app_handle.clone();
         let _ = self.app_handle.run_on_main_thread(move || {
@@ -1038,232 +1059,200 @@ impl OutputEngine {
 
     // ── Text overlay (sub-text / ASS) ────────────────────────────────────────
 
-    /// Display an ASS-tagged text string on the output surface.
+    /// Display an ASS-tagged text string on an output (`None` = main).
     ///
-    /// Uses mpv's `osd-overlay` command (`format=ass-events`), the API-supported
-    /// way to draw client-supplied ASS: it honours full override tags (`\an`,
-    /// `\fn`, `\fs`, `\c` …), is independent of `osd-level`, persists across file
-    /// loads, and composites over whatever the VO shows.  (`sub-text` is read-only
-    /// and `osd-msg2`/`osd-msg3` only render at `osd-level >= 2`, which is reserved
-    /// for the cue timer on `osd-msg1`.)
-    ///
-    /// When nothing is playing, a black lavfi source is loaded so the OSD has a
-    /// surface to composite onto and the output shows black rather than the desktop.
-    pub fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
-        self.position_window(screen_index);
-        // Hint the render loop to keep compositing OSD-only changes.
-        render::TEXT_OVERLAY_ACTIVE.store(true, Ordering::Relaxed);
-        // The ASS overlay only renders over a decoded surface.
-        ensure_overlay_surface();
-
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            // osd-overlay persists across file loads, so it can be set right
-            // away — the render loop composites it as soon as it renders.
-            unsafe { osd_overlay_set(lib, ctx.0, ass_text); }
-        }
-
-        fade::set_overlay_alpha(0);
+    /// When nothing is playing, a transparent lavfi source is loaded so the OSD
+    /// has a surface to composite onto and the output shows black rather than
+    /// the desktop.
+    pub fn show_text_overlay(&self, ass_text: &str, output: Option<OutputId>) {
+        let output = match self.output_for(output).and_then(|o| self.place_output(&o).map(|_| o)) {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("[output] text overlay not shown: {e}");
+                return;
+            }
+        };
+        output.show_text(ass_text);
     }
 
-    /// Clear the text set via [`show_text_overlay`].
-    ///
-    /// Restores the opaque-black idle state (alpha=255) when no video or image
-    /// content is currently playing.
-    pub fn clear_text_overlay(&self) {
-        render::TEXT_OVERLAY_ACTIVE.store(false, Ordering::Relaxed);
-
-        if let (Some(lib), Some(ctx)) = (OUTPUT_MPV_LIB.get(), OUTPUT_MPV_CTX.get()) {
-            unsafe { osd_overlay_remove(lib, ctx.0); }
+    /// Clear the text set via [`show_text_overlay`] on an output (`None` = main).
+    pub fn clear_text_overlay(&self, output: Option<OutputId>) {
+        let id = output.unwrap_or(MAIN_OUTPUT);
+        if let Some(live) = self.outputs.lock().unwrap().get(&id).cloned() {
+            live.clear_text();
         }
-        release_overlay_surface_if_idle();
-        render::mark_overlay_dirty();
-
-        // Blackout only when the whole stage is empty (no slot occupied).
-        let has_content = !self.voices.lock().unwrap().is_empty();
-        if !has_content {
-            fade::set_overlay_alpha(255);
-        }
-    }
-
-    /// Whether the output window is currently user-visible.
-    pub fn is_output_visible(&self) -> bool {
-        self.visible.load(Ordering::Relaxed)
-    }
-
-    /// Update the global projector-alignment transform and apply it
-    /// immediately, so the operator sees the effect live while dragging in
-    /// the alignment editor.  No-op when the transform is unchanged (the
-    /// event loop re-asserts it every tick to stay in sync with the loaded
-    /// workspace).
-    ///
-    /// The transform (incl. fractional rotation + corner pin) is a dedicated
-    /// warp render pass — mpv properties are not touched.
-    pub fn set_output_transform(&self, transform: OutputTransform) {
-        let changed = OUTPUT_TRANSFORM
-            .get()
-            .and_then(|m| m.lock().ok())
-            .map(|mut t| {
-                if *t == transform {
-                    false
-                } else {
-                    *t = transform;
-                    true
-                }
-            })
-            .unwrap_or(false);
-        if !changed {
-            return;
-        }
-
-        render::set_output_warp(warp::warp_matrix(&transform));
     }
 
     // ── Test patterns (projector calibration) ────────────────────────────────
 
-    /// Show a calibration pattern (grid, colour bars, custom image, …) on the
-    /// output window, replacing whatever is playing.
+    /// Show a calibration pattern (grid, colour bars, custom image, …) on an
+    /// output (`None` = main), replacing whatever that output is playing.
     ///
-    /// The current content is hard-stopped first (its owning cue completes
-    /// through the normal `OutputStatus::Completed` path), the window is
-    /// positioned like a GO would (fallback + banner included), and the
-    /// pattern is shown with **neutral cue geometry** — only the global
-    /// [`OutputTransform`] applies, which is exactly what alignment and
-    /// colorimetry need.
-    pub fn show_test_pattern(&self, pattern: &TestPattern, screen_index: Option<u32>) {
-        let Some((lib, ctx)) = self.overlay() else {
-            log::warn!("[output] test pattern ignored: {NO_VIDEO_OUTPUT}");
-            return;
+    /// The output's content is hard-stopped first (its owning cue resets
+    /// through `OutputStatus::Withdrawn`), the window is
+    /// positioned like a GO would (fallback + banner included), and the pattern
+    /// is shown with **neutral cue geometry** — only the output's own
+    /// transform applies, which is exactly what alignment and colorimetry need.
+    pub fn show_test_pattern(&self, pattern: &TestPattern, output: Option<OutputId>) {
+        let output = match self.output_for(output) {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("[output] test pattern ignored: {e}");
+                return;
+            }
         };
-        self.hard_stop_current();
-        self.position_window(screen_index);
-
-        // The pattern replaces whatever the overlay context held (incl. the
-        // transparent OSD dummy) and makes the overlay composite opaque.
-        TEST_PATTERN_ACTIVE.store(true, Ordering::Relaxed);
-        OVERLAY_HAS_DUMMY.store(false, Ordering::Relaxed);
+        for slot in output.slots_snapshot() {
+            slot::hard_unload(&slot, slot::UnloadReport::Withdrawn);
+        }
+        if let Err(e) = self.place_output(&output) {
+            log::warn!("[output] test pattern ignored: {e}");
+            return;
+        }
 
         // Pattern resolution: match the target screen so the grid is 1:1.
-        let (w, h) = resolve_output_screen(&self.list_screens(), screen_index)
+        let (w, h) = resolve_output_screen(&self.list_screens(), self.configured_screen(output.id))
             .0
             .map(|s| (s.width, s.height))
             .unwrap_or((1920, 1080));
-        let url = pattern.mpv_url(w, h);
-
-        apply_geometry_props(lib, ctx, &VideoGeometry::default());
-
-        unsafe {
-            // Patterns behave like images: play immediately, no paused-load
-            // handshake, and no keep-open (a previous held video may have set it).
-            (lib.mpv_set_property_string)(ctx, cs("pause").as_ptr(), cs("no").as_ptr());
-            (lib.mpv_set_property_string)(ctx, cs("keep-open").as_ptr(), cs("no").as_ptr());
-            if let Some(m) = OUTPUT_PENDING_VIDEO_START.get() {
-                if let Ok(mut p) = m.lock() {
-                    *p = None;
-                }
-            }
-
-            let opts = if pattern.is_file() {
-                // A custom image needs image-display-duration to hold on screen.
-                cs("audio=no,image-display-duration=inf")
-            } else {
-                cs("audio=no")
-            };
-            let path_cstr = match CString::new(url.as_str()) {
-                Ok(c) => c,
-                Err(_) => {
-                    log::warn!("[output] test pattern path contains NUL byte");
-                    return;
-                }
-            };
-            let cmd = cs("loadfile");
-            let flags = cs("replace");
-            let idx = cs("0");
-            // loadfile signature: <url> <flags> <index> <options> (see fade.rs).
-            let args: [*const std::ffi::c_char; 6] = [
-                cmd.as_ptr(), path_cstr.as_ptr(), flags.as_ptr(),
-                idx.as_ptr(), opts.as_ptr(), std::ptr::null(),
-            ];
-            let ret = (lib.mpv_command)(ctx, args.as_ptr());
-            if ret < 0 {
-                log::warn!("[output] test pattern loadfile failed: {ret} ({url})");
-            }
-        }
-
-        fade::set_overlay_alpha(0);
+        output.show_pattern(pattern, w, h);
     }
 
-    /// Clear the test pattern: stop playback and return to opaque black.
-    pub fn clear_test_pattern(&self) {
-        if let Some((lib, ctx)) = self.overlay() {
-            unsafe {
-                let stop = cs("stop");
-                let args: [*const std::ffi::c_char; 2] = [stop.as_ptr(), std::ptr::null()];
-                (lib.mpv_command)(ctx, args.as_ptr());
+    /// Clear the test pattern of an output (`None` = every output): stop
+    /// playback and return to opaque black.
+    pub fn clear_test_pattern(&self, output: Option<OutputId>) {
+        for live in self.live_outputs() {
+            if output.is_none_or(|id| id == live.id) {
+                live.clear_pattern();
             }
         }
-        TEST_PATTERN_ACTIVE.store(false, Ordering::Relaxed);
-        // Timer/Text OSD may still be live — give them their surface back.
-        if overlay_active() {
-            ensure_overlay_surface();
-        }
-        render::mark_overlay_dirty();
-        fade::set_overlay_alpha(255);
     }
 
-    /// Immediately apply the output-screen preference to the live window.
+    // ── Screen identification ────────────────────────────────────────────────
+
+    /// Flash `ass` on `screen` using an output's window, so the operator can
+    /// verify before a show that "Screen 2" really is the projector.  The
+    /// window is moved there for the occasion only; [`Self::end_identify`]
+    /// puts everything back.
+    pub fn identify_screen(
+        &self,
+        output: Option<OutputId>,
+        screen: Option<u32>,
+        ass: &str,
+    ) -> Result<()> {
+        let output = self.output_for(output)?;
+        self.place_output_at(&output, screen)?;
+        output.show_text(ass);
+        Ok(())
+    }
+
+    /// End an identification: remove the label and return the window to where
+    /// the show wants it (or hide it again when it was hidden before).
+    pub fn end_identify(&self, output: Option<OutputId>, was_visible: bool) {
+        self.clear_text_overlay(output);
+        let Ok(live) = self.output_for(output) else { return };
+        if was_visible {
+            let _ = self.place_output(&live);
+        } else {
+            live.hide();
+            self.emit_visibility(self.is_visible());
+        }
+    }
+
+    /// Operator-facing name of an output (`None` = main).
+    pub fn output_name(&self, output: Option<OutputId>) -> String {
+        self.config
+            .lock()
+            .map(|c| c.name_of(output.unwrap_or(MAIN_OUTPUT)))
+            .unwrap_or_default()
+    }
+
+    // ── Placement ─────────────────────────────────────────────────────────────
+
+    /// Immediately apply the main output's screen preference to its live window.
     ///
     /// `Some(idx)` shows the window fullscreen on that screen right away (same
     /// missing-screen fallback + health banner as a GO), so the operator sees
     /// the effect of the Preferences selection without waiting for the next
     /// visual cue.  `None` (floating) restores the windowed floating rect.
     pub fn apply_output_screen(&self, screen_index: Option<u32>) {
+        self.apply_output_screen_of(None, screen_index);
+    }
+
+    /// [`Self::apply_output_screen`] for any output (`None` = main).  An extra
+    /// output that has not been created yet is created when it gets a screen,
+    /// so the operator sees the projector light up as soon as it is assigned.
+    pub fn apply_output_screen_of(&self, output: Option<OutputId>, screen_index: Option<u32>) {
+        let id = output.unwrap_or(MAIN_OUTPUT);
+        if let Ok(mut config) = self.config.lock() {
+            if id == MAIN_OUTPUT {
+                config.main_screen = screen_index;
+            } else if let Some(extra) = config.extras.iter_mut().find(|c| c.id == id) {
+                extra.screen = screen_index;
+            }
+        }
         match screen_index {
-            Some(_) => self.position_window(screen_index),
+            Some(_) => {
+                if let Ok(live) = self.output_for(Some(id)) {
+                    let _ = self.place_output(&live);
+                }
+            }
             None => {
-                crate::health::clear("output-screen");
-                render::set_windowed_floating();
+                crate::health::clear(&screen_alert_id(id));
+                if let Some(live) = self.outputs.lock().unwrap().get(&id) {
+                    live.window.set_windowed_floating();
+                }
             }
         }
     }
 
     /// Apply the output-screen preference when a workspace is (re)loaded, so a
     /// configured screen goes live as a black fullscreen surface immediately —
-    /// not only on the first visual GO.
-    ///
-    /// Unlike [`Self::apply_output_screen`], a configured-but-missing screen
-    /// only raises the health banner and keeps the window hidden: falling back
-    /// to fullscreen-on-primary here would black out the operator's main
-    /// display the moment they open a show file without the projector attached.
+    /// not only on the first visual GO.  The extra outputs get the same
+    /// treatment as they open (see [`Self::sync_outputs_config`]).
     pub fn apply_output_screen_on_load(&self, screen_index: Option<u32>) {
-        match screen_index {
-            None => {
-                crate::health::clear("output-screen");
-                render::set_windowed_floating();
-            }
-            Some(idx) => {
-                if self.list_screens().iter().any(|s| s.index == idx) {
-                    self.position_window(screen_index);
-                } else {
-                    crate::health::set(crate::health::HealthAlert::new(
-                        "output-screen",
-                        crate::health::HealthLevel::Warning,
-                        format!(
-                            "Output screen {} is not connected — the output window stays \
-                             hidden; visual cues will fall back to the primary display. \
-                             Check Preferences → Display.",
-                            idx + 1,
-                        ),
-                    ));
-                }
-            }
+        if let Ok(mut config) = self.config.lock() {
+            config.main_screen = screen_index;
+        }
+        if let Some(main) = self.main_output() {
+            self.apply_screen_on_load(&main, screen_index);
         }
     }
 
-    // ── Fullscreen ────────────────────────────────────────────────────────────
+    /// Light the screens of the extra outputs already open when a workspace
+    /// is (re)loaded; those that open later are lit as they open.
+    pub fn apply_extra_screens_on_load(&self) {
+        for output in self.live_outputs().into_iter().filter(|o| o.id != MAIN_OUTPUT) {
+            self.apply_screen_on_load(&output, self.configured_screen(output.id));
+        }
+    }
 
-    /// Toggle the output window between windowed and true fullscreen.
+    /// Light an output's screen the way a workspace load does.  A connected
+    /// screen goes live as a black fullscreen surface.  A missing one raises
+    /// the banner and keeps the window hidden: falling back to the operator's
+    /// own display here would black it out the moment a show opens without
+    /// its projector.  A floating output stays hidden until a cue plays on it.
+    fn apply_screen_on_load(&self, output: &Arc<Output>, screen_index: Option<u32>) {
+        match screen_index {
+            None => {
+                crate::health::clear(&screen_alert_id(output.id));
+                output.window.set_windowed_floating();
+            }
+            Some(idx) if self.list_screens().iter().any(|s| s.index == idx) => {
+                let _ = self.place_output(output);
+            }
+            Some(idx) => crate::health::set(crate::health::HealthAlert::new(
+                screen_alert_id(output.id),
+                crate::health::HealthLevel::Warning,
+                missing_screen_on_load(output, idx),
+            )),
+        }
+    }
+
+    /// Toggle the main output window between windowed and true fullscreen.
     pub fn toggle_fullscreen(&self) {
-        render::toggle_fullscreen();
+        if let Some(main) = self.main_output() {
+            main.window.toggle_fullscreen();
+        }
     }
 
     // ── Status / GC ──────────────────────────────────────────────────────────
@@ -1280,35 +1269,57 @@ impl OutputEngine {
         out
     }
 
-    /// Remove a completed voice.
-    pub fn gc_voice(&self, voice_id: VoiceId) {
-        self.voices.lock().unwrap().remove(&voice_id);
-    }
+    /// A completed voice needs no cleanup: its slot released itself.
+    pub fn gc_voice(&self, _voice_id: VoiceId) {}
 
     // ── Internal helpers ─────────────────────────────────────────────────────
 
-    fn position_window(&self, screen_index: Option<u32>) {
-        // Resolve the configured screen against what is actually connected.
-        // A configured-but-missing screen falls back to the primary display
-        // (never a silent no-op) and raises a health banner so the operator
-        // knows before the show that "Screen 2" is not what they expect.
+    /// Put `output` on its configured screen and make it visible.
+    ///
+    /// The **main** output falls back to the primary display when its screen is
+    /// missing (never a silent no-op) and raises a health banner.  An **extra**
+    /// output refuses instead — showing a façade projector's picture on the
+    /// operator's own screen would be worse than showing nothing.
+    fn place_output(&self, output: &Arc<Output>) -> Result<()> {
+        self.place_output_at(output, self.configured_screen(output.id))
+    }
+
+    /// [`Self::place_output`] on an explicit screen instead of the configured
+    /// one (screen identification).
+    fn place_output_at(&self, output: &Arc<Output>, configured: Option<u32>) -> Result<()> {
         let (target_screen, screen_missing) =
-            resolve_output_screen(&self.list_screens(), screen_index);
+            resolve_output_screen(&self.list_screens(), configured);
+        let alert_id = screen_alert_id(output.id);
+
         if screen_missing {
+            let shown = configured.map(|i| i + 1).unwrap_or(0);
+            if output.id != MAIN_OUTPUT {
+                crate::health::set(crate::health::HealthAlert::new(
+                    &alert_id,
+                    crate::health::HealthLevel::Warning,
+                    format!(
+                        "Output '{}' is on screen {shown}, which is not connected. \
+                         Check Preferences → Outputs.",
+                        output.name(),
+                    ),
+                ));
+                return Err(anyhow!(
+                    "Output '{}' is not connected (screen {shown})",
+                    output.name(),
+                ));
+            }
             crate::health::set(crate::health::HealthAlert::new(
-                "output-screen",
+                &alert_id,
                 crate::health::HealthLevel::Warning,
                 format!(
-                    "Output screen {} is not connected — using the primary display instead. \
+                    "Output screen {shown} is not connected — using the primary display instead. \
                      Check Preferences → Display.",
-                    screen_index.map(|i| i + 1).unwrap_or(0),
                 ),
             ));
         } else {
-            crate::health::clear("output-screen");
+            crate::health::clear(&alert_id);
         }
 
-        self.visible.store(true, Ordering::Relaxed);
         if let Some(s) = &target_screen {
             // Windows/Linux: borderless-fullscreen the winit window on the
             // monitor matching the physical rect from list_screens(). macOS:
@@ -1317,21 +1328,61 @@ impl OutputEngine {
             // NSScreen both put the primary at index 0, so the fallback index
             // maps correctly too).
             #[cfg(not(target_os = "macos"))]
-            render::set_fullscreen_on_rect(s.x, s.y, s.width, s.height);
+            output.window.place_on_rect(s.x, s.y, s.width, s.height);
             #[cfg(target_os = "macos")]
-            render::position_on_screen(s.index);
+            output.window.place_on_screen(s.index);
         }
-        render::show();
-        use tauri::Emitter;
-        let _ = self.app_handle.emit("output-window-visible", true);
+        output.show();
+        self.emit_visibility(true);
+        Ok(())
     }
 }
 
-impl Drop for OutputEngine {
-    fn drop(&mut self) {
-        if let Some(m) = &self.mpv {
-            unsafe { (m.lib.mpv_terminate_destroy)(m.ctx.0) };
-        }
+/// The banner for an output whose screen is missing when the show opens.
+fn missing_screen_on_load(output: &Output, idx: u32) -> String {
+    if output.id == MAIN_OUTPUT {
+        format!(
+            "Output screen {} is not connected — the output window stays hidden; visual cues \
+             will fall back to the primary display. Check Preferences → Display.",
+            idx + 1,
+        )
+    } else {
+        format!(
+            "Output '{}' is on screen {}, which is not connected — its cues will not play \
+             until it is. Check Preferences → Outputs.",
+            output.name(),
+            idx + 1,
+        )
+    }
+}
+
+/// Error for an extra output that is not (or no longer) part of the show.
+fn ensure_output_exists(config: &OutputsConfig, id: OutputId) -> Result<()> {
+    if config.extras.iter().any(|c| c.id == id) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "This cue's video output no longer exists — pick another output in the cue's inspector"
+        ))
+    }
+}
+
+/// Apply an alignment transform to an output (no-op when unchanged).
+fn apply_transform(output: &Arc<Output>, transform: &OutputTransform) {
+    let changed = output
+        .transform
+        .lock()
+        .map(|mut t| {
+            if *t == *transform {
+                false
+            } else {
+                *t = *transform;
+                true
+            }
+        })
+        .unwrap_or(false);
+    if changed {
+        output.set_warp(warp::warp_matrix(transform));
     }
 }
 
@@ -1341,25 +1392,6 @@ impl Drop for OutputEngine {
 
 pub(super) fn cs(s: &str) -> CString {
     CString::new(s).expect("cs(): interior NUL byte in literal")
-}
-
-/// Resolve the configured output screen index against the connected screens.
-///
-/// Returns `(target, missing)`:
-/// - `target` — the screen to go fullscreen on (`None` = floating window);
-///   when the configured index is absent, falls back to the primary display.
-/// - `missing` — `true` when a screen was configured but is not connected.
-pub(super) fn resolve_output_screen(
-    screens: &[ScreenInfo],
-    screen_index: Option<u32>,
-) -> (Option<ScreenInfo>, bool) {
-    match screen_index {
-        None => (None, false),
-        Some(idx) => match screens.iter().find(|s| s.index == idx) {
-            Some(s) => (Some(s.clone()), false),
-            None => (screens.first().cloned(), true),
-        },
-    }
 }
 
 /// Read an int64 mpv property, or `None` when unavailable.
@@ -1395,44 +1427,6 @@ pub(super) fn try_apply_crop(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeo
     }
 }
 
-/// Push a cue's [`VideoGeometry`] to mpv.
-///
-/// The cue geometry is applied **pure** — the global [`OutputTransform`]
-/// lives in the warp render pass instead, so composing it here would
-/// double-apply it.
-///
-/// The scalar properties (`keepaspect`, `panscan`, `video-zoom`,
-/// `video-pan-x/y`, `video-rotate`) are global mpv properties that persist
-/// across `loadfile`, so every load — and every live edit — sets **all** of
-/// them (a cue without geometry resets the previous cue's values).  The crop
-/// is pixel-based: applied immediately when the source dimensions are known,
-/// otherwise parked in [`PENDING_CROP`] for the `VIDEO_RECONFIG` handler.
-pub(super) fn apply_geometry_props(lib: &MpvLib, ctx: *mut c_void, geometry: &VideoGeometry) {
-    // Remember the cue geometry most recently pushed to mpv.
-    if let Some(last) = LAST_CUE_GEOMETRY.get() {
-        if let Ok(mut g) = last.lock() {
-            *g = *geometry;
-        }
-    }
-
-    apply_scalar_geometry(lib, ctx, geometry);
-
-    let pending_crop = if geometry.has_crop() {
-        // Pixel crop needs the source dimensions; park it when unknown.
-        if try_apply_crop(lib, ctx, geometry) { None } else { Some(*geometry) }
-    } else {
-        // No crop on this cue: clear any crop left by the previous cue.
-        // (An empty string needs no dimensions.)
-        unsafe { prop_str(lib, ctx, "video-crop", "") };
-        None
-    };
-    if let Some(pending) = PENDING_CROP.get() {
-        if let Ok(mut p) = pending.lock() {
-            *p = pending_crop;
-        }
-    }
-}
-
 /// Push a geometry's scalar mpv properties (everything except the pixel
 /// crop, which needs the source dimensions).  Per-context — used by both the
 /// overlay context and each video slot.
@@ -1465,115 +1459,104 @@ pub(super) unsafe fn prop_str(lib: &MpvLib, ctx: *mut c_void, name: &str, value:
     (lib.mpv_set_property_string)(ctx, n.as_ptr(), v.as_ptr());
 }
 
-/// Show the Text Cue ASS string via mpv's `osd-overlay` command.
-///
-/// `res_y=720` is the ASS script reference height, so `\fs` sizes stay
-/// proportional to the output regardless of its actual resolution.
-pub(super) unsafe fn osd_overlay_set(lib: &MpvLib, ctx: *mut c_void, ass_text: &str) {
-    let Ok(data_v) = CString::new(ass_text) else {
-        log::warn!("[output] osd-overlay text contains an interior NUL — ignored");
-        return;
-    };
-    let (name, id, format, data_k, res_y) =
-        (cs("name"), cs("id"), cs("format"), cs("data"), cs("res_y"));
-    let (name_v, format_v) = (cs("osd-overlay"), cs("ass-events"));
-
-    let mut keys: [*const c_char; 5] =
-        [name.as_ptr(), id.as_ptr(), format.as_ptr(), data_k.as_ptr(), res_y.as_ptr()];
-    let mut values: [MpvNode; 5] = [
-        MpvNode { u: MpvNodeUnion { string: name_v.as_ptr() },    format: MPV_FORMAT_STRING },
-        MpvNode { u: MpvNodeUnion { int64: TEXT_OSD_OVERLAY_ID }, format: MPV_FORMAT_INT64  },
-        MpvNode { u: MpvNodeUnion { string: format_v.as_ptr() },  format: MPV_FORMAT_STRING },
-        MpvNode { u: MpvNodeUnion { string: data_v.as_ptr() },    format: MPV_FORMAT_STRING },
-        MpvNode { u: MpvNodeUnion { int64: 720 },                 format: MPV_FORMAT_INT64  },
-    ];
-    command_node_map(lib, ctx, &mut keys, &mut values);
-}
-
-/// Remove the Text Cue `osd-overlay` (`format=none`).
-pub(super) unsafe fn osd_overlay_remove(lib: &MpvLib, ctx: *mut c_void) {
-    let (name, id, format) = (cs("name"), cs("id"), cs("format"));
-    let (name_v, format_v) = (cs("osd-overlay"), cs("none"));
-
-    let mut keys: [*const c_char; 3] = [name.as_ptr(), id.as_ptr(), format.as_ptr()];
-    let mut values: [MpvNode; 3] = [
-        MpvNode { u: MpvNodeUnion { string: name_v.as_ptr() },    format: MPV_FORMAT_STRING },
-        MpvNode { u: MpvNodeUnion { int64: TEXT_OSD_OVERLAY_ID }, format: MPV_FORMAT_INT64  },
-        MpvNode { u: MpvNodeUnion { string: format_v.as_ptr() },  format: MPV_FORMAT_STRING },
-    ];
-    command_node_map(lib, ctx, &mut keys, &mut values);
-}
-
-/// Run `mpv_command_node` with a `MPV_FORMAT_NODE_MAP` built from parallel
-/// `keys`/`values` slices, freeing any memory mpv allocates for the result.
-unsafe fn command_node_map(
-    lib: &MpvLib,
-    ctx: *mut c_void,
-    keys: &mut [*const c_char],
-    values: &mut [MpvNode],
-) {
-    debug_assert_eq!(keys.len(), values.len());
-    let mut list = MpvNodeList {
-        num: keys.len() as i32,
-        values: values.as_mut_ptr(),
-        keys: keys.as_mut_ptr(),
-    };
-    let arg = MpvNode { u: MpvNodeUnion { list: &mut list }, format: MPV_FORMAT_NODE_MAP };
-    let mut result = MpvNode { u: MpvNodeUnion { int64: 0 }, format: MPV_FORMAT_NONE };
-    let ret = (lib.mpv_command_node)(ctx, &arg, &mut result);
-    (lib.mpv_free_node_contents)(&mut result);
-    if ret < 0 {
-        log::warn!("[output] mpv_command_node(osd-overlay) failed: {ret}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn screens(n: u32) -> Vec<ScreenInfo> {
-        (0..n)
-            .map(|i| ScreenInfo {
-                index: i,
-                width: 1920,
-                height: 1080,
-                x: (i as i32) * 1920,
-                y: 0,
-                is_primary: i == 0,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn resolve_screen_none_is_floating() {
-        assert_eq!(resolve_output_screen(&screens(2), None), (None, false));
-    }
-
-    #[test]
-    fn resolve_screen_found() {
-        let (target, missing) = resolve_output_screen(&screens(2), Some(1));
-        assert!(!missing);
-        assert_eq!(target.unwrap().index, 1);
-    }
-
-    #[test]
-    fn resolve_screen_missing_falls_back_to_primary() {
-        let (target, missing) = resolve_output_screen(&screens(2), Some(4));
-        assert!(missing);
-        assert_eq!(target.unwrap().index, 0);
-    }
-
-    #[test]
-    fn resolve_screen_missing_with_no_screens() {
-        let (target, missing) = resolve_output_screen(&[], Some(1));
-        assert!(missing);
-        assert!(target.is_none());
-    }
 
     #[test]
     fn headless_error_names_the_missing_piece() {
         // The operator reads this on a cue that will not fire; it has to say
         // what is wrong, not just that something is.
         assert!(NO_VIDEO_OUTPUT.contains("libmpv"));
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    fn config_with_extra() -> (OutputsConfig, OutputConfig) {
+        let mut extra = OutputConfig::new("Façade");
+        extra.screen = Some(2);
+        extra.transform.pan_x = 0.1;
+        let config = OutputsConfig {
+            main_screen: Some(1),
+            main_transform: OutputTransform { rotation: 0.5, ..OutputTransform::default() },
+            extras: vec![extra.clone()],
+            timer_output: None,
+        };
+        (config, extra)
+    }
+
+    #[test]
+    fn the_timer_belongs_on_the_main_output_unless_the_show_moves_it() {
+        let (mut config, extra) = config_with_extra();
+        assert_eq!(config.timer_output_id(), MAIN_OUTPUT);
+        config.timer_output = Some(extra.id);
+        assert_eq!(config.timer_output_id(), extra.id);
+    }
+
+    #[test]
+    fn only_declared_outputs_are_extras_of_the_show() {
+        let (config, extra) = config_with_extra();
+        assert!(config.has_extra(extra.id));
+        assert!(!config.has_extra(MAIN_OUTPUT), "the main output is not an extra");
+        assert!(!config.has_extra(Uuid::new_v4()));
+    }
+
+    #[test]
+    fn a_missing_screen_banner_says_which_preference_to_check() {
+        let main = Output::new(MAIN_OUTPUT, "Main");
+        assert!(missing_screen_on_load(&main, 1).contains("Preferences → Display"));
+        let extra = Output::new(Uuid::new_v4(), "Façade");
+        let text = missing_screen_on_load(&extra, 2);
+        assert!(text.contains("'Façade'") && text.contains("screen 3") && text.contains("Preferences → Outputs"));
+    }
+
+    #[test]
+    fn each_output_has_its_own_screen() {
+        let (config, extra) = config_with_extra();
+        assert_eq!(config.screen_of(MAIN_OUTPUT), Some(1));
+        assert_eq!(config.screen_of(extra.id), Some(2));
+        assert_eq!(config.screen_of(Uuid::new_v4()), None, "an unknown output is floating");
+    }
+
+    #[test]
+    fn each_output_has_its_own_alignment() {
+        let (config, extra) = config_with_extra();
+        assert_eq!(config.transform_of(MAIN_OUTPUT).rotation, 0.5);
+        assert_eq!(config.transform_of(MAIN_OUTPUT).pan_x, 0.0);
+        assert_eq!(config.transform_of(extra.id).pan_x, 0.1);
+        assert!(config.transform_of(Uuid::new_v4()).is_identity());
+    }
+
+    #[test]
+    fn names_come_from_the_show() {
+        let (config, extra) = config_with_extra();
+        assert_eq!(config.name_of(MAIN_OUTPUT), "Main");
+        assert_eq!(config.name_of(extra.id), "Façade");
+    }
+
+    #[test]
+    fn health_banners_are_per_output() {
+        let extra = Uuid::new_v4();
+        assert_eq!(screen_alert_id(MAIN_OUTPUT), "output-screen", "the main banner keeps its id");
+        assert_ne!(screen_alert_id(extra), screen_alert_id(MAIN_OUTPUT));
+        assert_ne!(screen_alert_id(extra), screen_alert_id(Uuid::new_v4()));
+    }
+
+    #[test]
+    fn a_deleted_output_is_refused_with_an_actionable_message() {
+        let (config, extra) = config_with_extra();
+        assert!(ensure_output_exists(&config, extra.id).is_ok());
+        let err = ensure_output_exists(&config, Uuid::new_v4()).unwrap_err().to_string();
+        assert!(err.contains("no longer exists"), "got: {err}");
+    }
+
+    #[test]
+    fn an_unchanged_config_compares_equal() {
+        let (config, _) = config_with_extra();
+        assert_eq!(config, config.clone());
+        assert_ne!(config, OutputsConfig::default());
     }
 }

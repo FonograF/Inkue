@@ -15,8 +15,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossbeam_channel::{unbounded, Receiver};
@@ -29,7 +30,7 @@ use inkue_lib::cue::registry::CueRegistry;
 use inkue_lib::cue::types::CueType;
 use inkue_lib::engine::dmx_engine::ChannelWidth;
 use inkue_lib::engine::engine_traits::{AudioEngineApi, DmxEngineApi, OutputEngineApi};
-use inkue_lib::engine::output_engine::ContentRequest;
+use inkue_lib::engine::output_engine::{ContentRequest, CrossfadePhase, CrossfadeRequest};
 use inkue_lib::engine::ring_command::{FadeCurve, VoiceId};
 use inkue_lib::engine::voice::Voice;
 
@@ -295,6 +296,9 @@ pub enum EngineCall {
     OutputPanicStop,
     OutputEofFade { fade_ms: u32 },
     OutputStartPreloaded,
+    OutputLinkCrossfade { duration_ms: u32, outgoing: usize },
+    OutputHoldCrossfade { paused: bool },
+    OutputReleaseCrossfade,
     OutputSetOpacity { opacity: f32 },
     AudioDevamp { stop_at_end: bool },
     OutputDevamp { stop_at_end: bool },
@@ -373,16 +377,51 @@ impl AudioEngineApi for RecAudio {
     }
 }
 
+/// The crossfades the recording output double has linked, by incoming voice.
+/// Tests drive their phase: the incoming picture's first frame, or the
+/// incoming content leaving before the dissolve has landed.
+#[derive(Clone, Default)]
+pub struct CrossfadeSim(Arc<Mutex<HashMap<VoiceId, CrossfadePhase>>>);
+
+impl CrossfadeSim {
+    /// Every crossfade still waiting shows its first frame now.
+    pub fn reveal_all(&self) {
+        for phase in self.0.lock().unwrap().values_mut() {
+            if *phase == CrossfadePhase::Waiting {
+                *phase = CrossfadePhase::Started { started_at: Instant::now() };
+            }
+        }
+    }
+
+    /// Every incoming content leaves the output (stopped, ended, failed).
+    pub fn vanish_all(&self) {
+        for phase in self.0.lock().unwrap().values_mut() {
+            *phase = CrossfadePhase::None;
+        }
+    }
+
+    /// How many crossfades were linked.
+    pub fn linked(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
 /// `video_audio` is the voice a Video Cue's audio track would occupy on the
 /// real engine — `None` (the default) models a silent video, `Some(id)` a
 /// video whose sound the cue can fade.
 ///
 /// `headless` models the real [`OutputEngine::new_headless`]: libmpv could not
 /// be loaded, so every `show_content` is refused.
+///
+/// `picture_waits`: a linked crossfade waits for [`CrossfadeSim::reveal_all`]
+/// (a video still decoding its first frame) instead of starting at once (an
+/// image already on screen).
 struct RecOutput {
     log: CallLog,
     video_audio: Option<VoiceId>,
     headless: bool,
+    crossfades: CrossfadeSim,
+    picture_waits: bool,
 }
 impl OutputEngineApi for RecOutput {
     fn show_content(&self, req: ContentRequest<'_>) -> Result<VoiceId> {
@@ -413,10 +452,10 @@ impl OutputEngineApi for RecOutput {
     fn pause_voice(&self, _v: VoiceId) -> Result<()> { Ok(()) }
     fn resume_voice(&self, _v: VoiceId) -> Result<()> { Ok(()) }
     fn seek_voice_ms(&self, _v: VoiceId, _p: u64) {}
-    fn show_text_overlay(&self, ass_text: &str, _s: Option<u32>) {
+    fn show_text_overlay(&self, ass_text: &str, _output: Option<uuid::Uuid>) {
         record(&self.log, EngineCall::OutputTextOverlay { ass: ass_text.to_string() });
     }
-    fn clear_text_overlay(&self) {
+    fn clear_text_overlay(&self, _output: Option<uuid::Uuid>) {
         record(&self.log, EngineCall::OutputClearText);
     }
     fn begin_eof_fade_out(&self, _v: VoiceId, fade_ms: u32) -> bool {
@@ -429,6 +468,28 @@ impl OutputEngineApi for RecOutput {
     fn start_preloaded(&self, _v: VoiceId) -> bool {
         record(&self.log, EngineCall::OutputStartPreloaded);
         true
+    }
+    fn link_crossfade(&self, request: &CrossfadeRequest) -> bool {
+        record(&self.log, EngineCall::OutputLinkCrossfade {
+            duration_ms: request.duration_ms,
+            outgoing: request.outgoing.len(),
+        });
+        let phase = if self.picture_waits {
+            CrossfadePhase::Waiting
+        } else {
+            CrossfadePhase::Started { started_at: Instant::now() }
+        };
+        self.crossfades.0.lock().unwrap().insert(request.incoming, phase);
+        true
+    }
+    fn crossfade_phase(&self, incoming: VoiceId) -> CrossfadePhase {
+        self.crossfades.0.lock().unwrap().get(&incoming).copied().unwrap_or(CrossfadePhase::None)
+    }
+    fn hold_crossfade(&self, _incoming: VoiceId, paused: bool) {
+        record(&self.log, EngineCall::OutputHoldCrossfade { paused });
+    }
+    fn release_crossfade(&self, _incoming: VoiceId) {
+        record(&self.log, EngineCall::OutputReleaseCrossfade);
     }
 }
 
@@ -449,19 +510,33 @@ pub fn recording_context_with(
     fixtures: Vec<inkue_lib::engine::fixture::PatchedFixture>,
     input_patches: Vec<inkue_lib::engine::audio_input::InputPatch>,
 ) -> (CueContext, Receiver<CueEvent>, CallLog) {
-    build_recording_context(osc_patches, fixtures, input_patches, None, false)
+    let (ctx, rx, log, _) = build_recording_context(osc_patches, fixtures, input_patches, None, false, false);
+    (ctx, rx, log)
 }
 
 /// [`recording_context`] whose output double reports a paired audio voice for
 /// every visual voice — i.e. a Video Cue that carries a sound track.
 pub fn recording_context_with_video_audio() -> (CueContext, Receiver<CueEvent>, CallLog) {
-    build_recording_context(Vec::new(), Vec::new(), Vec::new(), Some(Uuid::new_v4()), false)
+    let (ctx, rx, log, _) =
+        build_recording_context(Vec::new(), Vec::new(), Vec::new(), Some(Uuid::new_v4()), false, false);
+    (ctx, rx, log)
+}
+
+/// [`recording_context`] whose crossfades wait for their incoming picture
+/// (driven through the returned [`CrossfadeSim`]); videos carry a sound track
+/// when `video_audio` is set.
+pub fn recording_context_with_crossfades(
+    video_audio: bool,
+) -> (CueContext, Receiver<CueEvent>, CallLog, CrossfadeSim) {
+    let audio = video_audio.then(Uuid::new_v4);
+    build_recording_context(Vec::new(), Vec::new(), Vec::new(), audio, false, true)
 }
 
 /// [`recording_context`] running on a headless output engine — the state the
 /// app falls back to when libmpv is missing.
 pub fn recording_context_headless() -> (CueContext, Receiver<CueEvent>, CallLog) {
-    build_recording_context(Vec::new(), Vec::new(), Vec::new(), None, true)
+    let (ctx, rx, log, _) = build_recording_context(Vec::new(), Vec::new(), Vec::new(), None, true, false);
+    (ctx, rx, log)
 }
 
 fn build_recording_context(
@@ -470,16 +545,23 @@ fn build_recording_context(
     input_patches: Vec<inkue_lib::engine::audio_input::InputPatch>,
     video_audio: Option<VoiceId>,
     headless: bool,
-) -> (CueContext, Receiver<CueEvent>, CallLog) {
+    picture_waits: bool,
+) -> (CueContext, Receiver<CueEvent>, CallLog, CrossfadeSim) {
     let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let crossfades = CrossfadeSim::default();
     let (tx, rx) = unbounded();
     let ctx = CueContext::new(
         Arc::new(RecAudio(log.clone())),
-        Arc::new(RecOutput { log: log.clone(), video_audio, headless }),
+        Arc::new(RecOutput {
+            log: log.clone(),
+            video_audio,
+            headless,
+            crossfades: crossfades.clone(),
+            picture_waits,
+        }),
         tx,
         500,
         Vec::new(),
-        None,
         None,
         osc_patches,
         Arc::new(RecDmx(log.clone())),
@@ -488,7 +570,7 @@ fn build_recording_context(
         input_patches,
         256,
     );
-    (ctx, rx, log)
+    (ctx, rx, log, crossfades)
 }
 
 /// [`recording_context_with`] with empty workspace tables.

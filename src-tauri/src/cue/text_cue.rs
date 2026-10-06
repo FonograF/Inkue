@@ -122,8 +122,8 @@ pub struct TextCue {
     pub text_color: String,
     /// Position on the output surface (9-point grid).
     pub position: TextPosition,
-    /// Target monitor index.  `None` = use the workspace display setting.
-    pub screen_index: Option<u32>,
+    /// Video output to show on.  `None` = the main output.
+    pub output_id: Option<crate::engine::output_engine::OutputId>,
     /// Auto-complete after this duration.  `None` = hold until stopped.
     pub display_duration_ms: Option<u64>,
 
@@ -153,7 +153,7 @@ impl TextCue {
             font_size: 60,
             text_color: String::from("#FFFFFF"),
             position: TextPosition::Center,
-            screen_index: None,
+            output_id: None,
             display_duration_ms: None,
             is_disabled: false,
             in_pre_wait: false,
@@ -178,8 +178,7 @@ impl TextCue {
             &self.text_color,
             self.position,
         );
-        let screen = self.screen_index.or(context.output_screen);
-        context.output_engine.show_text_overlay(&ass_text, screen);
+        context.output_engine.show_text_overlay(&ass_text, self.output_id);
 
         self.action_started_at = Some(Instant::now());
         self.in_pre_wait = false;
@@ -232,7 +231,7 @@ impl Cue for TextCue {
 
     fn stop(&mut self, context: &CueContext) -> Result<()> {
         self.in_pre_wait = false;
-        context.output_engine.clear_text_overlay();
+        context.output_engine.clear_text_overlay(self.output_id);
         self.state = CueState::Standby;
         self.started_at = None;
         self.action_started_at = None;
@@ -303,6 +302,13 @@ impl Cue for TextCue {
     fn set_continue_mode(&mut self, mode: ContinueMode) { self.continue_mode = mode; }
 
     /// Text overlays stop on the next GO (same as Image/Video visual cues).
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        ctx.missing_output_issue(self.output_id).into_iter().collect()
+    }
+
     fn stop_on_next_go(&self) -> bool { true }
 
     fn play_generation(&self) -> u64 { self.play_generation }
@@ -343,7 +349,7 @@ impl Cue for TextCue {
             "font_size": self.font_size,
             "text_color": self.text_color,
             "position": self.position,
-            "screen_index": self.screen_index,
+            "output_id": self.output_id,
             "display_duration_ms": self.display_duration_ms,
             "is_disabled": self.is_disabled,
         })
@@ -410,9 +416,13 @@ impl CueFactory for TextCueFactory {
                 cue.position = p;
             }
         }
-        if let Some(idx) = value.get("screen_index").and_then(|v| v.as_u64()) {
-            cue.screen_index = Some(idx as u32);
-        }
+        // A Text Cue written by an older Inkue carried a monitor index
+        // (`screen_index`).  Outputs replaced it, and a bare monitor number
+        // names no output, so such a cue shows on the main output.
+        cue.output_id = value
+            .get("output_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok());
         if let Some(ms) = value.get("display_duration_ms").and_then(|v| v.as_u64()) {
             cue.display_duration_ms = Some(ms);
         }

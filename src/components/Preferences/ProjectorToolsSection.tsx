@@ -104,7 +104,11 @@ function TransformField({
   );
 }
 
-export function ProjectorToolsSection() {
+/**
+ * Alignment editor + test patterns.  `outputId` selects the output they act on;
+ * omitted/null = the main output.
+ */
+export function ProjectorToolsSection({ outputId = null }: { outputId?: string | null }) {
   const [transform, setTransformState] = useState<OutputTransform>(DEFAULT_OUTPUT_TRANSFORM);
   const [activePattern, setActivePatternState] = useState<TestPatternKind | null>(null);
   const [customImagePath, setCustomImagePath] = useState<string | null>(null);
@@ -120,17 +124,17 @@ export function ProjectorToolsSection() {
   };
 
   useEffect(() => {
-    getOutputTransform().then(setTransformState).catch(console.error);
+    getOutputTransform(outputId).then(setTransformState).catch(console.error);
     // Leaving Preferences (unmount) clears any test pattern still showing —
     // a calibration grid must never survive into the show.
     return () => {
       if (pendingRef.current !== null) window.clearTimeout(pendingRef.current);
       if (activePatternRef.current !== null) {
         activePatternRef.current = null;
-        void clearTestPattern().catch(console.error);
+        void clearTestPattern(outputId).catch(console.error);
       }
     };
-  }, []);
+  }, [outputId]);
 
   const applyTransform = (partial: Partial<OutputTransform>) => {
     const next = { ...transform, ...partial };
@@ -138,7 +142,7 @@ export function ProjectorToolsSection() {
     if (pendingRef.current !== null) window.clearTimeout(pendingRef.current);
     pendingRef.current = window.setTimeout(() => {
       pendingRef.current = null;
-      void setOutputTransform(next).catch(console.error);
+      void setOutputTransform(next, outputId).catch(console.error);
     }, 40);
   };
 
@@ -151,11 +155,11 @@ export function ProjectorToolsSection() {
   const togglePattern = async (kind: TestPatternKind, path?: string) => {
     if (activePattern === kind && kind !== "custom_image") {
       setActivePattern(null);
-      await clearTestPattern().catch(console.error);
+      await clearTestPattern(outputId).catch(console.error);
       return;
     }
     setActivePattern(kind);
-    await showTestPattern(kind === "custom_image" ? { kind, path } : { kind }).catch(console.error);
+    await showTestPattern(kind === "custom_image" ? { kind, path } : { kind }, outputId).catch(console.error);
   };
 
   const pickCustomImage = async () => {
@@ -174,7 +178,7 @@ export function ProjectorToolsSection() {
       <div style={{ marginBottom: 24 }}>
         <div style={sectionLabelStyle}>Projector Alignment</div>
         <div style={{ fontSize: 11, color: "var(--wc-text-faint)", marginBottom: 10 }}>
-          Warps everything on the output window (all Video and Image cues, and the test
+          Warps everything on this output window (all its Video and Image cues, and the test
           patterns below) inside the projector. <b>Drag a corner</b> to pin it
           (perspective warp), <b>drag the centre cross</b> to move the whole picture.
           Applies live and is saved in the workspace — show the Grid pattern below
@@ -230,7 +234,7 @@ export function ProjectorToolsSection() {
       <div style={{ marginBottom: 24 }}>
         <div style={sectionLabelStyle}>Test Patterns</div>
         <div style={{ fontSize: 11, color: "var(--wc-text-faint)", marginBottom: 10 }}>
-          Shown fullscreen on the configured output (replaces any playing visual cue).
+          Shown fullscreen on this output (replaces any visual cue playing on it).
           The alignment above applies, so you calibrate exactly what the audience sees.
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
@@ -256,7 +260,7 @@ export function ProjectorToolsSection() {
           disabled={activePattern === null}
           onClick={() => {
             setActivePattern(null);
-            void clearTestPattern().catch(console.error);
+            void clearTestPattern(outputId).catch(console.error);
           }}
           style={{
             ...buttonStyle(false),

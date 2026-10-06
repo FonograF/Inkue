@@ -124,6 +124,8 @@ export interface ImportReport {
   needs_attention: number;
   media_found: number;
   media_missing: string[];
+  /** Extra video outputs created from QLab's stages / surfaces (names). */
+  video_outputs: string[];
   cues: ImportedCue[];
 }
 
@@ -359,7 +361,8 @@ export interface VideoCueData extends CueSummary {
   start_time_ms: number | null;
   end_time_ms: number | null;
   loop_count: number;
-  output_surface_id: string | null;
+  /** Video output to play on. null = the main output. */
+  output_id: string | null;
   output_patch_id: string | null;
   /** Freeze on the last frame at natural EOF instead of cutting to black. */
   hold_last_frame: boolean;
@@ -390,8 +393,8 @@ export interface TextCueData extends CueSummary {
   text_color: string;
   /** Position on the output surface. */
   position: TextPosition;
-  /** Target monitor index. null = use workspace display setting. */
-  screen_index: number | null;
+  /** Video output to show on. null = the main output. */
+  output_id: string | null;
   /** Auto-complete after this duration in ms. null = hold until stopped. */
   display_duration_ms: number | null;
 }
@@ -399,6 +402,8 @@ export interface TextCueData extends CueSummary {
 /** Full cue data returned by get_cue for an Image Cue. */
 export interface ImageCueData extends CueSummary {
   notes: string;
+  /** Video output to show on. null = the main output. */
+  output_id: string | null;
   fade_in_ms: number | null;
   fade_in_curve: FadeCurve | null;
   fade_out_ms: number | null;
@@ -427,6 +432,8 @@ export interface CameraDeviceInfo {
 /** Full cue data returned by get_cue for a Camera Cue. */
 export interface CameraCueData extends CueSummary {
   notes: string;
+  /** Video output to show on. null = the main output. */
+  output_id: string | null;
   source: CameraSource;
   /** Visual (GL overlay) fade-in from black. */
   video_fade_in_ms: number | null;
@@ -485,6 +492,9 @@ export interface FadeCueData extends CueSummary {
   fade_shapes: FadeShapes;
   /** Stop the target cue(s) once the fade completes. */
   stop_at_end: boolean;
+  /** Crossfade: a visual cue started by this Fade so the picture dissolves from
+   *  the targets into it. null = plain fade. */
+  crossfade_into_id: string | null;
 }
 
 /** Full cue data returned by get_cue for a Wait Cue. */
@@ -928,8 +938,10 @@ export interface DisplayPreferences {
   theme: "dark" | "light" | "system";
   /** How a cue's colour tag is rendered in the Cue List. */
   cue_color_style: CueColorStyle;
-  /** Global projector-alignment transform, composed on top of per-cue geometry. */
+  /** Projector-alignment transform of the main output. */
   output_transform?: OutputTransform;
+  /** Video output that shows the on-output timer. null = the main output. */
+  timer_output?: string | null;
 }
 
 /** Global projector-alignment transform (Preferences → Display). */
@@ -1022,3 +1034,17 @@ export interface CueTimeUpdateEvent {
   action_elapsed_ms: number;
   remaining_ms: number;
 }
+
+/** One video output (a window on a screen). The main output comes first. */
+export interface VideoOutputInfo {
+  /** The main output's id is the nil UUID. */
+  id: string;
+  name: string;
+  is_main: boolean;
+  /** Monitor index (0 = primary); null = a floating window. */
+  screen: number | null;
+  transform: OutputTransform;
+}
+
+/** Id of the main output. */
+export const MAIN_OUTPUT_ID = "00000000-0000-0000-0000-000000000000";

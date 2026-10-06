@@ -61,6 +61,10 @@ use commands::{
         add_osc_patch, get_osc_config, list_osc_patches, remove_osc_patch,
         send_osc_test, set_osc_config, update_osc_patch,
     },
+    output_cmds::{
+        add_video_output, delete_video_output, list_video_outputs, rename_video_output,
+        set_video_output_screen,
+    },
     preferences_cmds::{
         clear_test_pattern, get_asio_output_pairs, get_available_backends,
         get_machine_audio_config, get_output_screen, get_output_transform, get_preferences,
@@ -142,7 +146,7 @@ pub fn run() {
                     AudioEngine::new_silent(&machine_config)
                 }
             };
-            let output_engine = Arc::new(
+            let output_engine =
                 match OutputEngine::new(Arc::clone(&audio_engine), app.handle().clone()) {
                     Ok(engine) => engine,
                     Err(e) => {
@@ -160,8 +164,7 @@ pub fn run() {
                             app.handle().clone(),
                         )
                     }
-                },
-            );
+                };
 
             // Pin all network traffic to the configured interface (must run
             // before the OSC server and any DMX sink binds a socket).
@@ -511,6 +514,11 @@ pub fn run() {
             set_live_crosspoint,
             list_video_screens,
             identify_output_screen,
+            list_video_outputs,
+            add_video_output,
+            rename_video_output,
+            set_video_output_screen,
+            delete_video_output,
             list_camera_devices,
             preview_cue,
             stop_preview,

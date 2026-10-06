@@ -548,6 +548,8 @@ mod tests {
             osc_patch_ids: HashSet::new(),
             output_patch_ids: HashSet::new(),
             midi_ports: ports.iter().map(|s| s.to_string()).collect(),
+            video_output_ids: Default::default(),
+            visual_cue_ids: Default::default(),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -13,8 +13,11 @@ use uuid::Uuid;
 
 /// Unique identifier for one playing output instance (video or image).
 pub type VoiceId = Uuid;
-/// Unique identifier for one output surface.
-pub type SurfaceId = Uuid;
+/// Identifier of one video output (one native window).
+pub type OutputId = Uuid;
+/// The main output — the one every visual cue without an explicit output uses,
+/// configured by Preferences → Display.  It always exists.
+pub const MAIN_OUTPUT: OutputId = Uuid::nil();
 
 // ---------------------------------------------------------------------------
 // Thread-safety wrapper for the raw mpv context pointer
@@ -58,6 +61,35 @@ pub enum FitMode {
 
 fn geometry_default_scale() -> f64 {
     1.0
+}
+
+/// One configured video output: a native window on a screen, with its own
+/// projector-alignment transform.  The workspace stores the **extra** outputs
+/// (`Workspace::video_outputs`); the main output is described by
+/// `DisplayPreferences` and is addressed as [`MAIN_OUTPUT`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutputConfig {
+    pub id: OutputId,
+    /// Operator-facing name ("Façade", "Retour"…).
+    pub name: String,
+    /// Monitor index (0 = primary).  `None` = a floating window.
+    #[serde(default)]
+    pub screen: Option<u32>,
+    /// Projector alignment of this output only.
+    #[serde(default)]
+    pub transform: OutputTransform,
+}
+
+impl OutputConfig {
+    /// A fresh output with a new id, floating, no alignment.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            screen: None,
+            transform: OutputTransform::default(),
+        }
+    }
 }
 
 /// Per-cue visual geometry for Video and Image cues, applied to the output
@@ -352,8 +384,8 @@ pub struct ContentRequest<'a> {
     pub loop_count: u32,
     pub start_ms: Option<u64>,
     pub end_ms: Option<u64>,
-    /// Screen to go fullscreen on.  `None` = floating window.
-    pub screen_index: Option<u32>,
+    /// The output to show this content on.  `None` = the main output.
+    pub output: Option<OutputId>,
     /// The AudioEngine voice carrying this video's audio track, if any.
     pub audio_voice_id: Option<VoiceId>,
     /// Image cues: how long the image stays before auto-completing
@@ -390,6 +422,10 @@ pub struct ContentRequest<'a> {
 pub enum OutputStatus {
     /// Playback reached its natural end.
     Completed { voice_id: VoiceId },
+    /// The content was taken off its output — its slot was needed for newer
+    /// content, a test pattern replaced it, or its output was deleted.  The
+    /// cue resets like a stopped one: no Auto-Follow.
+    Withdrawn { voice_id: VoiceId },
     /// File metadata loaded; total duration is now known.
     Duration { voice_id: VoiceId, duration_ms: u64 },
     /// A playback error occurred inside mpv.
@@ -397,50 +433,38 @@ pub enum OutputStatus {
 }
 
 // ---------------------------------------------------------------------------
-// OutputSurface
+// Crossfade
 // ---------------------------------------------------------------------------
 
-/// A named output surface.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutputSurface {
-    pub id: SurfaceId,
-    pub name: String,
-    pub label: String,
+/// A crossfade for the output engine to render: `incoming` dissolves in while
+/// every `outgoing` layer leaves (see `crossfade.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossfadeRequest {
+    pub incoming: VoiceId,
+    pub outgoing: Vec<VoiceId>,
+    pub duration_ms: u32,
+    /// Rising shape: the incoming picture, and the whole dissolve on one output.
+    pub up: crate::engine::ring_command::FadeCurve,
+    /// Falling shape: an outgoing picture on another output.
+    pub down: crate::engine::ring_command::FadeCurve,
 }
 
-// ---------------------------------------------------------------------------
-// OutputVoice
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(super) struct OutputVoice {
-    pub id: VoiceId,
-    pub started_at: Instant,
-    pub duration: Option<Duration>,
+/// Where a crossfade stands, as the Fade Cue driving it sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossfadePhase {
+    /// No dissolve on this voice: never linked, cancelled, or the incoming
+    /// content is gone.
+    None,
+    /// Linked, waiting for the incoming content's first frame.
+    Waiting,
+    /// Dissolving since `started_at` — the Fade Cue anchors its own clock on
+    /// it, so the sound moves with the picture.
+    Started { started_at: Instant },
 }
 
 // ---------------------------------------------------------------------------
 // Fade overlay state
 // ---------------------------------------------------------------------------
-
-pub(crate) enum FadePending {
-    /// Issue `mpv stop` once the master fade lands.  No longer constructed
-    /// (the per-slot stop path replaced it); the render loop still drains it.
-    #[allow(dead_code)]
-    Stop,
-}
-
-/// State carried from a video `loadfile` (issued paused) to the
-/// `MPV_EVENT_PLAYBACK_RESTART` that fires once frame 0 is decoded and on
-/// screen.  At that point the engine reveals the overlay and unpauses, so
-/// audio and video both start from frame 0 with no A/V offset and no
-/// decoder-warmup freeze.
-pub(crate) struct PendingVideoStart {
-    /// Fade-from-black duration to run when the first frame is revealed
-    /// (0 = hard cut).
-    pub fade_in_ms: u32,
-}
 
 pub(crate) struct FadeAnimState {
     pub current_alpha: u8,
@@ -448,8 +472,6 @@ pub(crate) struct FadeAnimState {
     pub start_alpha: u8,
     pub duration_ms: u32,
     pub start_time: Instant,
-    pub timer_active: bool,
-    pub pending: Option<FadePending>,
 }
 
 impl FadeAnimState {
@@ -468,8 +490,6 @@ impl FadeAnimState {
             start_alpha: 255,
             duration_ms: 0,
             start_time: Instant::now(),
-            timer_active: false,
-            pending: None,
         }
     }
 }
@@ -481,6 +501,27 @@ impl FadeAnimState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_config_roundtrips_and_defaults_missing_fields() {
+        let mut cfg = OutputConfig::new("Façade");
+        cfg.screen = Some(1);
+        cfg.transform.pan_x = 0.05;
+        let back: OutputConfig = serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+        assert_eq!(back, cfg);
+
+        let minimal: OutputConfig = serde_json::from_value(serde_json::json!({
+            "id": cfg.id, "name": "Retour"
+        }))
+        .unwrap();
+        assert_eq!(minimal.screen, None, "no screen = a floating window");
+        assert!(minimal.transform.is_identity());
+    }
+
+    #[test]
+    fn a_new_output_never_collides_with_the_main_output() {
+        assert_ne!(OutputConfig::new("x").id, MAIN_OUTPUT);
+    }
 
     #[test]
     fn geometry_default_is_neutral() {

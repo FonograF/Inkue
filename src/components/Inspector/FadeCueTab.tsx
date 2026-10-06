@@ -12,8 +12,12 @@ const DEFAULT_FADE_SHAPES: FadeShapes = {
   mirrored: true,
 };
 import { useWorkspaceStore } from "../../stores/workspaceStore";
-import { Grid2, MiniField, NumberInput, Section, SliderRow, ToggleRow } from "./Field";
+import { flattenCues, makesSound, showsPicture } from "../../lib/cueTree";
+import { Grid2, MiniField, NumberInput, Section, SliderRow, ToggleRow, inputStyle } from "./Field";
 import { CueTargetPicker } from "./CueTargetPicker";
+import { Select } from "../common/Select";
+
+const hintStyle = { fontSize: 11, color: "var(--wc-text-faint)", margin: "6px 0 10px", lineHeight: 1.5 } as const;
 
 export function FadeCueTab({
   cue,
@@ -27,21 +31,25 @@ export function FadeCueTab({
 }) {
   const allCues = useWorkspaceStore((s) => s.cues);
 
+  const everyCue = flattenCues(allCues);
   const targetIds: string[] = cue.target_cue_ids ?? [];
   const targetCues = targetIds
-    .map((id) => allCues.find((c) => c.id === id))
+    .map((id) => everyCue.find((c) => c.id === id))
     .filter((c): c is CueSummary => !!c);
-  const hasAudio = targetCues.some((c) => c.cue_type === "audio");
-  const hasVideo = targetCues.some((c) => c.cue_type === "video");
-  const hasVisual = hasVideo || targetCues.some(
-    (c) => c.cue_type === "image" || c.cue_type === "camera",
-  );
-  // Show audio goals when targets include audio or video (video has an audio
-  // track), or while no target is selected yet (default / unknown).
-  const showVolume = hasAudio || hasVideo || (!hasVisual && !hasAudio);
-  // Show visual goals when targets include image or video, or no target yet.
-  const showBrightness = hasVisual || (!hasAudio && !hasVisual);
+  // Groups count through their children: a group holding a video is both.
+  const hasSound = targetCues.some(makesSound);
+  const hasPicture = targetCues.some(showsPicture);
+  const noTarget = targetCues.length === 0;
+  const crossfadeInto = cue.crossfade_into_id ?? null;
+  // Show audio goals when targets make sound, or while no target is selected yet.
+  const showVolume = hasSound || noTarget;
+  // Show visual goals when targets show a picture, or no target yet.
+  const showBrightness = hasPicture || noTarget;
 
+  // Anything with a picture can be dissolved into, nested in a group or not.
+  const pictureCues = everyCue.filter(
+    (c) => c.id !== cue.id && (c.cue_type === "video" || c.cue_type === "image" || c.cue_type === "camera"),
+  );
   const volDb: number = cue.target_volume_db ?? -60;
   const brightnessPercent: number = cue.target_brightness_pct ?? 0;
   const fadeVolume: boolean = cue.fade_volume ?? true;
@@ -65,6 +73,31 @@ export function FadeCueTab({
         />
         <div style={{ height: 8 }} />
       </Section>
+
+      {(hasPicture || noTarget || crossfadeInto !== null) && (
+        <Section title="Crossfade">
+          <Select
+            style={inputStyle}
+            value={crossfadeInto ?? ""}
+            onChange={(e) => onSave({ crossfade_into_id: e.target.value || null })}
+          >
+            <option value="">None — plain fade</option>
+            {pictureCues.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.number ? `${c.number} — ` : ""}{c.name || "(untitled)"}
+              </option>
+            ))}
+            {crossfadeInto !== null && !pictureCues.some((c) => c.id === crossfadeInto) && (
+              <option value={crossfadeInto}>(missing cue)</option>
+            )}
+          </Select>
+          <div style={hintStyle}>
+            {crossfadeInto
+              ? "GO starts this cue. From its first frame, the targets' pictures dissolve into it over the fade time, along the curve — on another output they fade out on their own screen. Their sound fades out with them, and they stop when the dissolve ends."
+              : "Pick a Video, Image or Camera cue to dissolve the targets into, without the dip to black of two crossing fades."}
+          </div>
+        </Section>
+      )}
 
       <Section title="Fade">
         <Grid2>
@@ -139,7 +172,10 @@ export function FadeCueTab({
       )}
 
       {showBrightness && (
-        <Section title="Visual">
+        <Section
+          title="Visual"
+          hint={crossfadeInto ? "Used only if there is nothing to dissolve into." : undefined}
+        >
           <SliderRow
             label="Brightness"
             value={brightnessPercent}
@@ -152,7 +188,10 @@ export function FadeCueTab({
         </Section>
       )}
 
-      <Section title="On Complete">
+      <Section
+        title="On Complete"
+        hint={crossfadeInto ? "A crossfade always stops the targets it dissolved away." : undefined}
+      >
         <ToggleRow
           label="Stop targets when the fade ends"
           checked={cue.stop_at_end ?? false}

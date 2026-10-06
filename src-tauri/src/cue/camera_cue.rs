@@ -117,6 +117,8 @@ pub struct CameraCue {
     pub geometry: VideoGeometry,
     /// Compositing (stacking layer, base opacity, blend mode).
     pub layer_style: LayerStyle,
+    /// Video output to show on.  `None` = the main output.
+    pub output_id: Option<crate::engine::output_engine::OutputId>,
 
     is_disabled: bool,
 
@@ -147,6 +149,7 @@ impl CameraCue {
             video_fade_out: None,
             geometry: VideoGeometry::default(),
             layer_style: LayerStyle::default(),
+            output_id: None,
             is_disabled: false,
             active_voice_id: None,
             in_pre_wait: false,
@@ -183,7 +186,7 @@ impl CameraCue {
             loop_count: 0,
             start_ms: None,
             end_ms: None,
-            screen_index: context.output_screen,
+            output: self.output_id,
             audio_voice_id: None,
             display_duration_ms: None,
             hold_last_frame: false,
@@ -369,6 +372,13 @@ impl Cue for CameraCue {
         self.active_voice_id
     }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        ctx.missing_output_issue(self.output_id).into_iter().collect()
+    }
+
     fn is_visual(&self) -> bool {
         true
     }
@@ -426,6 +436,7 @@ impl Cue for CameraCue {
             "video_fade_out_curve": self.video_fade_out.as_ref().map(|f| f.curve),
             "geometry": self.geometry,
             "layer_style": self.layer_style,
+            "output_id": self.output_id,
             "is_disabled": self.is_disabled,
         })
     }
@@ -498,6 +509,10 @@ impl CueFactory for CameraCueFactory {
                 cue.geometry = geometry;
             }
         }
+        cue.output_id = value
+            .get("output_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok());
         if let Some(ls) = value.get("layer_style") {
             if let Ok(style) = serde_json::from_value::<LayerStyle>(ls.clone()) {
                 cue.layer_style = style;

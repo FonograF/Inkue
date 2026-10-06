@@ -1,4 +1,5 @@
-//! macOS native output window for the unified GL path (`render.rs`).
+//! macOS native output windows for the unified GL path (`render.rs`) — one
+//! `NSWindow` per output (see [`NativeWindow`]).
 //!
 //! winit cannot be used here: its `EventLoop` must own the AppKit main thread,
 //! which Tauri's `NSApplication` already runs.  So we create and drive a plain
@@ -23,7 +24,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use anyhow::{anyhow, Result};
 use objc2::rc::{Allocated, Retained};
@@ -33,6 +34,9 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
+
+use super::output::Output;
+use super::window::SendableHandles;
 
 // AppKit constants (stable ABI values from <AppKit/AppKit.h>).
 /// `NSWindowStyleMaskResizable` (1 << 3) — resizable window without a title bar.
@@ -56,111 +60,210 @@ const NS_EVENT_MASK_LEFT_MOUSE_DOWN: usize = 1 << 1;
 const INITIAL_WIDTH: f64 = 960.0;
 const INITIAL_HEIGHT: f64 = 540.0;
 
-/// Raw `*mut NSWindow` (as `usize`), retained for the app's lifetime.  0 = none.
-static MAC_WINDOW: AtomicUsize = AtomicUsize::new(0);
-/// Whether the window currently fills a whole screen (set by screen placement /
-/// fullscreen toggle).
-static MAC_FULLSCREEN: AtomicBool = AtomicBool::new(false);
-/// Windowed frame saved before a fullscreen toggle, restored on toggle-back.
-static MAC_SAVED_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+/// Cascade offset between successive output windows, so a second floating
+/// output does not open exactly on top of the first.
+const CASCADE_STEP: f64 = 40.0;
+
 /// App handle used to marshal control calls onto the main thread.
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
-/// Retained NSEvent local monitor for double-click → fullscreen.
+/// Every output window by `*mut NSWindow` address, so the shared mouse monitor
+/// can find the output an event belongs to.
+static WINDOWS: Mutex<Vec<(usize, Arc<MacState>)>> = Mutex::new(Vec::new());
+/// The single local `NSEvent` monitor (double-click → fullscreen) is installed
+/// once and serves every output window.
 static MOUSE_MONITOR: AtomicUsize = AtomicUsize::new(0);
 
-// ---------------------------------------------------------------------------
-// Public API (called from render.rs / OutputEngine)
-// ---------------------------------------------------------------------------
-
-/// Create the borderless output `NSWindow` and return the raw handles + initial
-/// size (physical pixels) for the render thread's `glutin` surface.
-pub(super) fn create(
-    app_handle: &tauri::AppHandle,
-) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
-    APP_HANDLE.get_or_init(|| app_handle.clone());
-
-    // Build on the main thread.  In normal startup we already are it (`.setup()`),
-    // so build inline; otherwise dispatch and wait.
-    let (view_ptr, width, height) = if MainThreadMarker::new().is_some() {
-        build_window()
-    } else {
-        let (tx, rx) = std::sync::mpsc::channel::<(usize, u32, u32)>();
-        app_handle
-            .run_on_main_thread(move || {
-                let _ = tx.send(build_window());
-            })
-            .map_err(|e| anyhow!("run_on_main_thread (window create): {e}"))?;
-        rx.recv()
-            .map_err(|_| anyhow!("main-thread NSWindow creation did not complete"))?
-    };
-
-    let ns_view = NonNull::new(view_ptr as *mut c_void)
-        .ok_or_else(|| anyhow!("NSWindow contentView was nil"))?;
-    let window_handle = AppKitWindowHandle::new(ns_view);
-    let rwh = RawWindowHandle::AppKit(window_handle);
-    let rdh = RawDisplayHandle::AppKit(AppKitDisplayHandle::new());
-    Ok((rwh, rdh, width, height))
+/// State of one output's `NSWindow`.  Shared with the closures that run on the
+/// main thread.
+struct MacState {
+    /// Raw `*mut NSWindow` (as `usize`), retained until [`NativeWindow::destroy`].
+    /// 0 = none.
+    window: AtomicUsize,
+    /// The `NSWindowDidResizeNotification` observer token (the notification
+    /// center holds it until it is removed).  0 = none.
+    observer: AtomicUsize,
+    /// Whether the window currently fills a whole screen (set by screen
+    /// placement / fullscreen toggle).
+    fullscreen: AtomicBool,
+    /// Windowed frame saved before a fullscreen toggle, restored on toggle-back.
+    saved_frame: Mutex<Option<(f64, f64, f64, f64)>>,
+    /// The output this window belongs to — told the physical size after every
+    /// resize or screen move.
+    output: OnceLock<Weak<Output>>,
 }
 
-/// Order the output window to the front (show).
-pub(super) fn show() {
-    on_main(|window| unsafe {
-        let _: () = msg_send![window, orderFrontRegardless];
-    });
-}
-
-/// Order the output window out (hide).
-pub(super) fn hide() {
-    on_main(|window| unsafe {
-        let nil: *mut AnyObject = std::ptr::null_mut();
-        let _: () = msg_send![window, orderOut: nil];
-    });
-}
-
-/// Place the window fullscreen onto `NSScreen[screen_index]` (clamped).
-pub(super) fn position_on_screen(screen_index: u32) {
-    on_main(move |window| unsafe {
-        let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
-        if screens.is_null() {
-            return;
+impl MacState {
+    /// Report the physical pixel size to the render thread.
+    fn report_size(&self, width: u32, height: u32) {
+        if let Some(output) = self.output.get().and_then(Weak::upgrade) {
+            output.set_surface_size(width, height);
         }
-        let count: usize = msg_send![screens, count];
-        if count == 0 {
-            return;
-        }
-        let idx = (screen_index as usize).min(count - 1);
-        let screen: *mut AnyObject = msg_send![screens, objectAtIndex: idx];
-        if screen.is_null() {
-            return;
-        }
-        let frame: NSRect = msg_send![screen, frame];
-        // Raise above the menu bar so the window truly covers the full screen.
-        let _: () = msg_send![window, setLevel: NS_FULLSCREEN_WINDOW_LEVEL];
-        let _: () = msg_send![window, setFrame: frame, display: true];
-        MAC_FULLSCREEN.store(true, Ordering::SeqCst);
-        // Use physical pixels so the GL surface covers the full screen on Retina.
-        let view: *mut AnyObject = msg_send![window, contentView];
-        let phys: NSSize = msg_send![view, convertSizeToBacking: frame.size];
-        super::render::set_surface_size(phys.width as u32, phys.height as u32);
-    });
-}
-
-/// Restore the saved windowed frame if the window is currently fullscreen
-/// (no-op otherwise).  Used when the operator selects "Floating window".
-pub(super) fn set_windowed() {
-    if MAC_FULLSCREEN.load(Ordering::SeqCst) {
-        toggle_fullscreen();
     }
 }
 
-/// Toggle the window between its saved windowed frame and fullscreen on its
-/// current screen — the macOS counterpart of winit's `Fullscreen::Borderless`.
-pub(super) fn toggle_fullscreen() {
-    on_main(|window| unsafe {
-        if MAC_FULLSCREEN.load(Ordering::SeqCst) {
-            // Fallback if no saved frame (e.g. window was shown via position_on_screen
+/// The `NSWindow` of one output.
+pub(in crate::engine::output_engine) struct NativeWindow {
+    state: Arc<MacState>,
+}
+
+// ---------------------------------------------------------------------------
+// Public API (called from OutputEngine / Output)
+// ---------------------------------------------------------------------------
+
+impl NativeWindow {
+    pub(in crate::engine::output_engine) fn new() -> Self {
+        Self {
+            state: Arc::new(MacState {
+                window: AtomicUsize::new(0),
+                observer: AtomicUsize::new(0),
+                fullscreen: AtomicBool::new(false),
+                saved_frame: Mutex::new(None),
+                output: OnceLock::new(),
+            }),
+        }
+    }
+
+    /// Order the output window to the front (show).
+    pub(in crate::engine::output_engine) fn show(&self) {
+        on_main(&self.state, |_, window| unsafe {
+            let _: () = msg_send![window, orderFrontRegardless];
+        });
+    }
+
+    /// Order the output window out (hide).
+    pub(in crate::engine::output_engine) fn hide(&self) {
+        on_main(&self.state, |_, window| unsafe {
+            let nil: *mut AnyObject = std::ptr::null_mut();
+            let _: () = msg_send![window, orderOut: nil];
+        });
+    }
+
+    /// Name the window after its output.
+    pub(in crate::engine::output_engine) fn set_title(&self, title: &str) {
+        let Ok(title) = std::ffi::CString::new(title) else { return };
+        on_main(&self.state, move |_, window| unsafe {
+            let ns_title: *mut AnyObject =
+                msg_send![class!(NSString), stringWithUTF8String: title.as_ptr()];
+            let _: () = msg_send![window, setTitle: ns_title];
+        });
+    }
+
+    /// Close the window for good (its output is being destroyed; its render
+    /// thread — and with it the CGL context on its view — is already gone).
+    pub(in crate::engine::output_engine) fn destroy(&self) {
+        on_main(&self.state, |state, window| unsafe {
+            if let Ok(mut all) = WINDOWS.lock() {
+                all.retain(|(ptr, _)| *ptr != window as usize);
+            }
+            let observer = state.observer.swap(0, Ordering::SeqCst);
+            if observer != 0 {
+                let nc: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+                let _: () = msg_send![nc, removeObserver: observer as *mut AnyObject];
+            }
+            let nil: *mut AnyObject = std::ptr::null_mut();
+            let _: () = msg_send![window, orderOut: nil];
+            let _: () = msg_send![window, close];
+            state.window.store(0, Ordering::SeqCst);
+            // Balance the retain `build_window` kept to hold the window alive
+            // (`setReleasedWhenClosed: false`, so `close` did not release it).
+            let _: () = msg_send![window, release];
+        });
+    }
+
+    /// Place the window fullscreen onto `NSScreen[screen_index]` (clamped).
+    pub(in crate::engine::output_engine) fn place_on_screen(&self, screen_index: u32) {
+        on_main(&self.state, move |state, window| unsafe {
+            let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
+            if screens.is_null() {
+                return;
+            }
+            let count: usize = msg_send![screens, count];
+            if count == 0 {
+                return;
+            }
+            let idx = (screen_index as usize).min(count - 1);
+            let screen: *mut AnyObject = msg_send![screens, objectAtIndex: idx];
+            if screen.is_null() {
+                return;
+            }
+            let frame: NSRect = msg_send![screen, frame];
+            // Raise above the menu bar so the window truly covers the full screen.
+            let _: () = msg_send![window, setLevel: NS_FULLSCREEN_WINDOW_LEVEL];
+            let _: () = msg_send![window, setFrame: frame, display: true];
+            state.fullscreen.store(true, Ordering::SeqCst);
+            // Use physical pixels so the GL surface covers the full screen on Retina.
+            let view: *mut AnyObject = msg_send![window, contentView];
+            let phys: NSSize = msg_send![view, convertSizeToBacking: frame.size];
+            state.report_size(phys.width as u32, phys.height as u32);
+        });
+    }
+
+    /// Restore the saved windowed frame if the window is currently fullscreen
+    /// (no-op otherwise).  Used when the operator selects "Floating window".
+    pub(in crate::engine::output_engine) fn set_windowed_floating(&self) {
+        if self.state.fullscreen.load(Ordering::SeqCst) {
+            self.toggle_fullscreen();
+        }
+    }
+
+    /// Toggle the window between its saved windowed frame and fullscreen on its
+    /// current screen — the macOS counterpart of winit's `Fullscreen::Borderless`.
+    pub(in crate::engine::output_engine) fn toggle_fullscreen(&self) {
+        toggle_fullscreen(&self.state);
+    }
+
+    /// Create the borderless output `NSWindow` for `output` and return the raw
+    /// handles + initial size (physical pixels) for the render thread's
+    /// `glutin` surface.
+    pub(in crate::engine::output_engine) fn create(
+        &self,
+        output: &Arc<Output>,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<SendableHandles> {
+        APP_HANDLE.get_or_init(|| app_handle.clone());
+        let _ = self.state.output.set(Arc::downgrade(output));
+        let cascade = WINDOWS.lock().map(|w| w.len()).unwrap_or(0) as f64 * CASCADE_STEP;
+
+        // Build on the main thread.  The first output is created during
+        // Tauri's `.setup()`, which *is* the main thread, so it builds inline;
+        // later ones are dispatched and awaited.
+        let (view_ptr, width, height) = if MainThreadMarker::new().is_some() {
+            build_window(&self.state, cascade)
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel::<(usize, u32, u32)>();
+            let state = Arc::clone(&self.state);
+            app_handle
+                .run_on_main_thread(move || {
+                    let _ = tx.send(build_window(&state, cascade));
+                })
+                .map_err(|e| anyhow!("run_on_main_thread (window create): {e}"))?;
+            rx.recv()
+                .map_err(|_| anyhow!("main-thread NSWindow creation did not complete"))?
+        };
+
+        let ns_view = NonNull::new(view_ptr as *mut c_void)
+            .ok_or_else(|| anyhow!("NSWindow contentView was nil"))?;
+        let rwh = RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view));
+        let rdh = RawDisplayHandle::AppKit(AppKitDisplayHandle::new());
+        Ok(SendableHandles { rwh, rdh, width, height })
+    }
+}
+
+/// Create the `NSWindow` of `output` — see [`NativeWindow::create`].
+pub(super) fn create_window(
+    output: &Arc<Output>,
+    app_handle: &tauri::AppHandle,
+) -> Result<SendableHandles> {
+    output.window.create(output, app_handle)
+}
+
+fn toggle_fullscreen(state: &Arc<MacState>) {
+    on_main(state, |state, window| unsafe {
+        if state.fullscreen.load(Ordering::SeqCst) {
+            // Fallback if no saved frame (e.g. window was shown via place_on_screen
             // without ever being in windowed mode first).
-            let (x, y, w, h) = MAC_SAVED_FRAME
+            let (x, y, w, h) = state
+                .saved_frame
                 .lock()
                 .unwrap()
                 .unwrap_or((100.0, 100.0, 960.0, 540.0));
@@ -172,11 +275,11 @@ pub(super) fn toggle_fullscreen() {
             // Physical pixels for the GL surface.
             let view: *mut AnyObject = msg_send![window, contentView];
             let phys: NSSize = msg_send![view, convertSizeToBacking: NSSize::new(w, h)];
-            super::render::set_surface_size(phys.width as u32, phys.height as u32);
-            MAC_FULLSCREEN.store(false, Ordering::SeqCst);
+            state.report_size(phys.width as u32, phys.height as u32);
+            state.fullscreen.store(false, Ordering::SeqCst);
         } else {
             let cur: NSRect = msg_send![window, frame];
-            *MAC_SAVED_FRAME.lock().unwrap() =
+            *state.saved_frame.lock().unwrap() =
                 Some((cur.origin.x, cur.origin.y, cur.size.width, cur.size.height));
             let mut screen: *mut AnyObject = msg_send![window, screen];
             if screen.is_null() {
@@ -190,9 +293,9 @@ pub(super) fn toggle_fullscreen() {
                 // Physical pixels for the GL surface.
                 let view: *mut AnyObject = msg_send![window, contentView];
                 let phys: NSSize = msg_send![view, convertSizeToBacking: frame.size];
-                super::render::set_surface_size(phys.width as u32, phys.height as u32);
+                state.report_size(phys.width as u32, phys.height as u32);
             }
-            MAC_FULLSCREEN.store(true, Ordering::SeqCst);
+            state.fullscreen.store(true, Ordering::SeqCst);
         }
     });
 }
@@ -201,20 +304,21 @@ pub(super) fn toggle_fullscreen() {
 // Internals
 // ---------------------------------------------------------------------------
 
-/// Build the NSWindow on the current (main) thread; store it and return the
-/// `contentView` pointer + initial size in **physical pixels**.
-fn build_window() -> (usize, u32, u32) {
+/// Build the NSWindow on the current (main) thread; store it in `state` and
+/// return the `contentView` pointer + initial size in **physical pixels**.
+/// `cascade` offsets the window so several outputs do not stack exactly.
+fn build_window(state: &Arc<MacState>, cascade: f64) -> (usize, u32, u32) {
     unsafe {
         // Center on the main screen (the one with the menu bar).
         let (win_x, win_y) = {
             let ms: *mut AnyObject = msg_send![class!(NSScreen), mainScreen];
             if ms.is_null() {
-                (100.0_f64, 100.0_f64)
+                (100.0_f64 + cascade, 100.0_f64 + cascade)
             } else {
                 let sf: NSRect = msg_send![ms, frame];
                 (
-                    sf.origin.x + (sf.size.width  - INITIAL_WIDTH)  / 2.0,
-                    sf.origin.y + (sf.size.height - INITIAL_HEIGHT) / 2.0,
+                    sf.origin.x + (sf.size.width - INITIAL_WIDTH) / 2.0 + cascade,
+                    sf.origin.y + (sf.size.height - INITIAL_HEIGHT) / 2.0 - cascade,
                 )
             }
         };
@@ -235,11 +339,11 @@ fn build_window() -> (usize, u32, u32) {
             backing: NS_BACKING_STORE_BUFFERED,
             defer: false
         ];
-        // Raw pointer to the (heap-stable) NSWindow; the `forget` below leaks the
-        // retain so the window outlives this Retained and lives for the whole app.
+        // Raw pointer to the (heap-stable) NSWindow; the `forget` below keeps the
+        // retain so the window outlives this Retained — `destroy` releases it.
         let window_ptr: *mut AnyObject = (&*window as *const AnyObject) as *mut AnyObject;
 
-        // Keep alive forever; closing must not deallocate it.
+        // Closing must not deallocate it: `destroy` releases it explicitly.
         let _: () = msg_send![window_ptr, setReleasedWhenClosed: false];
         // Drag the borderless window by its background.
         let _: () = msg_send![window_ptr, setMovableByWindowBackground: true];
@@ -264,7 +368,10 @@ fn build_window() -> (usize, u32, u32) {
         let phys_w = (phys.width as u32).max(1);
         let phys_h = (phys.height as u32).max(1);
 
-        MAC_WINDOW.store(window_ptr as usize, Ordering::SeqCst);
+        state.window.store(window_ptr as usize, Ordering::SeqCst);
+        if let Ok(mut all) = WINDOWS.lock() {
+            all.push((window_ptr as usize, Arc::clone(state)));
+        }
         std::mem::forget(window);
 
         // Output window starts hidden; shown on first GO or by F9 / View menu.
@@ -272,10 +379,11 @@ fn build_window() -> (usize, u32, u32) {
         let _: () = msg_send![window_ptr, orderOut: nil];
 
         // Keep GL surface size in sync when the user drags the window border.
-        register_resize_observer(window_ptr);
+        let observer = register_resize_observer(window_ptr, Arc::clone(state));
+        state.observer.store(observer as usize, Ordering::SeqCst);
 
-        // Double-click anywhere in the output window → toggle fullscreen.
-        register_dblclick_monitor(window_ptr);
+        // Double-click anywhere in an output window → toggle fullscreen.
+        register_dblclick_monitor();
 
         log::info!(
             "[macos-window] NSWindow created (resizable, \
@@ -287,10 +395,10 @@ fn build_window() -> (usize, u32, u32) {
     }
 }
 
-/// Update `GL_WIDTH`/`GL_HEIGHT` from the current window's physical pixel size.
-/// Called from `windowDidResize:` (main thread).
-fn update_physical_size() {
-    let ptr = MAC_WINDOW.load(Ordering::SeqCst);
+/// Update the output's surface size from the window's current physical pixel
+/// size.  Called from `windowDidResize:` (main thread).
+fn update_physical_size(state: &MacState) {
+    let ptr = state.window.load(Ordering::SeqCst);
     if ptr == 0 {
         return;
     }
@@ -299,15 +407,14 @@ fn update_physical_size() {
         let view: *mut AnyObject = msg_send![window, contentView];
         let bounds: NSRect = msg_send![view, bounds];
         let phys: NSSize = msg_send![view, convertSizeToBacking: bounds.size];
-        let w = (phys.width as u32).max(1);
-        let h = (phys.height as u32).max(1);
-        super::render::set_surface_size(w, h);
+        state.report_size((phys.width as u32).max(1), (phys.height as u32).max(1));
     }
 }
 
 /// Register an `NSNotificationCenter` observer so that when the user resizes the
-/// window by dragging its edge, the GL surface is immediately updated.
-fn register_resize_observer(window_ptr: *mut AnyObject) {
+/// window by dragging its edge, the GL surface is immediately updated.  Returns
+/// the observer token, needed to remove it when the window is destroyed.
+fn register_resize_observer(window_ptr: *mut AnyObject, state: Arc<MacState>) -> *mut AnyObject {
     use block2::RcBlock;
     unsafe {
         let name: *mut AnyObject = msg_send![
@@ -315,12 +422,12 @@ fn register_resize_observer(window_ptr: *mut AnyObject) {
             stringWithUTF8String: c"NSWindowDidResizeNotification".as_ptr()
         ];
         // queue: nil → block runs on the thread that posts the notification (main).
-        let block = RcBlock::new(|_notif: *mut AnyObject| {
-            update_physical_size();
+        let block = RcBlock::new(move |_notif: *mut AnyObject| {
+            update_physical_size(&state);
         });
         let nc: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
         let nil: *mut AnyObject = std::ptr::null_mut();
-        let _obs: *mut AnyObject = msg_send![
+        let observer: *mut AnyObject = msg_send![
             nc,
             addObserverForName: name,
             object: window_ptr,
@@ -328,24 +435,32 @@ fn register_resize_observer(window_ptr: *mut AnyObject) {
             usingBlock: &*block
         ];
         // NSNotificationCenter copies the block; we abandon our Rc without
-        // dropping so the block stays alive for the app's lifetime.
+        // dropping so the block stays alive until the observer is removed.
         std::mem::forget(block);
+        observer
     }
 }
 
-/// Register a local `NSEvent` monitor: double-click inside the output window
-/// toggles fullscreen, matching the winit double-click behaviour on Windows/Linux.
-fn register_dblclick_monitor(_window_ptr: *mut AnyObject) {
+/// Register the local `NSEvent` monitor (once for all outputs): double-click
+/// inside an output window toggles its fullscreen, matching the winit
+/// double-click behaviour on Windows/Linux.
+fn register_dblclick_monitor() {
     use block2::RcBlock;
+    if MOUSE_MONITOR.load(Ordering::SeqCst) != 0 {
+        return;
+    }
     unsafe {
-        // Use MAC_WINDOW instead of capturing window_ptr (raw pointer is !Send).
         let block = RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
             let click_count: isize = msg_send![event, clickCount];
             if click_count == 2 {
                 let event_window: *mut AnyObject = msg_send![event, window];
-                let our_window = MAC_WINDOW.load(Ordering::SeqCst) as *mut AnyObject;
-                if event_window == our_window {
-                    toggle_fullscreen();
+                let event_window = event_window as usize;
+                let hit = WINDOWS
+                    .lock()
+                    .ok()
+                    .and_then(|all| all.iter().find(|(ptr, _)| *ptr == event_window).map(|(_, s)| Arc::clone(s)));
+                if let Some(state) = hit {
+                    toggle_fullscreen(&state);
                 }
             }
             event
@@ -364,16 +479,17 @@ fn register_dblclick_monitor(_window_ptr: *mut AnyObject) {
     }
 }
 
-/// Run `f` with the live `*mut NSWindow` on the main thread (inline if already
-/// there, otherwise marshalled via the Tauri app handle).
-fn on_main<F>(f: F)
+/// Run `f` with the window's state and live `*mut NSWindow` on the main thread
+/// (inline if already there, otherwise marshalled via the Tauri app handle).
+fn on_main<F>(state: &Arc<MacState>, f: F)
 where
-    F: FnOnce(*mut AnyObject) + Send + 'static,
+    F: FnOnce(&MacState, *mut AnyObject) + Send + 'static,
 {
+    let state = Arc::clone(state);
     let run = move || {
-        let ptr = MAC_WINDOW.load(Ordering::SeqCst);
+        let ptr = state.window.load(Ordering::SeqCst);
         if ptr != 0 {
-            f(ptr as *mut AnyObject);
+            f(&state, ptr as *mut AnyObject);
         }
     };
 

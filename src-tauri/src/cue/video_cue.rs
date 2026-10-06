@@ -13,7 +13,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::engine::output_engine::{ContentRequest, LayerStyle, SurfaceId, VideoGeometry, VoiceId};
+use crate::engine::output_engine::{ContentRequest, LayerStyle, OutputId, VideoGeometry, VoiceId};
 use crate::engine::ring_command::FadeCurve as EngineFadeCurve;
 use crate::engine::voice::{FadeDirection, FadeState, Voice};
 
@@ -70,8 +70,8 @@ pub struct VideoCue {
     pub end_time: Option<Duration>,
     /// Extra loop repetitions (0 = play once, `u32::MAX` = infinite).
     pub loop_count: u32,
-    /// Output surface to render on.  `None` uses the default surface.
-    pub output_surface_id: Option<SurfaceId>,
+    /// Video output to play on.  `None` = the main output.
+    pub output_id: Option<OutputId>,
     /// Output Patch to route video audio through.  `None` uses the workspace
     /// default patch (or system default if none is configured).
     pub output_patch_id: Option<uuid::Uuid>,
@@ -151,7 +151,7 @@ impl VideoCue {
             start_time: None,
             end_time: None,
             loop_count: 0,
-            output_surface_id: None,
+            output_id: None,
             output_patch_id: None,
             hold_last_frame: false,
             geometry: VideoGeometry::default(),
@@ -400,7 +400,7 @@ impl VideoCue {
             loop_count: self.loop_count,
             start_ms,
             end_ms,
-            screen_index: context.output_screen,
+            output: self.output_id,
             audio_voice_id,
             display_duration_ms: None,
             hold_last_frame: self.hold_last_frame,
@@ -804,6 +804,13 @@ impl Cue for VideoCue {
         !self.slices.is_empty()
     }
 
+    fn validate(
+        &self,
+        ctx: &crate::cue::validation::ValidationContext,
+    ) -> Vec<crate::cue::validation::CueIssue> {
+        ctx.missing_output_issue(self.output_id).into_iter().collect()
+    }
+
     fn is_visual(&self) -> bool {
         true
     }
@@ -837,7 +844,7 @@ impl Cue for VideoCue {
             "start_time_ms": self.start_time.map(|d| d.as_millis() as u64),
             "end_time_ms": self.end_time.map(|d| d.as_millis() as u64),
             "loop_count": self.loop_count,
-            "output_surface_id": self.output_surface_id,
+            "output_id": self.output_id,
             "output_patch_id": self.output_patch_id,
             "hold_last_frame": self.hold_last_frame,
             "geometry": self.geometry,
@@ -936,8 +943,8 @@ impl CueFactory for VideoCueFactory {
         if let Some(lc) = value.get("loop_count").and_then(|v| v.as_u64()) {
             cue.loop_count = lc as u32;
         }
-        if let Some(sid_str) = value.get("output_surface_id").and_then(|v| v.as_str()) {
-            cue.output_surface_id = sid_str.parse().ok();
+        if let Some(sid_str) = value.get("output_id").and_then(|v| v.as_str()) {
+            cue.output_id = sid_str.parse().ok();
         }
         // "screen_index" was a per-cue field in older workspaces; it is now a
         // global preference (DisplayPreferences::output_screen) and is ignored here.

@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{
     context::CueContext,
-    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, GroupMode},
+    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCrossfade, GroupMode},
 };
 
 // ---------------------------------------------------------------------------
@@ -276,6 +276,18 @@ pub trait Cue: Send {
         None
     }
 
+    /// Every **visual** voice (output layer) this cue currently shows,
+    /// recursively — the picture counterpart of [`all_voice_ids`](Self::all_voice_ids).
+    /// A visual leaf cue reports its own layer; a Group flattens its children,
+    /// so a Group holding a video is a real visual target for a Fade.
+    fn visual_voice_ids(&self) -> Vec<CueId> {
+        if self.is_visual() {
+            self.playing_voice_id().into_iter().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Every audio voice this cue currently controls, **recursively**.
     ///
     /// For a leaf cue this is just its own [`playing_voice_id`](Self::playing_voice_id)
@@ -454,6 +466,16 @@ pub trait Cue: Send {
         Vec::new()
     }
 
+    /// Fade Cue only: the show layer has set up — or given up on — this Fade's
+    /// crossfade (see [`FadeCrossfade`]).  Default: ignored.
+    fn set_crossfade(&mut self, _crossfade: FadeCrossfade) {}
+
+    /// Fade Cue only: the crossfade still waiting to be set up, as
+    /// `(incoming cue, already started)`.  Default: none.
+    fn pending_crossfade(&self) -> Option<(CueId, bool)> {
+        None
+    }
+
     /// Resolve stop/fade targets from cue-number strings to UUIDs.
     ///
     /// Called once per cue after the whole cue list is loaded, allowing cues
@@ -481,6 +503,18 @@ pub trait Cue: Send {
     /// Called by `update_cue` after rebuilding so a running cue continues
     /// uninterrupted.  Default is a no-op.
     fn restore_runtime_state(&mut self, _snap: RuntimeState) {}
+
+    /// Runtime detail beyond [`RuntimeState`] that a running cue must keep
+    /// across the inspector's rebuild (a Fade's targets and crossfade).  Opaque
+    /// to everyone but the cue type itself; `update_cue` moves it from the old
+    /// instance to the rebuilt one.  Default: none.
+    fn take_runtime_extra(&mut self) -> Option<Box<dyn std::any::Any + Send>> {
+        None
+    }
+
+    /// Take back what [`take_runtime_extra`](Self::take_runtime_extra) gave,
+    /// after [`restore_runtime_state`](Self::restore_runtime_state).
+    fn restore_runtime_extra(&mut self, _extra: Box<dyn std::any::Any + Send>) {}
 
     /// Live audio parameters to push to the cue's currently-playing voice after
     /// an inspector edit (volume / pan), so changes apply without restarting.

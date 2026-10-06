@@ -46,9 +46,6 @@ pub struct CueContext {
     pub output_patches: Arc<Vec<OutputPatch>>,
     /// The workspace's default Output Patch ID.
     pub default_patch_id: Option<uuid::Uuid>,
-    /// Monitor index for the unified output surface.
-    /// `None` = floating window; `Some(n)` = fullscreen on monitor n.
-    pub output_screen: Option<u32>,
     /// Snapshot of the workspace's OSC Patch table.
     pub osc_patches: Arc<Vec<OscPatch>>,
     /// The DMX lighting engine, used by [`LightCue`](crate::cue::light_cue::LightCue).
@@ -77,7 +74,6 @@ impl CueContext {
         stop_fade_ms: u32,
         output_patches: Vec<OutputPatch>,
         default_patch_id: Option<uuid::Uuid>,
-        output_screen: Option<u32>,
         osc_patches: Vec<OscPatch>,
         dmx_engine: Arc<dyn DmxEngineApi>,
         fixtures: Vec<PatchedFixture>,
@@ -92,7 +88,6 @@ impl CueContext {
             stop_fade_ms,
             output_patches: Arc::new(output_patches),
             default_patch_id,
-            output_screen,
             osc_patches: Arc::new(osc_patches),
             dmx_engine,
             fixtures: Arc::new(fixtures),

@@ -30,20 +30,19 @@ use crate::{
 /// stop paths, which only need the engines and `stop_fade_ms`.
 pub(super) fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
     let (tx, _rx) = crossbeam_channel::unbounded::<CueEvent>();
-    let (patches, default_patch_id, output_screen, osc_patches, fixtures, groups, input_patches, audio_buffer_size) = state
+    let (patches, default_patch_id, osc_patches, fixtures, groups, input_patches, audio_buffer_size) = state
         .workspace
         .try_lock()
         .map(|ws| (
             ws.output_patches.clone(),
             ws.default_output_patch_id,
-            ws.preferences.display.output_screen,
             ws.osc_patches.clone(),
             ws.fixtures.clone(),
             ws.fixture_groups.clone(),
             ws.input_patches.clone(),
             ws.preferences.audio.audio_buffer_size,
         ))
-        .unwrap_or_else(|_| (Vec::new(), None, None, Vec::new(), Vec::new(), Vec::new(), Vec::new(), 256));
+        .unwrap_or_else(|_| (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new(), 256));
     CueContext::new(
         state.audio_engine.clone(),
         state.output_engine.clone(),
@@ -51,7 +50,6 @@ pub(super) fn make_context(state: &AppState, stop_fade_ms: u32) -> CueContext {
         stop_fade_ms,
         patches,
         default_patch_id,
-        output_screen,
         osc_patches,
         state.dmx_engine.clone(),
         fixtures,
@@ -103,7 +101,6 @@ pub fn go(state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<()
         stop_fade_ms,
         ws.output_patches.clone(),
         ws.default_output_patch_id,
-        ws.preferences.display.output_screen,
         ws.osc_patches.clone(),
         state.dmx_engine.clone(),
         ws.fixtures.clone(),

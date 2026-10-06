@@ -1,17 +1,19 @@
-//! Video slot pool — one mpv context per simultaneously-visible visual cue.
+//! Video slot pool — one mpv context per simultaneously-visible visual cue,
+//! one pool per output.
 //!
 //! QLab-style layering: every Video / Image / Camera cue gets its own
 //! [`VideoSlot`] (mpv context + event thread + FBO on the render thread), and
 //! the compositor in `render.rs` stacks the slot textures in layer order with
 //! per-slot opacity and blend mode.  Slots are created lazily up to
-//! [`MAX_VIDEO_SLOTS`] and never destroyed — an idle slot costs one idle mpv
-//! context.  When the pool is exhausted the oldest content is stolen (hard
-//! stop, `Completed` status so the owning cue resets).
+//! [`MAX_VIDEO_SLOTS`] **per output** and live as long as their output — an
+//! idle slot costs one idle mpv context.  When the pool is exhausted the oldest
+//! content is stolen (hard stop, `Withdrawn` status so the owning cue resets).
 //!
 
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -26,7 +28,12 @@ use crate::engine::mpv_sys::{
 use crate::engine::AudioEngine;
 
 use super::blend::BlendMode;
-use super::types::{LayerStyle, MpvCtx, OutputStatus, VideoGeometry, VoiceId};
+use super::crossfade::{CrossfadeLink, Departure, Outgoing};
+use super::output::{all_slots, slot_for_voice, wake_signal, Output};
+use super::types::{
+    CrossfadePhase, CrossfadeRequest, LayerStyle, MpvCtx, OutputId, OutputStatus, VideoGeometry,
+    VoiceId,
+};
 use super::{cs, opt_str, try_apply_crop, OUTPUT_STATUS_TX};
 
 /// Maximum simultaneously-open video slots (excluding the overlay context).
@@ -96,18 +103,6 @@ fn resolve_hwdec_mode(pinned: Option<&'static str>, software_only: bool) -> &'st
 pub(super) fn reports_hwdec_failure(text: &str) -> bool {
     text.contains("Failed setup for format")
         || text.contains("hwaccel initialisation returned error")
-}
-
-/// The slot registry.  Grow-only; the render thread iterates it every frame.
-static SLOTS: OnceLock<RwLock<Vec<Arc<VideoSlot>>>> = OnceLock::new();
-
-fn registry() -> &'static RwLock<Vec<Arc<VideoSlot>>> {
-    SLOTS.get_or_init(|| RwLock::new(Vec::new()))
-}
-
-/// Snapshot of all slots (cheap Arc clones) for the render thread.
-pub(super) fn all_slots() -> Vec<Arc<VideoSlot>> {
-    registry().read().map(|v| v.clone()).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +208,10 @@ pub(super) struct SlotState {
     /// Monotonic per-slot generation guard (a slow event for load N must not
     /// touch load N+1).
     pub generation: u64,
+    /// Set while this (incoming) content dissolves other layers away — see
+    /// `crossfade.rs`.  Dropped once the dissolve has landed and its outgoing
+    /// layers are gone, or when this content leaves the slot.
+    pub crossfade: Option<CrossfadeLink>,
 }
 
 /// Slice program for one slot: `(start_s, end_s, play_count)` per segment;
@@ -243,6 +242,7 @@ impl SlotState {
             hold_last_frame: false,
             slice_plan: None,
             generation: 0,
+            crossfade: None,
         }
     }
 }
@@ -265,6 +265,10 @@ pub(super) fn resolve_layer_key(layer: Option<u32>, seq: u64) -> u64 {
 /// One mpv context of the video pool.
 pub(super) struct VideoSlot {
     pub index: usize,
+    /// The output whose pool this slot belongs to.
+    pub output_id: OutputId,
+    /// That output's render signal — how the slot wakes its render thread.
+    signal: Arc<(Mutex<bool>, Condvar)>,
     pub lib: Arc<MpvLib>,
     pub mpv_ctx: Arc<MpvCtx>,
     pub audio_engine: Arc<AudioEngine>,
@@ -274,6 +278,12 @@ pub(super) struct VideoSlot {
     pub render_ctx: AtomicPtr<c_void>,
     /// Set at creation; cleared by the render thread once `render_ctx` is up.
     pub needs_render_init: AtomicBool,
+    /// Tells the event thread to end (the output is being destroyed).
+    shutdown: AtomicBool,
+    /// The event thread, joined by [`retire`].
+    event_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Set by [`retire`]: the mpv core is released with the slot's last user.
+    destroy_on_drop: AtomicBool,
 }
 
 // SAFETY: the raw mpv pointers are only used through the thread-safe libmpv
@@ -281,7 +291,24 @@ pub(super) struct VideoSlot {
 unsafe impl Send for VideoSlot {}
 unsafe impl Sync for VideoSlot {}
 
+impl Drop for VideoSlot {
+    fn drop(&mut self) {
+        if self.destroy_on_drop.load(Ordering::Acquire) {
+            // SAFETY: `retire` sets the flag only after the event thread has
+            // returned, and the output's render thread frees `render_ctx`
+            // before it exits — which happens before the output, and with it
+            // this slot, can be dropped.  Nobody else holds the handle.
+            unsafe { (self.lib.mpv_terminate_destroy)(self.mpv_ctx.0) };
+        }
+    }
+}
+
 impl VideoSlot {
+    /// Wake the render thread of this slot's output.
+    pub(super) fn wake(&self) {
+        wake_signal(&self.signal);
+    }
+
     /// Send an OutputStatus to the show event loop.
     fn send_status(&self, status: OutputStatus) {
         if let Some(tx) = OUTPUT_STATUS_TX.get() {
@@ -294,21 +321,15 @@ impl VideoSlot {
 // Pool operations
 // ---------------------------------------------------------------------------
 
-/// Find the slot currently owning `voice`.
-pub(super) fn slot_for_voice(voice: VoiceId) -> Option<Arc<VideoSlot>> {
-    all_slots().into_iter().find(|s| {
-        s.state.lock().map(|st| st.voice_id == Some(voice)).unwrap_or(false)
-    })
-}
-
 /// Acquire a slot for new content: reuse an idle one, create one below the
-/// cap, or steal the oldest occupied slot (hard stop + `Completed`).
+/// cap, or steal the oldest occupied slot (hard stop + `Withdrawn`).
 pub(super) fn acquire_slot(
+    output: &Arc<Output>,
     lib: &Arc<MpvLib>,
     audio_engine: &Arc<AudioEngine>,
 ) -> Result<Arc<VideoSlot>> {
     // 1. Reuse an idle slot.
-    for slot in all_slots() {
+    for slot in output.slots_snapshot() {
         if let Ok(st) = slot.state.lock() {
             if st.voice_id.is_none() && !st.pending_unload {
                 return Ok(Arc::clone(&slot));
@@ -317,26 +338,32 @@ pub(super) fn acquire_slot(
     }
 
     // 2. Create a new one below the cap.
-    let count = registry().read().map(|v| v.len()).unwrap_or(0);
+    let count = output.slots_snapshot().len();
     if count < MAX_VIDEO_SLOTS {
-        return create_slot(lib, audio_engine);
+        return create_slot(output, lib, audio_engine);
     }
 
     // 3. Steal the oldest (lowest sequence) occupied slot.
-    let victim = all_slots()
+    let victim = output
+        .slots_snapshot()
         .into_iter()
         .min_by_key(|s| s.state.lock().map(|st| st.layer_key & 0xFF_FFFF_FFFF).unwrap_or(u64::MAX))
         .ok_or_else(|| anyhow!("video slot pool empty and at cap — cannot allocate"))?;
     log::warn!(
-        "[slot] pool exhausted ({MAX_VIDEO_SLOTS} slots) — stealing slot {}",
+        "[slot] output '{}' pool exhausted ({MAX_VIDEO_SLOTS} slots) — stealing slot {}",
+        output.name(),
         victim.index
     );
-    hard_unload(&victim, true);
+    hard_unload(&victim, UnloadReport::Withdrawn);
     Ok(victim)
 }
 
-/// Create a new mpv context + event thread and register the slot.
-fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc<VideoSlot>> {
+/// Create a new mpv context + event thread and register the slot in `output`.
+fn create_slot(
+    output: &Arc<Output>,
+    lib: &Arc<MpvLib>,
+    audio_engine: &Arc<AudioEngine>,
+) -> Result<Arc<VideoSlot>> {
     let ctx = unsafe { (lib.mpv_create)() };
     if ctx.is_null() {
         return Err(anyhow!("mpv_create() returned null for video slot"));
@@ -379,28 +406,40 @@ fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc
         (lib.mpv_request_log_messages)(ctx, cs("warn").as_ptr());
     }
 
-    let index = registry().read().map(|v| v.len()).unwrap_or(0);
+    let index = output.slots_snapshot().len();
     let slot = Arc::new(VideoSlot {
         index,
+        output_id: output.id,
+        signal: Arc::clone(&output.signal),
         lib: Arc::clone(lib),
         mpv_ctx: Arc::new(MpvCtx(ctx)),
         audio_engine: Arc::clone(audio_engine),
         state: Mutex::new(SlotState::idle()),
         render_ctx: AtomicPtr::new(std::ptr::null_mut()),
         needs_render_init: AtomicBool::new(true),
+        shutdown: AtomicBool::new(false),
+        event_thread: Mutex::new(None),
+        destroy_on_drop: AtomicBool::new(false),
     });
 
     {
         let event_slot = Arc::clone(&slot);
-        std::thread::Builder::new()
-            .name(format!("inkue-slot-{index}-events"))
+        let handle = std::thread::Builder::new()
+            .name(format!("inkue-slot-{}-{index}-events", output.name()))
             .spawn(move || slot_event_loop(event_slot))
             .map_err(|e| anyhow!("spawn slot event thread: {e}"))?;
+        if let Ok(mut thread) = slot.event_thread.lock() {
+            *thread = Some(handle);
+        }
     }
 
-    registry().write().map_err(|_| anyhow!("slot registry poisoned"))?.push(Arc::clone(&slot));
+    output
+        .slots
+        .write()
+        .map_err(|_| anyhow!("slot registry poisoned"))?
+        .push(Arc::clone(&slot));
     // The render thread creates the mpv_render_context + FBO on next wake.
-    super::render::wake();
+    slot.wake();
 
     // Block until the render context exists (normally a few ms).  With
     // `vo=libmpv`, a `loadfile` whose track selection runs before the render
@@ -416,15 +455,25 @@ fn create_slot(lib: &Arc<MpvLib>, audio_engine: &Arc<AudioEngine>) -> Result<Arc
         std::thread::sleep(Duration::from_millis(2));
     }
 
-    log::info!("[slot] created video slot {index}");
+    log::info!("[slot] created video slot {index} on output '{}'", output.name());
     Ok(slot)
 }
 
+/// What [`hard_unload`] tells the show about the voice it cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UnloadReport {
+    /// Nothing (panic: the transport resets every cue itself).
+    Silent,
+    /// The content ended on its own terms (a Devamp stopping at its slice).
+    Completed,
+    /// The content was taken away (slot stolen, test pattern, output deleted).
+    Withdrawn,
+}
+
 /// Immediately cut a slot's content: stop mpv, stop its audio voice, clear
-/// the state.  `report_completed` sends `Completed` so the owning cue resets
-/// (steal / panic paths).
-pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report_completed: bool) {
-    let (voice, audio) = {
+/// the state, and tell the show as `report` says so the owning cue resets.
+pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report: UnloadReport) {
+    let (voice, audio, crossfade) = {
         let Ok(mut st) = slot.state.lock() else { return };
         st.generation = st.generation.wrapping_add(1);
         let voice = st.voice_id.take();
@@ -434,9 +483,11 @@ pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report_completed: bool) {
         st.preloaded = false;
         st.pending_unload = false;
         st.slice_plan = None;
+        let crossfade = st.crossfade.take();
         st.anim.set(0.0);
-        (voice, audio)
+        (voice, audio, crossfade)
     };
+    abandon_crossfade(crossfade);
     unsafe {
         let stop = cs("stop");
         let args: [*const c_char; 2] = [stop.as_ptr(), std::ptr::null()];
@@ -445,12 +496,14 @@ pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report_completed: bool) {
     if let Some(aid) = audio {
         let _ = slot.audio_engine.stop_voice(aid, 0, crate::engine::ring_command::FadeCurve::Linear);
     }
-    if report_completed {
-        if let Some(vid) = voice {
-            slot.send_status(OutputStatus::Completed { voice_id: vid });
+    if let Some(voice_id) = voice {
+        match report {
+            UnloadReport::Silent => {}
+            UnloadReport::Completed => slot.send_status(OutputStatus::Completed { voice_id }),
+            UnloadReport::Withdrawn => slot.send_status(OutputStatus::Withdrawn { voice_id }),
         }
     }
-    super::render::wake();
+    slot.wake();
 }
 
 /// Parameters for [`load_into_slot`].
@@ -481,7 +534,7 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
     let ctx = slot.mpv_ctx.0;
     let seq = LAYER_SEQ.fetch_add(1, Ordering::Relaxed);
 
-    {
+    let previous_crossfade = {
         let Ok(mut st) = slot.state.lock() else { return };
         st.generation = st.generation.wrapping_add(1);
         st.voice_id = Some(load.voice_id);
@@ -492,6 +545,7 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
         st.blend_mode = load.layer_style.blend_mode;
         st.base_opacity = load.layer_style.opacity.clamp(0.0, 1.0) as f32;
         st.pending_unload = false;
+        let previous_crossfade = st.crossfade.take();
         st.hold_last_frame = load.hold_last_frame;
         st.slice_plan = if load.slices.is_empty() {
             None
@@ -524,7 +578,9 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
             st.pending_reveal = Some(load.fade_in_ms);
             st.reveal_deadline = None; // armed at FILE_LOADED
         }
-    }
+        previous_crossfade
+    };
+    abandon_crossfade(previous_crossfade);
 
     // Per-slot scalar geometry (crop resolves at VIDEO_RECONFIG).
     super::apply_scalar_geometry(lib, ctx, &load.geometry);
@@ -621,13 +677,14 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
             log::info!("[slot {}] loadfile: {} opts=[{}]", slot.index, load.url, opts.join(","));
         }
     }
-    super::render::wake();
+    slot.wake();
 }
 
 /// Begin the stop fade for a voice.  The render thread finishes the unload
 /// once the opacity reaches 0.  Audio is stopped by the caller (engine).
 pub(super) fn begin_stop(slot: &Arc<VideoSlot>, visual_fade_ms: u32) {
-    if let Ok(mut st) = slot.state.lock() {
+    let crossfade = {
+        let Ok(mut st) = slot.state.lock() else { return };
         st.pending_reveal = None;
         st.reveal_deadline = None;
         st.preloaded = false;
@@ -638,8 +695,10 @@ pub(super) fn begin_stop(slot: &Arc<VideoSlot>, visual_fade_ms: u32) {
         } else {
             st.anim.animate_to(0.0, visual_fade_ms);
         }
-    }
-    super::render::wake();
+        st.crossfade.take()
+    };
+    abandon_crossfade(crossfade);
+    slot.wake();
 }
 
 /// Per-frame slot maintenance, called by the render thread: advance the
@@ -677,9 +736,11 @@ pub(super) fn tick_slot(slot: &Arc<VideoSlot>) -> (f32, bool) {
     let unload_now = st.pending_unload && opacity <= 0.0 && !animating;
     if unload_now {
         st.pending_unload = false;
+        let crossfade = st.crossfade.take();
         st.voice_id = None;
         st.generation = st.generation.wrapping_add(1);
         drop(st);
+        abandon_crossfade(crossfade);
         unsafe {
             let stop = cs("stop");
             let args: [*const c_char; 2] = [stop.as_ptr(), std::ptr::null()];
@@ -687,7 +748,95 @@ pub(super) fn tick_slot(slot: &Arc<VideoSlot>) -> (f32, bool) {
         }
         return (0.0, false);
     }
-    (opacity, animating)
+
+    let Some(link) = st.crossfade.clone() else { return (opacity, animating) };
+    let generation = st.generation;
+    let base = st.base_opacity;
+    let own_anim_busy = st.anim.is_animating();
+    drop(st);
+    drive_crossfade(slot, &link, generation, base, own_anim_busy, opacity, animating)
+}
+
+/// One frame of the crossfade this slot's content dissolves in with.
+///
+/// Outgoing layers on other outputs follow the falling curve; this content's
+/// own opacity follows the rising one when nothing dissolves on its output
+/// (otherwise it stays at full and the compositor mixes the pictures).  The
+/// link is dropped once it has landed and every outgoing layer is gone — the
+/// Fade Cue that started it stops them at its end.
+fn drive_crossfade(
+    slot: &Arc<VideoSlot>,
+    link: &CrossfadeLink,
+    generation: u64,
+    base: f32,
+    own_anim_busy: bool,
+    opacity: f32,
+    animating: bool,
+) -> (f32, bool) {
+    let now = Instant::now();
+    let started = link.phase() != CrossfadePhase::Waiting;
+    let mut any_outgoing_left = false;
+    for outgoing in &link.outgoing {
+        let Some(out_slot) = slot_for_voice(outgoing.voice) else { continue };
+        any_outgoing_left = true;
+        if let (true, Departure::Faded { from }) = (started, outgoing.departure) {
+            settle_opacity(&out_slot, from * link.outgoing_factor(now));
+        }
+    }
+
+    let mut opacity = opacity;
+    if started && !link.dissolves_on_its_output() && !own_anim_busy {
+        opacity = base * link.incoming_weight(now);
+        if let Ok(mut st) = slot.state.lock() {
+            if st.generation == generation {
+                st.anim.set(opacity);
+            }
+        }
+    }
+
+    if link.has_landed(now) && !any_outgoing_left {
+        if let Ok(mut st) = slot.state.lock() {
+            if st.generation == generation {
+                st.crossfade = None;
+                log::info!("[slot {}] crossfade landed", slot.index);
+            }
+        }
+    }
+    (opacity, animating || link.is_animating(now))
+}
+
+/// Set a slot's opacity unless it is already there or busy with an animation
+/// of its own (a stop fade must not be fought).
+fn settle_opacity(slot: &Arc<VideoSlot>, opacity: f32) {
+    let changed = {
+        let Ok(mut st) = slot.state.lock() else { return };
+        if st.anim.is_animating() || (st.anim.current - opacity).abs() < 1e-4 {
+            false
+        } else {
+            st.anim.set(opacity);
+            true
+        }
+    };
+    if changed {
+        slot.wake();
+    }
+}
+
+/// A crossfade whose incoming content left before the dissolve landed gives
+/// the outgoing pictures on other outputs back their opacity (those on the
+/// incoming output need nothing: they reappear as soon as the mix stops).
+fn abandon_crossfade(link: Option<CrossfadeLink>) {
+    let Some(link) = link else { return };
+    if link.has_landed(Instant::now()) {
+        return;
+    }
+    for outgoing in &link.outgoing {
+        if let Departure::Faded { from } = outgoing.departure {
+            if let Some(out_slot) = slot_for_voice(outgoing.voice) {
+                set_opacity_direct(&out_slot, from);
+            }
+        }
+    }
 }
 
 /// Release a preloaded slot: the file is already open and decoded, so this
@@ -724,15 +873,142 @@ fn reveal(slot: &Arc<VideoSlot>) {
             slot.mpv_ctx.0, cs("pause").as_ptr(), cs("no").as_ptr(),
         );
     }
-    if let Ok(mut st) = slot.state.lock() {
-        if fade_in_ms > 0 {
+    if let Ok(mut guard) = slot.state.lock() {
+        let st = &mut *guard;
+        if let Some(link) = st.crossfade.as_mut() {
+            // A crossfade replaces the configured fade-in: the dissolve starts
+            // on this very frame.
+            link.clock.reveal(Instant::now());
+            let start = if link.dissolves_on_its_output() { base } else { 0.0 };
+            st.anim.set(start);
+        } else if fade_in_ms > 0 {
             st.anim.set(0.0);
             st.anim.animate_to(base, fade_in_ms);
         } else {
             st.anim.set(base);
         }
     }
-    super::render::wake();
+    slot.wake();
+}
+
+/// Link a crossfade into `incoming`'s content: every outgoing voice still on
+/// screen dissolves away — in the compositor when it shares the incoming
+/// output, by its own opacity on another one.  The dissolve starts with the
+/// incoming content's first visible frame (now, when it is already showing).
+///
+/// Returns `false` when `incoming` no longer holds the request's voice.
+pub(super) fn link_crossfade(incoming: &Arc<VideoSlot>, request: &CrossfadeRequest) -> bool {
+    let outgoing: Vec<Outgoing> = request
+        .outgoing
+        .iter()
+        .copied()
+        .filter(|&voice| voice != request.incoming)
+        .filter_map(|voice| {
+            let slot = slot_for_voice(voice)?;
+            let departure = if slot.output_id == incoming.output_id {
+                Departure::Mixed
+            } else {
+                Departure::Faded { from: opacity_of(&slot) }
+            };
+            Some(Outgoing { voice, departure })
+        })
+        .collect();
+    let mut link = CrossfadeLink::new(outgoing, request.duration_ms, request.up, request.down);
+
+    let previous = {
+        let Ok(mut guard) = incoming.state.lock() else { return false };
+        let st = &mut *guard;
+        if st.voice_id != Some(request.incoming) {
+            return false;
+        }
+        if st.pending_reveal.is_none() && !st.preloaded {
+            // Already on screen (an image, or preloaded content GO just
+            // started): the dissolve starts now, from wherever its own fade-in
+            // had got to — which the dissolve now replaces.
+            link.clock.reveal(Instant::now());
+            st.anim.set(if link.dissolves_on_its_output() { st.base_opacity } else { 0.0 });
+        }
+        st.crossfade.replace(link)
+    };
+    abandon_crossfade(previous);
+    log::info!(
+        "[slot {}] crossfade linked ({} ms, {} outgoing)",
+        incoming.index,
+        request.duration_ms,
+        request.outgoing.len(),
+    );
+    incoming.wake();
+    true
+}
+
+/// Where the crossfade into this slot's content stands.
+pub(super) fn crossfade_phase(slot: &Arc<VideoSlot>) -> CrossfadePhase {
+    slot.state
+        .lock()
+        .ok()
+        .and_then(|st| st.crossfade.as_ref().map(CrossfadeLink::phase))
+        .unwrap_or(CrossfadePhase::None)
+}
+
+/// Pause (`true`) or resume the dissolve with the Fade Cue driving it.
+pub(super) fn hold_crossfade(slot: &Arc<VideoSlot>, paused: bool) {
+    if let Ok(mut st) = slot.state.lock() {
+        if let Some(link) = st.crossfade.as_mut() {
+            let now = Instant::now();
+            if paused {
+                link.clock.pause(now);
+            } else {
+                link.clock.resume(now);
+            }
+        }
+    }
+    slot.wake();
+}
+
+/// The Fade Cue driving the dissolve was stopped.  A dissolve that has not
+/// started is cancelled — the incoming content then appears as it would have
+/// on its own — and one in progress freezes where it is, like any stopped fade.
+pub(super) fn release_crossfade(slot: &Arc<VideoSlot>) {
+    let cancelled = {
+        let Ok(mut guard) = slot.state.lock() else { return };
+        let st = &mut *guard;
+        match st.crossfade.as_mut() {
+            Some(link) if link.phase() == CrossfadePhase::Waiting => {
+                // Revealed while paused: it was being held back by the mix, so
+                // it simply shows now.  Not revealed yet: its own fade-in is
+                // still armed in `pending_reveal`.
+                if link.clock.is_revealed() {
+                    st.anim.set(st.base_opacity);
+                }
+                st.crossfade.take()
+            }
+            Some(link) => {
+                link.clock.pause(Instant::now());
+                None
+            }
+            None => None,
+        }
+    };
+    abandon_crossfade(cancelled);
+    slot.wake();
+}
+
+/// The dissolve this slot's content renders on its own output: the voices it
+/// mixes away there and the incoming weight.  `None` when nothing dissolves on
+/// this output.
+pub(super) fn dissolve_of(slot: &Arc<VideoSlot>, now: Instant) -> Option<(Vec<VoiceId>, f32)> {
+    let st = slot.state.lock().ok()?;
+    let link = st.crossfade.as_ref()?;
+    if !link.dissolves_on_its_output() {
+        return None;
+    }
+    let mixed: Vec<VoiceId> = link
+        .outgoing
+        .iter()
+        .filter(|o| o.departure == Departure::Mixed)
+        .map(|o| o.voice)
+        .collect();
+    Some((mixed, link.incoming_weight(now)))
 }
 
 // ---------------------------------------------------------------------------
@@ -754,7 +1030,18 @@ pub(super) fn set_layer_style(slot: &Arc<VideoSlot>, style: &LayerStyle) {
         }
         st.base_opacity = new_base;
     }
-    super::render::wake();
+    slot.wake();
+}
+
+/// The slot needs frames: an opacity animation or a dissolve in progress.
+pub(super) fn is_animating(slot: &Arc<VideoSlot>) -> bool {
+    slot.state
+        .lock()
+        .map(|st| {
+            st.anim.is_animating()
+                || st.crossfade.as_ref().is_some_and(|link| link.is_animating(Instant::now()))
+        })
+        .unwrap_or(false)
 }
 
 /// Directly drive a slot's opacity (Fade Cue tick, ~30 fps).
@@ -762,7 +1049,7 @@ pub(super) fn set_opacity_direct(slot: &Arc<VideoSlot>, opacity: f32) {
     if let Ok(mut st) = slot.state.lock() {
         st.anim.set(opacity);
     }
-    super::render::wake();
+    slot.wake();
 }
 
 /// Current animated opacity of a voice's slot.
@@ -775,7 +1062,7 @@ pub(super) fn animate_opacity(slot: &Arc<VideoSlot>, target: f32, duration_ms: u
     if let Ok(mut st) = slot.state.lock() {
         st.anim.animate_to(target, duration_ms.max(1));
     }
-    super::render::wake();
+    slot.wake();
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +1075,9 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
 
     loop {
         let event = unsafe { (lib.mpv_wait_event)(ctx as *mut c_void, 1.0) };
+        if slot.shutdown.load(Ordering::Acquire) {
+            break;
+        }
         if event.is_null() {
             continue;
         }
@@ -834,7 +1124,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                         }
                     }
                 }
-                super::render::wake();
+                slot.wake();
             }
 
             MPV_EVENT_VIDEO_RECONFIG => {
@@ -850,7 +1140,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                 if let Some(g) = geometry {
                     let _ = try_apply_crop(&lib, ctx as *mut c_void, &g);
                 }
-                super::render::wake();
+                slot.wake();
             }
 
             MPV_EVENT_END_FILE => {
@@ -861,52 +1151,17 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                 };
                 match end_data.reason {
                     MPV_END_FILE_REASON_EOF => {
-                        let (voice, audio) = {
-                            let Ok(mut st) = slot.state.lock() else { continue };
-                            let voice = st.voice_id.take();
-                            let audio = st.audio_voice_id.take();
-                            st.pending_reveal = None;
-                            st.reveal_deadline = None;
-                            st.preloaded = false;
-                            st.pending_unload = false;
-                            st.slice_plan = None;
-                            st.anim.set(0.0);
-                            (voice, audio)
-                        };
-                        if let Some(aid) = audio {
-                            let _ = slot.audio_engine.stop_voice(
-                                aid, 0, crate::engine::ring_command::FadeCurve::Linear,
-                            );
-                        }
-                        if let Some(vid) = voice {
+                        if let Some(vid) = vacate_after_end(&slot) {
                             slot.send_status(OutputStatus::Completed { voice_id: vid });
                         }
-                        super::render::wake();
                     }
                     MPV_END_FILE_REASON_ERROR => {
-                        let (voice, audio) = {
-                            let Ok(mut st) = slot.state.lock() else { continue };
-                            let voice = st.voice_id.take();
-                            let audio = st.audio_voice_id.take();
-                            st.pending_reveal = None;
-                            st.reveal_deadline = None;
-                            st.preloaded = false;
-                            st.slice_plan = None;
-                            st.anim.set(0.0);
-                            (voice, audio)
-                        };
-                        if let Some(aid) = audio {
-                            let _ = slot.audio_engine.stop_voice(
-                                aid, 0, crate::engine::ring_command::FadeCurve::Linear,
-                            );
-                        }
-                        if let Some(vid) = voice {
+                        if let Some(vid) = vacate_after_end(&slot) {
                             slot.send_status(OutputStatus::Error {
                                 voice_id: vid,
                                 message: format!("mpv error (code {})", end_data.error),
                             });
                         }
-                        super::render::wake();
                     }
                     _ => {}
                 }
@@ -960,7 +1215,7 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
                     }
                     Some(SliceAction::Stop) => {
                         log::info!("[slot {}] devamp stop at slice boundary", slot.index);
-                        hard_unload(&slot, true);
+                        hard_unload(&slot, UnloadReport::Completed);
                     }
                     None => {}
                 }
@@ -993,6 +1248,31 @@ fn slot_event_loop(slot: Arc<VideoSlot>) {
             _ => {}
         }
     }
+}
+
+/// Empty a slot whose file mpv has finished with (end of file or error): its
+/// audio voice stops, a crossfade into it is abandoned.  Returns the voice that
+/// was playing, if any.
+fn vacate_after_end(slot: &Arc<VideoSlot>) -> Option<VoiceId> {
+    let (voice, audio, crossfade) = {
+        let mut st = slot.state.lock().ok()?;
+        let voice = st.voice_id.take();
+        let audio = st.audio_voice_id.take();
+        st.pending_reveal = None;
+        st.reveal_deadline = None;
+        st.preloaded = false;
+        st.pending_unload = false;
+        st.slice_plan = None;
+        let crossfade = st.crossfade.take();
+        st.anim.set(0.0);
+        (voice, audio, crossfade)
+    };
+    abandon_crossfade(crossfade);
+    if let Some(aid) = audio {
+        let _ = slot.audio_engine.stop_voice(aid, 0, crate::engine::ring_command::FadeCurve::Linear);
+    }
+    slot.wake();
+    voice
 }
 
 /// Drop every slot back to software decoding after a failed hwdec init.
@@ -1028,8 +1308,8 @@ pub(super) fn fall_back_to_software(origin: &str) {
                 cs("no").as_ptr(),
             );
         }
+        slot.wake();
     }
-    super::render::wake();
 }
 
 /// Program mpv's ab-loop for `seg` — or clear it when the segment plays once.
@@ -1076,10 +1356,27 @@ pub(super) fn devamp_slot(slot: &Arc<VideoSlot>, stop_at_end: bool) {
 // Pool-wide operations
 // ---------------------------------------------------------------------------
 
+/// Take a slot out of service for good (its output is being destroyed): its
+/// content stops — the owning cue resets through `Withdrawn` — and its event
+/// thread ends.  The mpv core itself goes when the last reference to the slot
+/// does, after the render thread has freed the render context.
+pub(super) fn retire(slot: &Arc<VideoSlot>) {
+    hard_unload(slot, UnloadReport::Withdrawn);
+    slot.shutdown.store(true, Ordering::Release);
+    // SAFETY: the core is alive (we hold the slot); mpv_wakeup only interrupts
+    // the event thread's mpv_wait_event.
+    unsafe { (slot.lib.mpv_wakeup)(slot.mpv_ctx.0) };
+    let handle = slot.event_thread.lock().ok().and_then(|mut t| t.take());
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+    slot.destroy_on_drop.store(true, Ordering::Release);
+}
+
 /// Panic: hard-unload every slot (double-Escape backstop).
 pub(super) fn panic_all() {
     for slot in all_slots() {
-        hard_unload(&slot, false);
+        hard_unload(&slot, UnloadReport::Silent);
     }
 }
 

@@ -1,10 +1,12 @@
-// Layer tab for visual cues (Video / Image / Camera): how this cue composites
-// with the other layers on the output — stacking order, opacity, blend mode.
+// Layer tab for visual cues (Video / Image / Camera): which output the cue
+// plays on and how it composites with the other layers there — stacking
+// order, opacity, blend mode.
 
 import type { BlendMode, CameraCueData, ImageCueData, LayerStyle, VideoCueData } from "../../lib/types";
 import { DEFAULT_LAYER_STYLE } from "../../lib/types";
 import { NumberInput, Section, SliderRow, ToggleRow, inputStyle } from "./Field";
 import { Select } from "../common/Select";
+import { OutputPicker } from "./OutputPicker";
 
 const BLEND_MODES: { value: BlendMode; label: string }[] = [
   { value: "normal", label: "Normal" },
@@ -39,6 +41,7 @@ export function LayerTab({
       title="Compositing"
       hint="Visual cues stack as layers on the output; changes apply live."
     >
+      <OutputPicker value={cue.output_id ?? null} onChange={(output_id) => onSave({ output_id })} />
       <ToggleRow
         label="Automatic layer order (newest on top)"
         checked={layerStyle.layer === null}

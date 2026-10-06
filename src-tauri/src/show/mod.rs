@@ -1,5 +1,6 @@
 //! Show layer — workspace, cue list, transport, and background event loop.
 
+pub mod crossfade;
 pub mod cue_list;
 pub mod event_loop;
 pub mod transport;

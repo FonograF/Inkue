@@ -833,6 +833,7 @@ export default function App() {
     refreshWorkspaceInfo();
     void refreshValidation();
     void refreshHealth();
+    void useWorkspaceStore.getState().refreshVideoOutputs();
     loadGeneralPrefs();
     loadDisplayPrefs();
     void getOutputWindowVisible().then(setOutputSurfaceVisible);

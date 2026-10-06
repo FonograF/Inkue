@@ -46,6 +46,7 @@ pub mod timecode_cmds;
 pub mod midi_cmds;
 pub mod network_cmds;
 pub mod osc_cmds;
+pub mod output_cmds;
 pub mod preferences_cmds;
 pub mod preflight_cmds;
 pub mod recovery_cmds;

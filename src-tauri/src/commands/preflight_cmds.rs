@@ -65,6 +65,18 @@ fn collect_ids(cues: &[Box<dyn Cue>], out: &mut HashSet<CueId>) {
     }
 }
 
+/// Every cue (nested included) that puts a picture on an output.
+fn collect_visual_ids(cues: &[Box<dyn Cue>], out: &mut HashSet<CueId>) {
+    for c in cues {
+        if c.is_visual() {
+            out.insert(c.id());
+        }
+        if let Some(children) = c.child_cues() {
+            collect_visual_ids(children, out);
+        }
+    }
+}
+
 /// Recursively validate every cue, pushing those with issues into `out`.
 fn walk_validate(cues: &[Box<dyn Cue>], ctx: &ValidationContext, out: &mut Vec<CueValidation>) {
     for c in cues {
@@ -105,8 +117,10 @@ pub fn check_workspace(state: State<'_, AppState>) -> Result<Vec<CueValidation>,
     let ws = state.workspace.lock().map_err(|e| e.to_string())?;
 
     let mut all_cue_ids = HashSet::new();
+    let mut visual_cue_ids = HashSet::new();
     for cl in &ws.cue_lists {
         collect_ids(&cl.cues, &mut all_cue_ids);
+        collect_visual_ids(&cl.cues, &mut visual_cue_ids);
     }
 
     let ctx = ValidationContext {
@@ -116,6 +130,8 @@ pub fn check_workspace(state: State<'_, AppState>) -> Result<Vec<CueValidation>,
         osc_patch_ids: ws.osc_patches.iter().map(|p| p.id).collect(),
         output_patch_ids: ws.output_patches.iter().map(|p| p.id).collect(),
         midi_ports: available_midi_ports(),
+        video_output_ids: ws.video_outputs.iter().map(|c| c.id).collect(),
+        visual_cue_ids,
     };
 
     let mut results = Vec::new();

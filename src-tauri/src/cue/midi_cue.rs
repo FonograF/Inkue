@@ -396,6 +396,8 @@ mod tests {
             osc_patch_ids: HashSet::new(),
             output_patch_ids: HashSet::new(),
             midi_ports: vec!["Real Port".to_string()],
+            video_output_ids: Default::default(),
+            visual_cue_ids: Default::default(),
         };
 
         let mut cue = MidiCue::new();

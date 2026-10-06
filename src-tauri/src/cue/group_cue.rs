@@ -747,6 +747,12 @@ impl Cue for GroupCue {
         self.children.iter().flat_map(|c| c.all_voice_ids()).collect()
     }
 
+    fn visual_voice_ids(&self) -> Vec<CueId> {
+        // The pictures of every child, recursively — what a Fade on the group
+        // (or a crossfade away from it) acts on.
+        self.children.iter().flat_map(|c| c.visual_voice_ids()).collect()
+    }
+
     fn child_cues(&self) -> Option<&[Box<dyn Cue>]> {
         Some(&self.children)
     }

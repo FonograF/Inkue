@@ -196,55 +196,81 @@ pub fn set_output_screen(
     Ok(())
 }
 
-/// Return the global projector-alignment transform from display preferences.
+/// Return the projector-alignment transform of an output (`output_id` absent =
+/// the main output, stored in display preferences).
 #[tauri::command]
 pub fn get_output_transform(
+    output_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<crate::engine::output_engine::OutputTransform, String> {
+    let id = super::output_cmds::parse_output_id(output_id.as_deref())?;
     let ws = state.workspace.lock().map_err(|e| e.to_string())?;
-    Ok(ws.preferences.display.output_transform)
+    match id {
+        None => Ok(ws.preferences.display.output_transform),
+        Some(id) => ws
+            .video_outputs
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.transform)
+            .ok_or_else(|| "Output not found".to_owned()),
+    }
 }
 
-/// Set the global projector-alignment transform.
+/// Set the projector-alignment transform of an output (`output_id` absent = the
+/// main output).
 ///
-/// Persisted in the workspace display preferences and applied to the output
-/// window immediately (recomposed with the current cue's geometry), so the
-/// operator sees the change live while adjusting values.
+/// Persisted in the workspace and applied to the output window immediately, so
+/// the operator sees the change live while adjusting values.
 #[tauri::command]
 pub fn set_output_transform(
     transform: crate::engine::output_engine::OutputTransform,
+    output_id: Option<String>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    let id = super::output_cmds::parse_output_id(output_id.as_deref())?;
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
-        ws.preferences.display.output_transform = transform;
+        match id {
+            None => ws.preferences.display.output_transform = transform,
+            Some(id) => {
+                ws.video_outputs
+                    .iter_mut()
+                    .find(|c| c.id == id)
+                    .ok_or_else(|| "Output not found".to_owned())?
+                    .transform = transform;
+            }
+        }
         ws.mark_modified();
     }
-    state.output_engine.set_output_transform(transform);
+    state.output_engine.set_output_transform(id, transform);
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
 }
 
 /// Show a calibration pattern (grid, colour bars, custom image, …) fullscreen
-/// on the configured output screen.  Replaces whatever is playing.
+/// on an output (`output_id` absent = the main output).  Replaces whatever that
+/// output is playing.
 #[tauri::command]
 pub fn show_test_pattern(
     pattern: crate::engine::output_engine::TestPattern,
+    output_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let screen = {
-        let ws = state.workspace.lock().map_err(|e| e.to_string())?;
-        ws.preferences.display.output_screen
-    };
-    state.output_engine.show_test_pattern(&pattern, screen);
+    let id = super::output_cmds::parse_output_id(output_id.as_deref())?;
+    state.output_engine.show_test_pattern(&pattern, id);
     Ok(())
 }
 
-/// Clear the test pattern: the output returns to opaque black.
+/// Clear the test pattern of an output (`output_id` absent = every output): the
+/// output returns to opaque black.
 #[tauri::command]
-pub fn clear_test_pattern(state: State<'_, AppState>) -> Result<(), String> {
-    state.output_engine.clear_test_pattern();
+pub fn clear_test_pattern(
+    output_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id = super::output_cmds::parse_output_id(output_id.as_deref())?;
+    state.output_engine.clear_test_pattern(id);
     Ok(())
 }
 
@@ -271,7 +297,11 @@ pub fn update_display_preferences(
         ws.preferences.display.timer_position      = prefs.timer_position;
         ws.preferences.display.timer_margin        = prefs.timer_margin;
         ws.preferences.display.cue_color_style     = prefs.cue_color_style;
+        ws.preferences.display.timer_output        = prefs.timer_output;
         ws.mark_modified();
+        // The timer may have moved to another output: no need to wait for the
+        // event loop's next sync.
+        state.output_engine.sync_outputs_config(&ws.outputs_config());
         (
             ws.preferences.display.timer_font.clone(),
             ws.preferences.display.timer_font_size,

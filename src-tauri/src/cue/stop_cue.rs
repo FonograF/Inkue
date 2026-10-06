@@ -295,6 +295,8 @@ mod tests {
             osc_patch_ids: HashSet::new(),
             output_patch_ids: HashSet::new(),
             midi_ports: Vec::new(),
+            video_output_ids: Default::default(),
+            visual_cue_ids: Default::default(),
         }
     }
 

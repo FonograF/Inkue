@@ -5,8 +5,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
-import type { AppPreferences, AudioPreferences, CueColorStyle, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition } from "../../lib/types";
-import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG } from "../../lib/types";
+import type { AppPreferences, AudioPreferences, CueColorStyle, DeviceInfo, DisplayPreferences, GeneralPreferences, MachineAudioConfig, OscReceiveConfig, ScreenInfo, TimerPosition, VideoOutputInfo } from "../../lib/types";
+import { DEFAULT_DISPLAY_PREFS, DEFAULT_MACHINE_AUDIO_CONFIG, MAIN_OUTPUT_ID } from "../../lib/types";
 import { CurveSelect } from "../common/CurveSelect";
 import { Select } from "../common/Select";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -20,6 +20,7 @@ import {
   identifyOutputScreen,
   listAudioDevices,
   listSystemFonts,
+  listVideoOutputs,
   listVideoScreens,
   previewOutputTimer,
   setOscConfig,
@@ -36,6 +37,7 @@ import { OutputPatchesPanel } from "../OutputPatches/OutputPatchesPanel";
 import { TcPreferences } from "../Timecode/TcPreferences";
 import { MidiTriggerPreferences } from "./MidiTriggerPreferences";
 import { NetworkInterfaceSection } from "./NetworkInterfaceSection";
+import { OutputsSection } from "./OutputsSection";
 import { ProjectorToolsSection } from "./ProjectorToolsSection";
 import { listInputDevices } from "../../lib/commands";
 import { DragNumber } from "../common/DragNumber";
@@ -44,13 +46,14 @@ import { DragNumber } from "../common/DragNumber";
 // Sidebar categories
 // ---------------------------------------------------------------------------
 
-type Category = "audio" | "general" | "network" | "display" | "personalization";
+type Category = "audio" | "general" | "network" | "display" | "outputs" | "personalization";
 
 const CATEGORIES: { id: Category; icon: string; label: string }[] = [
   { id: "audio",           icon: "🔊", label: "Audio"           },
   { id: "general",         icon: "⚙️",  label: "General"         },
   { id: "network",         icon: "🌐", label: "Network"          },
   { id: "display",         icon: "🖥",  label: "Display"          },
+  { id: "outputs",         icon: "📽",  label: "Outputs"          },
   { id: "personalization", icon: "🎨", label: "Personalization" },
 ];
 
@@ -486,6 +489,7 @@ function TimerPositionPicker({ value, onChange }: { value: TimerPosition; onChan
 function DisplayContent({
   outputScreen, onScreenChange,
   showOutputTimer, onTimerChange,
+  timerOutput, onTimerOutputChange,
   timerFloating, onTimerFloatingChange,
   timerCountDown, onTimerModeChange,
   timerFont, onTimerFontChange,
@@ -500,6 +504,9 @@ function DisplayContent({
   onScreenChange: (screen: number | null) => void;
   showOutputTimer: boolean;
   onTimerChange: (v: boolean) => void;
+  /** Output that shows the timer; null = the main output. */
+  timerOutput: string | null;
+  onTimerOutputChange: (v: string | null) => void;
   timerFloating: boolean;
   onTimerFloatingChange: (v: boolean) => void;
   timerCountDown: boolean;
@@ -521,11 +528,15 @@ function DisplayContent({
 }) {
   const [screens, setScreens] = useState<ScreenInfo[]>([]);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  const [videoOutputs, setVideoOutputs] = useState<VideoOutputInfo[]>([]);
 
   useEffect(() => {
     listVideoScreens().then(setScreens).catch(console.error);
     listSystemFonts().then(setSystemFonts).catch(console.error);
+    listVideoOutputs().then(setVideoOutputs).catch(console.error);
   }, []);
+  const timerOutputKnown =
+    timerOutput === null || videoOutputs.some((o) => o.id === timerOutput);
 
   // Derive preview text from current draft show_ms setting.
   const previewText = timerShowMs ? "00:00.000" : "00:00";
@@ -625,6 +636,22 @@ function DisplayContent({
                 </span>
               </label>
             </Row>
+            {!timerFloating && (videoOutputs.length > 1 || timerOutput !== null) && (
+              <Row label="Shown on">
+                <Select
+                  style={selectStyle}
+                  value={timerOutput ?? MAIN_OUTPUT_ID}
+                  onChange={(e) => onTimerOutputChange(e.target.value === MAIN_OUTPUT_ID ? null : e.target.value)}
+                >
+                  {videoOutputs.map((o) => (
+                    <option key={o.id} value={o.id}>{o.is_main ? "Main output" : o.name}</option>
+                  ))}
+                  {!timerOutputKnown && timerOutput !== null && (
+                    <option value={timerOutput}>(deleted output — timer hidden)</option>
+                  )}
+                </Select>
+              </Row>
+            )}
             <Row label="Timer mode">
               <div style={{ display: "flex", gap: 16 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
@@ -936,6 +963,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
   const [draftOutputScreen, setDraftOutputScreen] = useState<number | null>(null);
   const [showOutputTimer, setShowOutputTimer] = useState(false);
   const [draftShowOutputTimer, setDraftShowOutputTimer] = useState(false);
+  const [draftTimerOutput, setDraftTimerOutput] = useState<string | null>(null);
   const [timerCountDown, setTimerCountDown] = useState(false);
   const [draftTimerCountDown, setDraftTimerCountDown] = useState(false);
   const [timerFont, setTimerFont] = useState("DSEG7 Classic");
@@ -986,6 +1014,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       const timer = p.display.show_output_timer ?? false;
       setShowOutputTimer(timer);
       setDraftShowOutputTimer(timer);
+      setDraftTimerOutput(p.display.timer_output ?? null);
       const countDown = p.display.timer_count_down ?? false;
       setTimerCountDown(countDown);
       setDraftTimerCountDown(countDown);
@@ -1094,6 +1123,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
       ...draftTheme,
       output_screen: draftOutputScreen ?? undefined,
       show_output_timer: draftShowOutputTimer,
+      timer_output: draftTimerOutput,
       timer_floating: draftTimerFloating,
       timer_count_down: draftTimerCountDown,
       timer_font: draftTimerFont,
@@ -1118,6 +1148,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
           ...draftTheme,
           output_screen: draftOutputScreen,
           show_output_timer: draftShowOutputTimer,
+          timer_output: draftTimerOutput,
           timer_floating: draftTimerFloating,
           timer_count_down: draftTimerCountDown,
           timer_font: draftTimerFont,
@@ -1287,6 +1318,7 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                     onChange={(general) => setDraft({ ...draft, general })}
                   />
                 )}
+                {category === "outputs" && <OutputsSection />}
                 {category === "display" && (
                   <DisplayContent
                     outputScreen={draftOutputScreen}
@@ -1299,6 +1331,8 @@ export function PreferencesModal({ onClose, standalone = false }: Props) {
                     }}
                     showOutputTimer={draftShowOutputTimer}
                     onTimerChange={setDraftShowOutputTimer}
+                    timerOutput={draftTimerOutput}
+                    onTimerOutputChange={setDraftTimerOutput}
                     timerFloating={draftTimerFloating}
                     onTimerFloatingChange={setDraftTimerFloating}
                     timerCountDown={draftTimerCountDown}

@@ -43,6 +43,7 @@ import type {
   RecoveryInfo,
   RelinkResult,
   ScreenInfo,
+  VideoOutputInfo,
   TestPattern,
   UniverseOutput,
   VideoCueData,
@@ -136,6 +137,7 @@ export type CueProperties = Record<string, unknown>;
 
 export const updateCue = (cueId: CueId, properties: CueProperties) =>
   invoke<void>("update_cue", { cueId, properties });
+
 export const setAudioFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_audio_file", { cueId, filePath });
 export const setVideoFile = (cueId: CueId, filePath: string) =>
@@ -155,15 +157,31 @@ export const getVideoFilmstripRange = (
 export const listVideoScreens = () => invoke<ScreenInfo[]>("list_video_screens");
 export const listCameraDevices = () =>
   invoke<CameraDeviceInfo[]>("list_camera_devices");
-export const identifyOutputScreen = (screenIndex: number | null) =>
-  invoke<void>("identify_output_screen", { screenIndex });
-export const getOutputTransform = () =>
-  invoke<OutputTransform>("get_output_transform");
-export const setOutputTransform = (transform: OutputTransform) =>
-  invoke<void>("set_output_transform", { transform });
-export const showTestPattern = (pattern: TestPattern) =>
-  invoke<void>("show_test_pattern", { pattern });
-export const clearTestPattern = () => invoke<void>("clear_test_pattern");
+export const identifyOutputScreen = (screenIndex: number | null, outputId?: string | null) =>
+  invoke<void>("identify_output_screen", { screenIndex, outputId: outputId ?? null });
+export const getOutputTransform = (outputId?: string | null) =>
+  invoke<OutputTransform>("get_output_transform", { outputId: outputId ?? null });
+export const setOutputTransform = (transform: OutputTransform, outputId?: string | null) =>
+  invoke<void>("set_output_transform", { transform, outputId: outputId ?? null });
+export const showTestPattern = (pattern: TestPattern, outputId?: string | null) =>
+  invoke<void>("show_test_pattern", { pattern, outputId: outputId ?? null });
+export const clearTestPattern = (outputId?: string | null) =>
+  invoke<void>("clear_test_pattern", { outputId: outputId ?? null });
+
+// ---------------------------------------------------------------------------
+// Video outputs
+// ---------------------------------------------------------------------------
+
+export const listVideoOutputs = () => invoke<VideoOutputInfo[]>("list_video_outputs");
+export const addVideoOutput = (name: string) =>
+  invoke<VideoOutputInfo>("add_video_output", { name });
+export const renameVideoOutput = (outputId: string, name: string) =>
+  invoke<void>("rename_video_output", { outputId, name });
+/** Put an output on a monitor (null = floating window). Omit the id for the main output. */
+export const setVideoOutputScreen = (outputId: string | null, screen: number | null) =>
+  invoke<void>("set_video_output_screen", { outputId, screen });
+export const deleteVideoOutput = (outputId: string) =>
+  invoke<void>("delete_video_output", { outputId });
 export const listSystemFonts  = () => invoke<string[]>("list_system_fonts");
 export const previewOutputTimer = (
   font: string, fontSize: number, position: string, margin: number, text: string | null,

@@ -84,6 +84,17 @@ Apple's `NSKeyedArchiver`. Keep the trademark disclaimer in About.
   collect voices via `Cue::all_voice_ids()` (recursive; Group flattens children) and
   look up targets with `cue_list.get_recursive()` — never assume "one cue = one voice
   at the top level". This is the trap that made fade-on-group silently do nothing.
+  Pictures likewise: `Cue::visual_voice_ids()` (a Group holding a video is a visual
+  target — crossfades and visual fades go through it).
+- **A crossfade is a mix of whole-stack composites** (`output_engine/crossfade.rs`),
+  never two crossing opacity fades (they dip to black) nor "fade the upper layer only"
+  (wrong wherever the lower layer is transparent — letterbox bars).
+- **Never wait for the main thread while holding a lock.** On Linux/macOS Tauri's
+  `available_monitors()` and building an `NSWindow` both wait for it, and the event
+  loop holds the workspace lock: monitors come from the cache (`screens.rs`), output
+  windows are built on the main thread or in the background
+  (`window::can_create_window_here`), and outputs are destroyed in libmpv/GL order
+  (`lifecycle.rs`).
 - **Group children complete themselves via the group, not the event loop.** The
   top-level completion detector does not descend into groups; a Group reaps its own
   finished children in `tick()`, and the event loop reaps group children whose *voice*

@@ -39,6 +39,9 @@ pub fn list_output_devices(
         mgr.devices().to_vec()
     };
 
+    // Linux lists ALSA/PipeWire devices whatever backend the panel shows.
+    #[cfg(target_os = "linux")]
+    let _ = backend;
     #[cfg(target_os = "linux")]
     return Ok(linux_devices(false, fallback));
     #[cfg(not(target_os = "linux"))]

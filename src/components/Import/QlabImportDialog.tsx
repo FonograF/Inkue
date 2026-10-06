@@ -35,6 +35,7 @@ export function QlabImportDialog({
 }) {
   const attention = report.cues.filter((c) => c.note);
   const missing = report.media_missing;
+  const outputs = report.video_outputs ?? [];
 
   return (
     <div style={overlay} onClick={onClose}>
@@ -107,6 +108,14 @@ export function QlabImportDialog({
                 {missing.length > 12 && <div>…and {missing.length - 12} more</div>}
               </div>
             </>
+          )}
+
+          {outputs.length > 0 && (
+            <div style={{ fontSize: 12, color: "var(--wc-text)", marginBottom: 16, lineHeight: 1.5 }}>
+              QLab's video stages became {outputs.length} extra output
+              {outputs.length !== 1 ? "s" : ""}: <strong>{outputs.join(", ")}</strong>. They open as
+              floating windows — assign each one its screen in Preferences → Outputs.
+            </div>
           )}
 
           {attention.length === 0 && missing.length === 0 && (

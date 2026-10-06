@@ -55,4 +55,56 @@ pub struct ValidationContext {
     pub output_patch_ids: HashSet<Uuid>,
     /// Names of MIDI output ports currently available on this machine.
     pub midi_ports: Vec<String>,
+    /// IDs of the show's extra video outputs (the main output needs no id: a
+    /// cue without `output_id` plays on it).
+    pub video_output_ids: HashSet<Uuid>,
+    /// IDs of the cues that put a picture on an output (Video, Image, Camera)
+    /// — what a crossfade can dissolve into.
+    pub visual_cue_ids: HashSet<CueId>,
+}
+
+impl ValidationContext {
+    /// The problem to report for a visual cue pointing at `output_id`, if any:
+    /// an output the show no longer has.
+    pub fn missing_output_issue(&self, output_id: Option<Uuid>) -> Option<CueIssue> {
+        let id = output_id?;
+        (!self.video_output_ids.contains(&id)).then(|| {
+            CueIssue::error("Video output not found — pick another output in the Inspector")
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context_with_outputs(ids: &[Uuid]) -> ValidationContext {
+        ValidationContext {
+            all_cue_ids: HashSet::new(),
+            fixture_ids: HashSet::new(),
+            fixture_group_ids: HashSet::new(),
+            osc_patch_ids: HashSet::new(),
+            output_patch_ids: HashSet::new(),
+            midi_ports: Vec::new(),
+            video_output_ids: ids.iter().copied().collect(),
+            visual_cue_ids: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_cue_on_the_main_output_is_never_flagged() {
+        assert!(context_with_outputs(&[]).missing_output_issue(None).is_none());
+    }
+
+    #[test]
+    fn a_cue_on_an_existing_output_is_fine() {
+        let id = Uuid::new_v4();
+        assert!(context_with_outputs(&[id]).missing_output_issue(Some(id)).is_none());
+    }
+
+    #[test]
+    fn a_cue_on_a_deleted_output_is_an_error() {
+        let issue = context_with_outputs(&[]).missing_output_issue(Some(Uuid::new_v4())).unwrap();
+        assert_eq!(issue.severity, Severity::Error);
+    }
 }

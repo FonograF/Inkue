@@ -284,6 +284,45 @@ pub struct FadeAction {
     pub curve: FadeCurve,
     /// Whether to stop the target cue after the fade completes.
     pub stop_at_end: bool,
+    /// Crossfade: a visual cue the Fade starts, so the picture dissolves from
+    /// the targets into it.  `None` = plain fade.
+    pub crossfade_into: Option<CueId>,
+    /// Rising envelope (the incoming picture and sound of a crossfade).
+    pub up_curve: crate::engine::ring_command::FadeCurve,
+    /// Falling envelope (the outgoing sound, an outgoing picture on another
+    /// output).
+    pub down_curve: crate::engine::ring_command::FadeCurve,
+}
+
+/// The crossfade side of a running Fade Cue, set up by the show layer
+/// (`show/crossfade.rs`) and driven by the Fade's own clock.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FadeCrossfade {
+    /// A plain fade.
+    None,
+    /// Waiting to be set up: for the Fade's own pre-wait, then for the
+    /// incoming cue to start and show a picture (its pre-wait, a slow source).
+    Pending {
+        incoming_cue: CueId,
+        /// The Fade has already started the incoming cue.
+        incoming_started: bool,
+    },
+    /// Handed to the output engine.
+    Linked(CrossfadeLinked),
+}
+
+/// A crossfade the output engine is rendering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossfadeLinked {
+    pub incoming_cue: CueId,
+    /// The incoming picture's output voice — the engine's handle on the dissolve.
+    pub incoming_voice: CueId,
+    /// The incoming sound: `(audio voice, level it rises to)`.  Starts silent.
+    pub incoming_audio: Vec<(CueId, f32)>,
+    /// The outgoing sound: `(audio voice, level it falls from)` to silence.
+    pub outgoing_audio: Vec<(CueId, f32)>,
+    /// Targets being dissolved away — stopped when the dissolve lands.
+    pub targets: Vec<CueId>,
 }
 
 /// Specification for a single fade (in or out).

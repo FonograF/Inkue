@@ -9,9 +9,8 @@ use anyhow::{anyhow, Result};
 use crate::cue::{
     context::CueContext,
     control_cue::ControlAction,
-    types::{ContinueMode, CueId, CueState, CueType},
+    types::{ContinueMode, CueId, CueState},
 };
-use crate::engine::ring_command::VoiceId;
 
 use super::cue_list::CueList;
 
@@ -118,54 +117,13 @@ impl Transport {
             cue.go(&self.context)?;
         }
 
-        // Inject target voices into Fade Cues so tick() can apply gain updates,
-        // and per-layer opacity fades for Video/Image/Camera targets.
-        let fade_spec = cue_list.get(&cue_id).and_then(|c| c.fade_specification());
-        if let Some(spec) = fade_spec {
-            let mut voice_infos: Vec<(VoiceId, f32, f32)> = Vec::new();
-            let mut visual_targets: Vec<(VoiceId, f32)> = Vec::new();
-
-            for &target_id in &spec.target_cue_ids {
-                // Recursive lookup so a Fade can target a cue nested in a group
-                // (not just a top-level one).
-                let Some(target) = cue_list.get_recursive(&target_id) else { continue };
-                if target.is_visual() {
-                    // Visual cues (Video, Image, Camera, …): fade the target's
-                    // own layer opacity — other layers are untouched.  A Video
-                    // additionally fades its paired audio voice.
-                    let Some(voice) = target.playing_voice_id() else { continue };
-                    let start_opacity = self.context.output_engine.get_voice_opacity(voice);
-                    visual_targets.push((voice, start_opacity));
-                    if target.cue_type() == CueType::Video {
-                        if let Some(aid) = self.context.output_engine.video_audio_voice(voice) {
-                            let gain = self.context.audio_engine.get_voice_gain(aid);
-                            let pan = self.context.audio_engine.get_voice_pan(aid);
-                            voice_infos.push((aid, gain, pan));
-                        }
-                    }
-                } else {
-                    // Audio, Group, Mic, … — fade every audio voice the target
-                    // owns.  For a Group this is all of its children's voices,
-                    // recursively; for a leaf Audio cue it is its single voice.
-                    for vid in target.all_voice_ids() {
-                        let gain = self.context.audio_engine.get_voice_gain(vid);
-                        let pan = self.context.audio_engine.get_voice_pan(vid);
-                        voice_infos.push((vid, gain, pan));
-                    }
-                }
-            }
-
-            // Brightness % → layer opacity; without an explicit visual target
-            // the audio gain doubles as the opacity target (legacy semantics).
-            let visual_target_opacity = spec
-                .target_visual_alpha
-                .map(|alpha| 1.0 - alpha as f32 / 255.0)
-                .unwrap_or_else(|| spec.target_gain_linear.clamp(0.0, 1.0));
-
-            if let Some(fc) = cue_list.get_mut(&cue_id) {
-                fc.set_fade_voices(voice_infos, visual_targets, visual_target_opacity);
-            }
-        }
+        // Fade Cues: hand them their targets' voices — and start the cue a
+        // crossfade dissolves into, which the UI must see as triggered.
+        let crossfade_started = if cue_list.get(&cue_id).is_some_and(|c| c.fade_specification().is_some()) {
+            super::crossfade::on_fade_go(cue_list, &self.context, cue_id)
+        } else {
+            Vec::new()
+        };
 
         // Devamp Cues: release the current slice loop on every target voice.
         // The engines act at the next slice boundary, so ordering with
@@ -305,6 +263,7 @@ impl Transport {
         // refreshes their row — their state changed without them being GO'd.
         let mut triggered = vec![cue_id];
         triggered.extend(commanded);
+        triggered.extend(crossfade_started);
 
         if chain_now {
             let mut rest = self.go(cue_list)?;

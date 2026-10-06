@@ -1,38 +1,24 @@
-//! Unified OpenGL Render API output path.
+//! Unified OpenGL Render API output path — one render thread per output.
 //!
 //! Drives mpv with `vo=libmpv` and renders each frame into the default
 //! framebuffer of an OS window via `glutin` (OpenGL Core) + `mpv_render_context`.
 //! A fullscreen black quad handles fade-to-black.  The render loop and the GL
-//! fade are identical on every OS — only native window creation differs.
+//! fade are identical on every OS and for every output — only native window
+//! creation differs (`window.rs`: winit on Windows/Linux, AppKit/objc2 on macOS).
 //!
-//! ## Window creation
-//!
-//! - **Windows / Linux** — `winit 0.30` creates the `winit::window::Window` from a
-//!   background thread (stored as `Arc<Window>` in `GL_WINDOW`).
-//! - **macOS** — winit cannot be used: its EventLoop demands the AppKit main thread,
-//!   which Tauri's `NSApplication` already owns.  Instead `macos_window.rs` creates
-//!   and drives an `NSWindow` directly via `objc2` (`super::macos_window`).
-//!
-//! In both cases creation yields a raw window/display handle pair, which the render
-//! thread turns into a `glutin` GL context + `mpv_render_context`.
-//!
-//! ## Thread model
+//! ## Thread model (per output)
 //!
 //! | Thread                    | Role |
 //! |---------------------------|------|
-//! | `inkue-output-window`    | (Windows/Linux only) winit EventLoop + window events |
-//! | `inkue-output-render`    | glutin context + mpv RenderContext + render loop |
-//! | `inkue-output-mpv-events`| mpv_wait_event (PLAYBACK_RESTART, EOF, …) |
+//! | `inkue-output-window`    | (Windows/Linux only, **one for all outputs**) winit EventLoop + window events |
+//! | `inkue-output-render`    | glutin context + `mpv_render_context` + render loop of one output |
+//! | `inkue-output-mpv-events`| overlay context log / diagnostics |
 
 use std::ffi::{CStr, CString, c_void};
 use std::num::NonZeroU32;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-// `Instant` is only used by the winit event-loop window backend (drag / double-click
-// timing); macOS uses the AppKit backend instead and never touches it.
-#[cfg(not(target_os = "macos"))]
-use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use glow::HasContext;
@@ -42,235 +28,57 @@ use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{GlSurface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-// winit-based window backend (Windows + Linux only).
-#[cfg(not(target_os = "macos"))]
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-#[cfg(not(target_os = "macos"))]
-use winit::application::ApplicationHandler;
-#[cfg(not(target_os = "macos"))]
-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
-#[cfg(not(target_os = "macos"))]
-use winit::event::{ElementState, MouseButton, WindowEvent};
-#[cfg(not(target_os = "macos"))]
-use winit::event_loop::{ActiveEventLoop, EventLoop};
-#[cfg(not(target_os = "macos"))]
-use winit::keyboard::{Key, ModifiersState, NamedKey};
-#[cfg(not(target_os = "macos"))]
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
-
 use crate::engine::mpv_sys::{
     MpvLib, MpvOpenglFbo, MpvOpenglInitParams, MpvRenderParam,
     MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
     MPV_RENDER_PARAM_FLIP_Y, MPV_RENDER_PARAM_OPENGL_FBO,
     MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, MPV_RENDER_UPDATE_FRAME,
 };
-use super::types::MpvCtx;
-use super::FADE_STATE;
-use super::fade;
+use super::crossfade::{self, MixLink};
+use super::output::Output;
 use super::slot;
+use super::types::{MpvCtx, VoiceId};
+use super::window::{create_window, SendableHandles};
 
-// ---------------------------------------------------------------------------
-// Globals
-// ---------------------------------------------------------------------------
-
-/// Wakes the render thread when mpv signals a new frame is available.
-pub(super) static RENDER_SIGNAL: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
-
-/// Set to `true` while a Text Cue overlay is active.
-///
-/// When set, the render loop does **not** skip on `!has_frame && alpha==0` so
-/// that the Text Cue's `osd-overlay` ASS is composited and displayed even in
-/// idle mode (mpv does not signal `MPV_RENDER_UPDATE_FRAME` for OSD-only changes).
-pub(super) static TEXT_OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// `true` while the output window is user-visible.
-///
-/// Set by `show()` and cleared by `hide()`.  The render loop must NOT commit
-/// frames before this flag is set: on Wayland a `wl_surface.commit()` with a
-/// buffer permanently maps the surface (the window appears), so emitting even
-/// one frame while the window is "hidden" makes it visible at startup before
-/// the operator opens it.
-pub(super) static OUTPUT_VISIBLE: AtomicBool = AtomicBool::new(false);
-
-/// The winit output window, shared between the event-loop thread, the render
-/// thread, and `OutputEngine` methods (show/hide/position/fullscreen).
-/// macOS holds its `NSWindow` inside `macos_window` instead.
-#[cfg(not(target_os = "macos"))]
-pub(super) static GL_WINDOW: OnceLock<Arc<winit::window::Window>> = OnceLock::new();
-
-/// Current window dimensions in physical pixels, written on resize / screen move
-/// and read by the render thread to call `surface.resize()`.
-static GL_WIDTH:  AtomicU32 = AtomicU32::new(1920);
-static GL_HEIGHT: AtomicU32 = AtomicU32::new(1080);
-
-/// Inverse homography for the global output warp (corner pin / fine rotation),
-/// row-major.  `None` = identity: mpv renders straight into the window's
-/// default framebuffer with zero extra cost.  Set via [`set_output_warp`].
-static OUTPUT_WARP: Mutex<Option<[f32; 9]>> = Mutex::new(None);
-/// One-shot "warp params changed" flag: forces a redraw even when mpv has no
-/// new frame (paused video, held image), so edits in the alignment editor are
-/// visible immediately.
-static WARP_DIRTY: AtomicBool = AtomicBool::new(false);
-/// One-shot "overlay went inactive" flag: forces one redraw so the last
-/// composited overlay image (timer text, cleared pattern) leaves the screen
-/// even when no layer is animating and mpv signals no new frame.
-static OVERLAY_DIRTY: AtomicBool = AtomicBool::new(false);
-
-/// Force one redraw after an overlay deactivation (timer cleared, Text Cue
-/// ended, test pattern cleared).
-pub(super) fn mark_overlay_dirty() {
-    OVERLAY_DIRTY.store(true, Ordering::Relaxed);
-    wake();
+/// One visual layer of an output, as the compositor draws it this frame.
+struct LayerDraw {
+    slot_index: usize,
+    voice: VoiceId,
+    layer_key: u64,
+    opacity: f32,
+    blend_mode: i32,
+    has_new_frame: bool,
+    render_ctx: *mut c_void,
 }
 
-// ---------------------------------------------------------------------------
-// Public helpers called from OutputEngine
-// ---------------------------------------------------------------------------
-
-/// Wake the render thread immediately.
-///
-/// `tick_fade()` self-paces at 16 ms only while an animation is in progress
-/// (`current_alpha != target_alpha`).  When a Fade Cue drives the overlay alpha
-/// externally at 30 fps — setting `current == target` each step — the loop would
-/// otherwise sleep up to 100 ms between redraws.  Calling this on each alpha
-/// change keeps that fade smooth.
-pub(super) fn wake() {
-    if let Some(sig) = RENDER_SIGNAL.get() {
-        if let Ok(mut r) = sig.0.lock() {
-            *r = true;
-            sig.1.notify_one();
-        }
-    }
-}
-
-/// Store new physical window dimensions and wake the render thread so it resizes
-/// the GL surface.  Called by the macOS window backend after a screen move /
-/// fullscreen toggle (the winit path drives this from its own `Resized` event).
-#[cfg(target_os = "macos")]
-pub(super) fn set_surface_size(width: u32, height: u32) {
-    GL_WIDTH.store(width.max(1), Ordering::Relaxed);
-    GL_HEIGHT.store(height.max(1), Ordering::Relaxed);
-    wake();
-}
-
-pub(super) fn show() {
-    OUTPUT_VISIBLE.store(true, Ordering::Relaxed);
-    #[cfg(not(target_os = "macos"))]
-    if let Some(w) = GL_WINDOW.get() { w.set_visible(true); }
-    #[cfg(target_os = "macos")]
-    super::macos_window::show();
-    // Wake the render loop so it commits the first frame immediately.  On
-    // Wayland the surface is only mapped once a buffer arrives; without this
-    // wake the window would not appear until the next mpv signal (up to 100 ms).
-    wake();
-}
-
-pub(super) fn hide() {
-    OUTPUT_VISIBLE.store(false, Ordering::Relaxed);
-    #[cfg(not(target_os = "macos"))]
-    if let Some(w) = GL_WINDOW.get() { w.set_visible(false); }
-    #[cfg(target_os = "macos")]
-    super::macos_window::hide();
-}
-
-pub(super) fn toggle_fullscreen() {
-    #[cfg(not(target_os = "macos"))]
-    if let Some(w) = GL_WINDOW.get() {
-        if w.fullscreen().is_some() {
-            w.set_fullscreen(None);
-        } else {
-            w.set_fullscreen(Some(Fullscreen::Borderless(w.current_monitor())));
-        }
-    }
-    #[cfg(target_os = "macos")]
-    super::macos_window::toggle_fullscreen();
-}
-
-/// Place the output window fullscreen on the monitor whose top-left corner is
-/// `(x, y)` — **physical** virtual-screen coordinates from `list_screens()`.
-///
-/// Uses `Fullscreen::Borderless` on the matched `MonitorHandle` rather than a
-/// manual move/resize: the old path passed the physical rect as a *logical*
-/// position, which winit multiplies by the current monitor's DPI scale — with
-/// any display above 100 % the window landed shifted and oversized (the
-/// "output drifts on GO" report). Borderless fullscreen is DPI-proof, covers
-/// the taskbar, pins the window to the monitor, and works on Wayland where
-/// `set_outer_position` is a no-op.
-#[cfg(not(target_os = "macos"))]
-pub(super) fn set_fullscreen_on_rect(x: i32, y: i32, width: u32, height: u32) {
-    let Some(w) = GL_WINDOW.get() else { return };
-    let monitor = w.available_monitors().find(|m| {
-        let p = m.position();
-        p.x == x && p.y == y
-    });
-    match monitor {
-        Some(m) => w.set_fullscreen(Some(Fullscreen::Borderless(Some(m)))),
-        None => {
-            // The compositor reported different coordinates than list_screens()
-            // (possible on Wayland). Land on the rect in physical pixels, then
-            // fullscreen whatever monitor the window ended up on.
-            w.set_fullscreen(None);
-            w.set_outer_position(PhysicalPosition::new(x, y));
-            let _ = w.request_inner_size(PhysicalSize::new(width, height));
-            w.set_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
-    }
-}
-
-/// Place the macOS NSWindow fullscreen onto the given screen index.
-#[cfg(target_os = "macos")]
-pub(super) fn position_on_screen(screen_index: u32) {
-    super::macos_window::position_on_screen(screen_index);
-}
-
-/// Install (or clear) the global output warp and wake the render thread so
-/// the change shows immediately — even on a paused frame or a test pattern.
-pub(super) fn set_output_warp(matrix: Option<[f32; 9]>) {
-    if let Ok(mut w) = OUTPUT_WARP.lock() {
-        *w = matrix;
-    }
-    WARP_DIRTY.store(true, Ordering::Relaxed);
-    wake();
-}
-
-/// Restore the output window to a floating windowed rect — exits the
-/// fullscreen-on-screen placement applied by `set_outer_rect` /
-/// `position_on_screen` when the operator switches back to "Floating window".
-pub(super) fn set_windowed_floating() {
-    #[cfg(not(target_os = "macos"))]
-    if let Some(w) = GL_WINDOW.get() {
-        w.set_fullscreen(None);
-        w.set_outer_position(LogicalPosition::new(100, 100));
-        let _ = w.request_inner_size(LogicalSize::new(1280u32, 720u32));
-    }
-    #[cfg(target_os = "macos")]
-    super::macos_window::set_windowed();
+/// The GL programs of the layer compositor.
+struct Compositor {
+    composite: (glow::Program, glow::VertexArray),
+    mix: (glow::Program, glow::VertexArray),
+    blit: (glow::Program, glow::VertexArray),
 }
 
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Create the output window and spawn the render thread.
+/// Create the native window of `output` and spawn its render thread.
 ///
 /// Blocks until `mpv_render_context_create()` succeeds so that no `loadfile`
 /// can reach mpv before the render context is live.
 pub(super) fn init(
+    output: &Arc<Output>,
     app_handle: &tauri::AppHandle,
     lib: Arc<MpvLib>,
     mpv_ctx: Arc<MpvCtx>,
 ) -> Result<()> {
-    RENDER_SIGNAL.get_or_init(|| Arc::new((Mutex::new(false), Condvar::new())));
-    let (rwh, rdh, width, height) = create_native_window(app_handle)?;
-    GL_WIDTH.store(width.max(1), Ordering::Relaxed);
-    GL_HEIGHT.store(height.max(1), Ordering::Relaxed);
+    let handles = create_window(output, app_handle)?;
+    output.set_surface_size(handles.width, handles.height);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
-    spawn_render_thread(
-        SendableHandles { rwh, rdh, width, height },
-        lib, mpv_ctx, ready_tx,
-    )?;
+    let thread = spawn_render_thread(Arc::clone(output), handles, lib, mpv_ctx, ready_tx)?;
+    output.adopt_thread(thread);
 
     // On macOS, Tauri's NSApplication event loop hasn't started yet when setup()
     // runs. If glutin/CGL needs the run loop during context creation, blocking
@@ -297,378 +105,25 @@ pub(super) fn init(
 }
 
 // ---------------------------------------------------------------------------
-// Sendable raw-handle pair
-// ---------------------------------------------------------------------------
-
-struct SendableHandles {
-    rwh:    RawWindowHandle,
-    rdh:    RawDisplayHandle,
-    width:  u32,
-    height: u32,
-}
-// SAFETY: RawWindowHandle / RawDisplayHandle are plain integer/pointer structs.
-// The underlying OS objects outlive the render thread (window lives for the app).
-unsafe impl Send for SendableHandles {}
-
-// ---------------------------------------------------------------------------
-// Window creation — macOS (AppKit NSWindow via objc2)
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "macos")]
-fn create_native_window(
-    app_handle: &tauri::AppHandle,
-) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
-    super::macos_window::create(app_handle)
-}
-
-// ---------------------------------------------------------------------------
-// Window creation — winit (Windows + Linux)
-// ---------------------------------------------------------------------------
-
-/// Resize direction from cursor position relative to window size.
-#[cfg(not(target_os = "macos"))]
-fn resize_direction(
-    pos:    PhysicalPosition<f64>,
-    size:   PhysicalSize<u32>,
-    border: f64,
-) -> Option<winit::window::ResizeDirection> {
-    use winit::window::ResizeDirection::*;
-    let (x, y)   = (pos.x, pos.y);
-    let (w, h)   = (size.width as f64, size.height as f64);
-    let left     = x < border;
-    let right    = x > w - border;
-    let top      = y < border;
-    let bottom   = y > h - border;
-    match (top, bottom, left, right) {
-        (true,  _,     true,  _    ) => Some(NorthWest),
-        (true,  _,     _,     true ) => Some(NorthEast),
-        (_,     true,  true,  _    ) => Some(SouthWest),
-        (_,     true,  _,     true ) => Some(SouthEast),
-        (true,  _,     _,     _    ) => Some(North),
-        (_,     true,  _,     _    ) => Some(South),
-        (_,     _,     true,  _    ) => Some(West),
-        (_,     _,     _,     true ) => Some(East),
-        _                            => None,
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn resize_cursor(dir: Option<winit::window::ResizeDirection>) -> winit::window::CursorIcon {
-    use winit::window::{CursorIcon::*, ResizeDirection::*};
-    match dir {
-        Some(North)     => NResize,
-        Some(South)     => SResize,
-        Some(East)      => EResize,
-        Some(West)      => WResize,
-        Some(NorthEast) => NeResize,
-        Some(NorthWest) => NwResize,
-        Some(SouthEast) => SeResize,
-        Some(SouthWest) => SwResize,
-        None            => Default,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// winit ApplicationHandler — output window event loop
-// ---------------------------------------------------------------------------
-
-#[cfg(not(target_os = "macos"))]
-struct OutputApp {
-    /// One-shot sender: signals create_native_window() when the window is ready.
-    tx:         Option<std::sync::mpsc::Sender<Result<SendableHandles>>>,
-    window:     Option<Arc<Window>>,
-    cursor_pos: PhysicalPosition<f64>,
-    last_click: Option<Instant>,
-    /// Emits `output-keydown` so shortcuts keep working with the output focused.
-    app_handle: tauri::AppHandle,
-    modifiers:  ModifiersState,
-}
-
-/// Translate a winit logical key to the DOM `KeyboardEvent.key` string the
-/// frontend shortcut handler expects. winit's `NamedKey` variants are named
-/// after the DOM UI Events key values, so `Debug` *is* the mapping — except
-/// `Space`, which the DOM spells `" "`.
-#[cfg(not(target_os = "macos"))]
-fn dom_key(key: &Key) -> Option<String> {
-    match key {
-        Key::Character(c) => Some(c.to_string()),
-        Key::Named(NamedKey::Space) => Some(" ".into()),
-        Key::Named(n) => Some(format!("{n:?}")),
-        _ => None,
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl ApplicationHandler for OutputApp {
-    fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.window.is_some() { return; }
-
-        let attrs = WindowAttributes::default()
-            .with_title("Inkue Output")
-            .with_visible(false)
-            .with_decorations(false)
-            .with_resizable(true)
-            .with_inner_size(LogicalSize::new(1920u32, 1080u32));
-
-        let window = match el.create_window(attrs) {
-            Ok(w)  => Arc::new(w),
-            Err(e) => {
-                if let Some(tx) = self.tx.take() { let _ = tx.send(Err(anyhow!("create_window: {e}"))); }
-                return;
-            }
-        };
-
-        let rwh: RawWindowHandle = match window.window_handle() {
-            Ok(h)  => h.as_raw(),
-            Err(e) => {
-                if let Some(tx) = self.tx.take() { let _ = tx.send(Err(anyhow!("window_handle: {e}"))); }
-                return;
-            }
-        };
-        let rdh: RawDisplayHandle = match el.display_handle() {
-            Ok(h)  => h.as_raw(),
-            Err(e) => {
-                if let Some(tx) = self.tx.take() { let _ = tx.send(Err(anyhow!("display_handle: {e}"))); }
-                return;
-            }
-        };
-
-        GL_WINDOW.get_or_init(|| Arc::clone(&window));
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Ok(SendableHandles { rwh, rdh, width: 1920, height: 1080 }));
-        }
-        self.window = Some(window);
-    }
-
-    fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(window) = &self.window else { return; };
-        match event {
-            WindowEvent::CloseRequested => {
-                window.set_visible(false);
-            }
-
-            WindowEvent::Resized(size) => {
-                GL_WIDTH.store(size.width.max(1), Ordering::Relaxed);
-                GL_HEIGHT.store(size.height.max(1), Ordering::Relaxed);
-                if let Some(sig) = RENDER_SIGNAL.get() {
-                    if let Ok(mut r) = sig.0.lock() { *r = true; sig.1.notify_one(); }
-                }
-            }
-
-            WindowEvent::ModifiersChanged(m) => {
-                self.modifiers = m.state();
-            }
-
-            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
-                // The output window would swallow these otherwise — GO / panic
-                // must keep working while the operator has it focused. Forward
-                // to the main webview, which replays them into the regular
-                // window-level shortcut handler (repeats included, matching
-                // native DOM keydown behaviour).
-                //
-                // `is_synthetic` must be skipped: on Windows, winit fabricates
-                // Pressed events for every key physically held when the window
-                // gains focus — F9 (show output) activates this window while
-                // F9 is still down, and forwarding that ghost press would
-                // instantly toggle the window hidden again.
-                if event.state == ElementState::Pressed && !is_synthetic {
-                    if let Some(key) = dom_key(&event.logical_key) {
-                        use tauri::Emitter;
-                        let _ = self.app_handle.emit(
-                            "output-keydown",
-                            serde_json::json!({
-                                "key":   key,
-                                "ctrl":  self.modifiers.control_key(),
-                                "alt":   self.modifiers.alt_key(),
-                                "shift": self.modifiers.shift_key(),
-                                "meta":  self.modifiers.super_key(),
-                            }),
-                        );
-                    }
-                }
-            }
-
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = position;
-                let dir = resize_direction(position, window.inner_size(), 8.0);
-                window.set_cursor(resize_cursor(dir));
-            }
-
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left, ..
-            } => {
-                let dir = resize_direction(self.cursor_pos, window.inner_size(), 8.0);
-                if let Some(d) = dir {
-                    let _ = window.drag_resize_window(d);
-                } else {
-                    let now = Instant::now();
-                    let is_double = self.last_click
-                        .map(|t| now.duration_since(t) < Duration::from_millis(300))
-                        .unwrap_or(false);
-                    if is_double {
-                        if window.fullscreen().is_some() {
-                            window.set_fullscreen(None);
-                        } else {
-                            window.set_fullscreen(Some(Fullscreen::Borderless(window.current_monitor())));
-                        }
-                        self.last_click = None;
-                    } else {
-                        self.last_click = Some(now);
-                        let _ = window.drag_window();
-                    }
-                }
-            }
-
-            _ => {}
-        }
-    }
-}
-
-/// Build a winit EventLoop that may be created from any thread.
-///
-/// winit 0.30 guards EventLoop creation to the main thread by default on both
-/// Windows and Linux.  Platform-specific extension traits opt out of that guard.
-#[cfg(target_os = "windows")]
-fn build_event_loop() -> Result<EventLoop<()>> {
-    use winit::platform::windows::EventLoopBuilderExtWindows;
-    EventLoop::builder()
-        .with_any_thread(true)
-        .build()
-        .map_err(|e| anyhow!("EventLoop (Windows): {e}"))
-}
-
-/// Probe whether winit's X11 backend can actually run.
-///
-/// winit's X11 backend hard-requires `libxkbcommon-x11` and **panics** (not a
-/// recoverable `build()` error) during window creation if it is absent — common on
-/// Wayland-only installs.  We `dlopen` it up-front so `build_event_loop` can choose
-/// Wayland cleanly instead of taking down the whole output engine.
-#[cfg(target_os = "linux")]
-fn x11_xkb_available() -> bool {
-    use std::ffi::CString;
-    for name in ["libxkbcommon-x11.so.0", "libxkbcommon-x11.so"] {
-        let Ok(c) = CString::new(name) else { continue };
-        // SAFETY: valid C string; the handle is closed again immediately.
-        let h = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY) };
-        if !h.is_null() {
-            unsafe { libc::dlclose(h); }
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "linux")]
-fn build_event_loop() -> Result<EventLoop<()>> {
-    // Prefer X11/XWayland over native Wayland for the output window.
-    //
-    // With a *native Wayland* EGL surface, Mesa's `eglSwapBuffers` blocks on the
-    // compositor's frame callback regardless of the swap interval, which serialises
-    // this output window's render-thread GL with WebKitGTK's UI compositing on the
-    // same iGPU — the Inkue UI then crawls for the entire duration of video playback
-    // (the failure the operator reported).  XWayland's X11/DRI EGL path honours
-    // `SwapInterval::DontWait` and keeps the two GL clients decoupled, so the UI stays
-    // fluid while a video plays.
-    //
-    // X11 is selected only when `libxkbcommon-x11` is present (winit panics otherwise);
-    // otherwise we fall back to native Wayland so the app still runs.  Override with
-    // `INKUE_OUTPUT_BACKEND=wayland` for A/B testing.
-    let force_wayland = std::env::var("INKUE_OUTPUT_BACKEND").as_deref() == Ok("wayland");
-    let use_x11 = !force_wayland && x11_xkb_available();
-
-    let mut b = EventLoop::builder();
-    if use_x11 {
-        use winit::platform::x11::EventLoopBuilderExtX11;
-        b.with_any_thread(true).with_x11();
-        log::info!("[render] output window backend: X11/XWayland (default)");
-        b.build().map_err(|e| anyhow!("EventLoop (Linux/XWayland): {e}"))
-    } else {
-        use winit::platform::wayland::EventLoopBuilderExtWayland;
-        EventLoopBuilderExtWayland::with_any_thread(&mut b, true);
-        if force_wayland {
-            log::info!("[render] output window backend: native Wayland (forced via INKUE_OUTPUT_BACKEND)");
-        } else {
-            log::warn!(
-                "[render] output window backend: native Wayland — XWayland unavailable \
-                 (libxkbcommon-x11 not found); the UI may lag during video playback. \
-                 Install the 'libxkbcommon-x11-0' package to enable the smoother XWayland path."
-            );
-        }
-        b.build().map_err(|e| anyhow!("EventLoop (Linux/Wayland): {e}"))
-    }
-}
-
-/// Unified window creation for Windows and Linux via winit.
-#[cfg(not(target_os = "macos"))]
-fn create_native_window(
-    app_handle: &tauri::AppHandle,
-) -> Result<(RawWindowHandle, RawDisplayHandle, u32, u32)> {
-    let (tx, rx) = std::sync::mpsc::channel::<Result<SendableHandles>>();
-    let app_handle = app_handle.clone();
-
-    std::thread::Builder::new()
-        .name("inkue-output-window".into())
-        .spawn(move || {
-            let event_loop = match build_event_loop() {
-                Ok(el) => el,
-                Err(e) => { let _ = tx.send(Err(anyhow!("{e}"))); return; }
-            };
-            // Clone before moving into OutputApp so we can report panics or
-            // early exit (run_app returning without resumed() ever being called).
-            let tx_err = tx.clone();
-            let mut app = OutputApp {
-                tx:         Some(tx),
-                window:     None,
-                cursor_pos: PhysicalPosition::new(0.0, 0.0),
-                last_click: None,
-                app_handle,
-                modifiers:  ModifiersState::empty(),
-            };
-            let result = std::panic::catch_unwind(
-                std::panic::AssertUnwindSafe(|| event_loop.run_app(&mut app))
-            );
-            match result {
-                Err(_) => {
-                    let _ = tx_err.send(Err(anyhow!(
-                        "output window thread panicked (no display server?)"
-                    )));
-                }
-                Ok(_) if app.tx.is_some() => {
-                    // run_app returned normally but resumed() was never called.
-                    let _ = tx_err.send(Err(anyhow!(
-                        "event loop exited before window was created \
-                         (no X11/Wayland display available?)"
-                    )));
-                }
-                Ok(_) => {}
-            }
-        })
-        .map_err(|e| anyhow!("spawn output-window thread: {e}"))?;
-
-    let h = rx.recv()??;
-    Ok((h.rwh, h.rdh, h.width, h.height))
-}
-
-// ---------------------------------------------------------------------------
 // Spawn render thread
 // ---------------------------------------------------------------------------
 
 fn spawn_render_thread(
+    output:   Arc<Output>,
     handles:  SendableHandles,
     lib:      Arc<MpvLib>,
     mpv_ctx:  Arc<MpvCtx>,
     ready_tx: std::sync::mpsc::Sender<Result<()>>,
-) -> Result<()> {
+) -> Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("inkue-output-render".into())
         .spawn(move || {
-            if let Err(e) = render_thread_main(handles, lib, mpv_ctx, ready_tx) {
-                log::error!("[render] fatal: {e}");
+            let label = output.name();
+            if let Err(e) = render_thread_main(output, handles, lib, mpv_ctx, ready_tx) {
+                log::error!("[render] output '{label}' fatal: {e}");
             }
         })
-        .map_err(|e| anyhow!("spawn render thread: {e}"))?;
-    Ok(())
+        .map_err(|e| anyhow!("spawn render thread: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +156,7 @@ fn pick_gl_config(display: &Display, window: RawWindowHandle) -> Result<glutin::
 }
 
 fn render_thread_main(
+    output:   Arc<Output>,
     handles:  SendableHandles,
     lib:      Arc<MpvLib>,
     mpv_ctx:  Arc<MpvCtx>,
@@ -806,24 +262,28 @@ fn render_thread_main(
     let _ = ready_tx.send(Ok(()));
 
     // ── 10. Update callback ───────────────────────────────────────────────────
-    let signal_ptr = RENDER_SIGNAL.get().map(Arc::as_ptr).unwrap_or(std::ptr::null()) as *mut c_void;
+    let signal_ptr = Arc::as_ptr(&output.signal) as *mut c_void;
     unsafe { (lib.mpv_render_context_set_update_callback)(render_ctx, Some(on_mpv_update), signal_ptr); }
 
     // ── 11. Render loop ───────────────────────────────────────────────────────
-    let signal = RENDER_SIGNAL.get().expect("RENDER_SIGNAL not set");
-    let (lock, cvar) = signal.as_ref();
+    let (lock, cvar) = output.signal.as_ref();
     let mut w_px = handles.width;
     let mut h_px = handles.height;
 
     // Layer compositor state: the overlay context (timer OSD / Text Cue /
     // test patterns) renders into its own target like every video slot; the
-    // ping-pong pair accumulates the blend stack.
-    let (composite_program, composite_vao) = build_composite_shader(&gl)?;
-    let (blit_program, blit_vao) = build_blit_shader(&gl)?;
+    // ping-pong pair accumulates the blend stack, and the mix pair averages
+    // the composites of a dissolve (allocated on the first crossfade).
+    let compositor = Compositor {
+        composite: build_composite_shader(&gl)?,
+        mix: build_mix_shader(&gl)?,
+        blit: build_blit_shader(&gl)?,
+    };
     let mut overlay_target: Option<WarpTarget> = None;
     let mut slot_targets: Vec<Option<WarpTarget>> = Vec::new();
     let mut slot_valid: Vec<bool> = Vec::new();
     let mut pingpong: [Option<WarpTarget>; 2] = [None, None];
+    let mut mix_targets: [Option<WarpTarget>; 2] = [None, None];
 
     // Opt-in output frame-rate cap (Linux).  `INKUE_OUTPUT_FPS=30` makes the render
     // loop present at most ~30 fps, halving the output window's GPU compositing load so
@@ -843,8 +303,16 @@ fn render_thread_main(
     let mut last_present = std::time::Instant::now();
 
     loop {
+        // The output is being destroyed: hand every render context back while
+        // this thread's GL context is still current, then let it go.
+        if output.shutdown.load(Ordering::Acquire) {
+            release_render_contexts(&lib, &output, render_ctx);
+            log::info!("[render] output '{}' render thread ended", output.name());
+            return Ok(());
+        }
+
         // Create render contexts for slots the engine spawned since last pass.
-        let slots = slot_snapshot();
+        let slots = output.slots_snapshot();
         for s in &slots {
             if s.needs_render_init.swap(false, Ordering::AcqRel) {
                 let mut gl_init2 = MpvOpenglInitParams {
@@ -869,15 +337,13 @@ fn render_thread_main(
             }
         }
 
-        // Per-slot opacity animations pace the loop at 16 ms just like the
-        // master fade.
-        let master_animating = FADE_STATE.get()
-            .and_then(|fs| fs.lock().ok())
+        // Per-slot opacity animations and dissolves pace the loop at 16 ms
+        // just like the master fade — a crossfade between two still images
+        // has no mpv frame to wake it.
+        let master_animating = output.fade.lock()
             .map(|s| s.current_alpha != s.target_alpha)
             .unwrap_or(false);
-        let slots_animating = slots.iter().any(|s| {
-            s.state.lock().map(|st| st.anim.is_animating()).unwrap_or(false)
-        });
+        let slots_animating = slots.iter().any(slot::is_animating);
         let needs_animation = master_animating || slots_animating;
         let timeout = if needs_animation { Duration::from_millis(16) } else { Duration::from_millis(100) };
 
@@ -891,8 +357,8 @@ fn render_thread_main(
         }
 
         // Apply pending resize from the event loop / window backend.
-        let new_w = GL_WIDTH.load(Ordering::Relaxed).max(1);
-        let new_h = GL_HEIGHT.load(Ordering::Relaxed).max(1);
+        let new_w = output.width.load(Ordering::Relaxed).max(1);
+        let new_h = output.height.load(Ordering::Relaxed).max(1);
         if new_w != w_px || new_h != h_px {
             surface.resize(
                 &ctx,
@@ -903,31 +369,22 @@ fn render_thread_main(
             h_px = new_h;
         }
 
-        let (alpha, done) = fade::tick_fade();
-        if done { fade::execute_pending(); }
+        let (alpha, _) = output.tick_fade();
 
         // Overlay context (timer OSD / Text Cue / test patterns / win32 path).
         let flags     = unsafe { (lib.mpv_render_context_update)(render_ctx) };
         let has_frame = flags & MPV_RENDER_UPDATE_FRAME != 0;
-        let text_active = TEXT_OVERLAY_ACTIVE.load(Ordering::Relaxed);
+        let text_active = output.text_overlay_active.load(Ordering::Relaxed);
         // Warp params changed since the last pass — must redraw even without a
         // new mpv frame (paused video / held image), or alignment edits would
         // only show on the next frame.
-        let warp_dirty = WARP_DIRTY.swap(false, Ordering::Relaxed)
-            || OVERLAY_DIRTY.swap(false, Ordering::Relaxed);
+        let warp_dirty = output.warp_dirty.swap(false, Ordering::Relaxed)
+            || output.overlay_dirty.swap(false, Ordering::Relaxed);
 
         // Tick each slot: advance opacity anims, finish pending unloads, and
         // check for fresh frames.  Ticks must run even while hidden so stop
         // fades can finish, but rendering below is gated on visibility.
-        let slots = slot_snapshot();
-        struct LayerDraw {
-            slot_index: usize,
-            layer_key: u64,
-            opacity: f32,
-            blend_mode: i32,
-            has_new_frame: bool,
-            render_ctx: *mut c_void,
-        }
+        let slots = output.slots_snapshot();
         let mut layers: Vec<LayerDraw> = Vec::with_capacity(slots.len());
         let mut any_slot_frame = false;
         for s in &slots {
@@ -944,13 +401,14 @@ fn render_thread_main(
                 .ok()
                 .map(|st| (st.voice_id, st.layer_key, st.blend_mode.shader_id()))
             else { continue };
-            if voice.is_none() {
+            let Some(voice) = voice else {
                 if let Some(v) = slot_valid.get_mut(s.index) { *v = false; }
                 continue;
-            }
+            };
             any_slot_frame |= s_new_frame;
             layers.push(LayerDraw {
                 slot_index: s.index,
+                voice,
                 layer_key,
                 opacity,
                 blend_mode,
@@ -960,13 +418,22 @@ fn render_thread_main(
         }
         layers.sort_by_key(|l| l.layer_key);
 
+        // Dissolves on this output (crossfades), expanded into the weighted
+        // composites that render them exactly.
+        let plan = crossfade::plan_dissolves(&mix_links(&slots, &layers));
+        for &(slot_index, factor) in &plan.approximated {
+            if let Some(layer) = layers.iter_mut().find(|l| l.slot_index == slot_index) {
+                layer.opacity *= factor;
+            }
+        }
+
         // Do not commit frames while the output window is hidden.  On Wayland
         // a wl_surface.commit() with a buffer permanently maps the surface, so
         // a single frame emitted before show_output() would make the window
         // appear at startup instead of staying invisible until the operator
         // opens it.  show() sets this flag and wakes the loop so the first
         // committed frame arrives immediately when the window is revealed.
-        if !OUTPUT_VISIBLE.load(Ordering::Relaxed) { continue; }
+        if !output.visible.load(Ordering::Relaxed) { continue; }
         // Skip rendering when nothing changed anywhere: no new frame from any
         // mpv, no animation, no active layers or overlay work.  Text/timer
         // overlays render unconditionally (mpv does not signal OSD-only
@@ -1016,7 +483,7 @@ fn render_thread_main(
         // Our loop is paced by the update callbacks instead; each context just
         // hands over its current frame (video-sync=desync owns the clock).
         let mut no_block: i32 = 0;
-        let overlay_on = super::overlay_active();
+        let overlay_on = output.overlay_active();
         if let (true, Some(t)) = (overlay_on, &overlay_target) {
             let mut fbo = MpvOpenglFbo { fbo: t.fbo.0.get() as i32, w: w_px as i32, h: h_px as i32, internal_format: 0 };
             let mut flip = flip_y;
@@ -1051,54 +518,42 @@ fn render_thread_main(
             }
         }
 
-        // ── Composite the layer stack (ping-pong) ─────────────────────────────
+        // ── Composite the layer stack ─────────────────────────────────────────
         // Base = opaque black; each layer blends over the accumulated result.
-        let mut src = 0usize; // pingpong[src] holds the accumulated composite
-        unsafe {
-            let base = pingpong[src].as_ref().map(|t| t.fbo);
-            gl.bind_framebuffer(glow::FRAMEBUFFER, base);
-            gl.viewport(0, 0, w_px as i32, h_px as i32);
-            gl.clear_color(0.0, 0.0, 0.0, 1.0);
-            gl.clear(glow::COLOR_BUFFER_BIT);
-        }
-        for l in &layers {
-            if l.opacity <= 0.0 {
-                continue;
+        // A dissolve in flight composites the stack once per side and mixes
+        // the pictures (crossfade.rs) — never a dip, never a cut in the bars.
+        let targets = StackTargets { slots: &slot_targets, pingpong: &pingpong, w: w_px, h: h_px };
+        let stage = if plan.is_plain() {
+            composite_stack(&gl, &compositor, &layers, &[], &targets)
+        } else {
+            let mixable = ensure_warp_target(&gl, &mut mix_targets[0], w_px, h_px).is_ok()
+                && ensure_warp_target(&gl, &mut mix_targets[1], w_px, h_px).is_ok();
+            if mixable {
+                mix_dissolves(&gl, &compositor, &plan, &layers, &targets, &mix_targets)
+            } else {
+                log::warn!("[render] mix targets unavailable — dissolve shown unmixed");
+                composite_stack(&gl, &compositor, &layers, &[], &targets)
             }
-            let Some(Some(layer_t)) = slot_targets.get(l.slot_index) else { continue };
-            let dst = 1 - src;
-            let (backdrop_tex, dst_fbo) = match (&pingpong[src], &pingpong[dst]) {
-                (Some(a), Some(b)) => (a.tex, b.fbo),
-                _ => continue,
-            };
-            draw_composite_pass(
-                &gl, composite_program, composite_vao,
-                backdrop_tex, layer_t.tex, l.blend_mode, l.opacity, w_px, h_px, dst_fbo,
-            );
-            src = dst;
-        }
+        };
+        let Some((staged, free)) = stage else { continue };
+        let mut final_tex = staged;
+
         // Overlay (timer / text / patterns) on top — only while active.
         if overlay_valid {
-            if let Some(t) = &overlay_target {
-                let dst = 1 - src;
-                if let (Some(a), Some(b)) = (&pingpong[src], &pingpong[dst]) {
-                    draw_composite_pass(
-                        &gl, composite_program, composite_vao,
-                        a.tex, t.tex, 0, 1.0, w_px, h_px, b.fbo,
-                    );
-                    src = dst;
-                }
+            if let (Some(t), Some(dst)) = (&overlay_target, &pingpong[free]) {
+                draw_composite_pass(
+                    &gl, compositor.composite.0, compositor.composite.1,
+                    final_tex, t.tex, 0, 1.0, w_px, h_px, dst.fbo,
+                );
+                final_tex = dst.tex;
             }
         }
 
         // ── Present: warp (or plain blit) + master fade quad ──────────────────
-        let warp = OUTPUT_WARP.lock().ok().and_then(|g| *g);
-        let final_tex = pingpong[src].as_ref().map(|t| t.tex);
-        if let Some(tex) = final_tex {
-            match warp {
-                Some(hinv) => draw_warp_pass(&gl, warp_program, warp_vao, tex, &hinv, w_px, h_px),
-                None => draw_blit_pass(&gl, blit_program, blit_vao, tex, w_px, h_px),
-            }
+        let warp = output.warp.lock().ok().and_then(|g| *g);
+        match warp {
+            Some(hinv) => draw_warp_pass(&gl, warp_program, warp_vao, final_tex, &hinv, w_px, h_px),
+            None => draw_blit_pass(&gl, compositor.blit.0, compositor.blit.1, final_tex, w_px, h_px),
         }
 
         if alpha > 0 { draw_fade_quad(&gl, fade_program, fade_vao, alpha as f32 / 255.0); }
@@ -1115,9 +570,21 @@ fn render_thread_main(
     }
 }
 
-/// Snapshot of the slot registry for one render pass.
-fn slot_snapshot() -> Vec<Arc<super::slot::VideoSlot>> {
-    super::slot::all_slots()
+/// Free every mpv render context of `output` — its slots' and its overlay's.
+/// libmpv requires it on the GL thread, with the context current, before the
+/// cores are destroyed.
+fn release_render_contexts(lib: &MpvLib, output: &Output, overlay_ctx: *mut c_void) {
+    for slot in output.slots_snapshot() {
+        let rc = slot.render_ctx.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !rc.is_null() {
+            // SAFETY: created on this thread by `mpv_render_context_create`;
+            // swapped out above so nothing renders with it again.
+            unsafe { (lib.mpv_render_context_free)(rc) };
+        }
+    }
+    // SAFETY: the overlay's render context, created at the top of
+    // `render_thread_main` and used by no one else.
+    unsafe { (lib.mpv_render_context_free)(overlay_ctx) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,6 +972,170 @@ fn draw_composite_pass(
     }
 }
 
+/// The textures a stack composite reads and writes.
+struct StackTargets<'a> {
+    slots: &'a [Option<WarpTarget>],
+    pingpong: &'a [Option<WarpTarget>; 2],
+    w: u32,
+    h: u32,
+}
+
+/// Composite every layer not in `excluded` over opaque black, ping-ponging
+/// between the two buffers.  Returns the texture holding the result and the
+/// index of the ping-pong buffer left free.
+fn composite_stack(
+    gl: &glow::Context,
+    compositor: &Compositor,
+    layers: &[LayerDraw],
+    excluded: &[usize],
+    targets: &StackTargets<'_>,
+) -> Option<(glow::Texture, usize)> {
+    let mut src = 0usize;
+    let base = targets.pingpong[src].as_ref()?;
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(base.fbo));
+        gl.viewport(0, 0, targets.w as i32, targets.h as i32);
+        gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+    }
+    for l in layers {
+        if l.opacity <= 0.0 || excluded.contains(&l.slot_index) {
+            continue;
+        }
+        let Some(Some(layer_t)) = targets.slots.get(l.slot_index) else { continue };
+        let dst = 1 - src;
+        let (Some(backdrop), Some(out)) = (&targets.pingpong[src], &targets.pingpong[dst]) else {
+            continue;
+        };
+        draw_composite_pass(
+            gl, compositor.composite.0, compositor.composite.1,
+            backdrop.tex, layer_t.tex, l.blend_mode, l.opacity, targets.w, targets.h, out.fbo,
+        );
+        src = dst;
+    }
+    targets.pingpong[src].as_ref().map(|t| (t.tex, 1 - src))
+}
+
+/// A frame with dissolves in it: composite the stack once per pass of the
+/// plan and fold each composite into a running weighted average held by the
+/// mix pair.  Returns the averaged picture and a free ping-pong buffer.
+fn mix_dissolves(
+    gl: &glow::Context,
+    compositor: &Compositor,
+    plan: &crossfade::DissolvePlan,
+    layers: &[LayerDraw],
+    targets: &StackTargets<'_>,
+    mix_targets: &[Option<WarpTarget>; 2],
+) -> Option<(glow::Texture, usize)> {
+    let mut accumulated = 0.0_f32;
+    let mut average: Option<usize> = None; // mix_targets[i] holds the average so far
+    for pass in &plan.passes {
+        let (composite, _) = composite_stack(gl, compositor, layers, &pass.excluded, targets)?;
+        let dst = average.map_or(0, |current| 1 - current);
+        let out = mix_targets[dst].as_ref()?;
+        let (previous, factor) = match average {
+            None => (composite, 1.0),
+            Some(current) => (
+                mix_targets[current].as_ref()?.tex,
+                crossfade::fold_factor(accumulated, pass.weight),
+            ),
+        };
+        draw_mix_pass(
+            gl, compositor.mix.0, compositor.mix.1,
+            previous, composite, factor, targets.w, targets.h, out.fbo,
+        );
+        average = Some(dst);
+        accumulated += pass.weight;
+    }
+    let picture = mix_targets[average?].as_ref()?.tex;
+    Some((picture, 0))
+}
+
+/// The dissolves on this output, in slot indices: each incoming layer and the
+/// outgoing layers it mixes away here.
+fn mix_links(slots: &[Arc<slot::VideoSlot>], layers: &[LayerDraw]) -> Vec<MixLink> {
+    let now = std::time::Instant::now();
+    layers
+        .iter()
+        .filter_map(|l| {
+            let incoming = slots.iter().find(|s| s.index == l.slot_index)?;
+            let (mixed, weight) = slot::dissolve_of(incoming, now)?;
+            let outgoing = mixed
+                .iter()
+                .filter_map(|voice| layers.iter().find(|o| o.voice == *voice))
+                .map(|o| (o.slot_index, o.layer_key))
+                .collect();
+            Some(MixLink { incoming: l.slot_index, incoming_key: l.layer_key, outgoing, weight })
+        })
+        .collect()
+}
+
+/// `color = mix(a, b, t)` — folds one composite of a dissolve into the
+/// running average.  Both inputs are opaque (composited over black).
+fn build_mix_shader(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray)> {
+    const VERT: &str = r#"
+#version 150 core
+const vec2 POS[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
+out vec2 v_uv;
+void main() {
+    gl_Position = vec4(POS[gl_VertexID], 0.0, 1.0);
+    v_uv = POS[gl_VertexID] * 0.5 + 0.5;
+}
+"#;
+    const FRAG: &str = r#"
+#version 150 core
+uniform sampler2D u_a;
+uniform sampler2D u_b;
+uniform float u_t;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = mix(texture(u_a, v_uv), texture(u_b, v_uv), u_t); }
+"#;
+    build_program(gl, VERT, FRAG, "mix")
+}
+
+/// One fold of the dissolve average into `dst_fbo`.
+#[allow(clippy::too_many_arguments)]
+fn draw_mix_pass(
+    gl: &glow::Context,
+    program: glow::Program,
+    vao: glow::VertexArray,
+    a: glow::Texture,
+    b: glow::Texture,
+    t: f32,
+    w: u32,
+    h: u32,
+    dst_fbo: glow::Framebuffer,
+) {
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(dst_fbo));
+        gl.viewport(0, 0, w as i32, h as i32);
+        gl.disable(glow::BLEND);
+        gl.use_program(Some(program));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(a));
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, Some(b));
+        if let Some(loc) = gl.get_uniform_location(program, "u_a") {
+            gl.uniform_1_i32(Some(&loc), 0);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_b") {
+            gl.uniform_1_i32(Some(&loc), 1);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_t") {
+            gl.uniform_1_f32(Some(&loc), t);
+        }
+        gl.bind_vertex_array(Some(vao));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        gl.bind_vertex_array(None);
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        gl.use_program(None);
+    }
+}
+
 /// Blit the final composite to the window's default framebuffer.
 fn draw_blit_pass(
     gl: &glow::Context,
@@ -1564,48 +1195,5 @@ fn draw_warp_pass(
         gl.bind_vertex_array(None);
         gl.bind_texture(glow::TEXTURE_2D, None);
         gl.use_program(None);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(all(test, not(target_os = "macos")))]
-mod tests {
-    use super::dom_key;
-    use winit::keyboard::{Key, NamedKey};
-
-    #[test]
-    fn dom_key_space_uses_dom_spelling() {
-        assert_eq!(dom_key(&Key::Named(NamedKey::Space)).as_deref(), Some(" "));
-    }
-
-    #[test]
-    fn dom_key_named_keys_match_dom_values() {
-        for (key, dom) in [
-            (NamedKey::Escape, "Escape"),
-            (NamedKey::ArrowUp, "ArrowUp"),
-            (NamedKey::ArrowDown, "ArrowDown"),
-            (NamedKey::Delete, "Delete"),
-            (NamedKey::Backspace, "Backspace"),
-            (NamedKey::F5, "F5"),
-            (NamedKey::F9, "F9"),
-        ] {
-            assert_eq!(dom_key(&Key::Named(key)).as_deref(), Some(dom));
-        }
-    }
-
-    #[test]
-    fn dom_key_characters_pass_through() {
-        assert_eq!(dom_key(&Key::Character("s".into())).as_deref(), Some("s"));
-        assert_eq!(dom_key(&Key::Character("S".into())).as_deref(), Some("S"));
-        assert_eq!(dom_key(&Key::Character("[".into())).as_deref(), Some("["));
-        assert_eq!(dom_key(&Key::Character(",".into())).as_deref(), Some(","));
-    }
-
-    #[test]
-    fn dom_key_dead_keys_are_dropped() {
-        assert_eq!(dom_key(&Key::Dead(None)), None);
     }
 }

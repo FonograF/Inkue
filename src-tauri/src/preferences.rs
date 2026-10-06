@@ -388,10 +388,16 @@ pub struct DisplayPreferences {
     #[serde(default)]
     pub cue_color_style: CueColorStyle,
 
-    /// Global projector-alignment transform (Preferences → Display), composed
-    /// on top of every cue's own geometry by the output engine.
+    /// Projector-alignment transform of the main output (Preferences →
+    /// Display), applied by the output engine's warp pass.
     #[serde(default)]
     pub output_transform: crate::engine::output_engine::OutputTransform,
+
+    /// The video output that shows the on-output timer.  `None` = the main
+    /// output; an extra output (a backstage return monitor) keeps the timer
+    /// off the audience's screen.
+    #[serde(default)]
+    pub timer_output: Option<uuid::Uuid>,
 }
 
 impl DisplayPreferences {
@@ -416,6 +422,7 @@ impl Default for DisplayPreferences {
             theme:              Self::default_theme(),
             cue_color_style:    CueColorStyle::default(),
             output_transform:   crate::engine::output_engine::OutputTransform::default(),
+            timer_output:       None,
         }
     }
 }

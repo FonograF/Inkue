@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     cue::{registry::CueRegistry, traits::Cue, types::CueType},
-    engine::{audio_input::InputPatch, device_manager::OutputPatch, dmx_sink::UniverseOutput, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch},
+    engine::{output_engine::{OutputConfig, OutputsConfig}, audio_input::InputPatch, device_manager::OutputPatch, dmx_sink::UniverseOutput, fixture::{FixtureGroup, PatchedFixture}, osc_patch::OscPatch},
     preferences::AppPreferences,
 };
 
@@ -254,6 +254,9 @@ pub struct Workspace {
     pub default_output_patch_id: Option<Uuid>,
     /// OSC send patch table.
     pub osc_patches: Vec<OscPatch>,
+    /// Extra video outputs (windows) beyond the main one, which Preferences →
+    /// Display configures.  A visual cue picks its output by id.
+    pub video_outputs: Vec<OutputConfig>,
     /// Live audio input patch table (Mic Cues).
     pub input_patches: Vec<InputPatch>,
     /// DMX universe → destination mapping (sACN / Art-Net outputs).
@@ -291,6 +294,7 @@ impl Workspace {
             output_patches: Vec::new(),
             default_output_patch_id: None,
             osc_patches: Vec::new(),
+            video_outputs: Vec::new(),
             input_patches: Vec::new(),
             universe_outputs: Vec::new(),
             fixtures: Vec::new(),
@@ -300,6 +304,18 @@ impl Workspace {
             is_modified: false,
             revision: 0,
             cues_skipped_on_load: 0,
+        }
+    }
+
+    /// What the output engine needs to know about video outputs: the main
+    /// output's screen and alignment (Preferences → Display) plus the extra
+    /// outputs of this show.
+    pub fn outputs_config(&self) -> OutputsConfig {
+        OutputsConfig {
+            main_screen: self.preferences.display.output_screen,
+            main_transform: self.preferences.display.output_transform,
+            extras: self.video_outputs.clone(),
+            timer_output: self.preferences.display.timer_output,
         }
     }
 
@@ -370,6 +386,7 @@ impl Workspace {
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
             "osc_patches": self.osc_patches,
+            "video_outputs": self.video_outputs,
             "input_patches": self.input_patches,
             "universe_outputs": self.universe_outputs,
             "fixtures": self.fixtures,
@@ -401,6 +418,7 @@ impl Workspace {
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
             "osc_patches": self.osc_patches,
+            "video_outputs": self.video_outputs,
             "input_patches": self.input_patches,
             "universe_outputs": self.universe_outputs,
             "fixtures": self.fixtures,
@@ -549,6 +567,7 @@ impl Workspace {
             "output_patches": self.output_patches,
             "default_output_patch": self.default_output_patch_id,
             "osc_patches": self.osc_patches,
+            "video_outputs": self.video_outputs,
             "input_patches": self.input_patches,
             "universe_outputs": self.universe_outputs,
             "fixtures": self.fixtures,
@@ -614,6 +633,11 @@ impl Workspace {
         let patches_val = doc.get("output_patches").cloned().unwrap_or_default();
         let output_patches: Vec<OutputPatch> =
             serde_json::from_value(patches_val).unwrap_or_default();
+
+        let video_outputs: Vec<OutputConfig> = doc
+            .get("video_outputs")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         let osc_patches: Vec<OscPatch> = doc
             .get("osc_patches")
@@ -702,6 +726,7 @@ impl Workspace {
             output_patches,
             default_output_patch_id: default_patch,
             osc_patches,
+            video_outputs,
             input_patches,
             universe_outputs,
             fixtures,

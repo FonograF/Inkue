@@ -18,7 +18,9 @@ use uuid::Uuid;
 
 use super::audio_engine::AudioEngine;
 use super::dmx_engine::{ChannelWidth, DmxEngine};
-use super::output_engine::{ContentRequest, OutputEngine};
+use super::output_engine::{
+    ContentRequest, CrossfadePhase, CrossfadeRequest, OutputEngine, OutputId,
+};
 use super::ring_command::{FadeCurve, VoiceId};
 use super::voice::Voice;
 
@@ -166,8 +168,9 @@ pub trait OutputEngineApi: Send + Sync {
     fn pause_voice(&self, voice_id: VoiceId) -> Result<()>;
     fn resume_voice(&self, voice_id: VoiceId) -> Result<()>;
     fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64);
-    fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>);
-    fn clear_text_overlay(&self);
+    /// Show ASS text on a video output (`None` = the main output).
+    fn show_text_overlay(&self, ass_text: &str, output: Option<OutputId>);
+    fn clear_text_overlay(&self, output: Option<OutputId>);
     /// Start the visual fade that lands exactly on the content's natural end.
     /// Returns `false` when `voice_id` is no longer on the output window.
     fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool;
@@ -176,6 +179,17 @@ pub trait OutputEngineApi: Send + Sync {
     /// Reveal + unpause content that was preloaded by a Load Cue.
     /// `false` = this voice was not preloaded.
     fn start_preloaded(&self, voice_id: VoiceId) -> bool;
+    /// Start a crossfade: the request's incoming content dissolves in while its
+    /// outgoing layers leave, from the incoming content's first frame.
+    /// `false` = the incoming content is not on an output.
+    fn link_crossfade(&self, request: &CrossfadeRequest) -> bool;
+    /// Where the crossfade into `incoming` stands.
+    fn crossfade_phase(&self, incoming: VoiceId) -> CrossfadePhase;
+    /// Pause (`true`) or resume the crossfade into `incoming`.
+    fn hold_crossfade(&self, incoming: VoiceId, paused: bool);
+    /// The driving Fade Cue stopped: cancel a crossfade that has not started,
+    /// freeze one in progress.
+    fn release_crossfade(&self, incoming: VoiceId);
 }
 
 impl OutputEngineApi for OutputEngine {
@@ -215,11 +229,11 @@ impl OutputEngineApi for OutputEngine {
     fn seek_voice_ms(&self, voice_id: VoiceId, position_ms: u64) {
         OutputEngine::seek_voice_ms(self, voice_id, position_ms)
     }
-    fn show_text_overlay(&self, ass_text: &str, screen_index: Option<u32>) {
-        OutputEngine::show_text_overlay(self, ass_text, screen_index)
+    fn show_text_overlay(&self, ass_text: &str, output: Option<OutputId>) {
+        OutputEngine::show_text_overlay(self, ass_text, output)
     }
-    fn clear_text_overlay(&self) {
-        OutputEngine::clear_text_overlay(self)
+    fn clear_text_overlay(&self, output: Option<OutputId>) {
+        OutputEngine::clear_text_overlay(self, output)
     }
     fn begin_eof_fade_out(&self, voice_id: VoiceId, fade_ms: u32) -> bool {
         OutputEngine::begin_eof_fade_out(self, voice_id, fade_ms)
@@ -229,6 +243,18 @@ impl OutputEngineApi for OutputEngine {
     }
     fn start_preloaded(&self, voice_id: VoiceId) -> bool {
         OutputEngine::start_preloaded(self, voice_id)
+    }
+    fn link_crossfade(&self, request: &CrossfadeRequest) -> bool {
+        OutputEngine::link_crossfade(self, request)
+    }
+    fn crossfade_phase(&self, incoming: VoiceId) -> CrossfadePhase {
+        OutputEngine::crossfade_phase(self, incoming)
+    }
+    fn hold_crossfade(&self, incoming: VoiceId, paused: bool) {
+        OutputEngine::hold_crossfade(self, incoming, paused)
+    }
+    fn release_crossfade(&self, incoming: VoiceId) {
+        OutputEngine::release_crossfade(self, incoming)
     }
 }
 

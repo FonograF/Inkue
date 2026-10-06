@@ -118,6 +118,7 @@ pub(crate) fn install_workspace(
     // Store the new workspace and apply display preferences.
     let show_floating = loaded.preferences.display.show_output_timer && loaded.preferences.display.timer_floating;
     let output_screen = loaded.preferences.display.output_screen;
+    let outputs_config = loaded.outputs_config();
     let dmx_outputs = loaded.universe_outputs.clone();
     {
         let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
@@ -129,7 +130,9 @@ pub(crate) fn install_workspace(
     state.output_engine.set_floating_timer_visible(show_floating);
     // Light the configured output screen right away (black fullscreen surface)
     // instead of waiting for the first visual GO.
+    state.output_engine.sync_outputs_config(&outputs_config);
     state.output_engine.apply_output_screen_on_load(output_screen);
+    state.output_engine.apply_extra_screens_on_load();
     // Bind the engine's sinks to the loaded show's universe outputs.
     state.dmx_engine.set_outputs(dmx_outputs);
     {

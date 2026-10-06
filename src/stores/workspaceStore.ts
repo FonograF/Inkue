@@ -1,9 +1,9 @@
 // Zustand store: workspace data, cue list, selection, and playhead.
 
 import { create } from "zustand";
-import type { CueId, CueListSummary, CueSummary, CueValidation, DisplayPreferences, GeneralPreferences, HealthAlert, WorkspaceInfo } from "../lib/types";
+import type { CueId, CueListSummary, CueSummary, CueValidation, DisplayPreferences, GeneralPreferences, HealthAlert, VideoOutputInfo, WorkspaceInfo } from "../lib/types";
 import { DEFAULT_DISPLAY_PREFS, DEFAULT_GENERAL_PREFS } from "../lib/types";
-import { checkWorkspace, getAllCues, getCueLists, getHealthAlerts, getPlayhead, getPreferences, getWorkspaceInfo } from "../lib/commands";
+import { checkWorkspace, getAllCues, getCueLists, getHealthAlerts, getPlayhead, getPreferences, getWorkspaceInfo, listVideoOutputs } from "../lib/commands";
 
 interface WorkspaceState {
   cues: CueSummary[];
@@ -22,11 +22,14 @@ interface WorkspaceState {
   brokenCueIds: Set<CueId>;
   /** Active runtime health alerts (device/network faults) shown in the banner. */
   healthAlerts: HealthAlert[];
+  /** Video outputs of the show: the main output first, then the extras. */
+  videoOutputs: VideoOutputInfo[];
 
   // Actions
   refreshCues: () => Promise<void>;
   refreshValidation: () => Promise<void>;
   refreshHealth: () => Promise<void>;
+  refreshVideoOutputs: () => Promise<void>;
   refreshCueLists: () => Promise<void>;
   setCueLists: (lists: CueListSummary[], activeId: string) => void;
   refreshWorkspaceInfo: () => Promise<void>;
@@ -51,6 +54,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
   validation: [],
   brokenCueIds: new Set<CueId>(),
   healthAlerts: [],
+  videoOutputs: [],
   generalPrefs: DEFAULT_GENERAL_PREFS,
   displayPrefs: { ...DEFAULT_DISPLAY_PREFS, output_screen: null, show_output_timer: false, timer_floating: false, timer_count_down: false, timer_font: "DSEG7 Classic", timer_font_size: 120, timer_position: "center" as const, timer_show_ms: false, timer_margin: 50, theme: "system" as const },
 
@@ -75,6 +79,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, _get) => ({
       set({ validation, brokenCueIds });
     } catch (e) {
       console.error("Failed to validate workspace:", e);
+    }
+  },
+
+  refreshVideoOutputs: async () => {
+    try {
+      set({ videoOutputs: await listVideoOutputs() });
+    } catch (e) {
+      console.error("Failed to list video outputs:", e);
     }
   },
 
