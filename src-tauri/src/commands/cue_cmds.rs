@@ -51,6 +51,8 @@ pub struct CueSummary {
     pub is_broken: bool,
     /// True for non-critical problems (no file assigned, zero duration, empty group).
     pub is_warning: bool,
+    /// True when the cue can be scrubbed while it plays (`seek_cue` moves it).
+    pub seekable: bool,
     /// Duration of one loop iteration (file duration without start/end markers applied
     /// and without the loop-count multiplier).  `None` for non-media cues.
     pub file_duration_ms: Option<u64>,
@@ -177,6 +179,7 @@ fn summarise(cue: &dyn Cue, workspace_dir: Option<&std::path::Path>, patches: &P
         is_disabled: cue.is_disabled(),
         is_broken: check_broken(cue, workspace_dir),
         is_warning: warning_message.is_some(),
+        seekable: cue.supports_seek(),
         warning_message,
         file_duration_ms: cue.file_duration().map(|d| d.as_millis() as u64),
         children: cue.child_cues().map(|ch| {

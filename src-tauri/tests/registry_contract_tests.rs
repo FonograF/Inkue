@@ -98,3 +98,17 @@ fn uuid_str() -> String {
             .subsec_nanos()
     )
 }
+
+#[test]
+fn only_media_playback_cues_can_be_scrubbed() {
+    let r = full_registry();
+    let seekable = [CueType::Audio, CueType::Video, CueType::MidiFile];
+    for t in ALL_CUE_TYPES {
+        let cue = r.create(&t).unwrap();
+        assert_eq!(
+            cue.supports_seek(),
+            seekable.contains(&t),
+            "{t:?} supports_seek() disagrees with whether it implements seek()"
+        );
+    }
+}

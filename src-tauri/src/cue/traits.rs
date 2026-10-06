@@ -255,6 +255,12 @@ pub trait Cue: Send {
     /// cue has no effect.
     fn seek(&mut self, _position_ms: u64, _ctx: &CueContext) {}
 
+    /// `true` when [`seek`](Cue::seek) moves this cue's playback — the UI
+    /// offers scrubbing only then.  Types that implement `seek` override it.
+    fn supports_seek(&self) -> bool {
+        false
+    }
+
     /// Inject pre-decoded audio samples that were decoded *outside* the
     /// workspace mutex.  The caller decodes on a background thread, then
     /// briefly re-acquires the mutex to call this method.  Non-audio cues

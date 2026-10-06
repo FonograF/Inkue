@@ -233,6 +233,8 @@ export interface CueSummary {
   is_broken: boolean;
   /** True for non-critical problems (no file assigned, zero duration, empty group). */
   is_warning: boolean;
+  /** True when the cue can be scrubbed while it plays (seekCue moves it). */
+  seekable: boolean;
   /** Human-readable warning description, present when is_warning is true. */
   warning_message?: string;
   /** Output Patch name this cue plays through (explicit or workspace default).

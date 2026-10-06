@@ -283,6 +283,10 @@ impl Cue for MidiFileCue {
         Ok(())
     }
 
+    fn supports_seek(&self) -> bool {
+        true
+    }
+
     fn seek(&mut self, position_ms: u64, _ctx: &CueContext) {
         if self.action_started_at.is_none() && self.state != CueState::Paused {
             return;

@@ -518,6 +518,10 @@ impl Cue for AudioCue {
         Ok(())
     }
 
+    fn supports_seek(&self) -> bool {
+        true
+    }
+
     fn seek(&mut self, position_ms: u64, ctx: &CueContext) {
         // Allow seek when running or paused; block during pre-wait and standby.
         if self.action_started_at.is_none() && self.state != CueState::Paused {

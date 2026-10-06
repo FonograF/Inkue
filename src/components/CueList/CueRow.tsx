@@ -1,6 +1,7 @@
 // A single row in the cue list table.
 
 import { memo, useState } from "react";
+import { cueTimeline, timelinePosition } from "../../lib/timeline";
 import { PlayheadIndicator } from "./PlayheadIndicator";
 import { RunningLed } from "../common/RunningLed";
 import type { ColumnDef } from "./columns";
@@ -225,12 +226,11 @@ function CueRowImpl({
   const isBroken   = cue.is_broken ?? false;
   const isWarning  = cue.is_warning ?? false;
 
-  // Use file_duration_ms (single loop period) so the bar resets at each loop
-  // iteration. Falls back to total duration_ms for non-looping cues.
-  const loopPeriodMs = cue.file_duration_ms ?? cue.duration_ms;
+  // One loop iteration when looping (the bar resets each pass), else the whole cue.
+  const timeline = cueTimeline(cue);
   const progressPct =
-    isRunning && timing && loopPeriodMs && loopPeriodMs > 0
-      ? Math.min(100, ((timing.action_elapsed_ms % loopPeriodMs) / loopPeriodMs) * 100)
+    isRunning && timing && timeline
+      ? (timelinePosition(timeline, timing.action_elapsed_ms) / timeline.lengthMs) * 100
       : null;
 
   const colorAccent = COLOR_SWATCHES[cue.color] ?? "transparent";

@@ -601,6 +601,7 @@ interface UiLayout {
   showCueListTabs: boolean;
   inspectorOpen: boolean;
   showSearchBar: boolean;
+  showActiveCues: boolean;
   inspectorWidth: number;
 }
 
@@ -615,6 +616,7 @@ const DEFAULT_UI_LAYOUT: UiLayout = {
   showCueListTabs: true,
   inspectorOpen: true,
   showSearchBar: true,
+  showActiveCues: true,
   inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
 };
 
@@ -627,6 +629,7 @@ function loadUiLayout(): UiLayout {
       showCueListTabs: parsed.showCueListTabs ?? true,
       inspectorOpen: parsed.inspectorOpen ?? true,
       showSearchBar: parsed.showSearchBar ?? true,
+      showActiveCues: parsed.showActiveCues ?? true,
       inspectorWidth: clampInspectorWidth(parsed.inspectorWidth ?? INSPECTOR_DEFAULT_WIDTH),
     };
   } catch {
@@ -745,6 +748,7 @@ export default function App() {
   const [inspectorOpen, setInspectorOpen]         = useState(() => loadUiLayout().inspectorOpen);
   const [showCueListTabs, setShowCueListTabs]     = useState(() => loadUiLayout().showCueListTabs);
   const [showSearchBar, setShowSearchBar]         = useState(() => loadUiLayout().showSearchBar);
+  const [showActiveCues, setShowActiveCues]       = useState(() => loadUiLayout().showActiveCues);
   const [inspectorWidth, setInspectorWidth]       = useState(() => loadUiLayout().inspectorWidth);
   const [editorCueId, setEditorCueId]             = useState<string | null>(null);
   const [curveCueId, setCurveCueId]               = useState<string | null>(null);
@@ -767,8 +771,8 @@ export default function App() {
 
   // Persist panel visibility + inspector width across launches.
   useEffect(() => {
-    saveUiLayout({ showCueListTabs, inspectorOpen, showSearchBar, inspectorWidth });
-  }, [showCueListTabs, inspectorOpen, showSearchBar, inspectorWidth]);
+    saveUiLayout({ showCueListTabs, inspectorOpen, showSearchBar, showActiveCues, inspectorWidth });
+  }, [showCueListTabs, inspectorOpen, showSearchBar, showActiveCues, inspectorWidth]);
 
   // Drag-resize the inspector from its left edge (pointer capture keeps the
   // drag alive even when the cursor leaves the 5 px handle).
@@ -1301,6 +1305,7 @@ export default function App() {
           items={[
             { label: "Show Mode",      checked: showMode,             onClick: () => setShowMode((v) => !v),       shortcut: "F5" },
             { label: "Cue List Tabs",  checked: showCueListTabs,      onClick: () => setShowCueListTabs((v) => !v) },
+            { label: "Active Cues",    checked: showActiveCues,       onClick: () => setShowActiveCues((v) => !v) },
             { label: "Search Bar",     checked: showSearchBar,         onClick: handleToggleSearch, shortcut: "Ctrl+F" },
             { label: "Inspector",      checked: inspectorOpen,         onClick: () => setInspectorOpen((v) => !v) },
             { label: "Output Surface", checked: outputSurfaceVisible,  onClick: () => void handleToggleSurface() },
@@ -1483,7 +1488,7 @@ export default function App() {
           <>
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               {showCueListTabs && <CueListTabs onRefresh={handleRefresh} />}
-              <ActiveCuesView />
+              {showActiveCues && <ActiveCuesView />}
 
               {searchQuery.trim() ? (
                 <SearchResults

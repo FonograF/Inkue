@@ -4,6 +4,8 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTimingStore } from "../../stores/timingStore";
 import type { CueSummary } from "../../lib/types";
 import { stopCue } from "../../lib/commands";
+import { cueTimeline, formatClock, timelinePosition } from "../../lib/timeline";
+import { ActiveCueProgress } from "./ActiveCueProgress";
 
 const CUE_TYPE_ICONS: Record<string, string> = {
   audio: "🔊", memo: "📝", wait: "⏱", group: "📁",
@@ -26,23 +28,14 @@ function flattenActive(cues: CueSummary[]): CueSummary[] {
   return result;
 }
 
-function formatTime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, "0")}`;
-}
-
 function ActiveCueRow({ cue }: { cue: CueSummary }) {
   const timing = useTimingStore((s) => s.timings[cue.id]);
   const isPaused = cue.state === "paused";
   const colorAccent = COLOR_SWATCHES[cue.color] ?? "transparent";
 
-  const loopPeriod = cue.file_duration_ms ?? cue.duration_ms;
+  const timeline = cueTimeline(cue);
   const elapsed = timing?.action_elapsed_ms ?? 0;
   const remaining = timing?.remaining_ms ?? (cue.duration_ms != null ? Math.max(0, cue.duration_ms - elapsed) : null);
-  const progressPct = loopPeriod && loopPeriod > 0
-    ? Math.min(100, ((elapsed % loopPeriod) / loopPeriod) * 100)
-    : null;
 
   return (
     <div
@@ -65,16 +58,14 @@ function ActiveCueRow({ cue }: { cue: CueSummary }) {
           background: colorAccent, pointerEvents: "none",
         }} />
       )}
-      {progressPct !== null && (
-        <div style={{
-          position: "absolute", bottom: 0, left: 0,
-          height: 2, width: "100%",
-          transform: `scaleX(${progressPct / 100})`,
-          transformOrigin: "left",
-          background: isPaused ? "#fb923c" : "#22c55e",
-          willChange: "transform",
-          pointerEvents: "none",
-        }} />
+      {timeline !== null && (
+        <ActiveCueProgress
+          cueId={cue.id}
+          timeline={timeline}
+          positionMs={timelinePosition(timeline, elapsed)}
+          seekable={cue.seekable}
+          color={isPaused ? "#fb923c" : "#22c55e"}
+        />
       )}
 
       <span style={{ flexShrink: 0, fontSize: 11 }}>
@@ -112,9 +103,9 @@ function ActiveCueRow({ cue }: { cue: CueSummary }) {
 
       <span style={{ flexShrink: 0, fontFamily: "monospace", fontSize: 11, color: "var(--wc-text-secondary)", minWidth: 36, textAlign: "right" }}>
         {remaining !== null
-          ? formatTime(remaining)
+          ? formatClock(remaining)
           : elapsed > 0
-          ? `+${formatTime(elapsed)}`
+          ? `+${formatClock(elapsed)}`
           : ""}
       </span>
 
@@ -122,7 +113,7 @@ function ActiveCueRow({ cue }: { cue: CueSummary }) {
         onClick={() => stopCue(cue.id).catch(console.error)}
         title="Stop"
         style={{
-          flexShrink: 0,
+          flexShrink: 0, position: "relative", zIndex: 3,
           display: "flex", alignItems: "center", justifyContent: "center",
           width: 18, height: 18,
           background: "rgba(239,68,68,0.15)",

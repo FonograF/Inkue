@@ -222,6 +222,20 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-10-06) — Scrub from the Active panel
+
+- `Cue::supports_seek()` (default `false`; Audio, Video, MIDI File override it) →
+  `CueSummary::seekable`, so the UI offers scrubbing only where `seek` does something;
+  contract test in `registry_contract_tests.rs`.
+- `lib/timeline.ts` (bar length per loop/trim, position, pointer → ms; vitest) and
+  `hooks/useSeekDrag.ts` (drag, seek on release, hold the requested position until
+  timing lands) shared by the inspector `ScrubBar` and the new
+  `ActiveCues/ActiveCueProgress.tsx` (hover → thicker line, knob, time label). Knob and
+  label are portalled to `<body>` at fixed positions from the bar's rect, so they float
+  over the cue list header instead of growing the Active panel's scroll box.
+- View → Active Cues (`UiLayout::showActiveCues`, localStorage).
+- Fix: cue-list / Active bars used the full file length for a trimmed single-pass cue.
+
 ### Unreleased (2026-10-06) — Multi-cue editing from the context menu
 
 - **Backend** (`commands/batch_edit_cmds.rs`): `update_cues(edits)` applies a per-cue

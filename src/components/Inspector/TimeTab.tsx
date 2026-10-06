@@ -4,6 +4,7 @@ import { Grid2, MiniField, NumberInput, Section, ToggleRow, inputStyle } from ".
 import { WaveformViewer } from "./WaveformViewer";
 import { VideoTrimmer } from "./VideoTrimmer";
 import { ScrubBar } from "./ScrubBar";
+import { cueTimeline } from "../../lib/timeline";
 import { DragNumber } from "../common/DragNumber";
 
 const LOOP_INFINITE = 4294967295; // u32::MAX
@@ -34,24 +35,19 @@ export function TimeTab({
   const liveDurationMs = selectedCue?.duration_ms ?? cue.duration_ms ?? null;
   // file_duration_ms = duration of one loop iteration (no loop multiplier).
   const fileDurationMs: number | null = selectedCue?.file_duration_ms ?? cue.file_duration_ms ?? null;
-  // Detect looping: either infinite (duration null but file known) or finite multi-loop.
-  const isLooping = fileDurationMs != null && (liveDurationMs == null || fileDurationMs < liveDurationMs);
-  // Duration to use for the scrub bar: single iteration when looping, total otherwise.
-  const scrubDurationMs = isLooping ? fileDurationMs : liveDurationMs;
+  const scrubTimeline = cueTimeline({ duration_ms: liveDurationMs, file_duration_ms: fileDurationMs });
   const showScrubber =
     (isAudio || isVideo) &&
-    scrubDurationMs != null &&
-    scrubDurationMs > 0 &&
+    scrubTimeline !== null &&
     (liveState === "running" || liveState === "paused");
 
   return (
     <>
-      {showScrubber && (
+      {showScrubber && scrubTimeline && (
         <ScrubBar
           cueId={cue.id}
-          durationMs={scrubDurationMs!}
+          timeline={scrubTimeline}
           cueState={liveState}
-          loopDurationMs={isLooping ? fileDurationMs! : undefined}
         />
       )}
 
