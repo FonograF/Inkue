@@ -13,8 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 530 pass, 0 failures** (verified 2026-10-06 on Windows and on
-Linux in WSL Ubuntu 24.04 — clippy clean on both; earlier: 465 on 2026-10-05; run the full
+**`cargo test --lib` → 539 pass, 0 failures** (verified 2026-10-06 on Windows, clippy clean;
+530 earlier that day on Windows and on Linux in WSL Ubuntu 24.04; 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
 → `LNK anon.*.llvm.*`; if it happens, delete `target/debug/incremental`).
@@ -140,6 +140,7 @@ end-to-end, fade drives every group child voice, logger flood guard, crossfade s
 | `hooks/useKeyboardShortcuts.ts` | ✅ Complete — `F5` → `onToggleShowMode` |
 | `App.tsx` | ✅ Complete — Show Mode state; View menu with F5 shortcut; toolbar hidden in Show Mode; ShowModeView replaces CueList+Inspector |
 | `components/CueList/CueListView.tsx` | ✅ Complete — passes `onStop` to CueRow |
+| `components/CueList/CueContextMenu.tsx` + `BatchEditMenu.tsx` | ✅ Complete — right-click acts on the selection: batch edits (one undo step via `update_cues`), Create Cue Targeting Selection (`add_targeting_cue`) |
 | `components/Inspector/InspectorPanel.tsx` | ✅ Complete |
 | `components/Inspector/OscTab.tsx` | ✅ Complete |
 | `components/OscPatches/OscPatchesPanel.tsx` | ✅ Complete |
@@ -220,6 +221,25 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-10-06) — Multi-cue editing from the context menu
+
+- **Backend** (`commands/batch_edit_cmds.rs`): `update_cues(edits)` applies a per-cue
+  property patch to many cues under **one undo snapshot**, merging only keys a cue
+  already serialises (`MergePolicy::KnownKeysOnly`). `update_cue`'s body became
+  `cue_cmds::apply_cue_properties` (shared, still live-pushes level / geometry / layer
+  edits to a playing voice). `add_targeting_cue(cue_type, target_ids, properties)` builds
+  any cue that has `target_cue_ids` (Fade, Stop, Devamp, command cues) aimed at the
+  selection, inserted at the top level after the last target (after its Group when the
+  target is nested). 9 unit tests.
+- **Frontend**: `lib/batchEdit.ts` turns an intent (`BatchEdit`) into per-cue patches;
+  applicability comes from each cue's own JSON (`get_cue`), not a cue-type table, so new
+  cue types join the right edits for free (17 vitest cases). Menu split out of
+  `CueListView.tsx`: `CueContextMenu.tsx` (structure, viewport clamping),
+  `BatchEditMenu.tsx` (edit sections), `ContextMenuParts.tsx`, `BatchValueDialog.tsx`,
+  `cueCatalog.ts` (cue types + media file helpers); `common/DialogShell.tsx` shared with
+  `RenumberDialog`. `cueOperations.ts`: `applyBatchEdit`, `createTargetingCue`.
+- Fix on the way: the context menu's Delete / Duplicate ignored the selection.
 
 ### Unreleased (2026-10-06) — Multiple video outputs, exact crossfades
 

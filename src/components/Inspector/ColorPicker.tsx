@@ -1,6 +1,6 @@
 import type { CueColor } from "../../lib/types";
 
-const COLOR_OPTIONS: { value: CueColor; hex: string; label: string }[] = [
+export const COLOR_OPTIONS: { value: CueColor; hex: string; label: string }[] = [
   { value: "none",   hex: "transparent", label: "None"   },
   { value: "red",    hex: "#ef4444",     label: "Red"    },
   { value: "orange", hex: "#f97316",     label: "Orange" },

@@ -8,7 +8,7 @@ import { NumberInput, Section, SliderRow, ToggleRow, inputStyle } from "./Field"
 import { Select } from "../common/Select";
 import { OutputPicker } from "./OutputPicker";
 
-const BLEND_MODES: { value: BlendMode; label: string }[] = [
+export const BLEND_MODES: { value: BlendMode; label: string }[] = [
   { value: "normal", label: "Normal" },
   { value: "add", label: "Add" },
   { value: "multiply", label: "Multiply" },

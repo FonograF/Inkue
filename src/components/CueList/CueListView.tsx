@@ -10,9 +10,10 @@
 
 import { useEffect, useRef, useState, useMemo, useCallback, Fragment } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { CueRow } from "./CueRow";
+import { CueContextMenu, type CueContextMenuState } from "./CueContextMenu";
+import { basenameNoExt, cueTypeForPath, isMediaPath, setFileForCue } from "./cueCatalog";
 import {
   DEFAULT_COLUMNS,
   buildGridCols,
@@ -23,119 +24,19 @@ import {
   type ColumnDef,
   type ColumnId,
 } from "./columns";
-import type { CueSummary, CueType } from "../../lib/types";
-import { CUE_TYPE_COLORS } from "../../lib/types";
-import { AUDIO_EXTS, VIDEO_EXTS, IMAGE_EXTS, MIDI_EXTS, extensionOf } from "../../lib/mediaTypes";
+import type { CueSummary } from "../../lib/types";
 import {
   addCue,
-  removeCue,
-  duplicateCue,
-  groupCues,
   moveCue,
   moveCues,
-  ungroup,
-  removeCueFromGroup,
   addCueToGroup,
   moveToTopLevel,
-  setAudioFile,
-  setVideoFile,
-  setImageFile,
-  setMidiFile,
   setPlayhead,
   updateCue,
 } from "../../lib/commands";
 
 // ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
-
-
-// Every cue type that can be created, in toolbar order. Colors come from the
-// shared CUE_TYPE_COLORS map so the context menu and the Row 2 toolbar buttons
-// in App.tsx never drift apart. Adding a new cue type needs one entry here.
-const CUE_TYPES: { type: CueType; label: string; color: string }[] = (
-  [
-    { type: "audio",    label: "Audio" },
-    { type: "video",    label: "Video" },
-    { type: "image",    label: "Image" },
-    { type: "stop",     label: "Stop" },
-    { type: "fade",     label: "Fade" },
-    { type: "wait",     label: "Wait" },
-    { type: "group",    label: "Group" },
-    { type: "midi",     label: "MIDI" },
-    { type: "midi_file", label: "MIDI File" },
-    { type: "osc",      label: "OSC" },
-    { type: "light",    label: "Light" },
-    { type: "mic",      label: "Mic" },
-    { type: "timecode", label: "Timecode" },
-    { type: "text",     label: "Text" },
-    { type: "memo",     label: "Memo" },
-    // Command cues last: the toolbar groups them behind one button, but the
-    // right-click "Add Cue" list is where you look when you want a specific
-    // one, so they are spelled out here.
-    { type: "start",    label: "Start" },
-    { type: "pause",    label: "Pause" },
-    { type: "resume",   label: "Resume" },
-    { type: "load",     label: "Load" },
-    { type: "reset",    label: "Reset" },
-    { type: "goto",     label: "Goto" },
-    { type: "arm",      label: "Arm" },
-    { type: "disarm",   label: "Disarm" },
-    { type: "script",   label: "Script" },
-  ] as { type: CueType; label: string }[]
-).map((c) => ({ ...c, color: CUE_TYPE_COLORS[c.type] }));
-
-// Cue types that hold a media file, with the open-dialog filter for each.
-const FILE_FILTERS: Partial<Record<CueType, { name: string; extensions: string[] }>> = {
-  audio: { name: "Audio Files", extensions: [...AUDIO_EXTS] },
-  video: { name: "Video Files", extensions: [...VIDEO_EXTS] },
-  image: { name: "Image Files", extensions: [...IMAGE_EXTS] },
-  midi_file: { name: "MIDI Files", extensions: [...MIDI_EXTS] },
-};
-
-/** Cue types that own a file, as far as drop and "Assign … File…" go. */
-type MediaCueType = "audio" | "video" | "image" | "midi_file";
-
-const ASSIGN_FILE_LABELS: Record<MediaCueType, string> = {
-  audio: "Audio",
-  video: "Video",
-  image: "Image",
-  midi_file: "MIDI",
-};
-
-function isAudioPath(p: string) {
-  return AUDIO_EXTS.has(extensionOf(p));
-}
-function isVideoPath(p: string) {
-  return VIDEO_EXTS.has(extensionOf(p));
-}
-function isImagePath(p: string) {
-  return IMAGE_EXTS.has(extensionOf(p));
-}
-function isMidiPath(p: string) {
-  return MIDI_EXTS.has(extensionOf(p));
-}
-function isMediaPath(p: string) {
-  return isAudioPath(p) || isVideoPath(p) || isImagePath(p) || isMidiPath(p);
-}
-function cueTypeForPath(p: string): MediaCueType {
-  if (isVideoPath(p)) return "video";
-  if (isImagePath(p)) return "image";
-  if (isMidiPath(p)) return "midi_file";
-  return "audio";
-}
-async function setFileForCue(cueType: MediaCueType, cueId: string, path: string) {
-  if (cueType === "video") await setVideoFile(cueId, path);
-  else if (cueType === "image") await setImageFile(cueId, path);
-  else if (cueType === "midi_file") await setMidiFile(cueId, path);
-  else await setAudioFile(cueId, path);
-}
-function basenameNoExt(p: string) {
-  return (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "");
-}
-
-// ---------------------------------------------------------------------------
-// Cue context-menu item
 // ---------------------------------------------------------------------------
 
 /** Compute the set of child cue IDs that should show the inner playhead indicator.
@@ -175,61 +76,6 @@ function computeInnerPlayheadIds(cues: CueSummary[], outerPlayheadId: string | n
     }
   }
   return result;
-}
-
-function CtxItem({ label, danger, color, onClick }: { label: string; danger?: boolean; color?: string; onClick: () => void }) {
-  const [hov, setHov] = useState(false);
-  return (
-    <button
-      style={{
-        display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 16px",
-        background: hov ? "var(--wc-bg-hover)" : "transparent", border: "none",
-        textAlign: "left", color: danger ? "#ef4444" : "var(--wc-text)",
-        fontSize: 13, cursor: "pointer", whiteSpace: "nowrap",
-      }}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      onClick={onClick}
-    >
-      {color && <span style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />}
-      {label}
-    </button>
-  );
-}
-
-// A context-menu row that reveals a flyout of child items on hover. The flyout
-// opens to the right by default, or to the left when the menu sits near the
-// right edge of the window (`openLeft`).
-function CtxSubmenu({ label, openLeft, children }: { label: string; openLeft: boolean; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div style={{ position: "relative" }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      <button
-        style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-          width: "100%", padding: "6px 16px",
-          background: open ? "var(--wc-bg-hover)" : "transparent", border: "none",
-          textAlign: "left", color: "var(--wc-text)", fontSize: 13, cursor: "default", whiteSpace: "nowrap",
-        }}
-      >
-        <span>{label}</span>
-        <span style={{ color: "var(--wc-text-muted)" }}>{openLeft ? "‹" : "›"}</span>
-      </button>
-      {open && (
-        <div
-          style={{
-            position: "absolute", top: -5,
-            ...(openLeft ? { right: "100%" } : { left: "100%" }),
-            background: "var(--wc-bg-surface)", border: "1px solid var(--wc-border-strong)",
-            borderRadius: 6, padding: "4px 0", minWidth: 160, maxHeight: 380, overflowY: "auto",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.6)",
-          }}
-        >
-          {children}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -884,7 +730,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
   // When a file is dragged in insert-between mode (cursor near row edge),
   // this holds the insertion index; dragOverCueId is null in that case.
   const [fileDragInsertIdx, setFileDragInsertIdx] = useState<number | null>(null);
-  const [contextMenu,   setContextMenu]   = useState<{ x: number; y: number; cueId: string | null; parentGroupId?: string | null } | null>(null);
+  const [contextMenu,   setContextMenu]   = useState<CueContextMenuState | null>(null);
 
   const cuesRef = useRef(cues);
   useEffect(() => { cuesRef.current = cues; }, [cues]);
@@ -1040,42 +886,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     await onRefresh();
   }
 
-  // ---------- Cue context menu ----------
-  const closeCtx = () => setContextMenu(null);
-
-  const ctxAddType   = async (type: CueType) => { closeCtx(); await addCue(type, -1).catch(console.error); await onRefresh(); };
-  const ctxAddTypeAt = async (type: CueType, offset: 0 | 1) => {
-    closeCtx();
-    if (!contextMenu?.cueId) return;
-    const idx = cuesRef.current.findIndex((c) => c.id === contextMenu.cueId);
-    if (idx >= 0) { await addCue(type, idx + offset).catch(console.error); await onRefresh(); }
-  };
-  const ctxDuplicate = async () => {
-    closeCtx();
-    if (!contextMenu?.cueId) return;
-    await duplicateCue(contextMenu.cueId).catch(console.error);
-    await onRefresh();
-  };
-  const ctxDelete    = async () => {
-    closeCtx();
-    if (!contextMenu?.cueId) return;
-    await removeCue(contextMenu.cueId).catch(console.error);
-    await onRefresh();
-  };
-  const ctxAssignFile = async (cueType: MediaCueType) => {
-    const cueId = contextMenu?.cueId;
-    closeCtx();
-    if (!cueId) return;
-    const filter = FILE_FILTERS[cueType];
-    if (!filter) return;
-    const result = await open({ multiple: false, filters: [filter] });
-    if (typeof result === "string") {
-      await setFileForCue(cueType, cueId, result).catch(console.error);
-      await onRefresh();
-    }
-  };
-
-  // ---------- Keyboard navigation ----------
+  // ---------- Keyboard navigation ----------  // ---------- Keyboard navigation ----------
   function handleKeyDown(e: React.KeyboardEvent) {
     if (cues.length === 0) return;
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -1151,9 +962,17 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
     (id: string, parentGroupId: string | null, e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      setContextMenu({ x: e.clientX, y: e.clientY, cueId: id, parentGroupId });
+      let targetIds = selectedCueIdsRef.current;
+      if (!selectedCueSetRef.current.has(id)) {
+        targetIds = [id];
+        setSelectedCueId(id);
+        setSelectedCueIds(targetIds);
+        anchorCueIdRef.current = id;
+        selectionEndRef.current = id;
+      }
+      setContextMenu({ x: e.clientX, y: e.clientY, cueId: id, parentGroupId, targetIds });
     },
-    [],
+    [setSelectedCueId, setSelectedCueIds],
   );
   const handleRowClick = useCallback(
     (id: string, index: number, parentGroupId: string | null, e: React.MouseEvent) => {
@@ -1206,7 +1025,7 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
       style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, outline: "none", position: "relative" }}
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, cueId: null }); }}
+      onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, cueId: null, targetIds: [] }); }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
     >
@@ -1465,150 +1284,12 @@ export function CueListView({ onCueDoubleClick, onRefresh }: Props) {
 
       {/* ── Cue context menu ──────────────────────────────────────────────── */}
       {contextMenu && (
-        <>
-          <div
-            style={{ position: "fixed", inset: 0, zIndex: 9998 }}
-            onClick={closeCtx}
-            onContextMenu={(e) => { e.preventDefault(); closeCtx(); }}
-          />
-          <div
-            style={{
-              position: "fixed",
-              left: contextMenu.x,
-              top: contextMenu.y,
-              background: "var(--wc-bg-surface)",
-              border: "1px solid var(--wc-border-strong)",
-              borderRadius: 6,
-              padding: "4px 0",
-              zIndex: 9999,
-              minWidth: 200,
-              boxShadow: "0 4px 16px rgba(0,0,0,0.6)",
-              fontSize: 13,
-            }}
-          >
-            {(() => {
-              const openLeft = contextMenu.x > window.innerWidth - 380;
-              if (!contextMenu.cueId) {
-                return (
-                  <CtxSubmenu label="Add Cue" openLeft={openLeft}>
-                    {CUE_TYPES.map((ct) => (
-                      <CtxItem key={ct.type} color={ct.color} label={ct.label} onClick={() => ctxAddType(ct.type)} />
-                    ))}
-                  </CtxSubmenu>
-                );
-              }
-              const ctxType = flatItems.find((fi) => fi.cue.id === contextMenu.cueId)?.cue.cue_type ?? null;
-              const assignType: MediaCueType | null =
-                ctxType === "audio" || ctxType === "video" || ctxType === "image" || ctxType === "midi_file"
-                  ? ctxType
-                  : null;
-              return (
-              <>
-                {!contextMenu.parentGroupId && (
-                  <>
-                    <CtxSubmenu label="Add Cue Above" openLeft={openLeft}>
-                      {CUE_TYPES.map((ct) => (
-                        <CtxItem key={ct.type} color={ct.color} label={ct.label} onClick={() => ctxAddTypeAt(ct.type, 0)} />
-                      ))}
-                    </CtxSubmenu>
-                    <CtxSubmenu label="Add Cue Below" openLeft={openLeft}>
-                      {CUE_TYPES.map((ct) => (
-                        <CtxItem key={ct.type} color={ct.color} label={ct.label} onClick={() => ctxAddTypeAt(ct.type, 1)} />
-                      ))}
-                    </CtxSubmenu>
-                    <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
-                  </>
-                )}
-                <CtxItem label="Duplicate" onClick={ctxDuplicate} />
-                <CtxItem label="Delete" danger onClick={ctxDelete} />
-                {/* Group / ungroup */}
-                {!contextMenu.parentGroupId && (() => {
-                  const ids = selectedCueIds.length > 1 && contextMenu.cueId && selectedCueIds.includes(contextMenu.cueId)
-                    ? selectedCueIds
-                    : contextMenu.cueId ? [contextMenu.cueId] : [];
-                  const label = ids.length > 1 ? `Group ${ids.length} Cues` : "Group Cue";
-                  return ids.length > 0 ? (
-                    <>
-                      <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
-                      <CtxItem
-                        label={label}
-                        onClick={async () => {
-                          closeCtx();
-                          const newGroupId = await groupCues(ids).catch(() => null);
-                          if (newGroupId) {
-                            setSelectedCueId(newGroupId);
-                            setSelectedCueIds([newGroupId]);
-                            await onRefresh();
-                          }
-                        }}
-                      />
-                    </>
-                  ) : null;
-                })()}
-                {/* Group-specific actions */}
-                {(() => {
-                  const cueItem = flatItems.find(fi => fi.cue.id === contextMenu.cueId);
-                  const isGroup = cueItem?.cue.cue_type === "group";
-                  const inGroup = !!contextMenu.parentGroupId;
-                  return (
-                    <>
-                      {isGroup && (
-                        <>
-                          <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
-                          <CtxItem
-                            label="Ungroup"
-                            onClick={async () => {
-                              closeCtx();
-                              if (!contextMenu.cueId) return;
-                              await ungroup(contextMenu.cueId).catch(console.error);
-                              await onRefresh();
-                            }}
-                          />
-                        </>
-                      )}
-                      {inGroup && (
-                        <>
-                          <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
-                          <CtxItem
-                            label="Remove from Group"
-                            onClick={async () => {
-                              closeCtx();
-                              if (!contextMenu.cueId || !contextMenu.parentGroupId) return;
-                              // Remove all selected cues that share this parent group,
-                              // or just the right-clicked cue if it's not in the selection.
-                              const groupId = contextMenu.parentGroupId;
-                              const targets =
-                                selectedCueIds.includes(contextMenu.cueId)
-                                  ? selectedCueIds.filter((id) => {
-                                      const fi = flatItems.find((f) => f.cue.id === id);
-                                      return fi?.parentGroupId === groupId;
-                                    })
-                                  : [contextMenu.cueId];
-                              await Promise.all(
-                                targets.map((id) => removeCueFromGroup(groupId, id).catch(console.error))
-                              );
-                              await onRefresh();
-                            }}
-                          />
-                        </>
-                      )}
-                    </>
-                  );
-                })()}
-                {!contextMenu.parentGroupId && assignType && (
-                  <>
-                    <div style={{ height: 1, background: "var(--wc-border-strong)", margin: "4px 0" }} />
-                    <CtxItem
-                      label={`Assign ${ASSIGN_FILE_LABELS[assignType]} File…`}
-                      onClick={() => ctxAssignFile(assignType)}
-                    />
-                  </>
-                )}
-              </>
-              );
-            })()}
-          </div>
-        </>
+        <CueContextMenu
+          menu={contextMenu}
+          flatItems={flatItems}
+          onClose={() => setContextMenu(null)}
+          onRefresh={() => void onRefresh()}
+        />
       )}
     </div>
   );

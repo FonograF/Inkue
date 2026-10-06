@@ -16,6 +16,7 @@ pub mod state;
 use std::sync::Arc;
 
 use commands::{
+    batch_edit_cmds::{add_targeting_cue, update_cues},
     cue_cmds::{
         add_cue, add_cue_to_group, duplicate_cue, duplicate_cues,
         get_all_cues, get_cue, get_playhead,
@@ -502,6 +503,8 @@ pub fn run() {
             remove_cue_from_group,
             move_to_top_level,
             update_cue,
+            update_cues,
+            add_targeting_cue,
             set_playhead,
             get_playhead,
             set_audio_file,

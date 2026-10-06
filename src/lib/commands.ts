@@ -138,6 +138,21 @@ export type CueProperties = Record<string, unknown>;
 export const updateCue = (cueId: CueId, properties: CueProperties) =>
   invoke<void>("update_cue", { cueId, properties });
 
+/** One cue's share of a batch edit. */
+export interface CueEdit {
+  cue_id: CueId;
+  properties: CueProperties;
+}
+
+/** Edit many cues in one undo step; keys a cue does not have are skipped.
+ *  Resolves to the number of cues that changed. */
+export const updateCues = (edits: CueEdit[]) =>
+  invoke<number>("update_cues", { edits });
+
+/** Create a cue (Fade, Stop, Devamp, Start…) aimed at `targetIds`, inserted
+ *  after the last target. Resolves to the new cue's id. */
+export const addTargetingCue = (cueType: CueType, targetIds: CueId[], properties: CueProperties = {}) =>
+  invoke<CueId>("add_targeting_cue", { cueType, targetIds, properties });
 export const setAudioFile = (cueId: CueId, filePath: string) =>
   invoke<void>("set_audio_file", { cueId, filePath });
 export const setVideoFile = (cueId: CueId, filePath: string) =>

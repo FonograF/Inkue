@@ -519,6 +519,57 @@ pub fn update_cue(
     let registry = state.registry.lock().map_err(|e| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    apply_cue_properties(&state, &registry, &mut ws, id, &properties, MergePolicy::AllKeys)?;
+
+    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
+    Ok(())
+}
+
+/// Which keys of a property patch [`apply_cue_properties`] may write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergePolicy {
+    /// Every key is merged — the inspector knows the cue it edits.
+    AllKeys,
+    /// Only keys the cue already serialises are merged, so one patch can be
+    /// sent to a mixed selection and land only where it means something.
+    KnownKeysOnly,
+}
+
+/// Merge `properties` into a cue's serialised form under `policy`.
+///
+/// Returns `true` when at least one key was written.
+pub fn merge_properties(
+    target: &mut serde_json::Value,
+    properties: &serde_json::Value,
+    policy: MergePolicy,
+) -> bool {
+    let (Some(target), Some(source)) = (target.as_object_mut(), properties.as_object()) else {
+        return false;
+    };
+    let mut merged = false;
+    for (key, value) in source {
+        if policy == MergePolicy::KnownKeysOnly && !target.contains_key(key) {
+            continue;
+        }
+        target.insert(key.clone(), value.clone());
+        merged = true;
+    }
+    merged
+}
+
+/// Merge `properties` into one cue and rebuild it through the registry,
+/// pushing level, geometry and compositing edits to its playing voice.
+///
+/// The caller holds both locks and has already pushed the undo snapshot.
+/// Returns `false` when `policy` left nothing to write (the cue is untouched).
+pub(super) fn apply_cue_properties(
+    state: &AppState,
+    registry: &crate::cue::registry::CueRegistry,
+    ws: &mut crate::show::workspace::Workspace,
+    id: Uuid,
+    properties: &serde_json::Value,
+    policy: MergePolicy,
+) -> Result<bool, String> {
     // Snapshot the patch table before borrowing the cue list: a live matrix
     // edit needs the same channel mapping the GO path used.
     let patch_channels_by_id: Vec<(Uuid, Vec<u16>)> = ws
@@ -531,17 +582,16 @@ pub fn update_cue(
 
     // Serialise → merge → rebuild, working recursively so child cues inside
     // groups can also be updated from the inspector.
-    let (mut json, preserved_audio, runtime) = {
+    let (json, preserved_audio, runtime) = {
         let cue = cue_list
             .get_mut_recursive(&id)
             .ok_or("Cue not found")?;
         let mut json = cue.serialize();
         let old_file_path = json.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-        if let (Some(target), Some(src)) = (json.as_object_mut(), properties.as_object()) {
-            for (k, v) in src {
-                target.insert(k.clone(), v.clone());
-            }
+        let merged = merge_properties(&mut json, properties, policy);
+        if !merged && policy == MergePolicy::KnownKeysOnly {
+            return Ok(false);
         }
 
         let new_file_path = json.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -552,9 +602,6 @@ pub fn update_cue(
         let runtime = cue.runtime_state();
         (json, preserved_audio, runtime)
     };
-
-    // Suppress unused-variable warning when merge produced no change.
-    let _ = &mut json;
 
     let mut new_cue = registry.from_json(json).map_err(|e| e.to_string())?;
     apply_decoded_audio(new_cue.as_mut(), &preserved_audio);
@@ -609,9 +656,7 @@ pub fn update_cue(
             state.output_engine.set_layer_props(voice_id, &style);
         }
     }
-
-    let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
-    Ok(())
+    Ok(true)
 }
 
 /// Set the Playhead to a specific cue.

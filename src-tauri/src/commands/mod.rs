@@ -35,6 +35,7 @@ pub(crate) fn clear_decode_failure(cue_id: Uuid) {
     health::clear(&decode_alert_key(cue_id));
 }
 
+pub mod batch_edit_cmds;
 pub mod cue_cmds;
 pub mod cue_list_cmds;
 pub mod device_cmds;

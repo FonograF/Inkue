@@ -10,10 +10,14 @@
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 
+import type { BatchEdit, CueJson, TargetingPreset } from "./batchEdit";
+import { planBatch } from "./batchEdit";
 import {
+  addTargetingCue,
   clearCueNumbers,
   copyCue,
   duplicateCue,
+  getCue,
   duplicateCues,
   groupCues,
   pasteCue,
@@ -25,6 +29,7 @@ import {
   setPlayhead,
   undo,
   ungroup,
+  updateCues,
 } from "./commands";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 
@@ -145,5 +150,34 @@ export async function renumberSelection(start: number, increment: number, onRefr
 
 export async function clearAllCueNumbers(onRefresh: Refresh) {
   await clearCueNumbers().catch(console.error);
+  onRefresh();
+}
+
+/** Full serialised data of `ids`, in order — what batch edits plan against. */
+export async function loadCueJson(ids: string[]): Promise<CueJson[]> {
+  const cues = await Promise.all(ids.map((id) => getCue(id) as Promise<unknown>));
+  return cues as CueJson[];
+}
+
+/** Apply one edit to every cue of `ids` it fits, as a single undo step. */
+export async function applyBatchEdit(ids: string[], edit: BatchEdit, onRefresh: Refresh) {
+  const cues = await loadCueJson(ids).catch((e) => { console.error(e); return []; });
+  const edits = planBatch(edit, cues);
+  if (edits.length === 0) return;
+  await updateCues(edits).catch(console.error);
+  onRefresh();
+}
+
+/** Create a cue aimed at `ids` (a Fade Out for the selection…) and select it. */
+export async function createTargetingCue(ids: string[], preset: TargetingPreset, onRefresh: Refresh) {
+  if (ids.length === 0) return;
+  const newId = await addTargetingCue(preset.cueType, ids, preset.properties).catch((e) => {
+    console.error(e);
+    return null;
+  });
+  if (!newId) return;
+  const { setSelectedCueId, setSelectedCueIds } = useWorkspaceStore.getState();
+  setSelectedCueId(newId);
+  setSelectedCueIds([newId]);
   onRefresh();
 }
