@@ -1,6 +1,6 @@
 # Inkue — Project state as of 2026-10-06
 
-## Current version: 1.3.5 — Linux AppImage `.DirIcon` fix (1.3.4: cues in Groups keep their audio, video on NVIDIA/X11 and Intel Macs, UI zoom). **Unreleased on `feat/video-outputs`: multiple video outputs + exact crossfades** (WHATSNEXT Priority 2)
+## Current version: 1.4.0 — multiple video outputs + exact crossfades, multi-cue editing from the right-click menu, scrubbing from the Active panel (1.3.5: Linux AppImage `.DirIcon` fix)
 
 ## cargo build result
 
@@ -222,7 +222,7 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
-### Unreleased (2026-10-06) — Scrub from the Active panel
+### 1.4.0 (2026-10-06) — part 3: Scrub from the Active panel
 
 - `Cue::supports_seek()` (default `false`; Audio, Video, MIDI File override it) →
   `CueSummary::seekable`, so the UI offers scrubbing only where `seek` does something;
@@ -236,7 +236,7 @@ fix, not the full investigation.
 - View → Active Cues (`UiLayout::showActiveCues`, localStorage).
 - Fix: cue-list / Active bars used the full file length for a trimmed single-pass cue.
 
-### Unreleased (2026-10-06) — Multi-cue editing from the context menu
+### 1.4.0 (2026-10-06) — part 2: Multi-cue editing from the context menu
 
 - **Backend** (`commands/batch_edit_cmds.rs`): `update_cues(edits)` applies a per-cue
   property patch to many cues under **one undo snapshot**, merging only keys a cue
@@ -255,7 +255,7 @@ fix, not the full investigation.
   `RenumberDialog`. `cueOperations.ts`: `applyBatchEdit`, `createTargetingCue`.
 - Fix on the way: the context menu's Delete / Duplicate ignored the selection.
 
-### Unreleased (2026-10-06) — Multiple video outputs, exact crossfades
+### 1.4.0 (2026-10-06) — part 1: Multiple video outputs, exact crossfades
 
 WHATSNEXT Priority 2, branch `feat/video-outputs`. A first pass had been marked done
 by mistake: a session rewind deleted the files it created but kept the ones it patched,
