@@ -26,6 +26,7 @@
 
 pub mod archive;
 pub mod cues;
+pub mod geometry;
 pub mod outputs;
 pub mod patches;
 
@@ -251,7 +252,7 @@ fn map_cue(cue: &Value, ctx: &mut MapContext, report: &mut Vec<ImportedCue>) -> 
         "MIDICue" => cues::midi(cue, ctx.patches),
         "MIDIFileCue" => cues::midi_file(cue, ctx.patches),
         "TimecodeCue" => cues::timecode(cue, ctx.patches),
-        "FadeCue" => cues::fade(cue),
+        "FadeCue" => cues::fade(cue, ctx.outputs),
         "StopCue" => cues::stop(cue),
         "DevampCue" => cues::devamp(cue),
         "WaitCue" => cues::wait(cue),

@@ -28,6 +28,11 @@ pub struct VideoOutputs {
     extras: Vec<Value>,
     /// QLab viewport / surface key → Inkue output id (`None` = main output).
     by_qlab_key: HashMap<String, Option<String>>,
+    /// QLab 5 viewport key → its stage's size in pixels.  Geometry fades are
+    /// written in stage pixels and imported as fractions of it.
+    stage_sizes: HashMap<String, (f64, f64)>,
+    /// The first stage's size: the main output's.
+    first_stage_size: Option<(f64, f64)>,
 }
 
 impl VideoOutputs {
@@ -58,6 +63,15 @@ impl VideoOutputs {
                     .to_string()
             });
             let name = stage.get("name").and_then(Value::as_str).unwrap_or("QLab Stage");
+            let size = stage
+                .get("width")
+                .and_then(Value::as_f64)
+                .zip(stage.get("height").and_then(Value::as_f64))
+                .filter(|&(w, h)| w > 0.0 && h > 0.0);
+            if let Some(size) = size {
+                self.stage_sizes.insert(viewport.to_string(), size);
+                self.first_stage_size.get_or_insert(size);
+            }
             self.add(viewport.to_string(), id, name);
         }
     }
@@ -94,6 +108,15 @@ impl VideoOutputs {
             .map(str::to_string)
             .or_else(|| cue.get("surfaceID").and_then(Value::as_i64).map(|id| id.to_string()))?;
         self.by_qlab_key.get(&key).cloned().flatten()
+    }
+
+    /// The size in pixels of the stage a QLab cue plays on, falling back to the
+    /// first stage.  `None` when the workspace declares no stage size (QLab 4).
+    pub fn stage_size_of(&self, cue: &Value) -> Option<(f64, f64)> {
+        cue.get("viewportID")
+            .and_then(Value::as_str)
+            .and_then(|key| self.stage_sizes.get(key).copied())
+            .or(self.first_stage_size)
     }
 
     /// The extra outputs to write into the workspace (`video_outputs`).
@@ -136,6 +159,22 @@ fn unique_name(name: &str, taken: &[Value]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cue_knows_the_size_of_its_stage() {
+        let mut big = stage("Wall", "00000000-0000-0000-0000-000000000002", "VP-WALL");
+        big["width"] = json!(3840);
+        big["height"] = json!(1080);
+        let mut main = stage("Main", "00000000-0000-0000-0000-000000000001", "VP-MAIN");
+        main["width"] = json!(1920);
+        main["height"] = json!(1080);
+        let outputs = qlab5(vec![main, big]);
+        assert_eq!(outputs.stage_size_of(&json!({ "viewportID": "VP-WALL" })), Some((3840.0, 1080.0)));
+        // Unknown or absent stage: the main one.
+        assert_eq!(outputs.stage_size_of(&json!({ "viewportID": "gone" })), Some((1920.0, 1080.0)));
+        assert_eq!(outputs.stage_size_of(&json!({})), Some((1920.0, 1080.0)));
+        assert_eq!(VideoOutputs::default().stage_size_of(&json!({})), None);
+    }
 
     fn stage(name: &str, stage_id: &str, viewport_id: &str) -> Value {
         json!({ "__class__": "VideoStage", "name": name, "uniqueID": stage_id,

@@ -16,6 +16,8 @@
 
 use serde_json::{json, Map, Value};
 
+use super::geometry;
+use super::outputs::VideoOutputs;
 use super::patches::Patches;
 
 /// QLab `continueMode` → Inkue.
@@ -538,8 +540,9 @@ fn normalise_id(id: &str) -> String {
 }
 
 /// A QLab Fade cue. A pan-only fade must not move the level, hence
-/// `fade_volume: false` when the master crosspoint is untouched.
-pub fn fade(cue: &Value) -> Value {
+/// `fade_volume: false` when the master crosspoint is untouched; its Geometry
+/// tab (Curve or Path mode) maps through [`geometry::map`].
+pub fn fade(cue: &Value, outputs: &VideoOutputs) -> Value {
     let mut out = common(cue, "fade");
     let target_db = fade_target_db(cue);
     let target_pan = fade_target_pan(cue);
@@ -556,12 +559,21 @@ pub fn fade(cue: &Value) -> Value {
         "stop_at_end".into(),
         json!(cue.get("stopTargetWhenDone").and_then(Value::as_bool).unwrap_or(false)),
     );
-    if target_db.is_none() && target_pan.is_none() {
-        add_note(
-            &mut out,
-            "[QLab geometry fade — Inkue fades level, pan and visual opacity, \
-             so this fade's target was not converted]",
-        );
+    let pictures = geometry::map(cue, outputs);
+    if let Some(fades) = pictures.fade_opacity {
+        out.insert("fade_opacity".into(), json!(fades));
+    }
+    if let Some(pct) = pictures.brightness_pct {
+        out.insert("target_brightness_pct".into(), json!(pct));
+    }
+    let moves = pictures.geometry.is_some();
+    out.insert("geometry".into(), pictures.geometry.unwrap_or(Value::Null));
+    for note in &pictures.notes {
+        add_note(&mut out, note);
+    }
+    let fades_picture = pictures.fade_opacity == Some(true);
+    if target_db.is_none() && target_pan.is_none() && !moves && !fades_picture && pictures.notes.is_empty() {
+        add_note(&mut out, "[QLab fade with nothing Inkue could convert — check its target and settings]");
     }
     Value::Object(out)
 }

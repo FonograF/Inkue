@@ -223,6 +223,31 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-10-16) — QLab import of geometry and path fades (phase 4 of 5)
+
+`qlab_import/geometry.rs` (new) maps a QLab Fade's Geometry tab; `cues::fade` now
+takes the `VideoOutputs` and no longer drops every geometry fade with a note.
+
+- **`fadeType` first** (`1` Curve, `2` Path): QLab keeps Curve-mode values inside a
+  Path fade and Path mode ignores them and every `do*` box.
+- Curve: `doTranslation` + `translationX/Y` (stage px, +Y up) ÷ the **target's stage
+  size** (`VideoOutputs::stage_size_of`, from `settings.Video.stages[].width/height`,
+  via the resolved `cueTarget`'s `viewportID`; fallback first stage, then
+  1920 × 1080); `doScale` when `scaleX == scaleY`; `doOpacity` → `fade_opacity` +
+  `opacity` → brightness % (absent box = Inkue default). Rotation and a non-uniform
+  scale are named in the notes, not guessed (rotation's format is not decoded yet).
+- Path: `fade.path.points` (`"{x, y}"` NSPoint strings) + the `pathOriginPosition`
+  offset (1 Center, 5 Bottom Right confirmed; 2–4 by menu order) on the
+  `pathWidth`/`pathHeight` canvas, each axis ÷ the stage dimension of the property it
+  drives (`pathParameterMap.geometry`); `smoothPath`, `easeInFraction` (merge),
+  `pathLoop` as bool **or** integer. A path driving rotation/scale, unreadable points
+  and < 2 points are named in the notes. Path fades get `fade_opacity: false`.
+- Tests: 16 in `geometry.rs` + 1 in `outputs.rs`. Checked against the ten decoded
+  QLab test workspaces (all import and load every cue; values match the raw file).
+- Checked in the app (macOS): File → Import QLab Workspace… of the path test files
+  plays the paths as QLab does.
+- `C:\qlab2inkue` (reference converter, Windows) still needs the same mapping.
+
 ### Unreleased (2026-10-16) — Path fades (phase 3 of 5)
 
 A Fade Cue can move its pictures along a path (QLab 5.4's Path mode):
@@ -278,8 +303,9 @@ Curve mode), on the fade's own curve shapes.
 ### Unreleased (2026-10-16) — Layer motion engine (geometry / path fades, phase 1 of 5)
 
 Engine groundwork for QLab-style geometry and path fades. Nothing calls it yet:
-the Fade Cue is wired in phase 2. Plan and QLab format notes live locally in
-`docs/fade-path-plan.md` and `docs/qlab-fade-path.md` (not tracked).
+the Fade Cue is wired in phase 2. The QLab measurements behind it are summarised
+in `motion.rs`'s module docs (phases: engine, Curve fades, Path fades, QLab
+import, drawn path editor).
 
 - `output_engine/motion.rs` (pure math): `LayerMotion` (tx/ty as fraction of the
   output, Y up; clockwise degrees; scale), `MotionProgram::{Curve, Path}`,

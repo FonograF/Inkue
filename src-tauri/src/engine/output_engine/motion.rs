@@ -9,7 +9,12 @@
 //! the layer, letterbox bars included, on top of the cue's own geometry.
 //!
 //! Pure math, no GL and no locks: everything here is unit-tested on its own.
-//! The QLab behaviour it reproduces is measured in `docs/qlab-fade-path.md`.
+//! The QLab behaviour it reproduces was measured frame by frame from screen
+//! recordings of QLab 5 (build 5603) moving a still image: constant speed by
+//! path length (a long run then a short hop kept one speed); smoothing that
+//! fits Catmull-Rom to ~13 px (straight segments: 60 px); merge joining the
+//! path at the merge fraction of both time and length; each loop pass
+//! restarting from the layer's starting position.
 //!
 //! ## Units
 //!
