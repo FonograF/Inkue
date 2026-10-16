@@ -1,10 +1,11 @@
-// Path-mode controls of the Fade Cue's Geometry section: the path's points as
-// a table, plus smooth / merge / loop and the axis mapping. The drawn path
-// editor (phase 5 of the path-fade plan) will sit alongside the table.
+// Path-mode controls of the Fade Cue's Geometry section: the drawn path
+// editor, the points as a table for exact values, plus smooth / merge / loop
+// and the axis mapping.
 
 import type { PathGeometry, PathParam } from "../../lib/types";
 import { Grid2, MiniField, NumberInput, ToggleRow, inputStyle } from "./Field";
 import { Select } from "../common/Select";
+import { PathEditor } from "./PathEditor";
 
 /** A new path: a short horizontal move through the centre. */
 export const DEFAULT_PATH: PathGeometry = {
@@ -33,9 +34,12 @@ const smallButton = {
 
 export function PathFadeFields({
   path,
+  aspect,
   onChange,
 }: {
   path: PathGeometry;
+  /** Output width / height, for the drawn stage. */
+  aspect: number;
   onChange: (next: PathGeometry) => void;
 }) {
   const patch = (partial: Partial<PathGeometry>) => onChange({ ...path, ...partial });
@@ -49,6 +53,7 @@ export function PathFadeFields({
 
   return (
     <>
+      <PathEditor path={path} aspect={aspect} onChange={onChange} />
       <div style={{ fontSize: 11, color: "var(--wc-text-secondary)", marginBottom: 4 }}>
         Points (± of width / height, + = right / up)
       </div>
@@ -71,13 +76,6 @@ export function PathFadeFields({
       ))}
       <div style={{ display: "flex", gap: 6, margin: "6px 0 10px" }}>
         <button style={smallButton} onClick={addPoint}>+ Add point</button>
-        <button
-          style={smallButton}
-          title="Same points, travelled the other way"
-          onClick={() => patch({ points: [...path.points].reverse() })}
-        >
-          Reverse
-        </button>
       </div>
 
       <ToggleRow label="Smooth path" checked={path.smooth} onToggle={(v) => patch({ smooth: v })} />

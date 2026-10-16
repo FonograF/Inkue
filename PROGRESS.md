@@ -13,7 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 564 pass, 0 failures** (verified 2026-10-28 on Windows, clippy clean on
+**`cargo test --lib` → 613 pass, 0 failures** (verified 2026-11-05 on macOS with the geometry/path-fade
+branch on top of 1.4.1, clippy clean; full `cargo test` 720, vitest 86; 564 on 2026-10-28 on Windows, clippy clean on
 Windows and on Linux in WSL Ubuntu 24.04 with the native PipeWire host; 562 on 2026-10-23 on both; 539 on 2026-10-06;
 530 earlier that day on Windows and on Linux in WSL Ubuntu 24.04; 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
@@ -222,6 +223,22 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-10-16) — Drawn path editor (phase 5 of 5)
+
+- `components/Inspector/PathEditor.tsx` (new): QLab-style 2D canvas in the Fade's
+  Path mode — the stage at the main output's monitor aspect (16:9 for a floating
+  window) with a margin for off-stage points; click adds a point at the end,
+  Alt-click inserts into the nearest span, drag moves, Delete removes (never below
+  two points); start triangle / end square; Reverse, Flip ↔, Flip ↕. The points
+  table stays below it for exact values.
+- `lib/path.ts` (new) mirrors motion.rs's flattening (centripetal Catmull-Rom,
+  reflected ends, pixel-metric, repeat-merging), so the drawn line is the played
+  one. **Shared vector**: motion.rs `shared_path_vector` and
+  `lib/__tests__/path.test.ts` assert the same five vertices to 1e-12.
+- Tests: 1 Rust + 5 vitest.
+- Checked in the app (macOS): add, Alt-insert, drag, delete, smoothing matching
+  playback, Reverse and both flips.
 
 ### Unreleased (2026-10-16) — QLab import of geometry and path fades (phase 4 of 5)
 

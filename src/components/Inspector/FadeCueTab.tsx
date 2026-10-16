@@ -1,7 +1,9 @@
 // Fade Cue main tab: targets, fade parameters, audio/visual goals, on-complete.
 // Extracted from BasicsTab so Basics stays identity-only.
 
-import type { CueSummary, CurveGeometry, FadeCueData, FadeShapes } from "../../lib/types";
+import { useEffect, useState } from "react";
+import type { CueSummary, CurveGeometry, FadeCueData, FadeShapes, ScreenInfo } from "../../lib/types";
+import { listVideoScreens } from "../../lib/commands";
 import { CurveEditor } from "../Curve/CurveEditor";
 
 /** Locked S-Curve — what a fade has always done, for a cue saved before
@@ -33,6 +35,15 @@ export function FadeCueTab({
   onOpenCurveEditor?: () => void;
 }) {
   const allCues = useWorkspaceStore((s) => s.cues);
+  const videoOutputs = useWorkspaceStore((s) => s.videoOutputs);
+  const [screens, setScreens] = useState<ScreenInfo[]>([]);
+  useEffect(() => {
+    listVideoScreens().then(setScreens).catch(console.error);
+  }, []);
+  // The path editor's stage takes the main output's monitor shape (16:9 for
+  // a floating window). Points are fractions, so the path itself fits any output.
+  const mainScreen = screens.find((s) => s.index === videoOutputs.find((o) => o.is_main)?.screen);
+  const outputAspect = mainScreen && mainScreen.height > 0 ? mainScreen.width / mainScreen.height : 16 / 9;
 
   const everyCue = flattenCues(allCues);
   const targetIds: string[] = cue.target_cue_ids ?? [];
@@ -230,7 +241,11 @@ export function FadeCueTab({
             }}
           />
           {path ? (
-            <PathFadeFields path={path} onChange={(next) => onSave({ geometry: { ...next, mode: "path" } })} />
+            <PathFadeFields
+              path={path}
+              aspect={outputAspect}
+              onChange={(next) => onSave({ geometry: { ...next, mode: "path" } })}
+            />
           ) : (
           <>
           <ToggleRow

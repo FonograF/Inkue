@@ -634,6 +634,29 @@ mod tests {
         assert!(close(m.tx, 0.15, 1e-9) && close(m.ty, 0.0, 1e-9));
     }
 
+    /// The path editor (`src/lib/path.ts`) redraws this flattening in the UI;
+    /// `src/lib/__tests__/path.test.ts` asserts these exact numbers, so a
+    /// change on either side fails one of the two.
+    #[test]
+    fn shared_path_vector() {
+        let mut p = path(&[[-0.4, -0.3], [0.35, -0.3], [-0.4, 0.3], [0.4, 0.35]]);
+        p.smooth = true;
+        let compiled = CompiledPath::new(&p, ASPECT);
+        assert_eq!(compiled.vertices.len(), 97);
+        let expected = [
+            (0, [-0.4, -0.3]),
+            (16, [0.06452616993973369, -0.33498517066005307]),
+            (48, [-0.02504220802072924, -0.003799651069123458]),
+            (80, [-0.09559465867115714, 0.35864230399818736]),
+            (96, [0.4, 0.35]),
+        ];
+        for (index, [x, y]) in expected {
+            let v = compiled.vertices[index];
+            let (vx, vy) = (v[0] / ASPECT, v[1]);
+            assert!(close(vx, x, 1e-12) && close(vy, y, 1e-12), "vertex {index}: ({vx}, {vy})");
+        }
+    }
+
     #[test]
     fn repeated_points_do_not_break_the_spline() {
         let mut p = path(&[[0.0, 0.0], [0.1, 0.0], [0.1, 0.0], [0.2, 0.1]]);
