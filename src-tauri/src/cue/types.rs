@@ -329,13 +329,23 @@ pub struct CrossfadeLinked {
 /// Geometry tab).  The output engine runs it as a layer motion
 /// (`engine/output_engine/motion.rs`).
 ///
-/// Serialized with a `mode` tag, so Path mode can join without a format change.
+/// Serialized with a `mode` tag (`"curve"` / `"path"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum GeometryFade {
     /// Fade properties from where they are to target values, on the Fade's
     /// curve shapes.
     Curve(CurveGeometry),
+    /// Move along a drawn 2D path at constant speed (QLab 5.4's Path mode).
+    /// The curve shapes do not apply.
+    Path(PathGeometry),
+}
+
+impl GeometryFade {
+    /// `true` for a path that repeats until the Fade is stopped.
+    pub fn loops(&self) -> bool {
+        matches!(self, GeometryFade::Path(p) if p.loop_path)
+    }
 }
 
 /// Curve-mode targets.  Each one is `None` when it is not faded (QLab's
@@ -358,6 +368,55 @@ impl CurveGeometry {
     /// `true` when no property is faded.
     pub fn is_empty(&self) -> bool {
         self.translation.is_none() && self.scale.is_none() && self.rotation_deg.is_none()
+    }
+}
+
+/// Path-mode geometry: the measured QLab behaviour is in
+/// `engine/output_engine/motion.rs`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathGeometry {
+    /// Path points `[x, y]`, start first, in the units of `x_param` /
+    /// `y_param` — for translation, fractions of the output, centre origin,
+    /// +Y up.  At least two are needed.
+    #[serde(default)]
+    pub points: Vec<[f64; 2]>,
+    /// Catmull-Rom spline through the points (`false` = straight segments).
+    #[serde(default)]
+    pub smooth: bool,
+    /// Fraction of the duration (0–1) spent joining the path from where the
+    /// picture is; the part of the path before that point is skipped.
+    #[serde(default)]
+    pub merge: f64,
+    /// Repeat until the Fade is stopped.  Every pass restarts from where the
+    /// picture was when the Fade started.
+    #[serde(default)]
+    pub loop_path: bool,
+    /// Property the path's horizontal axis drives.
+    #[serde(default = "PathParam::horizontal")]
+    pub x_param: PathParam,
+    /// Property the path's vertical axis drives.
+    #[serde(default = "PathParam::vertical")]
+    pub y_param: PathParam,
+}
+
+/// A property one axis of a path drives.  Serialized as a string, so rotation
+/// and scale can be added without a format change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathParam {
+    /// Horizontal layer offset.
+    TranslationX,
+    /// Vertical layer offset.
+    TranslationY,
+}
+
+impl PathParam {
+    fn horizontal() -> Self {
+        PathParam::TranslationX
+    }
+
+    fn vertical() -> Self {
+        PathParam::TranslationY
     }
 }
 

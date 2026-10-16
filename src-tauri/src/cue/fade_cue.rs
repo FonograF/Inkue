@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::{
     cue::types::db_to_linear,
     engine::{
-        output_engine::{CrossfadePhase, CurveMotion, MotionProgram, MotionStop},
+        output_engine::{CrossfadePhase, CurveMotion, MotionParam, MotionProgram, MotionStop, PathMotion},
         ring_command::FadeCurve as EngineFadeCurve,
     },
 };
@@ -40,7 +40,7 @@ use super::{
     traits::{Cue, CueFactory, RuntimeState},
     types::{
         ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCrossfade, FadeCurve,
-        GeometryFade,
+        GeometryFade, PathParam,
     },
 };
 
@@ -199,7 +199,29 @@ impl FadeCue {
                 falling: self.shapes.for_direction(false).to_engine(),
             }))),
             GeometryFade::Curve(_) => None,
+            GeometryFade::Path(p) if p.points.len() >= 2 => Some(MotionProgram::Path(PathMotion {
+                points: p.points.clone(),
+                smooth: p.smooth,
+                merge: p.merge.clamp(0.0, 1.0),
+                looping: p.loop_path,
+                duration: Duration::from_millis(self.fade_duration_ms),
+                x_param: Self::motion_param(p.x_param),
+                y_param: Self::motion_param(p.y_param),
+            })),
+            GeometryFade::Path(_) => None,
         }
+    }
+
+    fn motion_param(param: PathParam) -> MotionParam {
+        match param {
+            PathParam::TranslationX => MotionParam::TranslationX,
+            PathParam::TranslationY => MotionParam::TranslationY,
+        }
+    }
+
+    /// A looping path runs until stopped: it never completes on its own.
+    fn loops(&self) -> bool {
+        self.geometry.as_ref().is_some_and(GeometryFade::loops)
     }
 
     /// Hand the geometry motion to each visual target's layer, once per run,
@@ -532,7 +554,8 @@ impl Cue for FadeCue {
             context.output_engine.set_voice_opacity(vid, opacity);
         }
 
-        if t >= 1.0 && !self.fade_complete {
+        // A looping path has no end: stop-at-end would cut it after one pass.
+        if t >= 1.0 && !self.fade_complete && !self.loops() {
             self.fade_complete = true;
             self.queue_stops_at_end(context);
         }
@@ -550,6 +573,11 @@ impl Cue for FadeCue {
     fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
     fn duration(&self) -> Option<Duration> {
+        // No duration = never time-complete (`show/event_loop.rs`): a looping
+        // path keeps going until the operator stops the Fade.
+        if self.loops() {
+            return None;
+        }
         Some(Duration::from_millis(self.fade_duration_ms))
     }
 
@@ -677,8 +705,19 @@ impl Cue for FadeCue {
                 ));
             }
         }
-        if matches!(&self.geometry, Some(GeometryFade::Curve(g)) if g.is_empty()) {
-            issues.push(CueIssue::warning("Geometry fade has nothing checked — it moves nothing"));
+        match &self.geometry {
+            Some(GeometryFade::Curve(g)) if g.is_empty() => {
+                issues.push(CueIssue::warning("Geometry fade has nothing checked — it moves nothing"));
+            }
+            Some(GeometryFade::Path(p)) => {
+                if p.points.len() < 2 {
+                    issues.push(CueIssue::error("Path fade needs at least two points"));
+                }
+                if p.x_param == p.y_param {
+                    issues.push(CueIssue::warning("Both path axes drive the same property"));
+                }
+            }
+            _ => {}
         }
         issues
     }
@@ -1242,6 +1281,113 @@ mod tests {
         let issues: Vec<String> =
             cue.validate(&validation_context(&[target], &[])).into_iter().map(|i| i.message).collect();
         assert!(!issues.iter().any(|m| m.contains("Geometry")), "{issues:?}");
+    }
+
+    fn zigzag(loop_path: bool) -> GeometryFade {
+        GeometryFade::Path(crate::cue::types::PathGeometry {
+            points: vec![[-0.4, -0.3], [0.35, -0.3], [-0.4, 0.3], [0.4, 0.35]],
+            smooth: true,
+            merge: 0.5,
+            loop_path,
+            x_param: PathParam::TranslationX,
+            y_param: PathParam::TranslationY,
+        })
+    }
+
+    #[test]
+    fn a_path_fade_survives_a_roundtrip_in_its_documented_shape() {
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(zigzag(true));
+        let json = cue.serialize();
+        assert_eq!(
+            json["geometry"],
+            json!({
+                "mode": "path",
+                "points": [[-0.4, -0.3], [0.35, -0.3], [-0.4, 0.3], [0.4, 0.35]],
+                "smooth": true,
+                "merge": 0.5,
+                "loop_path": true,
+                "x_param": "translation_x",
+                "y_param": "translation_y",
+            })
+        );
+        let again = FadeCueFactory.from_json(json.clone()).unwrap().serialize();
+        assert_eq!(again["geometry"], json["geometry"]);
+    }
+
+    #[test]
+    fn a_minimal_path_takes_the_qlab_defaults() {
+        let json = json!({ "type": "fade", "geometry": { "mode": "path", "points": [[0.0, 0.0], [0.1, 0.0]] } });
+        let geometry = FadeCueFactory.from_json(json).unwrap().serialize()["geometry"].clone();
+        assert_eq!(geometry["smooth"], false);
+        assert_eq!(geometry["merge"], 0.0);
+        assert_eq!(geometry["loop_path"], false);
+        assert_eq!((geometry["x_param"].as_str(), geometry["y_param"].as_str()), (Some("translation_x"), Some("translation_y")));
+    }
+
+    #[test]
+    fn the_path_motion_program_carries_the_path() {
+        let mut cue = FadeCue::new();
+        cue.fade_duration_ms = 3000;
+        let mut geometry = zigzag(false);
+        if let GeometryFade::Path(p) = &mut geometry {
+            p.merge = 1.7; // out of range: clamped
+            p.x_param = PathParam::TranslationY;
+            p.y_param = PathParam::TranslationX;
+        }
+        cue.geometry = Some(geometry);
+        let Some(MotionProgram::Path(path)) = cue.motion_program() else {
+            panic!("a path geometry fade is a path motion");
+        };
+        assert_eq!(path.points.len(), 4);
+        assert!(path.smooth && !path.looping);
+        assert_eq!(path.merge, 1.0);
+        assert_eq!(path.duration, Duration::from_millis(3000));
+        assert_eq!((path.x_param, path.y_param), (MotionParam::TranslationY, MotionParam::TranslationX));
+    }
+
+    #[test]
+    fn a_path_needs_two_points() {
+        let target = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        cue.geometry = Some(GeometryFade::Path(crate::cue::types::PathGeometry {
+            points: vec![[0.0, 0.0]],
+            smooth: false,
+            merge: 0.0,
+            loop_path: false,
+            x_param: PathParam::TranslationX,
+            y_param: PathParam::TranslationY,
+        }));
+        assert!(cue.motion_program().is_none(), "one point is not a path");
+        let issues = cue.validate(&validation_context(&[target], &[]));
+        assert!(issues.iter().any(|i| i.message.contains("at least two points")), "{issues:?}");
+    }
+
+    #[test]
+    fn a_path_driving_one_property_twice_is_flagged() {
+        let target = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        let mut geometry = zigzag(false);
+        if let GeometryFade::Path(p) = &mut geometry {
+            p.y_param = PathParam::TranslationX;
+        }
+        cue.geometry = Some(geometry);
+        let issues = cue.validate(&validation_context(&[target], &[]));
+        assert!(issues.iter().any(|i| i.message.contains("same property")), "{issues:?}");
+        cue.geometry = Some(zigzag(false));
+        assert!(cue.validate(&validation_context(&[target], &[])).is_empty());
+    }
+
+    #[test]
+    fn a_looping_path_has_no_duration_so_it_never_completes() {
+        let mut cue = FadeCue::new();
+        cue.fade_duration_ms = 3000;
+        cue.geometry = Some(zigzag(false));
+        assert_eq!(cue.duration(), Some(Duration::from_millis(3000)));
+        cue.geometry = Some(zigzag(true));
+        assert_eq!(cue.duration(), None);
     }
 
     #[test]

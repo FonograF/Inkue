@@ -842,6 +842,36 @@ mod geometry_fade {
     }
 
     #[test]
+    fn a_looping_path_fade_moves_its_pictures_and_never_stops_them() {
+        use inkue_lib::cue::types::{PathGeometry, PathParam};
+        let (ctx, _rx, log) = recording_context();
+        let mut fade = fade(20);
+        fade.stop_at_end = true;
+        fade.geometry = Some(GeometryFade::Path(PathGeometry {
+            points: vec![[-0.3, 0.0], [0.3, 0.0]],
+            smooth: false,
+            merge: 0.0,
+            loop_path: true,
+            x_param: PathParam::TranslationX,
+            y_param: PathParam::TranslationY,
+        }));
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(Vec::new(), vec![(Uuid::new_v4(), 1.0)], 1.0);
+        fade.tick(&ctx).unwrap();
+        std::thread::sleep(Duration::from_millis(60)); // three passes
+        fade.tick(&ctx).unwrap();
+
+        let calls = motion_calls(&log);
+        assert!(
+            matches!(&calls[..], [EngineCall::OutputStartMotion { program: MotionProgram::Path(p), .. }] if p.looping),
+            "{calls:?}"
+        );
+        assert!(fade.take_fade_stop_targets().is_empty(), "a looping path must not stop its targets after one pass");
+        assert!(!log.lock().unwrap().iter().any(|c| matches!(c, EngineCall::OutputStopContent)));
+        assert_eq!(fade.duration(), None, "no duration: the event loop never completes it");
+    }
+
+    #[test]
     fn stopping_before_the_action_touches_no_motion() {
         let (ctx, _rx, log) = recording_context();
         let mut fade = fade(500);

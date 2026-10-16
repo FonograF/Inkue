@@ -515,8 +515,28 @@ export interface CurveGeometry {
   rotation_deg: number | null;
 }
 
+/** A property one axis of a path drives. */
+export type PathParam = "translation_x" | "translation_y";
+
+/** Path-mode geometry (QLab 5.4): constant speed along the path; the fade's
+ *  curve shapes do not apply. */
+export interface PathGeometry {
+  /** Points [x, y], start first, in the units of x_param / y_param — for
+   *  translation, fractions of the output (centre origin, +Y = up). ≥ 2. */
+  points: [number, number][];
+  /** Catmull-Rom spline through the points (false = straight segments). */
+  smooth: boolean;
+  /** Fraction of the duration (0–1) spent joining the path from where the
+   *  picture is; the path before that point is skipped. */
+  merge: number;
+  /** Repeat until the Fade is stopped (it then has no duration). */
+  loop_path: boolean;
+  x_param: PathParam;
+  y_param: PathParam;
+}
+
 /** What a Fade Cue does to its pictures' geometry, tagged by mode. */
-export type GeometryFade = { mode: "curve" } & CurveGeometry;
+export type GeometryFade = ({ mode: "curve" } & CurveGeometry) | ({ mode: "path" } & PathGeometry);
 
 /** Full cue data returned by get_cue for a Wait Cue. */
 export interface WaitCueData extends CueSummary {

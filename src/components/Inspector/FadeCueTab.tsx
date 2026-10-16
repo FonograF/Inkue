@@ -13,7 +13,8 @@ const DEFAULT_FADE_SHAPES: FadeShapes = {
 };
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { flattenCues, makesSound, showsPicture } from "../../lib/cueTree";
-import { Grid2, MiniField, NumberInput, Section, SliderRow, ToggleRow, inputStyle } from "./Field";
+import { Grid2, MiniField, NumberInput, Section, Segmented, SliderRow, ToggleRow, inputStyle } from "./Field";
+import { DEFAULT_PATH, PathFadeFields } from "./PathFadeFields";
 import { CueTargetPicker } from "./CueTargetPicker";
 import { Select } from "../common/Select";
 
@@ -58,6 +59,8 @@ export function FadeCueTab({
   const panEnabled: boolean = cue.target_pan != null;
   const panValue: number = cue.target_pan ?? 0;
   const fadeOpacity: boolean = cue.fade_opacity ?? true;
+  const geometryMode = cue.geometry?.mode ?? "curve";
+  const path = cue.geometry?.mode === "path" ? cue.geometry : null;
   const geometry: CurveGeometry = cue.geometry?.mode === "curve" ? cue.geometry : NO_GEOMETRY;
   // Unchecking the last property removes the geometry fade altogether.
   const patchGeometry = (partial: Partial<CurveGeometry>) => {
@@ -208,8 +211,28 @@ export function FadeCueTab({
       {showBrightness && (
         <Section
           title="Geometry"
-          hint="Moves each picture from wherever it is, on the fade's curve. It stays there when the fade ends."
+          hint={
+            path
+              ? "Moves each picture along the path at constant speed — the curve shape is not used. It stays where the path ends."
+              : "Moves each picture from wherever it is, on the fade's curve. It stays there when the fade ends."
+          }
         >
+          <Segmented
+            options={[
+              { value: "curve", label: "Curve", hint: "Fade to target values" },
+              { value: "path", label: "Path", hint: "Follow a drawn path" },
+            ]}
+            value={geometryMode}
+            onChange={(mode) => {
+              // Re-clicking the current mode must not reset what is there.
+              if (mode === geometryMode) return;
+              onSave({ geometry: mode === "path" ? { mode: "path", ...DEFAULT_PATH } : null });
+            }}
+          />
+          {path ? (
+            <PathFadeFields path={path} onChange={(next) => onSave({ geometry: { ...next, mode: "path" } })} />
+          ) : (
+          <>
           <ToggleRow
             label="Fade position"
             checked={geometry.translation != null}
@@ -268,6 +291,8 @@ export function FadeCueTab({
               </MiniField>
             </Grid2>
           </ToggleRow>
+          </>
+          )}
         </Section>
       )}
 

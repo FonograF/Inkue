@@ -223,6 +223,31 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-10-16) — Path fades (phase 3 of 5)
+
+A Fade Cue can move its pictures along a path (QLab 5.4's Path mode):
+constant speed, optional Catmull-Rom smoothing, merge, loop.
+
+- `cue/types.rs`: `GeometryFade::Path(PathGeometry)` — `points` (fractions of the
+  output, +Y up), `smooth`, `merge` (0–1), `loop_path`, `x_param`/`y_param`
+  (`PathParam`, string-serialized; translation X/Y only for now). Missing fields
+  take QLab's defaults.
+- `FadeCue`: maps the path to `MotionProgram::Path` (merge clamped). A **looping**
+  path reports no `duration()`, so the event loop never time-completes it, and it
+  never fires stop-at-end after one pass — it runs until the Fade is stopped,
+  which holds the picture where it is. Validation: fewer than two points is an
+  error; both axes on one property is a warning.
+- Inspector: Geometry section gets a **Curve / Path** switch; Path mode shows the
+  points as a table (add, remove, reverse), smooth, loop, merge % and the axis
+  mapping (`PathFadeFields.tsx`). The drawn editor is phase 5.
+- Tests: 6 unit (documented JSON shape roundtrip, QLab defaults, program mapping
+  incl. merge clamp + swapped axes, two-point minimum, same-axis warning, looping =
+  no duration) + 1 integration (a looping path with stop-at-end starts one path
+  motion and never stops its targets).
+- Checked on screen (macOS, still image): constant speed, smoothing through every
+  point, merge 50 % joining halfway without visiting the start, loop restarting
+  from the start position and holding on stop.
+
 ### Unreleased (2026-10-16) — Geometry fades, Curve mode (phase 2 of 5)
 
 A Fade Cue can now move, scale and rotate its pictures (QLab's Geometry tab,
