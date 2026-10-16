@@ -19,7 +19,8 @@ use uuid::Uuid;
 use super::audio_engine::AudioEngine;
 use super::dmx_engine::{ChannelWidth, DmxEngine};
 use super::output_engine::{
-    ContentRequest, CrossfadePhase, CrossfadeRequest, OutputEngine, OutputId,
+    ContentRequest, CrossfadePhase, CrossfadeRequest, MotionProgram, MotionStop, OutputEngine,
+    OutputId,
 };
 use super::ring_command::{FadeCurve, VoiceId};
 use super::voice::Voice;
@@ -190,6 +191,12 @@ pub trait OutputEngineApi: Send + Sync {
     /// The driving Fade Cue stopped: cancel a crossfade that has not started,
     /// freeze one in progress.
     fn release_crossfade(&self, incoming: VoiceId);
+    /// Start moving a voice's layer (geometry or path fade) from where it is.
+    fn start_voice_motion(&self, _voice_id: VoiceId, _program: MotionProgram) {}
+    /// Hold (`true`) or release the clock of a voice's layer motion.
+    fn pause_voice_motion(&self, _voice_id: VoiceId, _paused: bool) {}
+    /// End a voice's layer motion, keeping or undoing what it did.
+    fn stop_voice_motion(&self, _voice_id: VoiceId, _how: MotionStop) {}
 }
 
 impl OutputEngineApi for OutputEngine {
@@ -255,6 +262,15 @@ impl OutputEngineApi for OutputEngine {
     }
     fn release_crossfade(&self, incoming: VoiceId) {
         OutputEngine::release_crossfade(self, incoming)
+    }
+    fn start_voice_motion(&self, voice_id: VoiceId, program: MotionProgram) {
+        OutputEngine::start_voice_motion(self, voice_id, program)
+    }
+    fn pause_voice_motion(&self, voice_id: VoiceId, paused: bool) {
+        OutputEngine::pause_voice_motion(self, voice_id, paused)
+    }
+    fn stop_voice_motion(&self, voice_id: VoiceId, how: MotionStop) {
+        OutputEngine::stop_voice_motion(self, voice_id, how)
     }
 }
 

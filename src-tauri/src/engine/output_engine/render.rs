@@ -35,6 +35,7 @@ use crate::engine::mpv_sys::{
     MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, MPV_RENDER_UPDATE_FRAME,
 };
 use super::crossfade::{self, MixLink};
+use super::motion;
 use super::output::Output;
 use super::slot;
 use super::types::{MpvCtx, VoiceId};
@@ -47,6 +48,9 @@ struct LayerDraw {
     layer_key: u64,
     opacity: f32,
     blend_mode: i32,
+    /// `u_layer_xform`: the layer's motion (geometry / path fade), as the
+    /// output-UV → layer-UV matrix.
+    xform: [f32; 9],
     has_new_frame: bool,
     render_ctx: *mut c_void,
 }
@@ -406,12 +410,19 @@ fn render_thread_main(
                 continue;
             };
             any_slot_frame |= s_new_frame;
+            let layer_motion = slot::motion_frame(s, w_px, h_px);
+            let xform = if layer_motion.is_identity() {
+                motion::IDENTITY_MATRIX
+            } else {
+                motion::sample_matrix(&layer_motion, w_px, h_px)
+            };
             layers.push(LayerDraw {
                 slot_index: s.index,
                 voice,
                 layer_key,
                 opacity,
                 blend_mode,
+                xform,
                 has_new_frame: s_new_frame,
                 render_ctx: rc,
             });
@@ -543,7 +554,7 @@ fn render_thread_main(
             if let (Some(t), Some(dst)) = (&overlay_target, &pingpong[free]) {
                 draw_composite_pass(
                     &gl, compositor.composite.0, compositor.composite.1,
-                    final_tex, t.tex, 0, 1.0, w_px, h_px, dst.fbo,
+                    final_tex, t.tex, 0, 1.0, &motion::IDENTITY_MATRIX, w_px, h_px, dst.fbo,
                 );
                 final_tex = dst.tex;
             }
@@ -843,12 +854,17 @@ uniform sampler2D u_backdrop;
 uniform sampler2D u_layer;
 uniform int   u_blend_mode;
 uniform float u_opacity;
+uniform mat3  u_layer_xform;
 in vec2 v_uv;
 out vec4 color;
 {}
 void main() {{
     vec4 b = texture(u_backdrop, v_uv);
-    vec4 s = texture(u_layer, v_uv);
+    // Layer motion (motion.rs): where in the layer this output pixel comes
+    // from.  Outside the layer is transparent, not a smeared edge.
+    vec2 luv = (u_layer_xform * vec3(v_uv, 1.0)).xy;
+    bool inside = all(greaterThanEqual(luv, vec2(0.0))) && all(lessThanEqual(luv, vec2(1.0)));
+    vec4 s = inside ? texture(u_layer, luv) : vec4(0.0);
     float sa = clamp(s.a * u_opacity, 0.0, 1.0);
     float ao = sa + b.a * (1.0 - sa);
     vec3 rgb = vec3(0.0);
@@ -936,6 +952,7 @@ fn draw_composite_pass(
     layer_tex: glow::Texture,
     blend_mode: i32,
     opacity: f32,
+    layer_xform: &[f32; 9],
     w: u32,
     h: u32,
     dst_fbo: glow::Framebuffer,
@@ -960,6 +977,9 @@ fn draw_composite_pass(
         }
         if let Some(loc) = gl.get_uniform_location(program, "u_opacity") {
             gl.uniform_1_f32(Some(&loc), opacity);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_layer_xform") {
+            gl.uniform_matrix_3_f32_slice(Some(&loc), false, layer_xform);
         }
         gl.bind_vertex_array(Some(vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -1009,7 +1029,7 @@ fn composite_stack(
         };
         draw_composite_pass(
             gl, compositor.composite.0, compositor.composite.1,
-            backdrop.tex, layer_t.tex, l.blend_mode, l.opacity, targets.w, targets.h, out.fbo,
+            backdrop.tex, layer_t.tex, l.blend_mode, l.opacity, &l.xform, targets.w, targets.h, out.fbo,
         );
         src = dst;
     }

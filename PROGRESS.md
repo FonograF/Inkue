@@ -223,6 +223,28 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-10-16) — Layer motion engine (geometry / path fades, phase 1 of 5)
+
+Engine groundwork for QLab-style geometry and path fades. Nothing calls it yet:
+the Fade Cue is wired in phase 2. Plan and QLab format notes live locally in
+`docs/fade-path-plan.md` and `docs/qlab-fade-path.md` (not tracked).
+
+- `output_engine/motion.rs` (pure math): `LayerMotion` (tx/ty as fraction of the
+  output, Y up; clockwise degrees; scale), `MotionProgram::{Curve, Path}`,
+  `MotionRun` with a pausable clock. Path = centripetal Catmull-Rom (or straight
+  segments) flattened to a distance table measured in output pixels → constant speed;
+  merge = cubic Hermite from the layer at rest to the path point at `merge`; loop
+  restarts each pass from the start offset. All measured against QLab 5.
+- Render thread evaluates each slot's motion every frame (`slot::motion_frame`) and
+  the composite shader samples the layer through `u_layer_xform` (output UV → layer
+  UV, rotation in pixels so 16:9 does not shear; outside the layer = transparent).
+  Identity matrix for unmoved layers and the overlay. A running motion paces the loop
+  at 16 ms like an opacity animation.
+- `OutputEngineApi::{start,pause,stop}_voice_motion` (defaults no-op). The engine
+  captures the start offset itself; a finished motion leaves its final offset as the
+  rest offset; new content / unload resets it.
+- 26 tests in `motion.rs`.
+
 ### 1.4.1 (2026-10-28) — OSC Cue address field squeezed (#12)
 
 - `components/common/Select.tsx`: the caller's `flex`/`minWidth` now go on the wrapper

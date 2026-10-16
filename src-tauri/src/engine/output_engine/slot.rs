@@ -29,6 +29,7 @@ use crate::engine::AudioEngine;
 
 use super::blend::BlendMode;
 use super::crossfade::{CrossfadeLink, Departure, Outgoing};
+use super::motion::{LayerMotion, MotionProgram, MotionRun, MotionStop};
 use super::output::{all_slots, slot_for_voice, wake_signal, Output};
 use super::types::{
     CrossfadePhase, CrossfadeRequest, LayerStyle, MpvCtx, OutputId, OutputStatus, VideoGeometry,
@@ -212,6 +213,14 @@ pub(super) struct SlotState {
     /// `crossfade.rs`.  Dropped once the dissolve has landed and its outgoing
     /// layers are gone, or when this content leaves the slot.
     pub crossfade: Option<CrossfadeLink>,
+    /// A geometry or path fade moving this layer, evaluated by the render
+    /// thread every frame (`motion.rs`).
+    pub motion: Option<MotionRun>,
+    /// The layer's offset while no motion runs: where the last one left it.
+    pub motion_rest: LayerMotion,
+    /// Width / height of this slot's output at the last rendered frame — what
+    /// a motion is sampled against outside the render thread.
+    pub motion_aspect: f64,
 }
 
 /// Slice program for one slot: `(start_s, end_s, play_count)` per segment;
@@ -243,7 +252,25 @@ impl SlotState {
             slice_plan: None,
             generation: 0,
             crossfade: None,
+            motion: None,
+            motion_rest: LayerMotion::IDENTITY,
+            motion_aspect: 16.0 / 9.0,
         }
+    }
+
+    /// The layer's offset right now.
+    fn current_motion(&mut self, now: Instant) -> LayerMotion {
+        let aspect = self.motion_aspect;
+        match self.motion.as_mut() {
+            Some(run) => run.sample(now, aspect).0,
+            None => self.motion_rest,
+        }
+    }
+
+    /// New content (or none): the layer starts unmoved.
+    fn clear_motion(&mut self) {
+        self.motion = None;
+        self.motion_rest = LayerMotion::IDENTITY;
     }
 }
 
@@ -483,6 +510,7 @@ pub(super) fn hard_unload(slot: &Arc<VideoSlot>, report: UnloadReport) {
         st.preloaded = false;
         st.pending_unload = false;
         st.slice_plan = None;
+        st.clear_motion();
         let crossfade = st.crossfade.take();
         st.anim.set(0.0);
         (voice, audio, crossfade)
@@ -545,6 +573,7 @@ pub(super) fn load_into_slot(slot: &Arc<VideoSlot>, load: SlotLoad) {
         st.blend_mode = load.layer_style.blend_mode;
         st.base_opacity = load.layer_style.opacity.clamp(0.0, 1.0) as f32;
         st.pending_unload = false;
+        st.clear_motion();
         let previous_crossfade = st.crossfade.take();
         st.hold_last_frame = load.hold_last_frame;
         st.slice_plan = if load.slices.is_empty() {
@@ -736,6 +765,7 @@ pub(super) fn tick_slot(slot: &Arc<VideoSlot>) -> (f32, bool) {
     let unload_now = st.pending_unload && opacity <= 0.0 && !animating;
     if unload_now {
         st.pending_unload = false;
+        st.clear_motion();
         let crossfade = st.crossfade.take();
         st.voice_id = None;
         st.generation = st.generation.wrapping_add(1);
@@ -1040,6 +1070,7 @@ pub(super) fn is_animating(slot: &Arc<VideoSlot>) -> bool {
         .map(|st| {
             st.anim.is_animating()
                 || st.crossfade.as_ref().is_some_and(|link| link.is_animating(Instant::now()))
+                || st.motion.as_ref().is_some_and(|run| !run.is_paused())
         })
         .unwrap_or(false)
 }
@@ -1061,6 +1092,63 @@ pub(super) fn opacity_of(slot: &Arc<VideoSlot>) -> f32 {
 pub(super) fn animate_opacity(slot: &Arc<VideoSlot>, target: f32, duration_ms: u32) {
     if let Ok(mut st) = slot.state.lock() {
         st.anim.animate_to(target, duration_ms.max(1));
+    }
+    slot.wake();
+}
+
+// ---------------------------------------------------------------------------
+// Layer motion
+// ---------------------------------------------------------------------------
+
+/// The layer offset to draw this frame, on an output of `width` × `height`.
+/// Called by the render thread; a finished motion settles into the rest
+/// offset here, so the layer stays where the fade left it.
+pub(super) fn motion_frame(slot: &Arc<VideoSlot>, width: u32, height: u32) -> LayerMotion {
+    let Ok(mut guard) = slot.state.lock() else { return LayerMotion::IDENTITY };
+    let st = &mut *guard;
+    st.motion_aspect = f64::from(width.max(1)) / f64::from(height.max(1));
+    let Some(run) = st.motion.as_mut() else { return st.motion_rest };
+    let (motion, finished) = run.sample(Instant::now(), st.motion_aspect);
+    if finished {
+        st.motion = None;
+        st.motion_rest = motion;
+    }
+    motion
+}
+
+/// Start moving the layer, from wherever it is now.  Replaces a motion
+/// already running on it (the new one starts from that one's position).
+pub(super) fn start_motion(slot: &Arc<VideoSlot>, program: MotionProgram) {
+    if let Ok(mut st) = slot.state.lock() {
+        let now = Instant::now();
+        let start = st.current_motion(now);
+        st.motion = Some(MotionRun::new(program, start, now));
+    }
+    slot.wake();
+}
+
+/// Hold (`true`) or release the clock of the layer's motion.
+pub(super) fn pause_motion(slot: &Arc<VideoSlot>, paused: bool) {
+    if let Ok(mut st) = slot.state.lock() {
+        if let Some(run) = st.motion.as_mut() {
+            let now = Instant::now();
+            if paused { run.pause(now) } else { run.resume(now) }
+        }
+    }
+    slot.wake();
+}
+
+/// End the layer's motion, keeping or undoing what it did.
+pub(super) fn stop_motion(slot: &Arc<VideoSlot>, how: MotionStop) {
+    if let Ok(mut st) = slot.state.lock() {
+        let now = Instant::now();
+        let current = st.current_motion(now);
+        if let Some(run) = st.motion.take() {
+            st.motion_rest = match how {
+                MotionStop::Hold => current,
+                MotionStop::Revert => run.start(),
+            };
+        }
     }
     slot.wake();
 }
@@ -1263,6 +1351,7 @@ fn vacate_after_end(slot: &Arc<VideoSlot>) -> Option<VoiceId> {
         st.preloaded = false;
         st.pending_unload = false;
         st.slice_plan = None;
+        st.clear_motion();
         let crossfade = st.crossfade.take();
         st.anim.set(0.0);
         (voice, audio, crossfade)
