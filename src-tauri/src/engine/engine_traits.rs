@@ -191,12 +191,13 @@ pub trait OutputEngineApi: Send + Sync {
     /// The driving Fade Cue stopped: cancel a crossfade that has not started,
     /// freeze one in progress.
     fn release_crossfade(&self, incoming: VoiceId);
-    /// Start moving a voice's layer (geometry or path fade) from where it is.
-    fn start_voice_motion(&self, _voice_id: VoiceId, _program: MotionProgram) {}
-    /// Hold (`true`) or release the clock of a voice's layer motion.
-    fn pause_voice_motion(&self, _voice_id: VoiceId, _paused: bool) {}
-    /// End a voice's layer motion, keeping or undoing what it did.
-    fn stop_voice_motion(&self, _voice_id: VoiceId, _how: MotionStop) {}
+    /// Start moving a voice's layer (geometry or path fade) for `owner`, from
+    /// where it is.  A later start on the same voice replaces it.
+    fn start_voice_motion(&self, _voice_id: VoiceId, _owner: Uuid, _program: MotionProgram) {}
+    /// Hold (`true`) or release the clock of `owner`'s motion on a voice.
+    fn pause_voice_motion(&self, _voice_id: VoiceId, _owner: Uuid, _paused: bool) {}
+    /// End `owner`'s motion on a voice; one another owner started is left alone.
+    fn stop_voice_motion(&self, _voice_id: VoiceId, _owner: Uuid, _how: MotionStop) {}
 }
 
 impl OutputEngineApi for OutputEngine {
@@ -263,14 +264,14 @@ impl OutputEngineApi for OutputEngine {
     fn release_crossfade(&self, incoming: VoiceId) {
         OutputEngine::release_crossfade(self, incoming)
     }
-    fn start_voice_motion(&self, voice_id: VoiceId, program: MotionProgram) {
-        OutputEngine::start_voice_motion(self, voice_id, program)
+    fn start_voice_motion(&self, voice_id: VoiceId, owner: Uuid, program: MotionProgram) {
+        OutputEngine::start_voice_motion(self, voice_id, owner, program)
     }
-    fn pause_voice_motion(&self, voice_id: VoiceId, paused: bool) {
-        OutputEngine::pause_voice_motion(self, voice_id, paused)
+    fn pause_voice_motion(&self, voice_id: VoiceId, owner: Uuid, paused: bool) {
+        OutputEngine::pause_voice_motion(self, voice_id, owner, paused)
     }
-    fn stop_voice_motion(&self, voice_id: VoiceId, how: MotionStop) {
-        OutputEngine::stop_voice_motion(self, voice_id, how)
+    fn stop_voice_motion(&self, voice_id: VoiceId, owner: Uuid, how: MotionStop) {
+        OutputEngine::stop_voice_motion(self, voice_id, owner, how)
     }
 }
 

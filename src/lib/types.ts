@@ -497,7 +497,26 @@ export interface FadeCueData extends CueSummary {
   /** Crossfade: a visual cue started by this Fade so the picture dissolves from
    *  the targets into it. null = plain fade. */
   crossfade_into_id: string | null;
+  /** Geometry fade on the visual targets (QLab's Geometry tab). null = none. */
+  geometry: GeometryFade | null;
+  /** When true (default) the fade drives the pictures' brightness toward
+   *  target_brightness_pct; false = a geometry-only fade. */
+  fade_opacity: boolean;
 }
+
+/** Curve-mode geometry targets; each null = not faded. */
+export interface CurveGeometry {
+  /** Layer offset [x, y] as a fraction of the output's width / height.
+   *  Centre origin, **+Y = up** (QLab's convention). */
+  translation: [number, number] | null;
+  /** Scale factor (1 = unchanged). */
+  scale: number | null;
+  /** Rotation about the output centre, degrees clockwise. */
+  rotation_deg: number | null;
+}
+
+/** What a Fade Cue does to its pictures' geometry, tagged by mode. */
+export type GeometryFade = { mode: "curve" } & CurveGeometry;
 
 /** Full cue data returned by get_cue for a Wait Cue. */
 export interface WaitCueData extends CueSummary {

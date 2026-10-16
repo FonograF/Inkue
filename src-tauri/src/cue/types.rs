@@ -325,6 +325,42 @@ pub struct CrossfadeLinked {
     pub targets: Vec<CueId>,
 }
 
+/// What a Fade Cue does to the geometry of its visual targets (QLab's
+/// Geometry tab).  The output engine runs it as a layer motion
+/// (`engine/output_engine/motion.rs`).
+///
+/// Serialized with a `mode` tag, so Path mode can join without a format change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum GeometryFade {
+    /// Fade properties from where they are to target values, on the Fade's
+    /// curve shapes.
+    Curve(CurveGeometry),
+}
+
+/// Curve-mode targets.  Each one is `None` when it is not faded (QLab's
+/// unchecked box); a fade with none set changes nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CurveGeometry {
+    /// Layer offset `[x, y]` as a fraction of the output's width and height:
+    /// centre origin, **Y up** (QLab's convention).
+    #[serde(default)]
+    pub translation: Option<[f64; 2]>,
+    /// Scale factor (1.0 = unchanged).
+    #[serde(default)]
+    pub scale: Option<f64>,
+    /// Rotation about the output centre, degrees clockwise.
+    #[serde(default)]
+    pub rotation_deg: Option<f64>,
+}
+
+impl CurveGeometry {
+    /// `true` when no property is faded.
+    pub fn is_empty(&self) -> bool {
+        self.translation.is_none() && self.scale.is_none() && self.rotation_deg.is_none()
+    }
+}
+
 /// Specification for a single fade (in or out).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FadeSpec {

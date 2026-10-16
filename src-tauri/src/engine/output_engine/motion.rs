@@ -25,6 +25,8 @@
 
 use std::time::{Duration, Instant};
 
+use uuid::Uuid;
+
 use crate::engine::ring_command::FadeCurve;
 
 /// Samples taken along each span of a smoothed path.  The distance table
@@ -168,6 +170,10 @@ pub enum MotionStop {
 
 /// A program in flight on a layer, with its own pausable clock.
 pub(super) struct MotionRun {
+    /// Who started it (the Fade Cue's id).  Only the owner may pause or stop
+    /// it: a later fade on the same layer replaces the run, and the earlier
+    /// fade stopping afterwards must not cancel the newer one.
+    owner: Uuid,
     program: MotionProgram,
     /// The layer's offset when the program started (merge source, curve
     /// start, loop restart point, revert target).
@@ -181,9 +187,22 @@ pub(super) struct MotionRun {
 }
 
 impl MotionRun {
-    /// Start `program` from `start` at `now`.
-    pub(super) fn new(program: MotionProgram, start: LayerMotion, now: Instant) -> Self {
-        Self { program, start, started_at: now, paused_at: None, paused_total: Duration::ZERO, compiled: None }
+    /// Start `program` for `owner` from `start` at `now`.
+    pub(super) fn new(owner: Uuid, program: MotionProgram, start: LayerMotion, now: Instant) -> Self {
+        Self {
+            owner,
+            program,
+            start,
+            started_at: now,
+            paused_at: None,
+            paused_total: Duration::ZERO,
+            compiled: None,
+        }
+    }
+
+    /// `true` when `owner` started this run.
+    pub(super) fn is_owned_by(&self, owner: Uuid) -> bool {
+        self.owner == owner
     }
 
     /// The layer's offset before this run.
@@ -493,7 +512,7 @@ mod tests {
     /// Sample `program` at `t` seconds after its start.
     fn at(program: &MotionProgram, start: LayerMotion, t: f64) -> (LayerMotion, bool) {
         let t0 = Instant::now();
-        let mut run = MotionRun::new(program.clone(), start, t0);
+        let mut run = MotionRun::new(Uuid::nil(), program.clone(), start, t0);
         run.sample(t0 + secs(t), ASPECT)
     }
 
@@ -698,7 +717,7 @@ mod tests {
     fn pause_holds_the_position() {
         let t0 = Instant::now();
         let program = MotionProgram::Path(path(&[[0.0, 0.0], [0.3, 0.0]]));
-        let mut run = MotionRun::new(program, LayerMotion::IDENTITY, t0);
+        let mut run = MotionRun::new(Uuid::nil(), program, LayerMotion::IDENTITY, t0);
         run.pause(t0 + secs(1.0));
         let held = run.sample(t0 + secs(2.5), ASPECT).0.tx;
         assert!(close(held, 0.1, 1e-9), "held at 1 s: {held}");
@@ -714,7 +733,7 @@ mod tests {
         // Same fractions, different aspect: the corner time moves with it.
         let program = MotionProgram::Path(path(&[[0.0, 0.0], [0.1, 0.0], [0.1, 0.1]]));
         let t0 = Instant::now();
-        let mut run = MotionRun::new(program, LayerMotion::IDENTITY, t0);
+        let mut run = MotionRun::new(Uuid::nil(), program, LayerMotion::IDENTITY, t0);
         let _ = run.sample(t0, ASPECT);
         let (m, _) = run.sample(t0 + secs(1.5), 1.0); // square: corner at half time
         assert!(close(m.tx, 0.1, 1e-9) && close(m.ty, 0.0, 1e-9), "{m:?}");

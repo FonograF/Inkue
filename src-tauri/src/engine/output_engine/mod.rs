@@ -715,25 +715,27 @@ impl OutputEngine {
         }
     }
 
-    /// Start moving a voice's layer (geometry or path fade), from wherever it
-    /// is now.  The render thread evaluates the program every frame.
-    pub fn start_voice_motion(&self, voice_id: VoiceId, program: MotionProgram) {
+    /// Start moving a voice's layer (geometry or path fade) on behalf of
+    /// `owner`, from wherever it is now.  The render thread evaluates the
+    /// program every frame.
+    pub fn start_voice_motion(&self, voice_id: VoiceId, owner: Uuid, program: MotionProgram) {
         if let Some(slot) = output::slot_for_voice(voice_id) {
-            slot::start_motion(&slot, program);
+            slot::start_motion(&slot, owner, program);
         }
     }
 
-    /// Hold (`true`) or release the clock of a voice's layer motion.
-    pub fn pause_voice_motion(&self, voice_id: VoiceId, paused: bool) {
+    /// Hold (`true`) or release the clock of `owner`'s motion on a voice.
+    pub fn pause_voice_motion(&self, voice_id: VoiceId, owner: Uuid, paused: bool) {
         if let Some(slot) = output::slot_for_voice(voice_id) {
-            slot::pause_motion(&slot, paused);
+            slot::pause_motion(&slot, owner, paused);
         }
     }
 
-    /// End a voice's layer motion, keeping or undoing what it did.
-    pub fn stop_voice_motion(&self, voice_id: VoiceId, how: MotionStop) {
+    /// End `owner`'s motion on a voice, keeping or undoing what it did.  A
+    /// motion another owner started since is left alone.
+    pub fn stop_voice_motion(&self, voice_id: VoiceId, owner: Uuid, how: MotionStop) {
         if let Some(slot) = output::slot_for_voice(voice_id) {
-            slot::stop_motion(&slot, how);
+            slot::stop_motion(&slot, owner, how);
         }
     }
 

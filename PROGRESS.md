@@ -223,6 +223,33 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### Unreleased (2026-10-16) — Geometry fades, Curve mode (phase 2 of 5)
+
+A Fade Cue can now move, scale and rotate its pictures (QLab's Geometry tab,
+Curve mode), on the fade's own curve shapes.
+
+- `cue/types.rs`: `GeometryFade::Curve(CurveGeometry)` (`mode`-tagged so Path mode
+  joins without a format change); each of translation `[x, y]` (fraction of the
+  output, +Y up), scale, rotation (° clockwise) is `None` when not faded.
+- `FadeCue`: `geometry` + `fade_opacity` (default `true` = the opacity fade every
+  older Fade ran; `false` = geometry-only). The motion is handed to each visual
+  target once, when the action starts (after the pre-wait); pause/resume forward to
+  it; a stop **holds** the picture where it got to. Carried across the inspector
+  rebuild (`FadeRun::motion_started`). Validation warns on a geometry fade with
+  nothing checked. Old shows load unchanged.
+- Engine: motions carry an **owner** (the Fade's id) — a later fade on the same
+  layer replaces the run, and the earlier fade's stop/pause can no longer touch it.
+- Inspector (`FadeCueTab.tsx`): Visual → "Fade brightness" toggle; new Geometry
+  section (position X/Y, scale, rotation, each with its own checkbox).
+- Tests: 6 unit (serde roundtrip, legacy JSON, unreadable geometry dropped, program
+  mapping incl. per-direction curves, empty-geometry warning, rebuild carry-over),
+  6 integration through the recording engine (one start per picture, geometry-only
+  leaves opacity/level alone, legacy fade starts no motion, pre-wait, pause/resume/
+  stop reach the own motion with Hold, stop before the action touches nothing).
+- Checked on screen (macOS, `pnpm tauri dev`, still image + video): position X/Y
+  (+Y = up), clockwise rotation without shear, and a second Fade taking over from
+  wherever the first left the picture.
+
 ### Unreleased (2026-10-16) — Layer motion engine (geometry / path fades, phase 1 of 5)
 
 Engine groundwork for QLab-style geometry and path fades. Nothing calls it yet:

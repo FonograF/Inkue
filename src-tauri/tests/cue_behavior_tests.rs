@@ -702,3 +702,155 @@ fn visual_cue_does_not_hang_after_its_pre_wait() {
         "a failed post-pre-wait start must release the cue, not freeze it",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fade — geometry (layer motion in the output engine)
+// ---------------------------------------------------------------------------
+
+mod geometry_fade {
+    use super::*;
+    use common::CallLog;
+    use inkue_lib::cue::fade_cue::FadeCue;
+    use inkue_lib::cue::types::{CurveGeometry, GeometryFade};
+    use inkue_lib::engine::output_engine::{MotionProgram, MotionStop};
+    use uuid::Uuid;
+
+    /// A move-and-turn fade that leaves level and opacity alone.
+    fn fade(duration_ms: u64) -> FadeCue {
+        let mut fade = FadeCue::new();
+        fade.target_cue_ids = vec![Uuid::new_v4()];
+        fade.fade_volume = false;
+        fade.fade_opacity = false;
+        fade.fade_duration_ms = duration_ms;
+        fade.geometry = Some(GeometryFade::Curve(CurveGeometry {
+            translation: Some([0.25, -0.1]),
+            scale: None,
+            rotation_deg: Some(45.0),
+        }));
+        fade
+    }
+
+    fn motion_calls(log: &CallLog) -> Vec<EngineCall> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    EngineCall::OutputStartMotion { .. }
+                        | EngineCall::OutputPauseMotion { .. }
+                        | EngineCall::OutputStopMotion { .. }
+                )
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn hands_its_motion_to_every_picture_once() {
+        let (ctx, _rx, log) = recording_context();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut fade = fade(500);
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(Vec::new(), vec![(a, 1.0), (b, 1.0)], 1.0);
+        for _ in 0..3 {
+            fade.tick(&ctx).unwrap();
+        }
+
+        let calls = motion_calls(&log);
+        assert_eq!(calls.len(), 2, "one start per picture, not per tick: {calls:?}");
+        for (call, voice) in calls.iter().zip([a, b]) {
+            let EngineCall::OutputStartMotion { voice: v, owner, program } = call else {
+                panic!("expected a motion start, got {call:?}");
+            };
+            assert_eq!((*v, *owner), (voice, fade.id()));
+            let MotionProgram::Curve(curve) = program else { panic!("curve mode: {program:?}") };
+            assert_eq!((curve.tx, curve.ty), (Some(0.25), Some(-0.1)));
+            assert_eq!((curve.rotation_deg, curve.scale), (Some(45.0), None));
+            assert_eq!(curve.duration, Duration::from_millis(500));
+        }
+    }
+
+    #[test]
+    fn a_geometry_only_fade_leaves_opacity_and_level_alone() {
+        let (ctx, _rx, log) = recording_context();
+        let mut fade = fade(20);
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(vec![(Uuid::new_v4(), 1.0, 0.0)], vec![(Uuid::new_v4(), 1.0)], 0.0);
+        fade.tick(&ctx).unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        fade.tick(&ctx).unwrap();
+
+        let calls = log.lock().unwrap();
+        assert!(!calls.iter().any(|c| matches!(c, EngineCall::OutputSetOpacity { .. })), "{calls:?}");
+        assert!(!calls.iter().any(|c| matches!(c, EngineCall::AudioSetGain { .. })), "{calls:?}");
+    }
+
+    #[test]
+    fn a_fade_without_geometry_fades_opacity_and_starts_no_motion() {
+        // Every Fade written before geometry fades existed.
+        let (ctx, _rx, log) = recording_context();
+        let mut fade = FadeCue::new();
+        fade.target_cue_ids = vec![Uuid::new_v4()];
+        fade.fade_duration_ms = 20;
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(Vec::new(), vec![(Uuid::new_v4(), 1.0)], 0.0);
+        fade.tick(&ctx).unwrap();
+
+        assert!(motion_calls(&log).is_empty());
+        assert!(log.lock().unwrap().iter().any(|c| matches!(c, EngineCall::OutputSetOpacity { .. })));
+    }
+
+    #[test]
+    fn the_motion_starts_after_the_pre_wait() {
+        let (ctx, _rx, log) = recording_context();
+        let mut fade = fade(500);
+        fade.set_pre_wait(Duration::from_millis(60));
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(Vec::new(), vec![(Uuid::new_v4(), 1.0)], 1.0);
+        fade.tick(&ctx).unwrap();
+        assert!(motion_calls(&log).is_empty(), "nothing moves during the pre-wait");
+
+        std::thread::sleep(Duration::from_millis(80));
+        fade.tick(&ctx).unwrap(); // ends the pre-wait
+        fade.tick(&ctx).unwrap(); // first tick of the action
+        assert_eq!(motion_calls(&log).len(), 1);
+    }
+
+    #[test]
+    fn pause_resume_and_stop_reach_its_own_motion() {
+        let (ctx, _rx, log) = recording_context();
+        let voice = Uuid::new_v4();
+        let mut fade = fade(500);
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(Vec::new(), vec![(voice, 1.0)], 1.0);
+        fade.tick(&ctx).unwrap();
+        fade.pause(&ctx).unwrap();
+        fade.resume(&ctx).unwrap();
+        fade.stop(&ctx).unwrap();
+
+        let owner = fade.id();
+        assert_eq!(
+            motion_calls(&log)[1..],
+            [
+                EngineCall::OutputPauseMotion { voice, owner, paused: true },
+                EngineCall::OutputPauseMotion { voice, owner, paused: false },
+                // A stopped geometry fade leaves the picture where it got to.
+                EngineCall::OutputStopMotion { voice, owner, how: MotionStop::Hold },
+            ]
+        );
+    }
+
+    #[test]
+    fn stopping_before_the_action_touches_no_motion() {
+        let (ctx, _rx, log) = recording_context();
+        let mut fade = fade(500);
+        fade.set_pre_wait(Duration::from_secs(10));
+        fade.go(&ctx).unwrap();
+        fade.set_fade_voices(Vec::new(), vec![(Uuid::new_v4(), 1.0)], 1.0);
+        fade.tick(&ctx).unwrap();
+        fade.pause(&ctx).unwrap();
+        fade.stop(&ctx).unwrap();
+        assert!(motion_calls(&log).is_empty(), "{:?}", motion_calls(&log));
+    }
+}

@@ -30,7 +30,9 @@ use inkue_lib::cue::registry::CueRegistry;
 use inkue_lib::cue::types::CueType;
 use inkue_lib::engine::dmx_engine::ChannelWidth;
 use inkue_lib::engine::engine_traits::{AudioEngineApi, DmxEngineApi, OutputEngineApi};
-use inkue_lib::engine::output_engine::{ContentRequest, CrossfadePhase, CrossfadeRequest};
+use inkue_lib::engine::output_engine::{
+    ContentRequest, CrossfadePhase, CrossfadeRequest, MotionProgram, MotionStop,
+};
 use inkue_lib::engine::ring_command::{FadeCurve, VoiceId};
 use inkue_lib::engine::voice::Voice;
 
@@ -300,6 +302,9 @@ pub enum EngineCall {
     OutputHoldCrossfade { paused: bool },
     OutputReleaseCrossfade,
     OutputSetOpacity { opacity: f32 },
+    OutputStartMotion { voice: VoiceId, owner: Uuid, program: MotionProgram },
+    OutputPauseMotion { voice: VoiceId, owner: Uuid, paused: bool },
+    OutputStopMotion { voice: VoiceId, owner: Uuid, how: MotionStop },
     AudioDevamp { stop_at_end: bool },
     OutputDevamp { stop_at_end: bool },
     DmxSubmitFade { universe: u16, channel: u16, target_norm: f64 },
@@ -490,6 +495,15 @@ impl OutputEngineApi for RecOutput {
     }
     fn release_crossfade(&self, _incoming: VoiceId) {
         record(&self.log, EngineCall::OutputReleaseCrossfade);
+    }
+    fn start_voice_motion(&self, voice: VoiceId, owner: Uuid, program: MotionProgram) {
+        record(&self.log, EngineCall::OutputStartMotion { voice, owner, program });
+    }
+    fn pause_voice_motion(&self, voice: VoiceId, owner: Uuid, paused: bool) {
+        record(&self.log, EngineCall::OutputPauseMotion { voice, owner, paused });
+    }
+    fn stop_voice_motion(&self, voice: VoiceId, owner: Uuid, how: MotionStop) {
+        record(&self.log, EngineCall::OutputStopMotion { voice, owner, how });
     }
 }
 

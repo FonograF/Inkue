@@ -17,6 +17,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use uuid::Uuid;
 
 use crate::engine::mpv_sys::{
     MpvEventEndFile, MpvEventLogMessage, MpvEventProperty, MpvLib,
@@ -1116,21 +1117,21 @@ pub(super) fn motion_frame(slot: &Arc<VideoSlot>, width: u32, height: u32) -> La
     motion
 }
 
-/// Start moving the layer, from wherever it is now.  Replaces a motion
-/// already running on it (the new one starts from that one's position).
-pub(super) fn start_motion(slot: &Arc<VideoSlot>, program: MotionProgram) {
+/// Start moving the layer for `owner`, from wherever it is now.  Replaces a
+/// motion already running on it (the new one starts from that one's position).
+pub(super) fn start_motion(slot: &Arc<VideoSlot>, owner: Uuid, program: MotionProgram) {
     if let Ok(mut st) = slot.state.lock() {
         let now = Instant::now();
         let start = st.current_motion(now);
-        st.motion = Some(MotionRun::new(program, start, now));
+        st.motion = Some(MotionRun::new(owner, program, start, now));
     }
     slot.wake();
 }
 
-/// Hold (`true`) or release the clock of the layer's motion.
-pub(super) fn pause_motion(slot: &Arc<VideoSlot>, paused: bool) {
+/// Hold (`true`) or release the clock of `owner`'s motion on the layer.
+pub(super) fn pause_motion(slot: &Arc<VideoSlot>, owner: Uuid, paused: bool) {
     if let Ok(mut st) = slot.state.lock() {
-        if let Some(run) = st.motion.as_mut() {
+        if let Some(run) = st.motion.as_mut().filter(|run| run.is_owned_by(owner)) {
             let now = Instant::now();
             if paused { run.pause(now) } else { run.resume(now) }
         }
@@ -1138,9 +1139,13 @@ pub(super) fn pause_motion(slot: &Arc<VideoSlot>, paused: bool) {
     slot.wake();
 }
 
-/// End the layer's motion, keeping or undoing what it did.
-pub(super) fn stop_motion(slot: &Arc<VideoSlot>, how: MotionStop) {
+/// End `owner`'s motion on the layer, keeping or undoing what it did.  A
+/// motion someone else started since is left running.
+pub(super) fn stop_motion(slot: &Arc<VideoSlot>, owner: Uuid, how: MotionStop) {
     if let Ok(mut st) = slot.state.lock() {
+        if !st.motion.as_ref().is_some_and(|run| run.is_owned_by(owner)) {
+            return;
+        }
         let now = Instant::now();
         let current = st.current_motion(now);
         if let Some(run) = st.motion.take() {

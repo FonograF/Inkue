@@ -1,7 +1,7 @@
 // Fade Cue main tab: targets, fade parameters, audio/visual goals, on-complete.
 // Extracted from BasicsTab so Basics stays identity-only.
 
-import type { CueSummary, FadeCueData, FadeShapes } from "../../lib/types";
+import type { CueSummary, CurveGeometry, FadeCueData, FadeShapes } from "../../lib/types";
 import { CurveEditor } from "../Curve/CurveEditor";
 
 /** Locked S-Curve — what a fade has always done, for a cue saved before
@@ -16,6 +16,8 @@ import { flattenCues, makesSound, showsPicture } from "../../lib/cueTree";
 import { Grid2, MiniField, NumberInput, Section, SliderRow, ToggleRow, inputStyle } from "./Field";
 import { CueTargetPicker } from "./CueTargetPicker";
 import { Select } from "../common/Select";
+
+const NO_GEOMETRY: CurveGeometry = { translation: null, scale: null, rotation_deg: null };
 
 const hintStyle = { fontSize: 11, color: "var(--wc-text-faint)", margin: "6px 0 10px", lineHeight: 1.5 } as const;
 
@@ -55,6 +57,15 @@ export function FadeCueTab({
   const fadeVolume: boolean = cue.fade_volume ?? true;
   const panEnabled: boolean = cue.target_pan != null;
   const panValue: number = cue.target_pan ?? 0;
+  const fadeOpacity: boolean = cue.fade_opacity ?? true;
+  const geometry: CurveGeometry = cue.geometry?.mode === "curve" ? cue.geometry : NO_GEOMETRY;
+  // Unchecking the last property removes the geometry fade altogether.
+  const patchGeometry = (partial: Partial<CurveGeometry>) => {
+    const next = { ...geometry, ...partial };
+    const empty = next.translation == null && next.scale == null && next.rotation_deg == null;
+    onSave({ geometry: empty ? null : { mode: "curve", ...next } });
+  };
+  const [moveX, moveY] = geometry.translation ?? [0, 0];
 
   return (
     <>
@@ -176,15 +187,87 @@ export function FadeCueTab({
           title="Visual"
           hint={crossfadeInto ? "Used only if there is nothing to dissolve into." : undefined}
         >
-          <SliderRow
-            label="Brightness"
-            value={brightnessPercent}
-            min={0}
-            max={100}
-            step={1}
-            format={(v) => `${Math.round(v)}%`}
-            onChange={(v) => onSave({ target_brightness_pct: Math.round(v) })}
-          />
+          <ToggleRow
+            label="Fade brightness"
+            checked={fadeOpacity}
+            onToggle={(v) => onSave({ fade_opacity: v })}
+          >
+            <SliderRow
+              label="To"
+              value={brightnessPercent}
+              min={0}
+              max={100}
+              step={1}
+              format={(v) => `${Math.round(v)}%`}
+              onChange={(v) => onSave({ target_brightness_pct: Math.round(v) })}
+            />
+          </ToggleRow>
+        </Section>
+      )}
+
+      {showBrightness && (
+        <Section
+          title="Geometry"
+          hint="Moves each picture from wherever it is, on the fade's curve. It stays there when the fade ends."
+        >
+          <ToggleRow
+            label="Fade position"
+            checked={geometry.translation != null}
+            onToggle={(v) => patchGeometry({ translation: v ? [moveX, moveY] : null })}
+          >
+            <Grid2>
+              <MiniField label="X (± of width, + = right)">
+                <NumberInput
+                  value={moveX}
+                  step={0.01}
+                  min={-2}
+                  max={2}
+                  onCommit={(v) => patchGeometry({ translation: [v, moveY] })}
+                />
+              </MiniField>
+              <MiniField label="Y (± of height, + = up)">
+                <NumberInput
+                  value={moveY}
+                  step={0.01}
+                  min={-2}
+                  max={2}
+                  onCommit={(v) => patchGeometry({ translation: [moveX, v] })}
+                />
+              </MiniField>
+            </Grid2>
+          </ToggleRow>
+          <ToggleRow
+            label="Fade scale"
+            checked={geometry.scale != null}
+            onToggle={(v) => patchGeometry({ scale: v ? 1 : null })}
+          >
+            <SliderRow
+              label="To"
+              value={geometry.scale ?? 1}
+              min={0.05}
+              max={8}
+              step={0.05}
+              format={(v) => `${Math.round(v * 100)}%`}
+              onChange={(v) => patchGeometry({ scale: v })}
+            />
+          </ToggleRow>
+          <ToggleRow
+            label="Fade rotation"
+            checked={geometry.rotation_deg != null}
+            onToggle={(v) => patchGeometry({ rotation_deg: v ? 0 : null })}
+          >
+            <Grid2>
+              <MiniField label="To (°, clockwise)">
+                <NumberInput
+                  value={geometry.rotation_deg ?? 0}
+                  step={1}
+                  min={-3600}
+                  max={3600}
+                  onCommit={(v) => patchGeometry({ rotation_deg: v })}
+                />
+              </MiniField>
+            </Grid2>
+          </ToggleRow>
         </Section>
       )}
 
