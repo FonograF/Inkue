@@ -30,7 +30,7 @@ use crate::{
         AudioEngine, DmxEngine, OscServer, OutputEngine,
         timecode_receiver::TimecodeReceiver,
     },
-    show::{undo_stack::UndoStack, Workspace},
+    show::{undo_stack::UndoHistory, Workspace},
 };
 
 /// A cue copied to the in-app clipboard.
@@ -58,8 +58,8 @@ pub struct AppState {
     /// Set of cue IDs whose audio files are currently being decoded in the
     /// background.  Used to show a "Loading…" indicator in the UI.
     pub loading_cues: Arc<Mutex<HashSet<Uuid>>>,
-    /// Undo / redo history for the active cue list.
-    pub undo_stack: Arc<Mutex<UndoStack>>,
+    /// Undo / redo history, one stack per cue list (see [`UndoHistory`]).
+    pub undo_stack: Arc<Mutex<UndoHistory>>,
     /// In-app clipboard: the last cue copied via Ctrl+C, with the decoded audio it
     /// carried so a paste into another list is playable immediately.
     pub clipboard: Arc<Mutex<Option<ClipboardCue>>>,
@@ -120,7 +120,7 @@ impl AppState {
             dmx_engine,
             registry: Arc::new(Mutex::new(registry)),
             loading_cues: Arc::new(Mutex::new(HashSet::new())),
-            undo_stack: Arc::new(Mutex::new(UndoStack::new())),
+            undo_stack: Arc::new(Mutex::new(UndoHistory::new())),
             clipboard: Arc::new(Mutex::new(None)),
             last_go_at: Arc::new(AtomicU64::new(0)),
             tc_receiver: Arc::new(Mutex::new(tc_receiver)),

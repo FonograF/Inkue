@@ -78,18 +78,18 @@ fn restore_snapshot(
 /// separately from the undo_stack lock so no deadlock is possible.
 pub fn push_current_snapshot(state: &AppState) -> Result<(), String> {
     // 1. Briefly lock the workspace to read the current state.
-    let snapshot = {
+    let (cue_list_id, snapshot) = {
         let ws = state.workspace.lock().map_err(|e| e.to_string())?;
         let cl = ws.active_cue_list().ok_or("No active cue list")?;
-        take_snapshot(cl)
+        (cl.id, take_snapshot(cl))
         // workspace lock released here
     };
-    // 2. Push onto the undo stack (separate lock, no deadlock risk).
+    // 2. Push onto that list's undo stack (separate lock, no deadlock risk).
     state
         .undo_stack
         .lock()
         .map_err(|e| e.to_string())?
-        .push_action(snapshot);
+        .push_action(cue_list_id, snapshot);
     Ok(())
 }
 
@@ -97,24 +97,32 @@ pub fn push_current_snapshot(state: &AppState) -> Result<(), String> {
 // Undo / Redo
 // ---------------------------------------------------------------------------
 
-/// Whether there is at least one action that can be undone.
+/// Whether the active cue list has at least one action that can be undone.
 #[tauri::command]
 pub fn can_undo(state: State<'_, AppState>) -> Result<bool, String> {
+    let cue_list_id = {
+        let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        ws.active_cue_list().ok_or("No active cue list")?.id
+    };
     Ok(state
         .undo_stack
         .lock()
         .map_err(|e| e.to_string())?
-        .can_undo())
+        .can_undo(cue_list_id))
 }
 
-/// Whether there is at least one action that can be re-done.
+/// Whether the active cue list has at least one action that can be re-done.
 #[tauri::command]
 pub fn can_redo(state: State<'_, AppState>) -> Result<bool, String> {
+    let cue_list_id = {
+        let ws = state.workspace.lock().map_err(|e| e.to_string())?;
+        ws.active_cue_list().ok_or("No active cue list")?.id
+    };
     Ok(state
         .undo_stack
         .lock()
         .map_err(|e| e.to_string())?
-        .can_redo())
+        .can_redo(cue_list_id))
 }
 
 /// Restore the cue list to its state before the most-recent mutating action.
@@ -129,9 +137,10 @@ pub fn undo(
     let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
 
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    let cue_list_id = cue_list.id;
     let current = take_snapshot(cue_list);
 
-    if let Some(prev) = stack.undo(current) {
+    if let Some(prev) = stack.undo(cue_list_id, current) {
         restore_snapshot(prev, cue_list, &registry).map_err(|e| e.to_string())?;
         ws.mark_modified();
     } else {
@@ -166,9 +175,10 @@ pub fn redo(
     let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
 
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    let cue_list_id = cue_list.id;
     let current = take_snapshot(cue_list);
 
-    if let Some(next) = stack.redo(current) {
+    if let Some(next) = stack.redo(cue_list_id, current) {
         restore_snapshot(next, cue_list, &registry).map_err(|e| e.to_string())?;
         ws.mark_modified();
     } else {

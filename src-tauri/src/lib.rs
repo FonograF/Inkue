@@ -278,9 +278,16 @@ pub fn run() {
                 std::thread::Builder::new()
                     .name("inkue-autosave".to_string())
                     .spawn(move || {
-                        enum Action { Write(String), Clear, Idle }
+                        enum Action { Write(u64, String), Clear, Idle }
                         // u64::MAX forces a first evaluation; the pristine
                         // "Untitled" workspace (is_modified == false) yields Clear.
+                        //
+                        // last_rev only advances once the write it represents has
+                        // actually landed on disk. Bumping it eagerly (as soon as a
+                        // write was *attempted*) meant a transient failure — disk
+                        // full, antivirus lock, a removable drive momentarily gone —
+                        // was never retried until the next real edit changed the
+                        // revision again, silently leaving a stale recovery snapshot.
                         let mut last_rev: u64 = u64::MAX;
                         // Only track files written by THIS session. A pre-existing
                         // recovery file belongs to the previous session — it must
@@ -296,9 +303,8 @@ pub fn run() {
                                         last_rev = w.revision;
                                         Action::Clear
                                     } else if w.revision != last_rev {
-                                        last_rev = w.revision;
                                         match w.to_recovery_json() {
-                                            Ok(json) => Action::Write(json),
+                                            Ok(json) => Action::Write(w.revision, json),
                                             Err(e) => {
                                                 log::warn!("[autosave] serialize failed: {e}");
                                                 Action::Idle
@@ -311,8 +317,11 @@ pub fn run() {
                                 Err(_) => Action::Idle,
                             };
                             match action {
-                                Action::Write(json) => match crate::recovery::write(&json) {
-                                    Ok(()) => on_disk = true,
+                                Action::Write(rev, json) => match crate::recovery::write(&json) {
+                                    Ok(()) => {
+                                        on_disk = true;
+                                        last_rev = rev;
+                                    }
                                     Err(e) => log::warn!("[autosave] write failed: {e}"),
                                 },
                                 Action::Clear => {

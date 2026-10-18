@@ -131,7 +131,7 @@ function CloseConfirmDialog({
           Unsaved Changes
         </div>
         <div style={{ fontSize: 13, color: "var(--wc-text-secondary)", marginBottom: 24 }}>
-          Do you want to save your workspace before quitting?
+          Do you want to save your workspace before continuing?
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <DialogBtn label="Cancel"    onClick={onCancel}  />
@@ -755,10 +755,15 @@ export default function App() {
   const [inspectorReload, setInspectorReload]     = useState(0);
   const [editorReload, setEditorReload]           = useState(0);
   const [showMode, setShowMode]                   = useState(false);
-  const [closeDialogOpen, setCloseDialogOpen]     = useState(false);
+  // Non-null while an unsaved-changes confirmation is pending; the function is
+  // the action to run once the user chooses Save or Don't Save (Cancel just
+  // clears this). Shared by window-close, New, Open and Import QLab so none
+  // of them can silently discard edits.
+  const [pendingUnsavedAction, setPendingUnsavedAction] = useState<(() => void) | null>(null);
   const [gotoOpen, setGotoOpen]                   = useState(false);
   const [outputSurfaceVisible, setOutputSurfaceVisible] = useState(false);
   const [loadError, setLoadError]                 = useState<string | null>(null);
+  const [saveError, setSaveError]                 = useState<string | null>(null);
   const [collectReport, setCollectReport]         = useState<CollectReport | null>(null);
   const [importReport, setImportReport]           = useState<ImportReport | null>(null);
   const [recentFiles, setRecentFiles]             = useState<string[]>(loadRecentFiles);
@@ -889,7 +894,13 @@ export default function App() {
     });
     if (typeof path !== "string") return false;
     const filePath = path.endsWith(".inkue") ? path : path + ".inkue";
-    await saveWorkspace(filePath).catch(console.error);
+    try {
+      await saveWorkspace(filePath);
+    } catch (err) {
+      console.error(err);
+      setSaveError(String(err));
+      return false;
+    }
     await refreshWorkspaceInfo();
     setRecentFiles(pushRecentFile(filePath));
     return true;
@@ -897,13 +908,17 @@ export default function App() {
 
   const handleSave = useCallback(async (): Promise<boolean> => {
     const path = workspaceInfo?.file_path;
-    if (path) {
-      await saveWorkspace(path).catch(console.error);
-      await refreshWorkspaceInfo();
-      setRecentFiles(pushRecentFile(path));
-      return true;
+    if (!path) return handleSaveAs();
+    try {
+      await saveWorkspace(path);
+    } catch (err) {
+      console.error(err);
+      setSaveError(String(err));
+      return false;
     }
-    return handleSaveAs();
+    await refreshWorkspaceInfo();
+    setRecentFiles(pushRecentFile(path));
+    return true;
   }, [workspaceInfo, refreshWorkspaceInfo, handleSaveAs]);
 
   const openWorkspacePath = useCallback(async (path: string) => {
@@ -912,20 +927,33 @@ export default function App() {
     setSearchQuery("");
   }, []);
 
+  /** Run `action` now, or — if the current workspace has unsaved edits —
+   *  prompt to save/discard/cancel first. `action` replaces or discards the
+   *  current show, so it must never run silently past unsaved work. */
+  const guardUnsaved = useCallback((action: () => void) => {
+    if (useWorkspaceStore.getState().workspaceInfo?.is_modified) {
+      setPendingUnsavedAction(() => action);
+    } else {
+      action();
+    }
+  }, []);
+
   const handleOpen = useCallback(async () => {
     const path = await openDialog({
       multiple: false,
       filters: [{ name: "Inkue Workspace", extensions: ["inkue", "wincue"] }],
     });
     if (typeof path === "string") {
-      await openWorkspacePath(path);
+      guardUnsaved(() => void openWorkspacePath(path));
     }
-  }, [openWorkspacePath]);
+  }, [openWorkspacePath, guardUnsaved]);
 
-  const handleNew = useCallback(async () => {
-    await newWorkspace().catch(console.error);
-    // cue-lists-changed and workspace-modified are emitted by the backend.
-  }, []);
+  const handleNew = useCallback(() => {
+    guardUnsaved(() => {
+      // cue-lists-changed and workspace-modified are emitted by the backend.
+      void newWorkspace().catch(console.error);
+    });
+  }, [guardUnsaved]);
 
   const handleImportQlab = useCallback(async () => {
     const path = await openDialog({
@@ -933,16 +961,21 @@ export default function App() {
       filters: [{ name: "QLab Workspace", extensions: ["qlab5", "qlab4"] }],
     });
     if (typeof path !== "string") return;
-    try {
-      // The import replaces the current show and is deliberately left unsaved:
-      // media resolves against the QLab bundle folder, so nothing is written
-      // into the user's QLab project. Save As is the operator's next step.
-      setImportReport(await importQlabWorkspace(path));
-      setSearchQuery("");
-    } catch (err) {
-      setLoadError(String(err));
-    }
-  }, []);
+    guardUnsaved(() => {
+      void (async () => {
+        try {
+          // The import replaces the current show and is deliberately left
+          // unsaved: media resolves against the QLab bundle folder, so
+          // nothing is written into the user's QLab project. Save As is the
+          // operator's next step.
+          setImportReport(await importQlabWorkspace(path));
+          setSearchQuery("");
+        } catch (err) {
+          setLoadError(String(err));
+        }
+      })();
+    });
+  }, [guardUnsaved]);
 
   const handleCollectAndSave = useCallback(async () => {
     const dir = await openDialog({ directory: true });
@@ -983,7 +1016,8 @@ export default function App() {
       const isModified = useWorkspaceStore.getState().workspaceInfo?.is_modified;
       if (isModified) {
         event.preventDefault();
-        setCloseDialogOpen(true);
+        // destroy() force-closes without re-triggering onCloseRequested.
+        setPendingUnsavedAction(() => () => void getCurrentWindow().destroy());
       }
       // Not modified → close proceeds normally.
     }).then((u) => { unlisten = u; });
@@ -991,22 +1025,23 @@ export default function App() {
     return () => unlisten?.();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // destroy() force-closes without re-triggering onCloseRequested.
-  const confirmSaveAndClose = async () => {
-    setCloseDialogOpen(false);
+  const confirmSaveThenContinue = async () => {
+    const action = pendingUnsavedAction;
+    setPendingUnsavedAction(null);
     const saved = await handleSave();
-    if (saved) {
-      void getCurrentWindow().destroy();
-    }
-    // If user cancelled the Save As dialog, keep the app open.
+    // If the user cancelled the Save As dialog, or the save failed
+    // (handleSave already surfaced the error), abandon the pending action
+    // instead of discarding their edits.
+    if (saved) action?.();
   };
 
-  const confirmDiscardAndClose = () => {
-    setCloseDialogOpen(false);
-    void getCurrentWindow().destroy();
+  const confirmDiscardThenContinue = () => {
+    const action = pendingUnsavedAction;
+    setPendingUnsavedAction(null);
+    action?.();
   };
 
-  const cancelClose = () => setCloseDialogOpen(false);
+  const cancelPendingUnsavedAction = () => setPendingUnsavedAction(null);
 
   // -------------------------------------------------------------------------
   // Misc
@@ -1202,6 +1237,34 @@ export default function App() {
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Save failure toast */}
+      {saveError && (
+        <div
+          style={{
+            position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
+            zIndex: 99999, background: "#7f1d1d", border: "1px solid #ef4444",
+            borderRadius: 8, padding: "10px 16px", maxWidth: 520,
+            display: "flex", alignItems: "flex-start", gap: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.8)",
+          }}
+        >
+          <span style={{ color: "#fca5a5", fontSize: 13, flex: 1 }}>
+            <strong style={{ color: "#fecaca" }}>Save failed — the workspace was not written.</strong>
+            <br />
+            <span style={{ opacity: 0.85, fontFamily: "monospace", fontSize: 11 }}>{saveError}</span>
+          </span>
+          <button
+            onClick={() => setSaveError(null)}
+            style={{
+              background: "transparent", border: "none", color: "#fca5a5",
+              cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1, flexShrink: 0,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Audio file load error toast */}
       {loadError && (
         <div
@@ -1235,12 +1298,12 @@ export default function App() {
         <GotoDialog onClose={() => setGotoOpen(false)} onRefresh={handleRefresh} />
       )}
 
-      {/* Unsaved-changes dialog */}
-      {closeDialogOpen && (
+      {/* Unsaved-changes dialog — shared by window-close, New, Open, Import QLab */}
+      {pendingUnsavedAction && (
         <CloseConfirmDialog
-          onSave={confirmSaveAndClose}
-          onDiscard={confirmDiscardAndClose}
-          onCancel={cancelClose}
+          onSave={() => void confirmSaveThenContinue()}
+          onDiscard={confirmDiscardThenContinue}
+          onCancel={cancelPendingUnsavedAction}
         />
       )}
 

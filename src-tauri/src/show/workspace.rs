@@ -166,8 +166,24 @@ fn sanitize_for_filename(name: &str) -> String {
     s.trim().to_string()
 }
 
-fn unique_filename(orig: &str, used: &mut HashSet<String>) -> String {
-    if used.insert(orig.to_string()) {
+/// Pick a filename for `orig` inside `dest_dir` that collides with neither a
+/// name already claimed this run (`used`, tracked case-insensitively — two
+/// source files named `Track.wav` and `track.wav` are the same file on a
+/// case-insensitive filesystem) nor a file already on disk — unless that file
+/// *is* `source_abs_path` itself (a re-run of Collect and Save into the same
+/// project folder must keep reusing the same destination name, not rename a
+/// file out from under its own previous copy).
+fn unique_filename(orig: &str, dest_dir: &Path, source_abs_path: &Path, used: &mut HashSet<String>) -> String {
+    let available = |name: &str, used: &HashSet<String>| {
+        if used.contains(&name.to_lowercase()) {
+            return false;
+        }
+        let candidate_path = dest_dir.join(name);
+        !candidate_path.exists() || candidate_path == source_abs_path
+    };
+
+    if available(orig, used) {
+        used.insert(orig.to_lowercase());
         return orig.to_string();
     }
     let (stem, ext) = orig
@@ -176,7 +192,8 @@ fn unique_filename(orig: &str, used: &mut HashSet<String>) -> String {
     let mut n = 1u32;
     loop {
         let candidate = format!("{stem}_{n}{ext}");
-        if used.insert(candidate.clone()) {
+        if available(&candidate, used) {
+            used.insert(candidate.to_lowercase());
             return candidate;
         }
         n += 1;
@@ -437,8 +454,18 @@ impl Workspace {
             .ok_or_else(|| anyhow::anyhow!("No file path set for workspace"))?;
 
         let json = self.to_json(&target)?;
-        std::fs::write(&target, json)
-            .with_context(|| format!("Failed to write workspace to {}", target.display()))?;
+        // Write to a sibling temp file then rename over the target. A write
+        // interrupted by a crash, power loss, or a full disk leaves only the
+        // temp file corrupt — the previous valid save is never truncated
+        // (same approach as the crash-recovery snapshot in recovery.rs).
+        let mut tmp_name = target.clone().into_os_string();
+        tmp_name.push(".tmp");
+        let tmp = PathBuf::from(tmp_name);
+        std::fs::write(&tmp, json)
+            .with_context(|| format!("Failed to write workspace to {}", tmp.display()))?;
+        std::fs::rename(&tmp, &target).with_context(|| {
+            format!("Failed to finalize workspace save to {}", target.display())
+        })?;
 
         // Derive the workspace name from the filename stem (e.g. "My Show" from
         // "My Show.inkue") so the title bar reflects the saved file immediately.
@@ -511,8 +538,9 @@ impl Workspace {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "file".into());
 
-            let dest_name = unique_filename(&orig_name, used.get_mut(subfolder).unwrap());
-            let dest_path = project_dir.join(subfolder).join(&dest_name);
+            let dest_dir = project_dir.join(subfolder);
+            let dest_name = unique_filename(&orig_name, &dest_dir, abs_path, used.get_mut(subfolder).unwrap());
+            let dest_path = dest_dir.join(&dest_name);
             let new_rel = format!("{subfolder}/{dest_name}");
 
             if abs_path == &dest_path {

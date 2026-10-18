@@ -278,7 +278,13 @@ pub fn remove_cue(
     let id: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    // Removing the Cue object does not stop its engine voice — it would
+    // otherwise keep playing, orphaned, with no cue row left to reach it.
+    if let Some(cue) = cue_list.get_mut_recursive(&id) {
+        stop_if_live(cue, &state, stop_fade_ms);
+    }
     cue_list.remove_anywhere(&id).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
@@ -316,7 +322,15 @@ pub fn remove_cues(
         .collect::<Result<_, _>>()?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    // See remove_cue: stop each target before it is removed so no engine
+    // voice is left orphaned and playing.
+    for id in &ids {
+        if let Some(cue) = cue_list.get_mut_recursive(id) {
+            stop_if_live(cue, &state, stop_fade_ms);
+        }
+    }
     cue_list.remove_many_anywhere(&ids).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("workspace-modified", serde_json::json!({}));
     Ok(())
@@ -900,7 +914,7 @@ pub fn get_normalize_db(
 /// (the rebuilt cue reports Standby, so the transport skips it).  Uses the
 /// soft stop so the operator hears the normal fade-out; the engine completes
 /// the fade autonomously after the cue object is replaced.
-fn stop_if_live(cue: &mut dyn Cue, state: &AppState, stop_fade_ms: u32) {
+pub(super) fn stop_if_live(cue: &mut dyn Cue, state: &AppState, stop_fade_ms: u32) {
     if cue.is_running() || cue.is_paused() {
         let context = super::transport_cmds::make_context(state, stop_fade_ms);
         let _ = cue.stop(&context);
@@ -1010,9 +1024,14 @@ pub fn set_audio_file(
                         'store: {
                             for cl in ws.cue_lists.iter_mut() {
                                 if let Some(cue) = cl.get_mut_recursive(&id) {
-                                    cue.accept_preloaded_audio(
-                                        samples, channels, sample_rate, duration,
-                                    );
+                                    // The operator may have picked yet another
+                                    // file for this cue while this decode was
+                                    // running — don't let a stale result win.
+                                    if super::cue_file_path_still(cue, &file_path_buf) {
+                                        cue.accept_preloaded_audio(
+                                            samples, channels, sample_rate, duration,
+                                        );
+                                    }
                                     break 'store;
                                 }
                             }
@@ -1186,6 +1205,12 @@ pub fn set_video_file(
                     'store: {
                         for cl in ws.cue_lists.iter_mut() {
                             if let Some(cue) = cl.get_mut_recursive(&cue_id) {
+                                // The cue may have been pointed at yet another
+                                // file while this decode was running — a stale
+                                // result must not overwrite the newer one.
+                                if !super::cue_file_path_still(cue, &path) {
+                                    break 'store;
+                                }
                                 if let Some(dur) = duration {
                                     cue.set_runtime_duration(dur);
                                 }
@@ -1614,7 +1639,12 @@ pub fn remove_cue_from_group(
     let cue_uuid: Uuid = cue_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let mut ws = state.workspace.lock().map_err(|e| e.to_string())?;
     ws.mark_modified();
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
+    // See remove_cue: stop it first so no engine voice is left orphaned.
+    if let Some(cue) = cue_list.get_mut_recursive(&cue_uuid) {
+        stop_if_live(cue, &state, stop_fade_ms);
+    }
     cue_list
         .remove_from_group(&grp_uuid, &cue_uuid)
         .map_err(|e| e.to_string())?;

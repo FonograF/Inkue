@@ -273,21 +273,26 @@ pub(crate) fn spawn_media_preload(
             if let Ok(mut ws) = workspace.lock() {
                 'store: for cl in ws.cue_lists.iter_mut() {
                     if let Some(cue) = cl.get_mut_recursive(&cue_id) {
-                        if let Some(dur) = duration {
-                            cue.set_runtime_duration(dur);
-                        }
-                        if let Ok(Some((samples, channels, sample_rate))) = audio {
-                            let dur = std::time::Duration::from_secs_f64(
-                                samples.len() as f64
-                                    / channels.max(1) as f64
-                                    / sample_rate.max(1) as f64,
-                            );
-                            cue.accept_preloaded_audio(
-                                Arc::new(samples),
-                                channels,
-                                sample_rate,
-                                dur,
-                            );
+                        // The cue may have been relinked to yet another file
+                        // while this decode was in flight — a stale result
+                        // must not clobber whatever decoded after it.
+                        if super::cue_file_path_still(cue, &path) {
+                            if let Some(dur) = duration {
+                                cue.set_runtime_duration(dur);
+                            }
+                            if let Ok(Some((samples, channels, sample_rate))) = audio {
+                                let dur = std::time::Duration::from_secs_f64(
+                                    samples.len() as f64
+                                        / channels.max(1) as f64
+                                        / sample_rate.max(1) as f64,
+                                );
+                                cue.accept_preloaded_audio(
+                                    Arc::new(samples),
+                                    channels,
+                                    sample_rate,
+                                    dur,
+                                );
+                            }
                         }
                         break 'store;
                     }

@@ -4,7 +4,27 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-use crate::health::{self, HealthAlert, HealthLevel};
+use crate::{
+    cue::traits::Cue,
+    health::{self, HealthAlert, HealthLevel},
+};
+
+/// Whether `cue`'s current `file_path` still matches `expected`.
+///
+/// A background decode can finish after the operator has already pointed the
+/// same cue at a different file (or a relink repointed it): the decode
+/// started against the old path, but by the time it lands the cue has moved
+/// on. Callers must check this before applying a decode result
+/// (`accept_preloaded_audio` / `set_runtime_duration`) read back after
+/// re-acquiring the workspace lock — otherwise a slow, stale decode can win
+/// the race and silently replace newer audio with the old file's.
+pub(crate) fn cue_file_path_still(cue: &dyn Cue, expected: &Path) -> bool {
+    cue.serialize()
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .map(Path::new)
+        == Some(expected)
+}
 
 /// Health-alert key for a cue whose audio file failed to decode.
 fn decode_alert_key(cue_id: Uuid) -> String {

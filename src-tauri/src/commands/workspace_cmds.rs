@@ -46,6 +46,11 @@ pub fn new_workspace(state: State<'_, AppState>, app_handle: tauri::AppHandle) -
     cue_list_cmds::emit_cue_lists_changed(&app_handle, &ws);
     let outputs = ws.universe_outputs.clone();
     drop(ws);
+    // A fresh workspace's cue lists have new ids — any history keyed by the
+    // old ones is dead weight, not a correctness issue, but no reason to keep it.
+    if let Ok(mut undo) = state.undo_stack.lock() {
+        undo.clear();
+    }
     state.output_engine.set_floating_timer_visible(false);
     // A fresh workspace has no DMX outputs — clear any from the previous show.
     state.dmx_engine.set_outputs(outputs);
@@ -127,6 +132,11 @@ pub(crate) fn install_workspace(
         ws.sync_auto_renumber();
         cue_list_cmds::emit_cue_lists_changed(app_handle, &ws);
     }
+    // The loaded workspace's cue lists carry different ids than whatever was
+    // open before — drop undo history keyed by the old ones.
+    if let Ok(mut undo) = state.undo_stack.lock() {
+        undo.clear();
+    }
     state.output_engine.set_floating_timer_visible(show_floating);
     // Light the configured output screen right away (black fullscreen surface)
     // instead of waiting for the first visual GO.
@@ -201,22 +211,24 @@ pub(crate) fn install_workspace(
                                 // file (searching all lists — a cue may be in a
                                 // non-active list). Voices read the buffer read-only,
                                 // so sharing one Arc across simultaneous plays is safe.
+                                // Skip a cue whose file_path moved on since this
+                                // decode started (e.g. relinked mid-preload) — this
+                                // stale result must not clobber newer audio.
                                 if let Ok(mut ws) = workspace.lock() {
-                                    for (cue_id, _) in &cues {
+                                    for (cue_id, is_audio) in &cues {
                                         'store: for cl in ws.cue_lists.iter_mut() {
                                             if let Some(cue) = cl.get_mut_recursive(cue_id) {
-                                                cue.accept_preloaded_audio(
-                                                    Arc::clone(&samples), channels, sample_rate, duration,
-                                                );
+                                                if super::cue_file_path_still(cue, &file_path) {
+                                                    cue.accept_preloaded_audio(
+                                                        Arc::clone(&samples), channels, sample_rate, duration,
+                                                    );
+                                                    if *is_audio {
+                                                        super::clear_decode_failure(*cue_id);
+                                                    }
+                                                }
                                                 break 'store;
                                             }
                                         }
-                                    }
-                                }
-                                // Decoded fine — retire any stale decode-failure banners.
-                                for (cue_id, is_audio) in &cues {
-                                    if *is_audio {
-                                        super::clear_decode_failure(*cue_id);
                                     }
                                 }
                             }

@@ -239,14 +239,20 @@ pub fn stop_all(
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let context = make_context(&state, stop_fade_ms);
     let mut transport = Transport::new(context);
-    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    let stopping: Vec<_> = cue_list
-        .cues
-        .iter()
-        .filter(|c| c.is_running() || c.is_paused())
-        .map(|c| c.id())
-        .collect();
-    transport.stop_all(cue_list).map_err(|e| e.to_string())?;
+    // Stop All must reach every cue list, not just the one on screen — a cue
+    // list tab is a UI concept, cues in a non-active list keep playing in the
+    // background and a global "Stop" button has to silence them too.
+    let mut stopping: Vec<_> = Vec::new();
+    for cue_list in ws.cue_lists.iter_mut() {
+        stopping.extend(
+            cue_list
+                .cues
+                .iter()
+                .filter(|c| c.is_running() || c.is_paused())
+                .map(|c| c.id()),
+        );
+        transport.stop_all(cue_list).map_err(|e| e.to_string())?;
+    }
     for id in stopping {
         let _ = app_handle.emit(
             "cue-state-changed",
@@ -270,14 +276,18 @@ pub fn hard_stop_all(
     let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
     let context = make_context(&state, stop_fade_ms);
     let mut transport = Transport::new(context);
-    let cue_list = ws.active_cue_list_mut().ok_or("No active cue list")?;
-    let stopping: Vec<_> = cue_list
-        .cues
-        .iter()
-        .filter(|c| c.is_running() || c.is_paused())
-        .map(|c| c.id())
-        .collect();
-    transport.hard_stop_all(cue_list).map_err(|e| e.to_string())?;
+    // See stop_all: cover every cue list, not just the active one.
+    let mut stopping: Vec<_> = Vec::new();
+    for cue_list in ws.cue_lists.iter_mut() {
+        stopping.extend(
+            cue_list
+                .cues
+                .iter()
+                .filter(|c| c.is_running() || c.is_paused())
+                .map(|c| c.id()),
+        );
+        transport.hard_stop_all(cue_list).map_err(|e| e.to_string())?;
+    }
     for id in stopping {
         let _ = app_handle.emit(
             "cue-state-changed",

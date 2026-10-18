@@ -14,6 +14,11 @@ use crate::cue::{
 
 use super::cue_list::CueList;
 
+/// Hard cap on how many cues a single GO call will chain through via
+/// Auto-Continue / Auto-Follow before giving up. Guards against a cyclic
+/// chain (e.g. Goto routing back into itself) spinning forever.
+const MAX_CHAIN_STEPS: u32 = 1000;
+
 /// Result returned by [`Transport::go`].
 pub struct GoResult {
     /// IDs of all cues triggered by this GO (including chained Auto-Continue /
@@ -54,223 +59,239 @@ impl Transport {
     ///    the Stop Cue would immediately kill.
     /// 6. Chain via Auto-Continue (post_wait = 0) or instant Auto-Follow.
     pub fn go(&mut self, cue_list: &mut CueList) -> Result<GoResult> {
-        let cue_id = match cue_list.playhead_cue_id {
-            Some(id) => id,
-            None => return Ok(GoResult { triggered: vec![], stopped: vec![] }),
-        };
+        let mut triggered: Vec<CueId> = Vec::new();
+        let mut stopped: Vec<CueId> = Vec::new();
 
-        // If the cue at the playhead is disabled (e.g., toggled while the
-        // playhead was parked on it), advance past it and retry.
-        if cue_list.get(&cue_id).is_some_and(|c| c.is_disabled()) {
+        // Each loop iteration processes one cue. Auto-Continue (post_wait = 0)
+        // and Auto-Follow-on-an-instant-cue chain straight into the next
+        // iteration instead of returning, so a cycle — e.g. a Goto cue that
+        // routes an Auto-Continue chain back into itself — no longer recurses
+        // the call stack without limit. MAX_CHAIN_STEPS bounds it outright:
+        // a real show chain is at most a few dozen cues long, so this is
+        // generous headroom before it's unambiguously a cycle.
+        for _ in 0..MAX_CHAIN_STEPS {
+            let cue_id = match cue_list.playhead_cue_id {
+                Some(id) => id,
+                None => return Ok(GoResult { triggered, stopped }),
+            };
+
+            // If the cue at the playhead is disabled (e.g., toggled while the
+            // playhead was parked on it), advance past it and retry.
+            if cue_list.get(&cue_id).is_some_and(|c| c.is_disabled()) {
+                cue_list.advance_playhead();
+                continue;
+            }
+
+            // If the cue wants to absorb this GO (e.g., a Sequential Group paused
+            // mid-sequence), delegate to the cue and skip outer Playhead advancement.
+            if cue_list.get(&cue_id).is_some_and(|c| c.absorbs_go()) {
+                if let Some(cue) = cue_list.get_mut(&cue_id) {
+                    cue.go(&self.context)?;
+                }
+                // If that GO fired the group's last child, release the outer Playhead
+                // to the cue after the group so the next GO continues the outer list.
+                if cue_list.get(&cue_id).is_some_and(|c| c.released_playhead()) {
+                    cue_list.advance_playhead();
+                }
+                triggered.push(cue_id);
+                return Ok(GoResult { triggered, stopped });
+            }
+
+            // Advance playhead before triggering (matches QLab behaviour).
             cue_list.advance_playhead();
-            return self.go(cue_list);
-        }
 
-        // If the cue wants to absorb this GO (e.g., a Sequential Group paused
-        // mid-sequence), delegate to the cue and skip outer Playhead advancement.
-        if cue_list.get(&cue_id).is_some_and(|c| c.absorbs_go()) {
-            if let Some(cue) = cue_list.get_mut(&cue_id) {
+            // Stop any running cues that should automatically stop on the next GO
+            // (only the Text Cue opts in — visual cues are layers and never
+            // auto-stop each other).  If a visual type ever opts back in, it only
+            // stops when the incoming cue is also visual.
+            let incoming_is_visual = cue_list
+                .get(&cue_id)
+                .map(|c| c.is_visual())
+                .unwrap_or(false);
+
+            let stop_ids: Vec<CueId> = cue_list
+                .cues
+                .iter()
+                .filter(|c| {
+                    if !c.is_running() || c.id() == cue_id || !c.stop_on_next_go() {
+                        return false;
+                    }
+                    !c.is_visual() || incoming_is_visual
+                })
+                .map(|c| c.id())
+                .collect();
+            for id in stop_ids {
+                if let Some(cue) = cue_list.get_mut(&id) {
+                    let _ = cue.stop(&self.context);
+                }
+            }
+
+            // Trigger the cue.
+            {
+                let cue = cue_list
+                    .get_mut(&cue_id)
+                    .ok_or_else(|| anyhow!("Cue not found: {:?}", cue_id))?;
                 cue.go(&self.context)?;
             }
-            // If that GO fired the group's last child, release the outer Playhead
-            // to the cue after the group so the next GO continues the outer list.
-            if cue_list.get(&cue_id).is_some_and(|c| c.released_playhead()) {
-                cue_list.advance_playhead();
-            }
-            return Ok(GoResult { triggered: vec![cue_id], stopped: vec![] });
-        }
 
-        // Advance playhead before triggering (matches QLab behaviour).
-        cue_list.advance_playhead();
-
-        // Stop any running cues that should automatically stop on the next GO
-        // (only the Text Cue opts in — visual cues are layers and never
-        // auto-stop each other).  If a visual type ever opts back in, it only
-        // stops when the incoming cue is also visual.
-        let incoming_is_visual = cue_list
-            .get(&cue_id)
-            .map(|c| c.is_visual())
-            .unwrap_or(false);
-
-        let stop_ids: Vec<CueId> = cue_list
-            .cues
-            .iter()
-            .filter(|c| {
-                if !c.is_running() || c.id() == cue_id || !c.stop_on_next_go() {
-                    return false;
-                }
-                !c.is_visual() || incoming_is_visual
-            })
-            .map(|c| c.id())
-            .collect();
-        for id in stop_ids {
-            if let Some(cue) = cue_list.get_mut(&id) {
-                let _ = cue.stop(&self.context);
-            }
-        }
-
-        // Trigger the cue.
-        {
-            let cue = cue_list
-                .get_mut(&cue_id)
-                .ok_or_else(|| anyhow!("Cue not found: {:?}", cue_id))?;
-            cue.go(&self.context)?;
-        }
-
-        // Fade Cues: hand them their targets' voices — and start the cue a
-        // crossfade dissolves into, which the UI must see as triggered.
-        let crossfade_started = if cue_list.get(&cue_id).is_some_and(|c| c.fade_specification().is_some()) {
-            super::crossfade::on_fade_go(cue_list, &self.context, cue_id)
-        } else {
-            Vec::new()
-        };
-
-        // Devamp Cues: release the current slice loop on every target voice.
-        // The engines act at the next slice boundary, so ordering with
-        // Auto-Follow below is not timing-sensitive.
-        let devamp_spec = cue_list.get(&cue_id).and_then(|c| c.devamp_specification());
-        if let Some((stop_at_end, target_ids)) = devamp_spec {
-            for target_id in &target_ids {
-                let Some(target) = cue_list.get_recursive(target_id) else { continue };
-                if target.is_visual() {
-                    // Video: devamp the mpv slice plan and the paired audio
-                    // voice together so picture and sound release in step.
-                    let Some(voice) = target.playing_voice_id() else { continue };
-                    self.context.output_engine.devamp_voice(voice, stop_at_end);
-                    if let Some(aid) = self.context.output_engine.video_audio_voice(voice) {
-                        let _ = self.context.audio_engine.devamp_voice(aid, stop_at_end);
-                    }
-                } else {
-                    // Audio / Group — devamp every audio voice the target owns.
-                    for vid in target.all_voice_ids() {
-                        let _ = self.context.audio_engine.devamp_voice(vid, stop_at_end);
-                    }
-                }
-            }
-        }
-
-        // Execute the stop action declared by Stop Cues **before** evaluating
-        // Auto-Follow, so the chained cue is not immediately killed.
-        let stop_spec = cue_list.get(&cue_id).and_then(|c| c.stop_specification());
-        let mut stopped: Vec<CueId> = Vec::new();
-        if let Some((hard, target_ids)) = stop_spec {
-            let ids_to_stop: Vec<CueId> = if target_ids.is_empty() {
-                // Empty = stop all running/paused cues (except the Stop Cue itself).
-                cue_list
-                    .cues
-                    .iter()
-                    .filter(|c| (c.is_running() || c.is_paused()) && c.id() != cue_id)
-                    .map(|c| c.id())
-                    .collect()
+            // Fade Cues: hand them their targets' voices — and start the cue a
+            // crossfade dissolves into, which the UI must see as triggered.
+            let crossfade_started = if cue_list.get(&cue_id).is_some_and(|c| c.fade_specification().is_some()) {
+                super::crossfade::on_fade_go(cue_list, &self.context, cue_id)
             } else {
-                target_ids.iter().copied()
-                    .filter(|&tid| tid != cue_id)
-                    .collect()
+                Vec::new()
             };
-            for id in &ids_to_stop {
-                if let Some(c) = cue_list.get_mut(id) {
-                    if hard {
-                        let _ = c.hard_stop(&self.context);
+
+            // Devamp Cues: release the current slice loop on every target voice.
+            // The engines act at the next slice boundary, so ordering with
+            // Auto-Follow below is not timing-sensitive.
+            let devamp_spec = cue_list.get(&cue_id).and_then(|c| c.devamp_specification());
+            if let Some((stop_at_end, target_ids)) = devamp_spec {
+                for target_id in &target_ids {
+                    let Some(target) = cue_list.get_recursive(target_id) else { continue };
+                    if target.is_visual() {
+                        // Video: devamp the mpv slice plan and the paired audio
+                        // voice together so picture and sound release in step.
+                        let Some(voice) = target.playing_voice_id() else { continue };
+                        self.context.output_engine.devamp_voice(voice, stop_at_end);
+                        if let Some(aid) = self.context.output_engine.video_audio_voice(voice) {
+                            let _ = self.context.audio_engine.devamp_voice(aid, stop_at_end);
+                        }
                     } else {
-                        let _ = c.stop(&self.context);
+                        // Audio / Group — devamp every audio voice the target owns.
+                        for vid in target.all_voice_ids() {
+                            let _ = self.context.audio_engine.devamp_voice(vid, stop_at_end);
+                        }
                     }
                 }
             }
-            stopped = ids_to_stop;
-        }
 
-        // Command cues (Start, Pause, Resume, Load, Reset, Goto, Arm, Disarm)
-        // act on other cues, so the transport — which owns the cue list and the
-        // playhead — carries them out. Like the stop action above, this runs
-        // before Auto-Follow is evaluated.
-        let control_spec = cue_list.get(&cue_id).and_then(|c| c.control_specification());
-        let mut commanded: Vec<CueId> = Vec::new();
-        if let Some((action, target_ids)) = control_spec {
-            // Never let a Command cue address itself: a Start targeting itself
-            // would recurse, and the rest are meaningless on an instant cue.
-            for target_id in target_ids.iter().copied().filter(|&t| t != cue_id) {
-                if action == ControlAction::Goto {
-                    // The Playhead is a position in *this* list, so a nested
-                    // cue cannot hold it.
-                    if cue_list.index_of(&target_id).is_some() {
-                        cue_list.playhead_cue_id = Some(target_id);
+            // Execute the stop action declared by Stop Cues **before** evaluating
+            // Auto-Follow, so the chained cue is not immediately killed.
+            let stop_spec = cue_list.get(&cue_id).and_then(|c| c.stop_specification());
+            if let Some((hard, target_ids)) = stop_spec {
+                let ids_to_stop: Vec<CueId> = if target_ids.is_empty() {
+                    // Empty = stop all running/paused cues (except the Stop Cue itself).
+                    cue_list
+                        .cues
+                        .iter()
+                        .filter(|c| (c.is_running() || c.is_paused()) && c.id() != cue_id)
+                        .map(|c| c.id())
+                        .collect()
+                } else {
+                    target_ids.iter().copied()
+                        .filter(|&tid| tid != cue_id)
+                        .collect()
+                };
+                for id in &ids_to_stop {
+                    if let Some(c) = cue_list.get_mut(id) {
+                        if hard {
+                            let _ = c.hard_stop(&self.context);
+                        } else {
+                            let _ = c.stop(&self.context);
+                        }
                     }
-                    continue;
                 }
-                let Some(target) = cue_list.get_mut_recursive(&target_id) else { continue };
-                match action {
-                    ControlAction::Start => {
-                        let _ = target.go(&self.context);
+                stopped.extend(ids_to_stop);
+            }
+
+            // Command cues (Start, Pause, Resume, Load, Reset, Goto, Arm, Disarm)
+            // act on other cues, so the transport — which owns the cue list and the
+            // playhead — carries them out. Like the stop action above, this runs
+            // before Auto-Follow is evaluated.
+            let control_spec = cue_list.get(&cue_id).and_then(|c| c.control_specification());
+            let mut commanded: Vec<CueId> = Vec::new();
+            if let Some((action, target_ids)) = control_spec {
+                // Never let a Command cue address itself: a Start targeting itself
+                // would recurse, and the rest are meaningless on an instant cue.
+                for target_id in target_ids.iter().copied().filter(|&t| t != cue_id) {
+                    if action == ControlAction::Goto {
+                        // The Playhead is a position in *this* list, so a nested
+                        // cue cannot hold it.
+                        if cue_list.index_of(&target_id).is_some() {
+                            cue_list.playhead_cue_id = Some(target_id);
+                        }
+                        continue;
                     }
-                    ControlAction::Pause => {
-                        let _ = target.pause(&self.context);
+                    let Some(target) = cue_list.get_mut_recursive(&target_id) else { continue };
+                    match action {
+                        ControlAction::Start => {
+                            let _ = target.go(&self.context);
+                        }
+                        ControlAction::Pause => {
+                            let _ = target.pause(&self.context);
+                        }
+                        ControlAction::Resume => {
+                            let _ = target.resume(&self.context);
+                        }
+                        ControlAction::Load => {
+                            // `preload` is the cue's own business: audio brings up
+                            // a paused voice, visual cues decode without putting
+                            // anything on the output.
+                            let _ = target.preload(&self.context);
+                        }
+                        ControlAction::Reset => {
+                            let _ = target.hard_stop(&self.context);
+                            let _ = target.reset();
+                        }
+                        ControlAction::Arm => target.set_disabled(false),
+                        ControlAction::Disarm => target.set_disabled(true),
+                        ControlAction::Goto => unreachable!("handled above"),
                     }
-                    ControlAction::Resume => {
-                        let _ = target.resume(&self.context);
-                    }
-                    ControlAction::Load => {
-                        // `preload` is the cue's own business: audio brings up
-                        // a paused voice, visual cues decode without putting
-                        // anything on the output.
-                        let _ = target.preload(&self.context);
-                    }
-                    ControlAction::Reset => {
-                        let _ = target.hard_stop(&self.context);
-                        let _ = target.reset();
-                    }
-                    ControlAction::Arm => target.set_disabled(false),
-                    ControlAction::Disarm => target.set_disabled(true),
-                    ControlAction::Goto => unreachable!("handled above"),
+                    commanded.push(target_id);
                 }
-                commanded.push(target_id);
             }
-        }
 
-        // Read continue-mode metadata after go() (state may have changed for
-        // instant cues that complete synchronously).
-        let (continue_mode, post_wait, is_still_running, holds_playhead) = cue_list
-            .cues
-            .iter()
-            .find(|c| c.id() == cue_id)
-            .map(|c| (c.continue_mode(), c.post_wait(), c.state() == CueState::Running, c.holds_playhead()))
-            .ok_or_else(|| anyhow!("Cue not found after go: {:?}", cue_id))?;
+            // Read continue-mode metadata after go() (state may have changed for
+            // instant cues that complete synchronously).
+            let (continue_mode, post_wait, is_still_running, holds_playhead) = cue_list
+                .cues
+                .iter()
+                .find(|c| c.id() == cue_id)
+                .map(|c| (c.continue_mode(), c.post_wait(), c.state() == CueState::Running, c.holds_playhead()))
+                .ok_or_else(|| anyhow!("Cue not found after go: {:?}", cue_id))?;
 
-        // Sequential groups retain the outer Playhead while running so that
-        // subsequent GOs are routed into the group's internal sequence via
-        // absorbs_go().  The advance_playhead() already moved the Playhead
-        // forward; we move it back here.  The event loop will advance it again
-        // once the group completes.
-        if is_still_running && holds_playhead {
-            cue_list.playhead_cue_id = Some(cue_id);
-        }
-
-        // Determine whether to chain immediately:
-        //
-        // • AutoContinue + post_wait = 0 → always chain now (audio or instant).
-        //   Mark the flag so the event loop skips this cue.
-        // • AutoFollow on an instant cue  → chain now (cue already completed).
-        //   Audio AutoFollow is handled by the event loop on voice completion.
-        let chain_now = (continue_mode == ContinueMode::AutoContinue && post_wait.is_zero())
-            || (!is_still_running && continue_mode == ContinueMode::AutoFollow);
-
-        if continue_mode == ContinueMode::AutoContinue && post_wait.is_zero() {
-            if let Some(cue) = cue_list.get_mut(&cue_id) {
-                cue.mark_auto_continue_fired();
+            // Sequential groups retain the outer Playhead while running so that
+            // subsequent GOs are routed into the group's internal sequence via
+            // absorbs_go().  The advance_playhead() already moved the Playhead
+            // forward; we move it back here.  The event loop will advance it again
+            // once the group completes.
+            if is_still_running && holds_playhead {
+                cue_list.playhead_cue_id = Some(cue_id);
             }
+
+            // Determine whether to chain immediately:
+            //
+            // • AutoContinue + post_wait = 0 → always chain now (audio or instant).
+            //   Mark the flag so the event loop skips this cue.
+            // • AutoFollow on an instant cue  → chain now (cue already completed).
+            //   Audio AutoFollow is handled by the event loop on voice completion.
+            let chain_now = (continue_mode == ContinueMode::AutoContinue && post_wait.is_zero())
+                || (!is_still_running && continue_mode == ContinueMode::AutoFollow);
+
+            if continue_mode == ContinueMode::AutoContinue && post_wait.is_zero() {
+                if let Some(cue) = cue_list.get_mut(&cue_id) {
+                    cue.mark_auto_continue_fired();
+                }
+            }
+
+            // Cues a Command cue acted on are reported as triggered so the UI
+            // refreshes their row — their state changed without them being GO'd.
+            triggered.push(cue_id);
+            triggered.extend(commanded);
+            triggered.extend(crossfade_started);
+
+            if !chain_now {
+                return Ok(GoResult { triggered, stopped });
+            }
+            // else: loop around and process the next cue in this same GO call.
         }
 
-        // Cues a Command cue acted on are reported as triggered so the UI
-        // refreshes their row — their state changed without them being GO'd.
-        let mut triggered = vec![cue_id];
-        triggered.extend(commanded);
-        triggered.extend(crossfade_started);
-
-        if chain_now {
-            let mut rest = self.go(cue_list)?;
-            triggered.append(&mut rest.triggered);
-            stopped.extend(rest.stopped);
-        }
-
+        log::error!(
+            "GO chain exceeded {MAX_CHAIN_STEPS} steps without stopping — likely an \
+             Auto-Continue/Goto cycle in the show; breaking the chain here instead of \
+             hanging or overflowing the stack."
+        );
         Ok(GoResult { triggered, stopped })
     }
 

@@ -6,6 +6,15 @@
 //! pointer, not a copy of the raw samples).  Restoration rebuilds cues via the
 //! `CueRegistry` and injects the saved audio Arc back, so there is never a
 //! re-decode round-trip on undo/redo.
+//!
+//! [`UndoHistory`] keeps one [`UndoStack`] per cue list (keyed by its id)
+//! instead of a single shared stack: without that, switching the active cue
+//! list tab and pressing Ctrl+Z would pop a snapshot recorded for a
+//! *different* list and splice its cues into the one on screen. Loading a
+//! different workspace gives its cue lists fresh ids, so this also keeps one
+//! workspace's history from bleeding into the next.
+
+use std::collections::HashMap;
 
 use crate::cue::decoded_audio::DecodedAudioMap;
 
@@ -90,5 +99,55 @@ impl UndoStack {
         let next = self.future.pop()?;
         self.past.push(current);
         Some(next)
+    }
+}
+
+/// Undo/redo histories for every cue list in the current workspace, keyed by
+/// cue list id so each list's history is independent of the others.
+#[derive(Default)]
+pub struct UndoHistory {
+    stacks: HashMap<uuid::Uuid, UndoStack>,
+}
+
+impl UndoHistory {
+    /// Create an empty history.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn stack_mut(&mut self, cue_list_id: uuid::Uuid) -> &mut UndoStack {
+        self.stacks.entry(cue_list_id).or_default()
+    }
+
+    /// Record the state *before* a mutating action on the given cue list.
+    pub fn push_action(&mut self, cue_list_id: uuid::Uuid, snapshot: Snapshot) {
+        self.stack_mut(cue_list_id).push_action(snapshot);
+    }
+
+    /// Whether the given cue list has at least one state to undo.
+    pub fn can_undo(&self, cue_list_id: uuid::Uuid) -> bool {
+        self.stacks.get(&cue_list_id).is_some_and(UndoStack::can_undo)
+    }
+
+    /// Whether the given cue list has at least one state to redo.
+    pub fn can_redo(&self, cue_list_id: uuid::Uuid) -> bool {
+        self.stacks.get(&cue_list_id).is_some_and(UndoStack::can_redo)
+    }
+
+    /// Undo the most-recent action recorded for the given cue list.
+    pub fn undo(&mut self, cue_list_id: uuid::Uuid, current: Snapshot) -> Option<Snapshot> {
+        self.stack_mut(cue_list_id).undo(current)
+    }
+
+    /// Redo the most-recently undone action for the given cue list.
+    pub fn redo(&mut self, cue_list_id: uuid::Uuid, current: Snapshot) -> Option<Snapshot> {
+        self.stack_mut(cue_list_id).redo(current)
+    }
+
+    /// Drop every cue list's history. Called when a new, loaded, or imported
+    /// workspace replaces the cue lists wholesale — stale histories keyed by
+    /// ids that no longer exist in the workspace would just be dead weight.
+    pub fn clear(&mut self) {
+        self.stacks.clear();
     }
 }

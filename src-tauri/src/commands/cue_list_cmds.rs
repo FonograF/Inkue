@@ -54,6 +54,16 @@ pub fn remove_cue_list(
     }
     let target: Uuid = id.parse().map_err(|_| "Invalid cue list ID")?;
     let was_active = ws.active_cue_list_id == target;
+    let stop_fade_ms = ws.preferences.audio.default_fade_out_ms;
+    // Stop any cues still running in this list before it disappears — a
+    // Group's hard_stop recurses into its children, so a top-level pass
+    // covers the whole tree. Otherwise their engine voices would be
+    // orphaned, with no cue row left to reach them.
+    if let Some(cl) = ws.cue_lists.iter_mut().find(|cl| cl.id == target) {
+        for cue in cl.cues.iter_mut() {
+            super::cue_cmds::stop_if_live(cue.as_mut(), &state, stop_fade_ms);
+        }
+    }
     ws.cue_lists.retain(|cl| cl.id != target);
     if was_active {
         ws.active_cue_list_id = ws.cue_lists[0].id;
