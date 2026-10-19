@@ -16,10 +16,12 @@ pub mod timecode_types;
 pub mod timecode_receiver;
 pub mod timecode_generator;
 pub mod ltc;
+pub mod mmc;
 
 pub use timecode_types::{TcPosition, TcRate, TcTrigger, TcEvent,
                          CueListTcConfig, TcOnStop};
 pub use timecode_receiver::TcSource;
+pub use mmc::MmcCommand;
 pub mod dmx_engine;
 pub mod dmx_sink;
 pub mod engine_traits;

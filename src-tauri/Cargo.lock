@@ -816,8 +816,6 @@ dependencies = [
 [[package]]
 name = "coremidi"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f32f5d3e1b800aa7ea10e9e83c87cbc1daef1397ee86cd599458b3c3b136428a"
 dependencies = [
  "block",
  "core-foundation 0.10.1",
