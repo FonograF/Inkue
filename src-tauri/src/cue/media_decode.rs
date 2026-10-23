@@ -106,8 +106,13 @@ fn decode_with_symphonia(path: &Path) -> Result<Option<(Vec<f32>, u16, u32)>> {
     let track_id = track.id;
     let codec_params = track.codec_params.clone();
 
-    let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
-    let sample_rate = codec_params.sample_rate.unwrap_or(44100);
+    // Container-level guesses only.  An MP4 track (.m4a) carries no channel
+    // layout, so AAC there reports `None` — and a mono file guessed as stereo
+    // plays at twice the speed.  The decoder's output spec is authoritative:
+    // the first decoded buffer overrides both values below.
+    let mut channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
+    let mut sample_rate = codec_params.sample_rate.unwrap_or(44100);
+    let mut spec_locked = false;
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
@@ -146,6 +151,22 @@ fn decode_with_symphonia(path: &Path) -> Result<Option<(Vec<f32>, u16, u32)>> {
 
         let n_frames = decoded.frames();
         let n_ch = decoded.spec().channels.count();
+        if n_ch == 0 {
+            continue;
+        }
+        if !spec_locked {
+            channels = n_ch as u16;
+            sample_rate = decoded.spec().rate;
+            spec_locked = true;
+        } else if n_ch != channels as usize {
+            // Interleaving a buffer of another width would shift every later
+            // frame; drop it so the voice's channel count stays truthful.
+            log::warn!(
+                "Skipping audio frame with {n_ch} channels (stream is {channels}) in {}",
+                path.display()
+            );
+            continue;
+        }
         samples.reserve(n_frames * n_ch);
 
         match decoded {

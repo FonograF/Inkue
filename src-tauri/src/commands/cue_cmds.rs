@@ -1014,7 +1014,7 @@ pub fn set_audio_file(
             match crate::cue::audio_cue::AudioCue::decode_file(&file_path_buf) {
                 Ok((samples, channels, sample_rate)) => {
                     let duration = std::time::Duration::from_secs_f64(
-                        samples.len() as f64 / channels as f64 / sample_rate as f64,
+                        samples.len() as f64 / channels.max(1) as f64 / sample_rate.max(1) as f64,
                     );
                     let samples = std::sync::Arc::new(samples);
                     // Brief lock: store the decoded data in whichever list contains the cue.

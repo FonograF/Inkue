@@ -414,7 +414,7 @@ impl Cue for AudioCue {
 
         let (samples, channels, sample_rate) = Self::decode_file(&path)?;
         self.cached_duration = Some(Duration::from_secs_f64(
-            samples.len() as f64 / channels as f64 / sample_rate as f64,
+            samples.len() as f64 / channels.max(1) as f64 / sample_rate.max(1) as f64,
         ));
         self.decoded_channels = channels;
         self.decoded_sample_rate = sample_rate;

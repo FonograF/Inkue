@@ -275,6 +275,55 @@ pub fn linux_devices(is_input: bool, fallback: Vec<DeviceInfo>) -> Vec<DeviceInf
     nodes
 }
 
+/// Channel count of the PipeWire sink `node_name` (its `audio.channels`), or
+/// `None` when PipeWire cannot be queried in time.
+///
+/// The ALSA stream to a `pw:` node must be opened this wide: the `pipewire`
+/// PCM accepts any width, so cpal's stereo-first default would silently cut a
+/// 4-out interface down to outputs 1–2.
+#[cfg(target_os = "linux")]
+pub fn pipewire_node_channels(node_name: &str) -> Option<u16> {
+    let id = format!("pw:{node_name}");
+    run_bounded(Duration::from_secs(2), query_pipewire_devices)
+        .and_then(|(_, outputs)| outputs.into_iter().find(|d| d.id == id))
+        .map(|d| d.channels)
+}
+
+/// Smallest period the PipeWire graph may run at, from `pw-metadata -n
+/// settings`; `None` when PipeWire is not running or cannot be queried.
+#[cfg(target_os = "linux")]
+pub fn pipewire_quantum_floor() -> Option<u32> {
+    let out = run_bounded(Duration::from_secs(2), || {
+        std::process::Command::new("pw-metadata")
+            .args(["-n", "settings"])
+            .output()
+            .ok()
+    })??;
+    parse_pw_quantum_floor(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse `pw-metadata -n settings` output into the smallest quantum the graph
+/// may run at: `clock.force-quantum` when the operator forced one (non-zero),
+/// else `clock.min-quantum`.
+///
+/// An ALSA period below this floor cannot be fed fast enough: the PipeWire
+/// plugin is handed one graph cycle's worth of frames but cpal only keeps two
+/// periods in its ring, so it underruns every cycle — stuttering, wrong-speed
+/// playback (#10).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn parse_pw_quantum_floor(text: &str) -> Option<u32> {
+    let value_of = |key: &str| -> Option<u32> {
+        let needle = format!("key:'{key}'");
+        let line = text.lines().find(|l| l.contains(&needle))?;
+        let rest = &line[line.find("value:'")? + "value:'".len()..];
+        rest[..rest.find('\'')?].trim().parse().ok()
+    };
+    match value_of("clock.force-quantum") {
+        Some(q) if q > 0 => Some(q),
+        _ => value_of("clock.min-quantum").filter(|&q| q > 0),
+    }
+}
+
 /// If `device_id` is a `pw:…` synthetic ID, return the bare PipeWire node name.
 pub fn pipewire_node_of(device_id: &str) -> Option<&str> {
     device_id.strip_prefix("pw:")
@@ -339,6 +388,37 @@ mod tests {
             start.elapsed() < Duration::from_millis(500),
             "run_bounded returned only after the slow job finished — it did not time out"
         );
+    }
+
+    const PW_SETTINGS: &str = "\
+Found \"settings\" metadata 34
+update: id:0 key:'log.level' value:'2' type:''
+update: id:0 key:'clock.rate' value:'48000' type:''
+update: id:0 key:'clock.quantum' value:'1024' type:''
+update: id:0 key:'clock.min-quantum' value:'32' type:''
+update: id:0 key:'clock.max-quantum' value:'2048' type:''
+update: id:0 key:'clock.force-quantum' value:'0' type:''
+update: id:0 key:'clock.force-rate' value:'0' type:''
+";
+
+    #[test]
+    fn pw_quantum_floor_is_min_quantum_when_nothing_is_forced() {
+        assert_eq!(parse_pw_quantum_floor(PW_SETTINGS), Some(32));
+    }
+
+    #[test]
+    fn pw_quantum_floor_follows_a_forced_quantum() {
+        let forced = PW_SETTINGS.replace(
+            "key:'clock.force-quantum' value:'0'",
+            "key:'clock.force-quantum' value:'1024'",
+        );
+        assert_eq!(parse_pw_quantum_floor(&forced), Some(1024));
+    }
+
+    #[test]
+    fn pw_quantum_floor_is_none_without_pipewire_output() {
+        assert_eq!(parse_pw_quantum_floor(""), None);
+        assert_eq!(parse_pw_quantum_floor("Failed to connect: Host is down"), None);
     }
 
     #[test]

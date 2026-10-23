@@ -75,6 +75,21 @@ fn decode_wav_mono() {
 }
 
 #[test]
+fn decode_mono_aac_m4a_reports_one_channel() {
+    // #11: an MP4 track carries no channel layout, so the container guessed
+    // "stereo" for mono AAC — the voice then played twice as fast, for half
+    // the length.  The decoder's output spec must win.  Committed fixture:
+    // 0.5 s, 440 Hz sine, 48 kHz mono AAC-LC (ffmpeg lavfi).
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mono_aac.m4a");
+    let (samples, channels, sr) = AudioCue::decode_file(&path).expect("decode mono m4a");
+    assert_eq!(channels, 1, "mono AAC in MP4 must report 1 channel");
+    assert_eq!(sr, 48_000);
+    let secs = samples.len() as f64 / channels as f64 / sr as f64;
+    assert!((secs - 0.5).abs() < 0.05, "0.5 s file decoded to {secs:.3} s");
+    assert!(is_non_silent(&samples));
+}
+
+#[test]
 fn decode_wav_float32_branch() {
     // Exercises the IEEE-float (format 3) → F32 buffer path in media_decode.
     let dir = temp_dir("decf32");

@@ -1250,6 +1250,27 @@ fn open_stream_inner(
 
     let default_config = device.default_output_config()
         .map_err(|e| anyhow!("Device config error: {e}"))?;
+
+    // ALSA has no native default format and cpal's fallback ranks stereo
+    // first, so a PipeWire node or interface with more outs would open as
+    // two channels and every Output Patch past output 2 would be dropped.
+    // Open at the target's real width instead.
+    #[cfg(target_os = "linux")]
+    let default_config = {
+        use crate::engine::device_manager::{pipewire_node_channels, pipewire_node_of};
+        let width = match device_name.filter(|s| !s.is_empty()).and_then(pipewire_node_of) {
+            Some(node) => pipewire_node_channels(node).map(ChannelWidth::Exactly),
+            None if effective_name.is_some_and(|n| n.starts_with("hw:")) => Some(ChannelWidth::Widest),
+            None => None,
+        };
+        width
+            .and_then(|w| {
+                let ranges = device.supported_output_configs().ok()?;
+                wider_output_config(&default_config, ranges, w)
+            })
+            .unwrap_or(default_config)
+    };
+
     let sample_rate = default_config.sample_rate();
     let channels = default_config.channels();
     let total_ch = channels as usize;
@@ -1260,9 +1281,25 @@ fn open_stream_inner(
     // macOS (CoreAudio) and Linux (ALSA/PipeWire) — previously they always got
     // the OS default (typically 256-1024 samples), causing high Mic Cue latency
     // even when the operator had set 64 samples in Preferences.
+    let period = config.buffer_size;
+    // Through PipeWire the period must not be shorter than a graph cycle:
+    // cpal keeps only two periods buffered, so with a forced quantum above
+    // the configured buffer the plugin underruns on every cycle.
+    #[cfg(target_os = "linux")]
+    let period = match crate::engine::device_manager::pipewire_quantum_floor() {
+        Some(floor) if routes_via_pipewire(effective_name) && floor > period => {
+            log::info!("PipeWire quantum floor {floor} > buffer {period}: raising the period");
+            floor
+        }
+        _ => period,
+    };
+    let period = match default_config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => period.clamp(*min, (*max).max(*min)),
+        cpal::SupportedBufferSize::Unknown => period,
+    };
     let buf_size = match config.backend {
         AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
-        _ => cpal::BufferSize::Fixed(config.buffer_size),
+        _ => cpal::BufferSize::Fixed(period),
     };
 
     let stream_cfg = StreamConfig {
@@ -1326,8 +1363,9 @@ fn open_stream_inner(
         )?,
         cpal::SampleFormat::I32 => {
             // Pre-allocate a full-width f32 scratch — no alloc inside the RT
-            // callback (4096 frames covers every period cpal will request).
-            let scratch_len = (config.buffer_size as usize).max(4096) * total_ch;
+            // callback.  A period larger than the scratch is mixed in
+            // scratch-sized chunks rather than left partly unwritten.
+            let scratch_len = (period as usize).max(4096) * total_ch;
             let mut scratch = vec![0.0f32; scratch_len].into_boxed_slice();
             device.build_output_stream(
                 stream_cfg,
@@ -1335,10 +1373,12 @@ fn open_stream_inner(
                     cb_callbacks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let frames = data.len() / total_ch;
                     cb_period.store(frames as u32, std::sync::atomic::Ordering::Relaxed);
-                    let n = (frames * total_ch).min(scratch.len());
-                    fill_buffer(&mut scratch[..n], total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
-                    for (dst, src) in data.iter_mut().zip(scratch[..n].iter()) {
-                        *dst = (src.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
+                    for chunk in data.chunks_mut(scratch.len()) {
+                        let n = chunk.len();
+                        fill_buffer(&mut scratch[..n], total_ch, sample_rate, &cb_voices, &cb_feeds, &mut cmd_cons, &mut status_prod, &cb_mg, &cb_period);
+                        for (dst, src) in chunk.iter_mut().zip(scratch[..n].iter()) {
+                            *dst = (src.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
+                        }
                     }
                 },
                 make_err_fn(),
@@ -1366,6 +1406,56 @@ fn open_stream_inner(
         cmd_prod,
         status_cons,
     })
+}
+
+/// How wide to open an output stream, when the device default is too narrow.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelWidth {
+    /// The target's known channel count (a PipeWire node's `audio.channels`).
+    Exactly(u16),
+    /// The most channels the device offers (a raw `hw:` ALSA device).
+    Widest,
+}
+
+/// A config wider than `default` among `ranges`, at the same sample rate and
+/// in a sample format the callback mixes (F32 / I32, the default's first).
+///
+/// `None` when nothing wider fits, so the caller keeps the default.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn wider_output_config(
+    default: &cpal::SupportedStreamConfig,
+    ranges: impl IntoIterator<Item = cpal::SupportedStreamConfigRange>,
+    width: ChannelWidth,
+) -> Option<cpal::SupportedStreamConfig> {
+    let rate = default.sample_rate();
+    let format_rank = |f: cpal::SampleFormat| {
+        if f == default.sample_format() {
+            2
+        } else if matches!(f, cpal::SampleFormat::F32 | cpal::SampleFormat::I32) {
+            1
+        } else {
+            0
+        }
+    };
+    ranges
+        .into_iter()
+        .filter(|r| r.channels() > default.channels() && r.contains_rate(rate))
+        .filter(|r| format_rank(r.sample_format()) > 0)
+        .filter(|r| match width {
+            ChannelWidth::Exactly(n) => r.channels() == n,
+            ChannelWidth::Widest => true,
+        })
+        .max_by_key(|r| (r.channels(), format_rank(r.sample_format())))
+        .map(|r| r.with_sample_rate(rate))
+}
+
+/// `true` when the ALSA PCM `name` is served by PipeWire's ALSA plugin: the
+/// `pipewire` PCM itself (used for `pw:` nodes) or the system default, which
+/// pipewire-alsa takes over when PipeWire runs.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn routes_via_pipewire(name: Option<&str>) -> bool {
+    matches!(name, None | Some("pipewire") | Some("default"))
 }
 
 /// Pure routing decision: does an explicitly-requested patch device match the
@@ -1965,6 +2055,67 @@ mod tests {
         v.inner.set_rate(rate);
         v.set_playing();
         Arc::new(v)
+    }
+
+    fn range(channels: u16, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        let buf = cpal::SupportedBufferSize::Range { min: 64, max: 8192 };
+        cpal::SupportedStreamConfigRange::new(channels, 8_000, 192_000, buf, format)
+    }
+
+    /// What PipeWire's ALSA plugin advertises: any width 1..=64 in every format.
+    fn pipewire_like_ranges() -> Vec<cpal::SupportedStreamConfigRange> {
+        let mut v = Vec::new();
+        for fmt in [cpal::SampleFormat::I16, cpal::SampleFormat::I32, cpal::SampleFormat::F32] {
+            for ch in 1..=64 {
+                v.push(range(ch, fmt));
+            }
+        }
+        v
+    }
+
+    fn stereo_f32_default() -> cpal::SupportedStreamConfig {
+        let buf = cpal::SupportedBufferSize::Range { min: 64, max: 8192 };
+        cpal::SupportedStreamConfig::new(2, 48_000, buf, cpal::SampleFormat::F32)
+    }
+
+    #[test]
+    fn wider_config_opens_a_pipewire_node_at_its_real_width() {
+        // #10: a 4-out node opened stereo silently drops a patch on output 3.
+        let cfg = wider_output_config(&stereo_f32_default(), pipewire_like_ranges(), ChannelWidth::Exactly(4))
+            .expect("a 4-channel config is on offer");
+        assert_eq!(cfg.channels(), 4);
+        assert_eq!(cfg.sample_rate(), 48_000, "the default rate is kept");
+        assert_eq!(cfg.sample_format(), cpal::SampleFormat::F32, "the default format is kept");
+    }
+
+    #[test]
+    fn wider_config_widest_takes_every_hardware_channel() {
+        let ranges = vec![range(2, cpal::SampleFormat::I32), range(10, cpal::SampleFormat::I32)];
+        let cfg = wider_output_config(&stereo_f32_default(), ranges, ChannelWidth::Widest).unwrap();
+        assert_eq!(cfg.channels(), 10);
+        assert_eq!(cfg.sample_format(), cpal::SampleFormat::I32);
+    }
+
+    #[test]
+    fn wider_config_keeps_the_default_when_nothing_wider_fits() {
+        let d = stereo_f32_default();
+        // A stereo node: nothing to widen.
+        assert!(wider_output_config(&d, pipewire_like_ranges(), ChannelWidth::Exactly(2)).is_none());
+        // Wider, but only in a format the callback cannot mix.
+        assert!(wider_output_config(&d, vec![range(8, cpal::SampleFormat::I16)], ChannelWidth::Widest).is_none());
+        // Wider, but not at the stream's sample rate.
+        let off_rate = cpal::SupportedStreamConfigRange::new(
+            8, 96_000, 96_000, cpal::SupportedBufferSize::Unknown, cpal::SampleFormat::F32,
+        );
+        assert!(wider_output_config(&d, vec![off_rate], ChannelWidth::Widest).is_none());
+    }
+
+    #[test]
+    fn pipewire_routing_covers_node_and_default_pcms_only() {
+        assert!(routes_via_pipewire(None));
+        assert!(routes_via_pipewire(Some("pipewire")));
+        assert!(routes_via_pipewire(Some("default")));
+        assert!(!routes_via_pipewire(Some("hw:CARD=UMC404HD,DEV=0")));
     }
 
     /// An RT voice-list handle (the ArcSwap the callback reads) holding `voices`.
