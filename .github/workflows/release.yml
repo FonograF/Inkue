@@ -174,7 +174,13 @@ jobs:
           sudo apt-get install -y \
             build-essential libssl-dev \
             libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev \
-            libasound2-dev libmpv-dev
+            libasound2-dev libmpv-dev \
+            libpipewire-0.3-0 libclang-dev
+          # cpal's native PipeWire host needs 1.x PipeWire headers and 22.04
+          # ships 0.3.48: take 1.0.5's headers, link 22.04's own library so a
+          # symbol 0.3.48 lacks fails the build (scripts/pipewire_headers.sh).
+          bash scripts/pipewire_headers.sh "$RUNNER_TEMP/pipewire"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/pipewire/lib/pkgconfig" >> "$GITHUB_ENV"
 
       # ── ASIO: libclang for bindgen (Windows) ─────────────────────────────────
       # asio-sys generates bindings from the vendored SDK headers via bindgen,

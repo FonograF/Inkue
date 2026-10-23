@@ -6,6 +6,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait};
+
+use super::audio_host::{self, HostKind};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -101,10 +103,17 @@ impl DeviceManager {
 
     /// Return the default output device info, if one exists.
     pub fn default_device(&self) -> Option<&DeviceInfo> {
-        let host = cpal::default_host();
-        let default_id = host
-            .default_output_device()
-            .and_then(|d| d.id().ok().map(|i| i.id().to_string()))?;
+        // Both Linux hosts name the default `default` (ALSA's PCM, PipeWire's
+        // synthetic default via `inkue_device_id`): no need to connect to
+        // PipeWire on the GO path just to learn that.
+        #[cfg(target_os = "linux")]
+        let default_id = "default".to_string();
+        #[cfg(not(target_os = "linux"))]
+        let default_id = {
+            let (host, kind) = audio_host::system_host();
+            host.default_output_device()
+                .and_then(|d| d.id().ok().map(|i| audio_host::inkue_device_id(kind, i.id())))?
+        };
         self.cached_devices.iter().find(|d| d.id == default_id)
     }
 
@@ -121,18 +130,24 @@ impl Default for DeviceManager {
 /// (~100 ms/device) yet short enough that a hung driver never strands the UI.
 pub const ENUM_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Build a [`DeviceInfo`] from a cpal output device (queries its default config).
-fn output_device_info(device: &cpal::Device) -> DeviceInfo {
+/// Build a [`DeviceInfo`] for a cpal device of host `kind` (queries its
+/// default config in direction `input`).
+fn device_info(device: &cpal::Device, kind: HostKind, input: bool) -> DeviceInfo {
     let id = device
         .id()
         .ok()
-        .map(|i| i.id().to_string())
+        .map(|i| audio_host::inkue_device_id(kind, i.id()))
         .unwrap_or_else(|| device.to_string());
-    let name = device.to_string();
-    let (channels, sample_rate) = device
-        .default_output_config()
+    // cpal names its synthetic PipeWire defaults "output_default" etc.
+    let name = if kind == HostKind::PipeWire && id == "default" {
+        "System Default".to_string()
+    } else {
+        device.to_string()
+    };
+    let config = if input { device.default_input_config() } else { device.default_output_config() };
+    let (channels, sample_rate) = config
         .map(|c| (c.channels(), c.sample_rate()))
-        .unwrap_or((2, 44100));
+        .unwrap_or((2, if input { 48_000 } else { 44_100 }));
     DeviceInfo {
         id,
         name,
@@ -141,26 +156,44 @@ fn output_device_info(device: &cpal::Device) -> DeviceInfo {
     }
 }
 
+/// Enumerate the system host's devices of one direction, with Inkue ids
+/// (`pw:<node>` on the native PipeWire host — see [`audio_host`]).
+///
+/// **Slow on Windows** — see [`enumerate_output_devices`].
+pub fn enumerate_devices(input: bool) -> Vec<DeviceInfo> {
+    let (host, kind) = audio_host::system_host();
+    let found = if input {
+        host.input_devices().map(|it| it.collect::<Vec<_>>())
+    } else {
+        host.output_devices().map(|it| it.collect::<Vec<_>>())
+    };
+    let mut devices: Vec<DeviceInfo> = found
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| {
+            kind != HostKind::PipeWire
+                || match (d.id(), d.description()) {
+                    (Ok(id), Ok(desc)) => audio_host::lists_pipewire_device(id.id(), desc.direction(), input),
+                    _ => false,
+                }
+        })
+        .map(|d| device_info(d, kind, input))
+        .collect();
+    // Fall back to just the default device if full enumeration yielded nothing.
+    if devices.is_empty() {
+        let default = if input { host.default_input_device() } else { host.default_output_device() };
+        devices.extend(default.map(|d| device_info(&d, kind, input)));
+    }
+    devices
+}
+
 /// Enumerate output devices directly from cpal.
 ///
 /// **Slow on Windows** — WASAPI queries every device's mix format and can hang
 /// on a bad driver (cpal #867).  Never call this on the main thread: wrap it in
 /// [`run_bounded`], and inside a Tauri command run it via `spawn_blocking`.
 pub fn enumerate_output_devices() -> Vec<DeviceInfo> {
-    let host = cpal::default_host();
-    let mut devices = Vec::new();
-    if let Ok(iter) = host.output_devices() {
-        for device in iter {
-            devices.push(output_device_info(&device));
-        }
-    }
-    // Fall back to just the default device if full enumeration yielded nothing.
-    if devices.is_empty() {
-        if let Some(device) = host.default_output_device() {
-            devices.push(output_device_info(&device));
-        }
-    }
-    devices
+    enumerate_devices(false)
 }
 
 /// Run `job` on a scratch thread, waiting at most `timeout` for its result.
@@ -185,7 +218,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Linux: PipeWire device enumeration + PIPEWIRE_NODE helper
+// Linux: PipeWire device enumeration (pw-dump) + node helpers
 // ---------------------------------------------------------------------------
 
 /// On non-Linux, noop passthrough kept for call-site compatibility.
@@ -327,35 +360,6 @@ pub(crate) fn parse_pw_quantum_floor(text: &str) -> Option<u32> {
 /// If `device_id` is a `pw:…` synthetic ID, return the bare PipeWire node name.
 pub fn pipewire_node_of(device_id: &str) -> Option<&str> {
     device_id.strip_prefix("pw:")
-}
-
-/// RAII guard that sets `PIPEWIRE_NODE` for the current process while held and
-/// removes it on drop.  A static mutex serialises concurrent stream opens so
-/// the env-var is never overwritten by a racing thread.
-#[cfg(target_os = "linux")]
-pub struct PwNodeGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
-
-#[cfg(target_os = "linux")]
-impl Drop for PwNodeGuard {
-    fn drop(&mut self) {
-        // SAFETY: We still hold the mutex — no other thread touches this var.
-        unsafe { std::env::remove_var("PIPEWIRE_NODE"); }
-        // MutexGuard drops here, releasing the lock.
-    }
-}
-
-#[cfg(target_os = "linux")]
-static PW_OPEN_MTX: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-
-/// Lock the stream-open mutex, set `PIPEWIRE_NODE=node_name`, and return a
-/// guard whose `Drop` removes the var and releases the lock.
-#[cfg(target_os = "linux")]
-pub fn acquire_pw_node(node_name: &str) -> PwNodeGuard {
-    let mtx = PW_OPEN_MTX.get_or_init(|| std::sync::Mutex::new(()));
-    let guard = mtx.lock().unwrap_or_else(|p| p.into_inner());
-    // SAFETY: mutex is held; no other thread calls set_var concurrently.
-    unsafe { std::env::set_var("PIPEWIRE_NODE", node_name); }
-    PwNodeGuard(guard)
 }
 
 /// Legacy shim — still called from `preferences_cmds` for the ALSA fallback path

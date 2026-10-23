@@ -98,7 +98,7 @@
     },
     "linux": {
       "deb": {
-        "depends": ["libmpv2 | libmpv1", "libxkbcommon-x11-0"]
+        "depends": ["libmpv2 | libmpv1", "libxkbcommon-x11-0", "libpipewire-0.3-0t64 | libpipewire-0.3-0"]
       }
     }
   }

@@ -503,23 +503,18 @@ pub fn test_audio_device(
 /// avoid Send issues with the underlying Win32 handles.
 fn play_beep_on_device(device_name: Option<String>) {
     std::thread::spawn(move || {
-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use cpal::traits::{DeviceTrait, StreamTrait};
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
         };
 
-        let host = cpal::default_host();
-        let device = match &device_name {
-            Some(name) => host
-                .output_devices()
-                .ok()
-                .and_then(|mut it| it.find(|d| d.id().ok().map(|id| id.id() == *name).unwrap_or(false)))
-                .or_else(|| host.default_output_device()),
-            None => host.default_output_device(),
-        };
-
-        let device = match device { Some(d) => d, None => return };
+        // Same host + id mapping as the engine (`pw:` nodes on PipeWire);
+        // an unknown device beeps on the default one.
+        use crate::engine::audio_host;
+        let resolved = audio_host::output_device(device_name.as_deref())
+            .or_else(|_| audio_host::output_device(None));
+        let Ok(audio_host::Resolved { host: _host, device, .. }) = resolved else { return };
         let config = match device.default_output_config() { Ok(c) => c, Err(_) => return };
 
         let sample_rate = config.sample_rate();

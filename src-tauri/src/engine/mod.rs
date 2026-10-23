@@ -9,6 +9,7 @@
 //! - [`mpv_sys`]: runtime-loaded libmpv FFI symbols
 
 pub mod audio_engine;
+pub mod audio_host;
 pub mod audio_input;
 pub mod camera_enum;
 pub mod device_manager;

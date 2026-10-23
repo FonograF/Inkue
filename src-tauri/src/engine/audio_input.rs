@@ -13,13 +13,13 @@
 //! device clocks is absorbed there (see the live voice path in
 //! [`audio_engine`](super::audio_engine)).
 //!
-//! Cross-platform: uses the generic cpal host (WASAPI/CoreAudio/ALSA) — no
-//! per-OS API.
+//! Cross-platform: uses the generic cpal host (WASAPI / CoreAudio / native
+//! PipeWire or ALSA, see [`audio_host`](super::audio_host)) — no per-OS API.
 
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::Stream;
 use ringbuf::traits::{Producer, Split};
 use ringbuf::{HeapCons, HeapRb};
@@ -64,44 +64,14 @@ impl InputPatch {
 /// Enumerate available audio **input** devices.
 ///
 /// On Linux uses PipeWire node enumeration so the list matches what Ubuntu
-/// Sound Settings shows (`UMC404HD 192k Input 1`, etc.).  Falls back to cpal
-/// ALSA enumeration when PipeWire is unavailable.  On other platforms uses
-/// cpal directly.
+/// Sound Settings shows (`UMC404HD 192k Input 1`, etc.).  Falls back to the
+/// cpal host's own list (native PipeWire or ALSA) when `pw-dump` is
+/// unavailable.  On other platforms uses cpal directly.
 pub fn list_input_devices() -> Vec<DeviceInfo> {
+    let devices = super::device_manager::enumerate_devices(true);
     #[cfg(target_os = "linux")]
-    {
-        let host = cpal::default_host();
-        let mut fallback = Vec::new();
-        let Ok(iter) = host.input_devices() else {
-            return super::device_manager::linux_devices(true, fallback);
-        };
-        for device in iter {
-            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
-            let name = device.to_string();
-            let (channels, sample_rate) = device
-                .default_input_config()
-                .map(|c| (c.channels(), c.sample_rate()))
-                .unwrap_or((2, 48_000));
-            fallback.push(DeviceInfo { id, name, channels, sample_rate });
-        }
-        super::device_manager::linux_devices(true, fallback)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let host = cpal::default_host();
-        let mut devices = Vec::new();
-        let Ok(iter) = host.input_devices() else { return devices };
-        for device in iter {
-            let id = device.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| device.to_string());
-            let name = device.to_string();
-            let (channels, sample_rate) = device
-                .default_input_config()
-                .map(|c| (c.channels(), c.sample_rate()))
-                .unwrap_or((2, 48_000));
-            devices.push(DeviceInfo { id, name, channels, sample_rate });
-        }
-        devices
-    }
+    let devices = super::device_manager::linux_devices(true, devices);
+    devices
 }
 
 /// A running input capture: the persistent cpal stream plus the metadata the
@@ -136,45 +106,11 @@ const RING_FRAMES: usize = 48_000 / 2;
 /// (Linux only).  `None`/empty → system default.
 /// `buffer_size`: target period in frames (`0` = OS default).
 pub fn open_input(device_id: Option<&str>, buffer_size: u32) -> Result<(InputCapture, HeapCons<f32>)> {
-    #[cfg(target_os = "linux")]
-    use super::device_manager::pipewire_node_of;
-
-    // On Linux, `pw:<node_name>` IDs are opened via the `pipewire` ALSA PCM
-    // device with PIPEWIRE_NODE pointing PipeWire at the requested source node.
-    // We hold the pw-open mutex for the duration of cpal stream creation so the
-    // env var is never clobbered by a concurrent open on another thread.
-    #[cfg(target_os = "linux")]
-    let (_pw_guard, effective_id): (Option<super::device_manager::PwNodeGuard>, Option<&str>) = {
-        match device_id.filter(|s| !s.is_empty()).and_then(pipewire_node_of) {
-            Some(node) => {
-                let guard = super::device_manager::acquire_pw_node(node);
-                (Some(guard), Some("pipewire"))
-            }
-            None => (None, device_id.filter(|s| !s.is_empty())),
-        }
-    };
-    #[cfg(not(target_os = "linux"))]
-    let effective_id = device_id.filter(|s| !s.is_empty());
-
-    let host = cpal::default_host();
-
-    let device = match effective_id {
-        Some(name) => {
-            let all: Vec<_> = host
-                .input_devices()
-                .map_err(|e| anyhow!("Failed to enumerate input devices: {e}"))?
-                .map(|d| d.id().ok().map(|i| i.id().to_string()).unwrap_or_else(|| d.to_string()))
-                .collect();
-            log::info!("open_input: looking for '{name}' in input devices: {all:?}");
-            host.input_devices()
-                .map_err(|e| anyhow!("Failed to enumerate input devices: {e}"))?
-                .find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false))
-                .ok_or_else(|| anyhow!("Audio input device '{}' not found (available: {:?})", name, all))?
-        }
-        None => host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("No default audio input device found"))?,
-    };
+    // Linux: a `pw:` id opens that node on the native PipeWire host (ALSA
+    // default when PipeWire is absent) — see `audio_host`.  `_host` stays
+    // alive until the stream is built.
+    let super::audio_host::Resolved { host: _host, device, .. } =
+        super::audio_host::input_device(device_id.filter(|s| !s.is_empty()))?;
 
     let default_config = device
         .default_input_config()

@@ -13,7 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 539 pass, 0 failures** (verified 2026-10-06 on Windows, clippy clean;
+**`cargo test --lib` → 562 pass, 0 failures** (verified 2026-10-23 on Windows and on Linux in WSL
+Ubuntu 24.04 with the native PipeWire host compiled in, clippy clean on both; 539 on 2026-10-06;
 530 earlier that day on Windows and on Linux in WSL Ubuntu 24.04; 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
@@ -221,6 +222,27 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased — Linux audio: native PipeWire host (#10, #11)
+
+- `cpal/pipewire` on Linux only; `engine/audio_host.rs` picks the host (native PipeWire
+  when the daemon answers and libpipewire ≥ 0.3.53, else ALSA; `INKUE_AUDIO_HOST=alsa`)
+  and maps stored ids: `pw:<node.name>` = that node, `default`/`pipewire` = session
+  default, raw `hw:` ids still open through ALSA. Main/aux output streams, Mic Cue input,
+  the Preferences beep and device lists all resolve through it, so saved Output Patches
+  and machine config keep working.
+- Fixes #10 at the root: the stream follows the graph quantum (forced or not) instead of
+  ALSA's two periods, and opens at the node's real channel count (patches on outs 3+).
+  Removes the runtime `std::env::set_var("PIPEWIRE_NODE")` (UB with other threads
+  reading the environment, suspected in #11's crash on GO).
+- `StreamInvalidated` is fatal for the watchdog on Linux (a PipeWire stream in its error
+  state never recovers). Period clamp ignores PipeWire's `0..0` quantum range.
+- Packaging: `.deb` depends on `libpipewire-0.3-0t64 | libpipewire-0.3-0` (hard link, no
+  dlopen; the AppImage excludelist leaves it to the host). The 22.04 release runner
+  builds with PipeWire 1.0.5 headers + 22.04's 0.3.48 library
+  (`scripts/pipewire_headers.sh`); `pw_stream_get_time_n` (0.3.50+) is shimmed so the
+  BIND_NOW binary still starts on 22.04. Decision and pitfalls: PORTAGE.md.
+- Not verified on a real PipeWire session (WSL has no daemon).
 
 ### 1.4.0 (2026-10-06) — part 3: Scrub from the Active panel
 

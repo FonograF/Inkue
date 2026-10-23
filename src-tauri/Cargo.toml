@@ -114,6 +114,10 @@ block2 = "0.5"
 # `wayland` is compiled in only so the `INKUE_OUTPUT_BACKEND=wayland` escape hatch
 # (render.rs) can link; the default output backend is X11/XWayland (see build_event_loop).
 glutin = { version = "0.32", features = ["egl", "glx", "x11", "wayland"] }
+# Native PipeWire host (engine/audio_host.rs), preferred over ALSA through the
+# pipewire-alsa plugin when a PipeWire daemon runs.  Links libpipewire-0.3
+# (≥ 0.3.53) — build/packaging consequences in PORTAGE.md.
+cpal = { version = "0.18", features = ["pipewire"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 libc = "0.2"

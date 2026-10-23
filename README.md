@@ -44,7 +44,15 @@ cannot declare dependencies, so install it yourself before running the AppImage:
 | Arch / Manjaro | `sudo pacman -S mpv` |
 | Fedora | `sudo dnf install mpv-libs` |
 
-Inkue still starts without it — audio, MIDI, OSC, timecode and lighting all work
+Audio talks to PipeWire natively when it runs (every channel of an interface,
+the graph's own quantum) and falls back to ALSA otherwise. That needs the
+PipeWire client library `libpipewire-0.3.so.0` — present on any desktop that
+runs PipeWire, and declared by the `.deb`. On an AppImage system without it:
+`sudo apt install libpipewire-0.3-0t64` (Ubuntu 22.04 / Debian 12:
+`libpipewire-0.3-0`), `sudo pacman -S libpipewire`, `sudo dnf install pipewire-libs`.
+Set `INKUE_AUDIO_HOST=alsa` to force the ALSA path.
+
+Inkue still starts without libmpv — audio, MIDI, OSC, timecode and lighting all work
 — and shows a banner explaining that video output is unavailable. Everything
 else (a missing display server, no audio device) degrades the same way rather
 than preventing the app from opening.

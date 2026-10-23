@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::preferences::MachineAudioConfig;
 
 use super::{
+    audio_host::{self, Resolved},
     audio_input::{open_input, InputCapture},
     device_manager::DeviceManager,
     ring_command::{AudioCommand, AudioStatus, FadeCurve, VoiceId},
@@ -1189,78 +1190,38 @@ fn open_stream_inner(
 ) -> Result<StreamResult> {
     use crate::preferences::AudioBackend;
 
-    let host = match config.backend {
-        AudioBackend::WasapiShared | AudioBackend::WasapiExclusive | AudioBackend::SystemDefault => {
-            cpal::default_host()
-        }
-        AudioBackend::Asio => {
-            // Fall back to the default host when ASIO is not compiled in
-            // (e.g. `pnpm tauri dev` without `--features asio-support`).
-            // This lets developers iterate without ASIO while keeping their
-            // saved machine config pointing at ASIO for production builds.
-            match open_asio_host() {
-                Ok(h) => h,
-                Err(e) => {
-                    log::warn!("ASIO unavailable ({e}), falling back to default host");
-                    cpal::default_host()
-                }
-            }
-        }
-    };
+    let device_name = config.device_id.as_deref().filter(|s| !s.is_empty());
 
-    let device_name = config.device_id.as_deref();
-
-    // On Linux, `pw:<node_name>` IDs route through the `pipewire` ALSA device
-    // with PIPEWIRE_NODE set.  The guard keeps the env var live until the
-    // device is fully opened below.
-    #[cfg(target_os = "linux")]
-    let (_pw_guard, effective_name): (Option<crate::engine::device_manager::PwNodeGuard>, Option<&str>) = {
-        use crate::engine::device_manager::pipewire_node_of;
-        match device_name.filter(|s| !s.is_empty()).and_then(pipewire_node_of) {
-            Some(node) => {
-                let guard = crate::engine::device_manager::acquire_pw_node(node);
-                (Some(guard), Some("pipewire"))
-            }
-            None => (None, device_name.filter(|s| !s.is_empty())),
-        }
-    };
-    #[cfg(not(target_os = "linux"))]
-    let effective_name = device_name.filter(|s| !s.is_empty());
-
-    let device = if matches!(config.backend, AudioBackend::Asio) {
-        let found = effective_name
-            .and_then(|name| {
-                host.output_devices().ok()
-                    .and_then(|mut it| it.find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false)))
-            });
-        found
-            .or_else(|| host.default_output_device())
-            .ok_or_else(|| anyhow!(
-                "No ASIO device found. Make sure the driver is not already in use by another application."
-            ))?
-    } else if let Some(name) = effective_name {
-        host.output_devices()
-            .map_err(|e| anyhow!("Failed to enumerate devices: {e}"))?
-            .find(|d| d.id().ok().map(|id| id.id() == name).unwrap_or(false))
-            .ok_or_else(|| anyhow!("Audio device '{}' not found", name))?
+    // Linux: the native PipeWire host when its daemon answers, else ALSA
+    // (`audio_host`).  `_host` stays alive until the stream is built.
+    let Resolved { host: _host, device, kind: host_kind } = if matches!(config.backend, AudioBackend::Asio) {
+        resolve_asio_device(device_name)?
     } else {
-        host.default_output_device()
-            .ok_or_else(|| anyhow!("No default audio output device found"))?
+        audio_host::output_device(device_name)?
     };
 
     let default_config = device.default_output_config()
         .map_err(|e| anyhow!("Device config error: {e}"))?;
 
+    // The ALSA name the stream opens (`None` = ALSA `default`), for the
+    // width and quantum decisions below.
+    #[cfg(target_os = "linux")]
+    let alsa_name = match audio_host::route(device_name, host_kind) {
+        (_, audio_host::DeviceTarget::Id(name)) => Some(name),
+        (_, audio_host::DeviceTarget::Default) => None,
+    };
+
     // ALSA has no native default format and cpal's fallback ranks stereo
     // first, so a PipeWire node or interface with more outs would open as
     // two channels and every Output Patch past output 2 would be dropped.
-    // Open at the target's real width instead.
+    // Open at the target's real width instead.  (The native PipeWire host
+    // already reports a node's own channel count.)
     #[cfg(target_os = "linux")]
-    let default_config = {
+    let default_config = if host_kind == audio_host::HostKind::Alsa {
         use crate::engine::device_manager::{pipewire_node_channels, pipewire_node_of};
-        let width = match device_name.filter(|s| !s.is_empty()).and_then(pipewire_node_of) {
+        let width = match device_name.and_then(pipewire_node_of) {
             Some(node) => pipewire_node_channels(node).map(ChannelWidth::Exactly),
-            None if effective_name.is_some_and(|n| n.starts_with("hw:")) => Some(ChannelWidth::Widest),
+            None if alsa_name.is_some_and(|n| n.starts_with("hw:")) => Some(ChannelWidth::Widest),
             None => None,
         };
         width
@@ -1269,6 +1230,8 @@ fn open_stream_inner(
                 wider_output_config(&default_config, ranges, w)
             })
             .unwrap_or(default_config)
+    } else {
+        default_config
     };
 
     let sample_rate = default_config.sample_rate();
@@ -1281,22 +1244,25 @@ fn open_stream_inner(
     // macOS (CoreAudio) and Linux (ALSA/PipeWire) — previously they always got
     // the OS default (typically 256-1024 samples), causing high Mic Cue latency
     // even when the operator had set 64 samples in Preferences.
+    //
+    // On the native PipeWire host the period is only a latency *request*
+    // (`node.latency`): the graph runs at its own quantum (forced or not) and
+    // the callback simply receives a quantum's worth of frames.
     let period = config.buffer_size;
-    // Through PipeWire the period must not be shorter than a graph cycle:
-    // cpal keeps only two periods buffered, so with a forced quantum above
-    // the configured buffer the plugin underruns on every cycle.
+    // Through PipeWire's ALSA plugin the period must not be shorter than a
+    // graph cycle: cpal keeps only two periods buffered, so with a forced
+    // quantum above the configured buffer the plugin underruns on every cycle.
     #[cfg(target_os = "linux")]
     let period = match crate::engine::device_manager::pipewire_quantum_floor() {
-        Some(floor) if routes_via_pipewire(effective_name) && floor > period => {
+        Some(floor) if host_kind == audio_host::HostKind::Alsa && routes_via_pipewire(alsa_name) && floor > period => {
             log::info!("PipeWire quantum floor {floor} > buffer {period}: raising the period");
             floor
         }
         _ => period,
     };
-    let period = match default_config.buffer_size() {
-        cpal::SupportedBufferSize::Range { min, max } => period.clamp(*min, (*max).max(*min)),
-        cpal::SupportedBufferSize::Unknown => period,
-    };
+    let period = clamp_period(period, default_config.buffer_size());
+    #[cfg(not(target_os = "linux"))]
+    let _ = host_kind;
     let buf_size = match config.backend {
         AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
         _ => cpal::BufferSize::Fixed(period),
@@ -1327,11 +1293,7 @@ fn open_stream_inner(
             let last_log2  = Arc::clone(&last_log);
             let failed2    = Arc::clone(&stream_failed);
             move |err: cpal::Error| {
-                // Only DeviceNotAvailable is truly fatal (device pulled or
-                // exclusively grabbed).  Other kinds cover recoverable ALSA
-                // errors (e.g. Xrun, POLLERR) that should not trigger the
-                // watchdog restart.
-                if matches!(err.kind(), cpal::ErrorKind::DeviceNotAvailable) {
+                if stream_error_is_fatal(err.kind()) {
                     failed2.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 let now = std::time::SystemTime::now()
@@ -1406,6 +1368,54 @@ fn open_stream_inner(
         cmd_prod,
         status_cons,
     })
+}
+
+/// Resolve the ASIO driver `device_id` (or the first one).  Without ASIO
+/// compiled in (e.g. `pnpm tauri dev` without `--features asio-support`),
+/// fall back to the system host so developers can iterate while their saved
+/// machine config keeps pointing at ASIO for production builds.
+fn resolve_asio_device(device_id: Option<&str>) -> Result<Resolved> {
+    let host = match open_asio_host() {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("ASIO unavailable ({e}), falling back to default host");
+            return audio_host::output_device(device_id).or_else(|_| audio_host::output_device(None));
+        }
+    };
+    let found = device_id.and_then(|name| {
+        host.output_devices()
+            .ok()
+            .and_then(|mut it| it.find(|d| d.id().ok().is_some_and(|id| id.id() == name)))
+    });
+    let device = found
+        .or_else(|| host.default_output_device())
+        .ok_or_else(|| anyhow!(
+            "No ASIO device found. Make sure the driver is not already in use by another application."
+        ))?;
+    Ok(Resolved { host, device, kind: audio_host::HostKind::System })
+}
+
+/// Does a stream error leave the stream dead, so the watchdog must reopen it?
+///
+/// DeviceNotAvailable is (device pulled or exclusively grabbed).  Other kinds
+/// cover recoverable ALSA errors (e.g. Xrun, POLLERR) that should not trigger
+/// the watchdog restart — except, on Linux, StreamInvalidated: the native
+/// PipeWire host reports a stream that entered its error state or lost its
+/// negotiated format with it, and stops that stream for good.  (cpal's ALSA
+/// host never emits it.)
+fn stream_error_is_fatal(kind: cpal::ErrorKind) -> bool {
+    kind == cpal::ErrorKind::DeviceNotAvailable
+        || (cfg!(target_os = "linux") && kind == cpal::ErrorKind::StreamInvalidated)
+}
+
+/// Clamp a requested period into the device's supported range.  A range
+/// with `max == 0` is the PipeWire host before the server clock settings
+/// arrived: no bounds are known, so the request stands.
+fn clamp_period(period: u32, supported: &cpal::SupportedBufferSize) -> u32 {
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } if *max > 0 => period.clamp(*min, (*max).max(*min)),
+        _ => period,
+    }
 }
 
 /// How wide to open an output stream, when the device default is too narrow.
@@ -2108,6 +2118,35 @@ mod tests {
             8, 96_000, 96_000, cpal::SupportedBufferSize::Unknown, cpal::SampleFormat::F32,
         );
         assert!(wider_output_config(&d, vec![off_rate], ChannelWidth::Widest).is_none());
+    }
+
+    #[test]
+    fn period_is_clamped_into_the_quantum_range() {
+        let range = cpal::SupportedBufferSize::Range { min: 32, max: 2048 };
+        assert_eq!(clamp_period(16, &range), 32);
+        assert_eq!(clamp_period(256, &range), 256);
+        assert_eq!(clamp_period(8192, &range), 2048);
+        assert_eq!(clamp_period(256, &cpal::SupportedBufferSize::Unknown), 256);
+    }
+
+    #[test]
+    fn period_stands_before_pipewire_reports_its_quantum_range() {
+        // cpal's PipeWire host reports 0..0 until the server clock settings
+        // arrive; clamping into it would request a zero-frame period.
+        let unknown = cpal::SupportedBufferSize::Range { min: 0, max: 0 };
+        assert_eq!(clamp_period(256, &unknown), 256);
+    }
+
+    #[test]
+    fn only_dead_streams_trip_the_watchdog() {
+        assert!(stream_error_is_fatal(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(!stream_error_is_fatal(cpal::ErrorKind::Xrun));
+        assert!(!stream_error_is_fatal(cpal::ErrorKind::DeviceChanged));
+        // A PipeWire stream in its error state never comes back on its own.
+        assert_eq!(
+            stream_error_is_fatal(cpal::ErrorKind::StreamInvalidated),
+            cfg!(target_os = "linux"),
+        );
     }
 
     #[test]
