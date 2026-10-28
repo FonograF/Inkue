@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged by Tauri into the macOS bundle's Info.plist. Without these keys macOS
+     never prompts: LAN sends fail with EHOSTUNREACH (os error 65), and camera /
+     microphone access gets the process killed by TCC. -->
+<plist version="1.0">
+<dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Inkue sends and receives OSC and lighting data (Art-Net / sACN) on your local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Inkue shows live camera feeds in Camera Cues.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Inkue plays live audio inputs in Mic Cues.</string>
+</dict>
+</plist>
