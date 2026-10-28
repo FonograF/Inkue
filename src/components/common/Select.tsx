@@ -35,7 +35,16 @@ export function Select({ value, onChange, style, disabled, children }: SelectPro
   const current = options.find((o) => o.value === String(value));
 
   return (
-    <div style={{ position: "relative", width: style?.width ?? "100%" }}>
+    // Flex sizing must land on the wrapper (the flex item), not the inner
+    // button — otherwise the 100%-wide wrapper squeezes its siblings (#12).
+    <div
+      style={{
+        position: "relative",
+        width: style?.width ?? "100%",
+        flex: style?.flex,
+        minWidth: style?.minWidth,
+      }}
+    >
       {open && (
         <div
           style={{ position: "fixed", inset: 0, zIndex: 100 }}
