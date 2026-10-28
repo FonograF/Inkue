@@ -223,6 +223,12 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
+### 1.4.1 (2026-10-28) — OSC Cue address field squeezed (#12)
+
+- `components/common/Select.tsx`: the caller's `flex`/`minWidth` now go on the wrapper
+  (the real flex item) instead of the inner button, so the OSC address field next to the
+  patch dropdown keeps its width.
+
 ### 1.4.1 (2026-10-28) — macOS: Local Network, camera and microphone permissions
 
 - `src-tauri/Info.plist` (merged by Tauri into the bundle) declares
