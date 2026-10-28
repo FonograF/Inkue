@@ -29,6 +29,10 @@ const _MAX_VOICES: usize = 64;
 const RING_CAPACITY: usize = 256;
 pub const DEFAULT_FADE_OUT_MS: u32 = 500;
 
+/// Longest the watchdog waits for PipeWire to say whether a pinned node still
+/// exists, so a stalled daemon only delays (never blocks) its 2 s tick.
+const NODE_PRESENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Circular staging buffer per input feed, in frames.  Large enough to absorb
 /// two full input-callback periods at maximum buffer size (2 × 2048 @ 48 kHz ≈
 /// 85 ms) while staying small so the target-lag calculation stays well inside.
@@ -231,6 +235,10 @@ pub struct AudioEngine {
     current_device_id: Mutex<Option<String>>,
     /// `true` while running on the default device after the desired one was lost.
     in_fallback: std::sync::atomic::AtomicBool,
+    /// The current stream is pinned to one PipeWire node, whose loss raises no
+    /// stream error (WirePlumber re-links the stream to the default sink): the
+    /// watchdog polls the node's presence instead.
+    pins_node: std::sync::atomic::AtomicBool,
 }
 
 /// Snapshot of the output device's health, read by the device watchdog.
@@ -303,15 +311,15 @@ impl EngineCore {
         // fills the queue and then reports "ring buffer full", which callers
         // already treat as a non-fatal playback error.  A later `restart()`
         // replaces both halves with the new stream's.
-        let (cmd_prod, status_cons, stream, sample_rate, channels, out_offset) = match stream {
+        let (cmd_prod, status_cons, stream, sample_rate, channels, out_offset, pins_node) = match stream {
             Some(sr) => (
                 sr.cmd_prod, sr.status_cons, Some(sr.stream),
-                sr.sample_rate, sr.channels, sr.default_out_offset,
+                sr.sample_rate, sr.channels, sr.default_out_offset, sr.pins_node,
             ),
             None => {
                 let (cmd_prod, _) = HeapRb::<AudioCommand>::new(RING_CAPACITY).split();
                 let (_, status_cons) = HeapRb::<AudioStatus>::new(RING_CAPACITY).split();
-                (cmd_prod, status_cons, None, 48_000, 2, 0)
+                (cmd_prod, status_cons, None, 48_000, 2, 0, false)
             }
         };
 
@@ -337,6 +345,7 @@ impl EngineCore {
                 if started_in_fallback { None } else { config.device_id.clone() },
             ),
             in_fallback: std::sync::atomic::AtomicBool::new(started_in_fallback),
+            pins_node: std::sync::atomic::AtomicBool::new(pins_node),
         });
 
         // A broken configured device (HDMI with no display, unplugged interface)
@@ -420,12 +429,13 @@ impl AudioEngine {
 
     /// Snapshot of the output device's current health for the watchdog.
     pub fn audio_health(&self) -> AudioHealth {
+        let in_fallback = self.in_fallback.load(std::sync::atomic::Ordering::Relaxed);
         let failed = self
             .stream_failed
             .lock()
             .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(false);
-        let in_fallback = self.in_fallback.load(std::sync::atomic::Ordering::Relaxed);
+            .unwrap_or(false)
+            || (!in_fallback && self.pinned_node_vanished());
         let (desired_id, desired_label) = self
             .desired_config
             .lock()
@@ -457,6 +467,23 @@ impl AudioEngine {
             _ => true,
         };
         AudioHealth { failed, in_fallback, desired_device: desired_label, desired_present }
+    }
+
+    /// `true` when the PipeWire node the current stream is pinned to has
+    /// disappeared.  An unanswered query counts as present: a slow daemon
+    /// must not trigger a fallback.
+    fn pinned_node_vanished(&self) -> bool {
+        if !self.pins_node.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let Some(id) = self.current_device_id.lock().ok().and_then(|d| d.clone()) else {
+            return false;
+        };
+        crate::engine::device_manager::run_bounded(NODE_PRESENCE_TIMEOUT, move || {
+            audio_host::pipewire_output_present(&id)
+        })
+        .flatten()
+            == Some(false)
     }
 
     /// Open `config` as the operator's chosen device (an explicit settings change).
@@ -1141,6 +1168,7 @@ impl AudioEngine {
         self.default_out_offset.store(sr.default_out_offset, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut f) = self.stream_failed.lock() { *f = new_failed; }
         if let Ok(mut d) = self.current_device_id.lock() { *d = config.device_id.clone(); }
+        self.pins_node.store(sr.pins_node, std::sync::atomic::Ordering::Relaxed);
 
         // The device set does not change on a restart (same hardware, different
         // selection), so we do not re-enumerate here — that would add a slow,
@@ -1172,6 +1200,8 @@ struct StreamResult {
     default_out_offset: u32,
     cmd_prod: ringbuf::HeapProd<AudioCommand>,
     status_cons: ringbuf::HeapCons<AudioStatus>,
+    /// Opened on one PipeWire node (see [`AudioEngine::pinned_node_vanished`]).
+    pins_node: bool,
 }
 
 /// Select device, configure buffer, build and start the cpal stream.
@@ -1261,8 +1291,6 @@ fn open_stream_inner(
         _ => period,
     };
     let period = clamp_period(period, default_config.buffer_size());
-    #[cfg(not(target_os = "linux"))]
-    let _ = host_kind;
     let buf_size = match config.backend {
         AudioBackend::Asio | AudioBackend::WasapiShared => cpal::BufferSize::Default,
         _ => cpal::BufferSize::Fixed(period),
@@ -1367,6 +1395,7 @@ fn open_stream_inner(
         default_out_offset: pair_offset as u32,
         cmd_prod,
         status_cons,
+        pins_node: audio_host::pins_pipewire_node(host_kind, device_name),
     })
 }
 

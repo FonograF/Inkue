@@ -113,6 +113,36 @@ pub fn route(id: Option<&str>, active: HostKind) -> (HostKind, DeviceTarget<'_>)
     }
 }
 
+/// `true` when a stream for stored id `id`, opened on host `kind`, is pinned
+/// to one PipeWire node.  Losing that node raises no cpal error: WirePlumber
+/// moves the stream to the default sink and it keeps streaming there, so the
+/// device watchdog has to poll the node's presence instead
+/// ([`pipewire_output_present`]).
+pub fn pins_pipewire_node(kind: HostKind, id: Option<&str>) -> bool {
+    matches!(route(id, kind), (HostKind::PipeWire, DeviceTarget::Id(_)))
+}
+
+/// Whether the PipeWire output node behind stored id `id` (`pw:<node.name>`)
+/// still exists.  `None` when the PipeWire host could not be asked — callers
+/// treat that as "unknown", never as "gone".  Always `Some(true)` off Linux.
+///
+/// Compares ids only (no per-device config query), so it is cheap enough for
+/// the watchdog's 2 s tick.
+pub fn pipewire_output_present(id: &str) -> Option<bool> {
+    let (HostKind::PipeWire, DeviceTarget::Id(node)) = route(Some(id), HostKind::PipeWire) else {
+        return Some(true);
+    };
+    #[cfg(target_os = "linux")]
+    {
+        linux::output_node_present(node)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = node;
+        Some(true)
+    }
+}
+
 /// cpal 0.18's synthetic PipeWire devices that follow the session default
 /// (`src/host/pipewire/device.rs`): they map to Inkue's `default` id.
 const PW_DEFAULT_NODES: [&str; 3] = ["output_default", "input_default", "sink_default"];
@@ -230,6 +260,8 @@ mod linux {
     use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
     use std::sync::Once;
 
+    use cpal::traits::{DeviceTrait, HostTrait};
+
     use super::{choose_linux_host, pipewire_lib_supported, HostKind, HOST_ENV};
 
     extern "C" {
@@ -327,6 +359,13 @@ mod linux {
         (alsa_host(), HostKind::Alsa)
     }
 
+    /// See [`super::pipewire_output_present`].
+    pub(super) fn output_node_present(node: &str) -> Option<bool> {
+        let host = cpal::host_from_id(cpal::HostId::PipeWire).ok()?;
+        let mut devices = host.output_devices().ok()?;
+        Some(devices.any(|d| d.id().ok().is_some_and(|i| i.id() == node)))
+    }
+
     /// The ALSA host, built explicitly: `cpal::default_host()` would try
     /// PipeWire first.
     pub(super) fn alsa_host() -> cpal::Host {
@@ -413,6 +452,28 @@ mod tests {
         // WASAPI endpoint ids and CoreAudio UIDs are opaque; "default" is not special.
         for id in ["{0.0.0.00000000}.{guid}", "BuiltInSpeakerDevice", "default", "pw:x"] {
             assert_eq!(route(Some(id), HostKind::System), (HostKind::System, DeviceTarget::Id(id)));
+        }
+    }
+
+    #[test]
+    fn only_a_node_on_the_pipewire_host_is_pinned() {
+        let node = Some("pw:alsa_output.usb-BEHRINGER_UMC404HD_192k-00.pro-output-0");
+        assert!(pins_pipewire_node(HostKind::PipeWire, node));
+        // The session default follows WirePlumber's choice: nothing to lose.
+        for id in [None, Some(""), Some("default"), Some("pipewire"), Some("pw:")] {
+            assert!(!pins_pipewire_node(HostKind::PipeWire, id), "{id:?}");
+        }
+        // A raw PCM opens through ALSA, which reports its loss itself.
+        assert!(!pins_pipewire_node(HostKind::PipeWire, Some("hw:CARD=PCH,DEV=0")));
+        // Without the native host a `pw:` id plays on the ALSA default.
+        assert!(!pins_pipewire_node(HostKind::Alsa, node));
+        assert!(!pins_pipewire_node(HostKind::System, node));
+    }
+
+    #[test]
+    fn non_node_ids_are_always_present() {
+        for id in ["default", "pw:", "hw:0,0"] {
+            assert_eq!(pipewire_output_present(id), Some(true), "{id:?}");
         }
     }
 

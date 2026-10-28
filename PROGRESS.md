@@ -13,8 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 562 pass, 0 failures** (verified 2026-10-23 on Windows and on Linux in WSL
-Ubuntu 24.04 with the native PipeWire host compiled in, clippy clean on both; 539 on 2026-10-06;
+**`cargo test --lib` → 564 pass, 0 failures** (verified 2026-10-28 on Windows, clippy clean on
+Windows and on Linux in WSL Ubuntu 24.04 with the native PipeWire host; 562 on 2026-10-23 on both; 539 on 2026-10-06;
 530 earlier that day on Windows and on Linux in WSL Ubuntu 24.04; 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
 `libmpv-2.dll`. Never force-kill `cargo` mid-build — corrupts the incremental cache
@@ -242,7 +242,15 @@ fix, not the full investigation.
   builds with PipeWire 1.0.5 headers + 22.04's 0.3.48 library
   (`scripts/pipewire_headers.sh`); `pw_stream_get_time_n` (0.3.50+) is shimmed so the
   BIND_NOW binary still starts on 22.04. Decision and pitfalls: PORTAGE.md.
-- Not verified on a real PipeWire session (WSL has no daemon).
+- Losing a pinned node raises no cpal error (WirePlumber re-links the stream to the
+  default sink and it keeps streaming, and the node's serial changes when it returns,
+  so audio never goes back). The watchdog now polls the node's presence
+  (`audio_host::pipewire_output_present`, ids only, 1 s bound) while the stream is
+  pinned to a `pw:` node, and reports it as failed → usual fallback banner + "Switch back".
+- Verified 2026-10-28 in WSL Ubuntu 24.04 against a real PipeWire 1.0.5 + WirePlumber
+  0.4.17 daemon (null sinks, no sound card): outs 3-4 on a 4-ch node, forced quantum
+  2048 (23 callbacks/s, clean signal), node removal → fallback → return → Switch back.
+  Not verified on real hardware.
 
 ### 1.4.0 (2026-10-06) — part 3: Scrub from the Active panel
 
