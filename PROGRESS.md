@@ -1,6 +1,6 @@
-# Inkue — Project state as of 2026-10-06
+# Inkue — Project state as of 2026-10-28
 
-## Current version: 1.4.0 — multiple video outputs + exact crossfades, multi-cue editing from the right-click menu, scrubbing from the Active panel (1.3.5: Linux AppImage `.DirIcon` fix)
+## Current version: 1.4.1 — native PipeWire audio on Linux, mono m4a speed fix, macOS local-network/camera/mic permissions, data-loss and race fixes (1.4.0: multiple video outputs + exact crossfades, multi-cue editing from the right-click menu, scrubbing from the Active panel; 1.3.5: Linux AppImage `.DirIcon` fix)
 
 ## cargo build result
 
@@ -223,7 +223,34 @@ this drift.
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
 
-### Unreleased — Linux audio: native PipeWire host (#10, #11)
+### 1.4.1 (2026-10-28) — macOS: Local Network, camera and microphone permissions
+
+- `src-tauri/Info.plist` (merged by Tauri into the bundle) declares
+  `NSLocalNetworkUsageDescription`, `NSCameraUsageDescription` and
+  `NSMicrophoneUsageDescription`. Without the first, macOS 15+ never prompts and every
+  LAN send (OSC, Art-Net/sACN) fails with `No route to host (os error 65)`; from
+  Terminal it worked because the process inherits Terminal's permission. Without the
+  other two, TCC kills the process on first camera / mic access (Camera Cue, Mic Cue).
+  Builds are still unsigned, so macOS may ask again after each update. Not verified on
+  a Mac (reported on Discord).
+
+### 1.4.1 (2026-10-23) — mono m4a speed, PipeWire channel width and quantum (#10, #11)
+
+- Decoding takes channel count and sample rate from the decoder output, not the
+  container: mono AAC `.m4a` (no channel layout in MP4) played at double speed (#11).
+- Linux: output stream opens at the target's real width (outs 3+ were dropped) and the
+  period is raised to the graph quantum floor (stutter / wrong speed, #10). Period
+  clamped to the device range; I32 callback mixes in scratch-sized chunks.
+
+### 1.4.1 (2026-10-18) — data-loss, race and panic fixes (community bug report)
+
+- Failed save blocks the close; New/Open/Import QLab prompt for unsaved changes;
+  `Workspace::save()` writes a temp file then renames; failed autosave retries.
+- Undo/redo history per cue list; stale background decodes are discarded; removing a
+  running cue hard-stops it; Auto-Continue/Follow chaining is iterative (Goto cycle no
+  longer overflows the stack); Stop All / Hard Stop All cover every cue list.
+
+### 1.4.1 (2026-10-28) — Linux audio: native PipeWire host (#10, #11)
 
 - `cpal/pipewire` on Linux only; `engine/audio_host.rs` picks the host (native PipeWire
   when the daemon answers and libpipewire ≥ 0.3.53, else ALSA; `INKUE_AUDIO_HOST=alsa`)
