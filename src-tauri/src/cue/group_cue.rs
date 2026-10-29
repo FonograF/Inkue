@@ -606,6 +606,19 @@ impl Cue for GroupCue {
         Ok(())
     }
 
+    /// Reposition every descendant to `position_ms`.
+    ///
+    /// A `GroupCue` has no native seek (the trait default is a no-op), so an
+    /// external transport master (MPC) MMC Locate on a *running* group walks its
+    /// children: nested groups recurse, and each `AudioCue`/`VideoCue`
+    /// repositions its voice to the absolute SMPTE target. Non-seekable leaves
+    /// (Memo, Stop, …) simply use the no-op default.
+    fn seek(&mut self, position_ms: u64, ctx: &CueContext) {
+        for child in &mut self.children {
+            child.seek(position_ms, ctx);
+        }
+    }
+
     fn reset(&mut self) -> Result<()> {
         self.reset_children();
         self.state = CueState::Standby;
