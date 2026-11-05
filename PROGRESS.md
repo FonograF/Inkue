@@ -13,8 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 613 pass, 0 failures** (verified 2026-11-05 on macOS with the geometry/path-fade
-branch on top of 1.4.1, clippy clean; full `cargo test` 720, vitest 86; 564 on 2026-10-28 on Windows, clippy clean on
+**`cargo test --lib` → 614 pass, 0 failures** (verified 2026-11-05 on macOS with the geometry/path-fade
+branch on top of 1.4.1, clippy clean; full `cargo test` 721, vitest 86; 564 on 2026-10-28 on Windows, clippy clean on
 Windows and on Linux in WSL Ubuntu 24.04 with the native PipeWire host; 562 on 2026-10-23 on both; 539 on 2026-10-06;
 530 earlier that day on Windows and on Linux in WSL Ubuntu 24.04; 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
@@ -303,7 +303,9 @@ Curve mode), on the fade's own curve shapes.
   target once, when the action starts (after the pre-wait); pause/resume forward to
   it; a stop **holds** the picture where it got to. Carried across the inspector
   rebuild (`FadeRun::motion_started`). Validation warns on a geometry fade with
-  nothing checked. Old shows load unchanged.
+  nothing checked. Old shows load unchanged. With `fade_opacity` off the file
+  stores `target_brightness_pct: 100`, so 1.4.1 and older (which ignore
+  `fade_opacity` and fade to that target, default 0 %) leave the picture visible.
 - Engine: motions carry an **owner** (the Fade's id) — a later fade on the same
   layer replaces the run, and the earlier fade's stop/pause can no longer touch it.
 - Inspector (`FadeCueTab.tsx`): Visual → "Fade brightness" toggle; new Geometry

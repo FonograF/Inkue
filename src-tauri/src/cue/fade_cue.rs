@@ -773,6 +773,12 @@ impl Cue for FadeCue {
     }
 
     fn serialize(&self) -> Value {
+        // Inkue 1.4.1 and earlier do not know `fade_opacity` and always fade
+        // pictures to `target_brightness_pct`, whose default is 0 %: a
+        // geometry-only fade opened there would fade its picture to black.
+        // While the box is off the value is unused here, so write 100 % and
+        // older builds leave the picture visible.
+        let brightness = if self.fade_opacity { self.target_brightness_pct } else { 100.0 };
         json!({
             "type": "fade",
             "cue_type": "fade",
@@ -787,7 +793,7 @@ impl Cue for FadeCue {
             "target_cue_ids": self.target_cue_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
             "target_cue_numbers": self.target_cue_numbers,
             "target_volume_db": self.target_volume_db,
-            "target_brightness_pct": self.target_brightness_pct,
+            "target_brightness_pct": brightness,
             "target_pan": self.target_pan,
             "fade_volume": self.fade_volume,
             "fade_duration_ms": self.fade_duration_ms,
@@ -1230,6 +1236,21 @@ mod tests {
         let again = FadeCueFactory.from_json(json.clone()).unwrap().serialize();
         assert_eq!(again["geometry"], json["geometry"]);
         assert_eq!(again["fade_opacity"], false);
+    }
+
+    #[test]
+    fn a_geometry_only_fade_stays_visible_in_older_builds() {
+        // Older builds ignore `fade_opacity` and fade to the brightness target.
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(move_and_turn());
+        cue.fade_opacity = false;
+        assert_eq!(cue.target_brightness_pct, 0.0, "the default target is black");
+        assert_eq!(cue.serialize()["target_brightness_pct"], 100.0);
+
+        // An opacity fade keeps its own target.
+        cue.fade_opacity = true;
+        cue.target_brightness_pct = 25.0;
+        assert_eq!(cue.serialize()["target_brightness_pct"], 25.0);
     }
 
     #[test]
