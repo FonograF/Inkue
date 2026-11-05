@@ -497,7 +497,46 @@ export interface FadeCueData extends CueSummary {
   /** Crossfade: a visual cue started by this Fade so the picture dissolves from
    *  the targets into it. null = plain fade. */
   crossfade_into_id: string | null;
+  /** Geometry fade on the visual targets (QLab's Geometry tab). null = none. */
+  geometry: GeometryFade | null;
+  /** When true (default) the fade drives the pictures' brightness toward
+   *  target_brightness_pct; false = a geometry-only fade. */
+  fade_opacity: boolean;
 }
+
+/** Curve-mode geometry targets; each null = not faded. */
+export interface CurveGeometry {
+  /** Layer offset [x, y] as a fraction of the output's width / height.
+   *  Centre origin, **+Y = up** (QLab's convention). */
+  translation: [number, number] | null;
+  /** Scale factor (1 = unchanged). */
+  scale: number | null;
+  /** Rotation about the output centre, degrees clockwise. */
+  rotation_deg: number | null;
+}
+
+/** A property one axis of a path drives. */
+export type PathParam = "translation_x" | "translation_y";
+
+/** Path-mode geometry (QLab 5.4): constant speed along the path; the fade's
+ *  curve shapes do not apply. */
+export interface PathGeometry {
+  /** Points [x, y], start first, in the units of x_param / y_param — for
+   *  translation, fractions of the output (centre origin, +Y = up). ≥ 2. */
+  points: [number, number][];
+  /** Catmull-Rom spline through the points (false = straight segments). */
+  smooth: boolean;
+  /** Fraction of the duration (0–1) spent joining the path from where the
+   *  picture is; the path before that point is skipped. */
+  merge: number;
+  /** Repeat until the Fade is stopped (it then has no duration). */
+  loop_path: boolean;
+  x_param: PathParam;
+  y_param: PathParam;
+}
+
+/** What a Fade Cue does to its pictures' geometry, tagged by mode. */
+export type GeometryFade = ({ mode: "curve" } & CurveGeometry) | ({ mode: "path" } & PathGeometry);
 
 /** Full cue data returned by get_cue for a Wait Cue. */
 export interface WaitCueData extends CueSummary {

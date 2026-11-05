@@ -1,7 +1,9 @@
 // Fade Cue main tab: targets, fade parameters, audio/visual goals, on-complete.
 // Extracted from BasicsTab so Basics stays identity-only.
 
-import type { CueSummary, FadeCueData, FadeShapes } from "../../lib/types";
+import { useEffect, useState } from "react";
+import type { CueSummary, CurveGeometry, FadeCueData, FadeShapes, ScreenInfo } from "../../lib/types";
+import { listVideoScreens } from "../../lib/commands";
 import { CurveEditor } from "../Curve/CurveEditor";
 
 /** Locked S-Curve — what a fade has always done, for a cue saved before
@@ -13,9 +15,12 @@ const DEFAULT_FADE_SHAPES: FadeShapes = {
 };
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { flattenCues, makesSound, showsPicture } from "../../lib/cueTree";
-import { Grid2, MiniField, NumberInput, Section, SliderRow, ToggleRow, inputStyle } from "./Field";
+import { Grid2, MiniField, NumberInput, Section, Segmented, SliderRow, ToggleRow, inputStyle } from "./Field";
+import { DEFAULT_PATH, PathFadeFields } from "./PathFadeFields";
 import { CueTargetPicker } from "./CueTargetPicker";
 import { Select } from "../common/Select";
+
+const NO_GEOMETRY: CurveGeometry = { translation: null, scale: null, rotation_deg: null };
 
 const hintStyle = { fontSize: 11, color: "var(--wc-text-faint)", margin: "6px 0 10px", lineHeight: 1.5 } as const;
 
@@ -30,6 +35,15 @@ export function FadeCueTab({
   onOpenCurveEditor?: () => void;
 }) {
   const allCues = useWorkspaceStore((s) => s.cues);
+  const videoOutputs = useWorkspaceStore((s) => s.videoOutputs);
+  const [screens, setScreens] = useState<ScreenInfo[]>([]);
+  useEffect(() => {
+    listVideoScreens().then(setScreens).catch(console.error);
+  }, []);
+  // The path editor's stage takes the main output's monitor shape (16:9 for
+  // a floating window). Points are fractions, so the path itself fits any output.
+  const mainScreen = screens.find((s) => s.index === videoOutputs.find((o) => o.is_main)?.screen);
+  const outputAspect = mainScreen && mainScreen.height > 0 ? mainScreen.width / mainScreen.height : 16 / 9;
 
   const everyCue = flattenCues(allCues);
   const targetIds: string[] = cue.target_cue_ids ?? [];
@@ -55,6 +69,17 @@ export function FadeCueTab({
   const fadeVolume: boolean = cue.fade_volume ?? true;
   const panEnabled: boolean = cue.target_pan != null;
   const panValue: number = cue.target_pan ?? 0;
+  const fadeOpacity: boolean = cue.fade_opacity ?? true;
+  const geometryMode = cue.geometry?.mode ?? "curve";
+  const path = cue.geometry?.mode === "path" ? cue.geometry : null;
+  const geometry: CurveGeometry = cue.geometry?.mode === "curve" ? cue.geometry : NO_GEOMETRY;
+  // Unchecking the last property removes the geometry fade altogether.
+  const patchGeometry = (partial: Partial<CurveGeometry>) => {
+    const next = { ...geometry, ...partial };
+    const empty = next.translation == null && next.scale == null && next.rotation_deg == null;
+    onSave({ geometry: empty ? null : { mode: "curve", ...next } });
+  };
+  const [moveX, moveY] = geometry.translation ?? [0, 0];
 
   return (
     <>
@@ -176,15 +201,113 @@ export function FadeCueTab({
           title="Visual"
           hint={crossfadeInto ? "Used only if there is nothing to dissolve into." : undefined}
         >
-          <SliderRow
-            label="Brightness"
-            value={brightnessPercent}
-            min={0}
-            max={100}
-            step={1}
-            format={(v) => `${Math.round(v)}%`}
-            onChange={(v) => onSave({ target_brightness_pct: Math.round(v) })}
+          <ToggleRow
+            label="Fade brightness"
+            checked={fadeOpacity}
+            onToggle={(v) => onSave({ fade_opacity: v })}
+          >
+            <SliderRow
+              label="To"
+              value={brightnessPercent}
+              min={0}
+              max={100}
+              step={1}
+              format={(v) => `${Math.round(v)}%`}
+              onChange={(v) => onSave({ target_brightness_pct: Math.round(v) })}
+            />
+          </ToggleRow>
+        </Section>
+      )}
+
+      {showBrightness && (
+        <Section
+          title="Geometry"
+          hint={
+            path
+              ? "Moves each picture along the path at constant speed — the curve shape is not used. It stays where the path ends."
+              : "Moves each picture from wherever it is, on the fade's curve. It stays there when the fade ends."
+          }
+        >
+          <Segmented
+            options={[
+              { value: "curve", label: "Curve", hint: "Fade to target values" },
+              { value: "path", label: "Path", hint: "Follow a drawn path" },
+            ]}
+            value={geometryMode}
+            onChange={(mode) => {
+              // Re-clicking the current mode must not reset what is there.
+              if (mode === geometryMode) return;
+              onSave({ geometry: mode === "path" ? { mode: "path", ...DEFAULT_PATH } : null });
+            }}
           />
+          {path ? (
+            <PathFadeFields
+              path={path}
+              aspect={outputAspect}
+              onChange={(next) => onSave({ geometry: { ...next, mode: "path" } })}
+            />
+          ) : (
+          <>
+          <ToggleRow
+            label="Fade position"
+            checked={geometry.translation != null}
+            onToggle={(v) => patchGeometry({ translation: v ? [moveX, moveY] : null })}
+          >
+            <Grid2>
+              <MiniField label="X (± of width, + = right)">
+                <NumberInput
+                  value={moveX}
+                  step={0.01}
+                  min={-2}
+                  max={2}
+                  onCommit={(v) => patchGeometry({ translation: [v, moveY] })}
+                />
+              </MiniField>
+              <MiniField label="Y (± of height, + = up)">
+                <NumberInput
+                  value={moveY}
+                  step={0.01}
+                  min={-2}
+                  max={2}
+                  onCommit={(v) => patchGeometry({ translation: [moveX, v] })}
+                />
+              </MiniField>
+            </Grid2>
+          </ToggleRow>
+          <ToggleRow
+            label="Fade scale"
+            checked={geometry.scale != null}
+            onToggle={(v) => patchGeometry({ scale: v ? 1 : null })}
+          >
+            <SliderRow
+              label="To"
+              value={geometry.scale ?? 1}
+              min={0.05}
+              max={8}
+              step={0.05}
+              format={(v) => `${Math.round(v * 100)}%`}
+              onChange={(v) => patchGeometry({ scale: v })}
+            />
+          </ToggleRow>
+          <ToggleRow
+            label="Fade rotation"
+            checked={geometry.rotation_deg != null}
+            onToggle={(v) => patchGeometry({ rotation_deg: v ? 0 : null })}
+          >
+            <Grid2>
+              <MiniField label="To (°, clockwise)">
+                <NumberInput
+                  value={geometry.rotation_deg ?? 0}
+                  step={1}
+                  min={-3600}
+                  max={3600}
+                  onCommit={(v) => patchGeometry({ rotation_deg: v })}
+                />
+              </MiniField>
+            </Grid2>
+          </ToggleRow>
+          </>
+          )}
         </Section>
       )}
 

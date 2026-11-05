@@ -13,7 +13,8 @@ three OS.
 
 ## cargo test result
 
-**`cargo test --lib` → 564 pass, 0 failures** (verified 2026-10-28 on Windows, clippy clean on
+**`cargo test --lib` → 614 pass, 0 failures** (verified 2026-11-05 on macOS with the geometry/path-fade
+branch on top of 1.4.1, clippy clean; full `cargo test` 721, vitest 86; 564 on 2026-10-28 on Windows, clippy clean on
 Windows and on Linux in WSL Ubuntu 24.04 with the native PipeWire host; 562 on 2026-10-23 on both; 539 on 2026-10-06;
 530 earlier that day on Windows and on Linux in WSL Ubuntu 24.04; 465 on 2026-10-05; run the full
 `cargo test` from `src-tauri/` after closing the dev server, which holds `inkue.exe` /
@@ -222,6 +223,124 @@ this drift.
 
 Condensed log — what each version changed and the key files. Bug entries keep the
 fix, not the full investigation.
+
+### Unreleased (2026-10-16) — Drawn path editor (phase 5 of 5)
+
+- `components/Inspector/PathEditor.tsx` (new): QLab-style 2D canvas in the Fade's
+  Path mode — the stage at the main output's monitor aspect (16:9 for a floating
+  window) with a margin for off-stage points; click adds a point at the end,
+  Alt-click inserts into the nearest span, drag moves, Delete removes (never below
+  two points); start triangle / end square; Reverse, Flip ↔, Flip ↕. The points
+  table stays below it for exact values.
+- `lib/path.ts` (new) mirrors motion.rs's flattening (centripetal Catmull-Rom,
+  reflected ends, pixel-metric, repeat-merging), so the drawn line is the played
+  one. **Shared vector**: motion.rs `shared_path_vector` and
+  `lib/__tests__/path.test.ts` assert the same five vertices to 1e-12.
+- Tests: 1 Rust + 5 vitest.
+- Checked in the app (macOS): add, Alt-insert, drag, delete, smoothing matching
+  playback, Reverse and both flips.
+
+### Unreleased (2026-10-16) — QLab import of geometry and path fades (phase 4 of 5)
+
+`qlab_import/geometry.rs` (new) maps a QLab Fade's Geometry tab; `cues::fade` now
+takes the `VideoOutputs` and no longer drops every geometry fade with a note.
+
+- **`fadeType` first** (`1` Curve, `2` Path): QLab keeps Curve-mode values inside a
+  Path fade and Path mode ignores them and every `do*` box.
+- Curve: `doTranslation` + `translationX/Y` (stage px, +Y up) ÷ the **target's stage
+  size** (`VideoOutputs::stage_size_of`, from `settings.Video.stages[].width/height`,
+  via the resolved `cueTarget`'s `viewportID`; fallback first stage, then
+  1920 × 1080); `doScale` when `scaleX == scaleY`; `doOpacity` → `fade_opacity` +
+  `opacity` → brightness % (absent box = Inkue default). Rotation and a non-uniform
+  scale are named in the notes, not guessed (rotation's format is not decoded yet).
+- Path: `fade.path.points` (`"{x, y}"` NSPoint strings) + the `pathOriginPosition`
+  offset (1 Center, 5 Bottom Right confirmed; 2–4 by menu order) on the
+  `pathWidth`/`pathHeight` canvas, each axis ÷ the stage dimension of the property it
+  drives (`pathParameterMap.geometry`); `smoothPath`, `easeInFraction` (merge),
+  `pathLoop` as bool **or** integer. A path driving rotation/scale, unreadable points
+  and < 2 points are named in the notes. Path fades get `fade_opacity: false`.
+- Tests: 16 in `geometry.rs` + 1 in `outputs.rs`. Checked against the ten decoded
+  QLab test workspaces (all import and load every cue; values match the raw file).
+- Checked in the app (macOS): File → Import QLab Workspace… of the path test files
+  plays the paths as QLab does.
+- `C:\qlab2inkue` (reference converter, Windows) still needs the same mapping.
+
+### Unreleased (2026-10-16) — Path fades (phase 3 of 5)
+
+A Fade Cue can move its pictures along a path (QLab 5.4's Path mode):
+constant speed, optional Catmull-Rom smoothing, merge, loop.
+
+- `cue/types.rs`: `GeometryFade::Path(PathGeometry)` — `points` (fractions of the
+  output, +Y up), `smooth`, `merge` (0–1), `loop_path`, `x_param`/`y_param`
+  (`PathParam`, string-serialized; translation X/Y only for now). Missing fields
+  take QLab's defaults.
+- `FadeCue`: maps the path to `MotionProgram::Path` (merge clamped). A **looping**
+  path reports no `duration()`, so the event loop never time-completes it, and it
+  never fires stop-at-end after one pass — it runs until the Fade is stopped,
+  which holds the picture where it is. Validation: fewer than two points is an
+  error; both axes on one property is a warning.
+- Inspector: Geometry section gets a **Curve / Path** switch; Path mode shows the
+  points as a table (add, remove, reverse), smooth, loop, merge % and the axis
+  mapping (`PathFadeFields.tsx`). The drawn editor is phase 5.
+- Tests: 6 unit (documented JSON shape roundtrip, QLab defaults, program mapping
+  incl. merge clamp + swapped axes, two-point minimum, same-axis warning, looping =
+  no duration) + 1 integration (a looping path with stop-at-end starts one path
+  motion and never stops its targets).
+- Checked on screen (macOS, still image): constant speed, smoothing through every
+  point, merge 50 % joining halfway without visiting the start, loop restarting
+  from the start position and holding on stop.
+
+### Unreleased (2026-10-16) — Geometry fades, Curve mode (phase 2 of 5)
+
+A Fade Cue can now move, scale and rotate its pictures (QLab's Geometry tab,
+Curve mode), on the fade's own curve shapes.
+
+- `cue/types.rs`: `GeometryFade::Curve(CurveGeometry)` (`mode`-tagged so Path mode
+  joins without a format change); each of translation `[x, y]` (fraction of the
+  output, +Y up), scale, rotation (° clockwise) is `None` when not faded.
+- `FadeCue`: `geometry` + `fade_opacity` (default `true` = the opacity fade every
+  older Fade ran; `false` = geometry-only). The motion is handed to each visual
+  target once, when the action starts (after the pre-wait); pause/resume forward to
+  it; a stop **holds** the picture where it got to. Carried across the inspector
+  rebuild (`FadeRun::motion_started`). Validation warns on a geometry fade with
+  nothing checked. Old shows load unchanged. With `fade_opacity` off the file
+  stores `target_brightness_pct: 100`, so 1.4.1 and older (which ignore
+  `fade_opacity` and fade to that target, default 0 %) leave the picture visible.
+- Engine: motions carry an **owner** (the Fade's id) — a later fade on the same
+  layer replaces the run, and the earlier fade's stop/pause can no longer touch it.
+- Inspector (`FadeCueTab.tsx`): Visual → "Fade brightness" toggle; new Geometry
+  section (position X/Y, scale, rotation, each with its own checkbox).
+- Tests: 6 unit (serde roundtrip, legacy JSON, unreadable geometry dropped, program
+  mapping incl. per-direction curves, empty-geometry warning, rebuild carry-over),
+  6 integration through the recording engine (one start per picture, geometry-only
+  leaves opacity/level alone, legacy fade starts no motion, pre-wait, pause/resume/
+  stop reach the own motion with Hold, stop before the action touches nothing).
+- Checked on screen (macOS, `pnpm tauri dev`, still image + video): position X/Y
+  (+Y = up), clockwise rotation without shear, and a second Fade taking over from
+  wherever the first left the picture.
+
+### Unreleased (2026-10-16) — Layer motion engine (geometry / path fades, phase 1 of 5)
+
+Engine groundwork for QLab-style geometry and path fades. Nothing calls it yet:
+the Fade Cue is wired in phase 2. The QLab measurements behind it are summarised
+in `motion.rs`'s module docs (phases: engine, Curve fades, Path fades, QLab
+import, drawn path editor).
+
+- `output_engine/motion.rs` (pure math): `LayerMotion` (tx/ty as fraction of the
+  output, Y up; clockwise degrees; scale), `MotionProgram::{Curve, Path}`,
+  `MotionRun` with a pausable clock. Path = centripetal Catmull-Rom (or straight
+  segments) flattened to a distance table measured in output pixels → constant speed;
+  merge = cubic Hermite from the layer at rest to the path point at `merge`; loop
+  restarts each pass from the start offset. All measured against QLab 5.
+- Render thread evaluates each slot's motion every frame (`slot::motion_frame`) and
+  the composite shader samples the layer through `u_layer_xform` (output UV → layer
+  UV, rotation in pixels so 16:9 does not shear; outside the layer = transparent).
+  Identity matrix for unmoved layers and the overlay. A running motion paces the loop
+  at 16 ms like an opacity animation.
+- `OutputEngineApi::{start,pause,stop}_voice_motion` (defaults no-op). The engine
+  captures the start offset itself; a finished motion leaves its final offset as the
+  rest offset; new content / unload resets it.
+- 26 tests in `motion.rs`.
 
 ### 1.4.1 (2026-10-28) — OSC Cue address field squeezed (#12)
 

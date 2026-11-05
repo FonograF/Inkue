@@ -19,6 +19,7 @@
 mod blend;
 mod crossfade;
 mod lifecycle;
+mod motion;
 mod mpv_events;
 mod output;
 mod overlay;
@@ -33,6 +34,7 @@ mod macos_window;
 mod types;
 
 pub use blend::BlendMode;
+pub use motion::{CurveMotion, LayerMotion, MotionParam, MotionProgram, MotionStop, PathMotion};
 pub use types::{
     ContentRequest, CrossfadePhase, CrossfadeRequest, FitMode, LayerStyle, OutputConfig, OutputId,
     OutputStatus, OutputTransform, ScreenInfo, TestPattern, VideoGeometry, VoiceId, MAIN_OUTPUT,
@@ -710,6 +712,30 @@ impl OutputEngine {
     pub fn set_voice_opacity(&self, voice_id: VoiceId, opacity: f32) {
         if let Some(slot) = output::slot_for_voice(voice_id) {
             slot::set_opacity_direct(&slot, opacity);
+        }
+    }
+
+    /// Start moving a voice's layer (geometry or path fade) on behalf of
+    /// `owner`, from wherever it is now.  The render thread evaluates the
+    /// program every frame.
+    pub fn start_voice_motion(&self, voice_id: VoiceId, owner: Uuid, program: MotionProgram) {
+        if let Some(slot) = output::slot_for_voice(voice_id) {
+            slot::start_motion(&slot, owner, program);
+        }
+    }
+
+    /// Hold (`true`) or release the clock of `owner`'s motion on a voice.
+    pub fn pause_voice_motion(&self, voice_id: VoiceId, owner: Uuid, paused: bool) {
+        if let Some(slot) = output::slot_for_voice(voice_id) {
+            slot::pause_motion(&slot, owner, paused);
+        }
+    }
+
+    /// End `owner`'s motion on a voice, keeping or undoing what it did.  A
+    /// motion another owner started since is left alone.
+    pub fn stop_voice_motion(&self, voice_id: VoiceId, owner: Uuid, how: MotionStop) {
+        if let Some(slot) = output::slot_for_voice(voice_id) {
+            slot::stop_motion(&slot, owner, how);
         }
     }
 

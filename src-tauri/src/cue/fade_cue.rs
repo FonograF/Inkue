@@ -6,7 +6,10 @@
 //! - **audio** voices (audio cues, video sound tracks, group children): gain
 //!   and/or pan;
 //! - **pictures** (video, image, camera layers — a group's included): their own
-//!   layer opacity, so other layers are untouched.
+//!   layer opacity, so other layers are untouched — and, with a
+//!   [`GeometryFade`], their position, scale and rotation.  Geometry runs in
+//!   the output engine as a layer motion, started once when the action starts
+//!   and evaluated there every frame.
 //!
 //! `target_gain_linear = 0.0` → fade to black/silence.
 //! `target_gain_linear = 1.0` → fade to full brightness/unity volume.
@@ -25,14 +28,20 @@ use uuid::Uuid;
 
 use crate::{
     cue::types::db_to_linear,
-    engine::{output_engine::CrossfadePhase, ring_command::FadeCurve as EngineFadeCurve},
+    engine::{
+        output_engine::{CrossfadePhase, CurveMotion, MotionParam, MotionProgram, MotionStop, PathMotion},
+        ring_command::FadeCurve as EngineFadeCurve,
+    },
 };
 
 use super::{
     context::{CueContext, CueEvent},
     curve::{CurveKind, FadeShapes},
     traits::{Cue, CueFactory, RuntimeState},
-    types::{ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCrossfade, FadeCurve},
+    types::{
+        ContinueMode, CueColor, CueId, CueState, CueType, FadeAction, FadeCrossfade, FadeCurve,
+        GeometryFade, PathParam,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -85,6 +94,13 @@ pub struct FadeCue {
     /// Crossfade: a visual cue this Fade starts, so the picture dissolves from
     /// the targets into it (`show/crossfade.rs`, `engine/output_engine/crossfade.rs`).
     pub crossfade_into: Option<CueId>,
+    /// Geometry fade on the visual targets (QLab's Geometry tab).  `None` =
+    /// position, scale and rotation are left alone.
+    pub geometry: Option<GeometryFade>,
+    /// When `true` (default) the fade drives the visual targets' opacity
+    /// toward `target_brightness_pct`.  `false` for a geometry-only fade that
+    /// must leave the picture's brightness alone (QLab's unchecked Opacity box).
+    pub fade_opacity: bool,
     is_disabled: bool,
 
     // Runtime — injected by transport after go()
@@ -106,6 +122,8 @@ pub struct FadeCue {
     /// [`take_fade_stop_targets`](crate::cue::traits::Cue::take_fade_stop_targets)
     /// and stops the actual cues — the fade itself can't reach the cue list.
     stop_targets_pending: Vec<CueId>,
+    /// The geometry motion has been handed to the output engine for this run.
+    motion_started: bool,
 }
 
 /// What a running Fade drives, carried across the inspector's rebuild (see
@@ -122,6 +140,7 @@ struct FadeRun {
     awaiting_picture: bool,
     fade_complete: bool,
     stop_targets_pending: Vec<CueId>,
+    motion_started: bool,
 }
 
 impl FadeCue {
@@ -152,6 +171,8 @@ impl FadeCue {
             shapes: FadeShapes::default(),
             stop_at_end: false,
             crossfade_into: None,
+            geometry: None,
+            fade_opacity: true,
             is_disabled: false,
             target_voices: Vec::new(),
             visual_targets: Vec::new(),
@@ -160,6 +181,70 @@ impl FadeCue {
             visual_target_opacity: 0.0,
             fade_complete: false,
             stop_targets_pending: Vec::new(),
+            motion_started: false,
+        }
+    }
+
+    /// The layer motion this Fade's geometry asks for, or `None` when it
+    /// moves nothing.
+    pub fn motion_program(&self) -> Option<MotionProgram> {
+        match self.geometry.as_ref()? {
+            GeometryFade::Curve(g) if !g.is_empty() => Some(MotionProgram::Curve(Box::new(CurveMotion {
+                tx: g.translation.map(|t| t[0]),
+                ty: g.translation.map(|t| t[1]),
+                rotation_deg: g.rotation_deg,
+                scale: g.scale,
+                duration: Duration::from_millis(self.fade_duration_ms),
+                rising: self.shapes.up.to_engine(),
+                falling: self.shapes.for_direction(false).to_engine(),
+            }))),
+            GeometryFade::Curve(_) => None,
+            GeometryFade::Path(p) if p.points.len() >= 2 => Some(MotionProgram::Path(PathMotion {
+                points: p.points.clone(),
+                smooth: p.smooth,
+                merge: p.merge.clamp(0.0, 1.0),
+                looping: p.loop_path,
+                duration: Duration::from_millis(self.fade_duration_ms),
+                x_param: Self::motion_param(p.x_param),
+                y_param: Self::motion_param(p.y_param),
+            })),
+            GeometryFade::Path(_) => None,
+        }
+    }
+
+    fn motion_param(param: PathParam) -> MotionParam {
+        match param {
+            PathParam::TranslationX => MotionParam::TranslationX,
+            PathParam::TranslationY => MotionParam::TranslationY,
+        }
+    }
+
+    /// A looping path runs until stopped: it never completes on its own.
+    fn loops(&self) -> bool {
+        self.geometry.as_ref().is_some_and(GeometryFade::loops)
+    }
+
+    /// Hand the geometry motion to each visual target's layer, once per run,
+    /// when the action starts.  The engine owns the motion from there: it
+    /// starts from wherever each layer is, and settles there at the end.
+    fn start_motion(&mut self, context: &CueContext) {
+        if self.motion_started {
+            return;
+        }
+        self.motion_started = true;
+        let Some(program) = self.motion_program() else { return };
+        for &(vid, _) in &self.visual_targets {
+            context.output_engine.start_voice_motion(vid, self.id, program.clone());
+        }
+    }
+
+    /// Pause (`true`) or resume this run's geometry motion.
+    fn hold_motion(&self, context: &CueContext, paused: bool) {
+        if !self.motion_started {
+            return;
+        }
+        for &(vid, _) in &self.visual_targets {
+            context.output_engine.pause_voice_motion(vid, self.id, paused);
         }
     }
 
@@ -291,6 +376,7 @@ impl Cue for FadeCue {
         self.visual_target_opacity = 0.0;
         self.fade_complete = false;
         self.stop_targets_pending.clear();
+        self.motion_started = false;
         self.started_at = Some(Instant::now());
 
         if self.pre_wait.is_zero() {
@@ -310,6 +396,12 @@ impl Cue for FadeCue {
         // that has not started yet is called off.
         if let Some(incoming) = self.linked_incoming_voice() {
             context.output_engine.release_crossfade(incoming);
+        }
+        // A stopped geometry fade leaves the picture where it got to (QLab).
+        if self.motion_started {
+            for &(vid, _) in &self.visual_targets {
+                context.output_engine.stop_voice_motion(vid, self.id, MotionStop::Hold);
+            }
         }
         self.state = CueState::Standby;
         self.started_at = None;
@@ -334,6 +426,7 @@ impl Cue for FadeCue {
             if let Some(incoming) = self.linked_incoming_voice() {
                 context.output_engine.hold_crossfade(incoming, true);
             }
+            self.hold_motion(context, true);
             self.state = CueState::Paused;
         }
         Ok(())
@@ -349,6 +442,7 @@ impl Cue for FadeCue {
             if let Some(incoming) = self.linked_incoming_voice() {
                 context.output_engine.hold_crossfade(incoming, false);
             }
+            self.hold_motion(context, false);
             self.state = CueState::Running;
         }
         Ok(())
@@ -372,6 +466,7 @@ impl Cue for FadeCue {
         self.visual_target_opacity = 0.0;
         self.fade_complete = false;
         self.stop_targets_pending.clear();
+        self.motion_started = false;
         Ok(())
     }
 
@@ -400,6 +495,7 @@ impl Cue for FadeCue {
         if self.action_started_at.is_none() {
             return Ok(());
         }
+        self.start_motion(context);
 
         // No targets → nothing to drive; just wait for duration to expire.
         let crossfading = matches!(self.crossfade, FadeCrossfade::Linked(_));
@@ -451,13 +547,15 @@ impl Cue for FadeCue {
 
         // Interpolate each visual target's layer opacity (per-slot — a Fade
         // on one video no longer dips the whole output to black).
-        for &(vid, start_opacity) in &self.visual_targets {
+        let opacity_targets = if self.fade_opacity { self.visual_targets.as_slice() } else { &[] };
+        for &(vid, start_opacity) in opacity_targets {
             let progress = if self.visual_target_opacity >= start_opacity { rising_t } else { falling_t };
             let opacity = start_opacity + (self.visual_target_opacity - start_opacity) * progress;
             context.output_engine.set_voice_opacity(vid, opacity);
         }
 
-        if t >= 1.0 && !self.fade_complete {
+        // A looping path has no end: stop-at-end would cut it after one pass.
+        if t >= 1.0 && !self.fade_complete && !self.loops() {
             self.fade_complete = true;
             self.queue_stops_at_end(context);
         }
@@ -475,6 +573,11 @@ impl Cue for FadeCue {
     fn set_post_wait(&mut self, d: Duration) { self.post_wait = d; }
 
     fn duration(&self) -> Option<Duration> {
+        // No duration = never time-complete (`show/event_loop.rs`): a looping
+        // path keeps going until the operator stops the Fade.
+        if self.loops() {
+            return None;
+        }
         Some(Duration::from_millis(self.fade_duration_ms))
     }
 
@@ -602,6 +705,20 @@ impl Cue for FadeCue {
                 ));
             }
         }
+        match &self.geometry {
+            Some(GeometryFade::Curve(g)) if g.is_empty() => {
+                issues.push(CueIssue::warning("Geometry fade has nothing checked — it moves nothing"));
+            }
+            Some(GeometryFade::Path(p)) => {
+                if p.points.len() < 2 {
+                    issues.push(CueIssue::error("Path fade needs at least two points"));
+                }
+                if p.x_param == p.y_param {
+                    issues.push(CueIssue::warning("Both path axes drive the same property"));
+                }
+            }
+            _ => {}
+        }
         issues
     }
 
@@ -636,6 +753,7 @@ impl Cue for FadeCue {
             awaiting_picture: self.awaiting_picture,
             fade_complete: self.fade_complete,
             stop_targets_pending: std::mem::take(&mut self.stop_targets_pending),
+            motion_started: self.motion_started,
         }))
     }
 
@@ -651,9 +769,16 @@ impl Cue for FadeCue {
         self.awaiting_picture = run.awaiting_picture;
         self.fade_complete = run.fade_complete;
         self.stop_targets_pending = run.stop_targets_pending;
+        self.motion_started = run.motion_started;
     }
 
     fn serialize(&self) -> Value {
+        // Inkue 1.4.1 and earlier do not know `fade_opacity` and always fade
+        // pictures to `target_brightness_pct`, whose default is 0 %: a
+        // geometry-only fade opened there would fade its picture to black.
+        // While the box is off the value is unused here, so write 100 % and
+        // older builds leave the picture visible.
+        let brightness = if self.fade_opacity { self.target_brightness_pct } else { 100.0 };
         json!({
             "type": "fade",
             "cue_type": "fade",
@@ -668,7 +793,7 @@ impl Cue for FadeCue {
             "target_cue_ids": self.target_cue_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
             "target_cue_numbers": self.target_cue_numbers,
             "target_volume_db": self.target_volume_db,
-            "target_brightness_pct": self.target_brightness_pct,
+            "target_brightness_pct": brightness,
             "target_pan": self.target_pan,
             "fade_volume": self.fade_volume,
             "fade_duration_ms": self.fade_duration_ms,
@@ -676,6 +801,8 @@ impl Cue for FadeCue {
             "fade_shapes": self.shapes,
             "stop_at_end": self.stop_at_end,
             "crossfade_into_id": self.crossfade_into.map(|id| id.to_string()),
+            "geometry": self.geometry,
+            "fade_opacity": self.fade_opacity,
             "is_disabled": self.is_disabled,
         })
     }
@@ -774,6 +901,17 @@ impl CueFactory for FadeCueFactory {
             .get("crossfade_into_id")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok());
+        // Absent (any show written before geometry fades) = no geometry, and
+        // the opacity fade every older Fade always ran.
+        if let Some(g) = value.get("geometry").filter(|g| !g.is_null()) {
+            match serde_json::from_value(g.clone()) {
+                Ok(geometry) => cue.geometry = Some(geometry),
+                Err(e) => log::warn!("[fade {}] geometry ignored: {e}", cue.id),
+            }
+        }
+        if let Some(b) = value.get("fade_opacity").and_then(|v| v.as_bool()) {
+            cue.fade_opacity = b;
+        }
         if let Some(b) = value.get("is_disabled").and_then(|v| v.as_bool()) {
             cue.is_disabled = b;
         }
@@ -1074,5 +1212,215 @@ mod tests {
     #[test]
     fn an_idle_fade_carries_nothing_across_the_rebuild() {
         assert!(FadeCue::new().take_runtime_extra().is_none());
+    }
+    // ── Geometry ────────────────────────────────────────────────────────────
+
+    fn move_and_turn() -> GeometryFade {
+        GeometryFade::Curve(crate::cue::types::CurveGeometry {
+            translation: Some([0.25, -0.1]),
+            scale: None,
+            rotation_deg: Some(45.0),
+        })
+    }
+
+    #[test]
+    fn geometry_and_the_opacity_switch_survive_a_roundtrip() {
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(move_and_turn());
+        cue.fade_opacity = false;
+        let json = cue.serialize();
+        assert_eq!(json["geometry"]["mode"], "curve");
+        assert_eq!(json["geometry"]["translation"], json!([0.25, -0.1]));
+        assert_eq!(json["geometry"]["scale"], Value::Null);
+
+        let again = FadeCueFactory.from_json(json.clone()).unwrap().serialize();
+        assert_eq!(again["geometry"], json["geometry"]);
+        assert_eq!(again["fade_opacity"], false);
+    }
+
+    #[test]
+    fn a_geometry_only_fade_stays_visible_in_older_builds() {
+        // Older builds ignore `fade_opacity` and fade to the brightness target.
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(move_and_turn());
+        cue.fade_opacity = false;
+        assert_eq!(cue.target_brightness_pct, 0.0, "the default target is black");
+        assert_eq!(cue.serialize()["target_brightness_pct"], 100.0);
+
+        // An opacity fade keeps its own target.
+        cue.fade_opacity = true;
+        cue.target_brightness_pct = 25.0;
+        assert_eq!(cue.serialize()["target_brightness_pct"], 25.0);
+    }
+
+    #[test]
+    fn a_show_written_before_geometry_fades_loads_unchanged() {
+        let json = json!({ "type": "fade", "target_brightness_pct": 0.0, "fade_duration_ms": 1000 });
+        let cue = FadeCueFactory.from_json(json).unwrap().serialize();
+        assert_eq!(cue["geometry"], Value::Null);
+        assert_eq!(cue["fade_opacity"], true, "older fades always faded the picture");
+    }
+
+    #[test]
+    fn unreadable_geometry_is_dropped_not_fatal() {
+        let json = json!({ "type": "fade", "geometry": { "mode": "warp_drive" } });
+        let cue = FadeCueFactory.from_json(json).unwrap().serialize();
+        assert_eq!(cue["geometry"], Value::Null);
+    }
+
+    #[test]
+    fn the_motion_program_carries_the_targets_and_the_fade_shapes() {
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(move_and_turn());
+        cue.fade_duration_ms = 1500;
+        cue.shapes = FadeShapes {
+            up: crate::cue::curve::CurveShape::of_kind(CurveKind::Linear),
+            down: crate::cue::curve::CurveShape::of_kind(CurveKind::Exponential),
+            mirrored: false,
+        };
+        let Some(MotionProgram::Curve(curve)) = cue.motion_program() else {
+            panic!("a curve geometry fade is a curve motion");
+        };
+        assert_eq!((curve.tx, curve.ty, curve.rotation_deg, curve.scale), (Some(0.25), Some(-0.1), Some(45.0), None));
+        assert_eq!(curve.duration, Duration::from_millis(1500));
+        assert_eq!(curve.rising, EngineFadeCurve::Linear);
+        assert_eq!(curve.falling, EngineFadeCurve::Exponential);
+    }
+
+    #[test]
+    fn a_geometry_fade_with_nothing_checked_moves_nothing_and_is_flagged() {
+        let target = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        cue.geometry = Some(GeometryFade::Curve(Default::default()));
+        assert!(cue.motion_program().is_none());
+        let issues: Vec<String> =
+            cue.validate(&validation_context(&[target], &[])).into_iter().map(|i| i.message).collect();
+        assert!(issues.iter().any(|m| m.contains("Geometry fade has nothing checked")), "{issues:?}");
+
+        cue.geometry = Some(move_and_turn());
+        let issues: Vec<String> =
+            cue.validate(&validation_context(&[target], &[])).into_iter().map(|i| i.message).collect();
+        assert!(!issues.iter().any(|m| m.contains("Geometry")), "{issues:?}");
+    }
+
+    fn zigzag(loop_path: bool) -> GeometryFade {
+        GeometryFade::Path(crate::cue::types::PathGeometry {
+            points: vec![[-0.4, -0.3], [0.35, -0.3], [-0.4, 0.3], [0.4, 0.35]],
+            smooth: true,
+            merge: 0.5,
+            loop_path,
+            x_param: PathParam::TranslationX,
+            y_param: PathParam::TranslationY,
+        })
+    }
+
+    #[test]
+    fn a_path_fade_survives_a_roundtrip_in_its_documented_shape() {
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(zigzag(true));
+        let json = cue.serialize();
+        assert_eq!(
+            json["geometry"],
+            json!({
+                "mode": "path",
+                "points": [[-0.4, -0.3], [0.35, -0.3], [-0.4, 0.3], [0.4, 0.35]],
+                "smooth": true,
+                "merge": 0.5,
+                "loop_path": true,
+                "x_param": "translation_x",
+                "y_param": "translation_y",
+            })
+        );
+        let again = FadeCueFactory.from_json(json.clone()).unwrap().serialize();
+        assert_eq!(again["geometry"], json["geometry"]);
+    }
+
+    #[test]
+    fn a_minimal_path_takes_the_qlab_defaults() {
+        let json = json!({ "type": "fade", "geometry": { "mode": "path", "points": [[0.0, 0.0], [0.1, 0.0]] } });
+        let geometry = FadeCueFactory.from_json(json).unwrap().serialize()["geometry"].clone();
+        assert_eq!(geometry["smooth"], false);
+        assert_eq!(geometry["merge"], 0.0);
+        assert_eq!(geometry["loop_path"], false);
+        assert_eq!((geometry["x_param"].as_str(), geometry["y_param"].as_str()), (Some("translation_x"), Some("translation_y")));
+    }
+
+    #[test]
+    fn the_path_motion_program_carries_the_path() {
+        let mut cue = FadeCue::new();
+        cue.fade_duration_ms = 3000;
+        let mut geometry = zigzag(false);
+        if let GeometryFade::Path(p) = &mut geometry {
+            p.merge = 1.7; // out of range: clamped
+            p.x_param = PathParam::TranslationY;
+            p.y_param = PathParam::TranslationX;
+        }
+        cue.geometry = Some(geometry);
+        let Some(MotionProgram::Path(path)) = cue.motion_program() else {
+            panic!("a path geometry fade is a path motion");
+        };
+        assert_eq!(path.points.len(), 4);
+        assert!(path.smooth && !path.looping);
+        assert_eq!(path.merge, 1.0);
+        assert_eq!(path.duration, Duration::from_millis(3000));
+        assert_eq!((path.x_param, path.y_param), (MotionParam::TranslationY, MotionParam::TranslationX));
+    }
+
+    #[test]
+    fn a_path_needs_two_points() {
+        let target = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        cue.geometry = Some(GeometryFade::Path(crate::cue::types::PathGeometry {
+            points: vec![[0.0, 0.0]],
+            smooth: false,
+            merge: 0.0,
+            loop_path: false,
+            x_param: PathParam::TranslationX,
+            y_param: PathParam::TranslationY,
+        }));
+        assert!(cue.motion_program().is_none(), "one point is not a path");
+        let issues = cue.validate(&validation_context(&[target], &[]));
+        assert!(issues.iter().any(|i| i.message.contains("at least two points")), "{issues:?}");
+    }
+
+    #[test]
+    fn a_path_driving_one_property_twice_is_flagged() {
+        let target = Uuid::new_v4();
+        let mut cue = FadeCue::new();
+        cue.target_cue_ids = vec![target];
+        let mut geometry = zigzag(false);
+        if let GeometryFade::Path(p) = &mut geometry {
+            p.y_param = PathParam::TranslationX;
+        }
+        cue.geometry = Some(geometry);
+        let issues = cue.validate(&validation_context(&[target], &[]));
+        assert!(issues.iter().any(|i| i.message.contains("same property")), "{issues:?}");
+        cue.geometry = Some(zigzag(false));
+        assert!(cue.validate(&validation_context(&[target], &[])).is_empty());
+    }
+
+    #[test]
+    fn a_looping_path_has_no_duration_so_it_never_completes() {
+        let mut cue = FadeCue::new();
+        cue.fade_duration_ms = 3000;
+        cue.geometry = Some(zigzag(false));
+        assert_eq!(cue.duration(), Some(Duration::from_millis(3000)));
+        cue.geometry = Some(zigzag(true));
+        assert_eq!(cue.duration(), None);
+    }
+
+    #[test]
+    fn a_running_geometry_fade_survives_the_inspector_rebuild() {
+        let mut cue = FadeCue::new();
+        cue.geometry = Some(move_and_turn());
+        cue.state = CueState::Running;
+        cue.motion_started = true;
+
+        let extra = cue.take_runtime_extra().unwrap();
+        let mut rebuilt = FadeCue::new();
+        rebuilt.restore_runtime_extra(extra);
+        assert!(rebuilt.motion_started, "the rebuilt cue must not start the motion again");
     }
 }
